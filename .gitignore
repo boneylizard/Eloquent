@@ -1,0 +1,22 @@
+# Ignore virtual environments
+venv/
+.env/
+.env.*  # Optional if you use dotenv
+
+# Ignore old Git config folders
+.git/
+
+# Ignore Python cruft
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore compiled wheels and caches
+*.egg-info/
+dist/
+build/
+
+# Ignore system stuff
+.DS_Store
+Thumbs.db

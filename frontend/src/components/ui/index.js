@@ -1,0 +1,21 @@
+// Re-export all UI components for easier imports
+export { Button, buttonVariants } from './button';
+export { Input } from './input';
+export { Label } from './label';
+export { Textarea } from './textarea';
+export { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './card';
+export { Tabs, TabsContent, TabsList, TabsTrigger } from './tabs';
+export { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from './dialog';
+export { Alert, AlertDescription, AlertTitle } from './alert';
+export { Badge } from './badge';
+export { Separator } from './separator';
+export { ScrollArea } from './scroll-area';
+export { Slider } from './slider';
+export { Switch } from './switch';
+export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './tooltip';
+export { Avatar, AvatarFallback, AvatarImage } from './avatar';
+export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select';
+export { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from './dropdown-menu';
+export { Popover, PopoverContent, PopoverTrigger } from './popover';
+export { Toast, ToastAction, ToastProvider, ToastViewport } from './toast';
+export { useToast } from './use-toast';

@@ -1,0 +1,379 @@
+.memory-editor {
+  background-color: var(--background);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  max-width: 900px;
+  margin: 0 auto;
+  overflow: hidden;
+}
+
+.memory-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.memory-editor-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.view-switcher {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.view-switcher button {
+  background: none;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.view-switcher button.active {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  cursor: pointer;
+  color: var(--muted-foreground);
+}
+
+.close-button:hover {
+  color: var(--foreground);
+}
+
+/* Memories View */
+.memories-view {
+  padding: 1.5rem;
+}
+
+.filters-bar {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.filters-bar input, 
+.filters-bar select {
+  flex: 1;
+  padding: 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+.filters-bar .add-button {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border: none;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.memories-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.memory-card {
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.memory-content {
+  flex: 1;
+}
+
+.memory-content p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.memory-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.memory-category,
+.memory-type {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 20px;
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+}
+
+.memory-importance {
+  font-size: 0.8rem;
+  color: gold;
+}
+
+.memory-dates {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.memory-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.memory-actions button {
+  background: none;
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.memory-actions .edit-button:hover {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border-color: var(--primary);
+}
+
+.memory-actions .delete-button:hover {
+  background-color: var(--destructive);
+  color: var(--destructive-foreground);
+  border-color: var(--destructive);
+}
+
+.no-memories {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 2rem;
+  color: var(--muted-foreground);
+}
+
+.memories-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.reset-button {
+  background-color: var(--destructive);
+  color: var(--destructive-foreground);
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Add/Edit Memory View */
+.add-memory-view,
+.edit-memory-view,
+.profile-view {
+  padding: 1.5rem;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 0.75rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+.form-group textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.form-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+}
+
+.form-actions button {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.form-actions button[type="submit"] {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border: none;
+}
+
+.form-actions button[type="button"] {
+  background: none;
+  border: 1px solid var(--border);
+}
+
+/* User Profile */
+.topics-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.topic-tag {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 20px;
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.topic-tag button {
+  background: none;
+  border: none;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: inherit;
+  padding: 0 0.25rem;
+}
+
+.topics-input input {
+  border: none;
+  padding: 0.25rem;
+  background: none;
+  flex: 1;
+  min-width: 120px;
+  color: var(--foreground);
+}
+/* Add these styles to your MemoryEditor.css file */
+
+/* Profile Selector Styles */
+.profile-selector {
+    margin-bottom: 2rem;
+  }
+  
+  .profiles-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  
+  .profile-card {
+    border: 1px solid #e0e0e0;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    background-color: #f9f9f9;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  
+  .profile-card:hover {
+    border-color: #ccc;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  }
+  
+  .profile-card.active {
+    border-color: #4a90e2;
+    background-color: #f0f7ff;
+  }
+  
+  .profile-info {
+    margin-bottom: 0.5rem;
+  }
+  
+  .profile-info h4 {
+    margin: 0 0 0.5rem 0;
+    font-size: 1.1rem;
+  }
+  
+  .memory-count {
+    font-size: 0.8rem;
+    color: #666;
+  }
+  
+  .active-badge {
+    display: inline-block;
+    background-color: #4a90e2;
+    color: white;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 1rem;
+    margin-left: 0.5rem;
+  }
+  
+  .profile-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+  
+  .profile-rename-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .rename-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+  
+  .add-profile-form {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+  
+  .add-profile-form input {
+    flex: 1;
+    padding: 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 0.25rem;
+  }
+  
+  .add-profile-form button {
+    padding: 0.5rem 1rem;
+    background-color: #4a90e2;
+    color: white;
+    border: none;
+    border-radius: 0.25rem;
+    cursor: pointer;
+  }
+  
+  .add-profile-form button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+  }
