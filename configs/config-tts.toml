@@ -1,0 +1,54 @@
+instance_name = "kyutai-streaming-server"
+static_dir = "./static"
+log_dir = "./logs"
+authorized_ids = []
+
+[model]
+# Model repository on HuggingFace
+hf_repo = "kyutai/tts-1.6b-en_fr"
+# Local model path (alternative to hf_repo)
+# model_path = "./models/kyutai-tts-1.6b"
+
+[server]
+# Server settings
+host = "0.0.0.0"
+port = 7007
+# Maximum number of concurrent connections
+max_connections = 16
+
+[generation]
+# Generation parameters
+# Batch size - adjust based on your GPU memory
+# 3090: 8-16, 4060Ti: 4-8, H100: 32+
+batch_size = 8
+# Maximum sequence length
+max_length = 2048
+# Temperature for generation
+temperature = 1.0
+# Top-p sampling
+top_p = 0.9
+
+[device]
+# GPU device index (0 for first GPU, 1 for second, etc.)
+device_id = 1  # Use your 3090 (second GPU)
+# Memory management
+memory_fraction = 0.9
+# Use mixed precision for better performance
+use_fp16 = true
+
+[audio]
+# Audio output settings
+sample_rate = 16000
+# Audio chunk size for streaming (smaller = lower latency, higher CPU)
+chunk_size = 1024
+
+[cache]
+# Model cache directory (Windows paths)
+cache_dir = "./models"
+# Voice embeddings cache  
+voice_cache_dir = "./voice_cache"
+
+[logging]
+level = "info"
+# Log file path (optional) - Windows path
+# log_file = "./logs/kyutai-server.log"

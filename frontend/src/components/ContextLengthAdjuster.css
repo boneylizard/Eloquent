@@ -1,0 +1,76 @@
+/* ContextLengthAdjuster.css */
+.context-length-adjuster {
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background-color: #f5f5f5;
+}
+
+.context-length-label {
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.context-length-value {
+  font-weight: bold;
+}
+
+.context-length-slider-container {
+  padding: 0 5px;
+  margin: 10px 0;
+}
+
+.context-length-slider {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #ddd;
+  outline: none;
+  border-radius: 2px;
+}
+
+.context-length-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: #007bff;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.context-length-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: #007bff;
+  cursor: pointer;
+  border-radius: 50%;
+  border: none;
+}
+
+.context-presets {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.preset-button {
+  padding: 4px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s ease;
+}
+
+.preset-button:hover {
+  background-color: #f0f0f0;
+}
+
+.preset-button.active {
+  background-color: #007bff;
+  color: white;
+  border-color: #007bff;
+}
