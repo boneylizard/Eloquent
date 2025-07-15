@@ -29,6 +29,10 @@ if "%PYVER%"=="3.11" (
     exit /b 1
 )
 
+REM Install PyTorch for CUDA 12.1
+echo ⚙️ Installing PyTorch with CUDA 12.1...
+pip install torch==2.3.1+cu121 torchvision==0.18.1+cu121 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+
 REM Install all remaining dependencies
 echo 📜 Installing remaining dependencies...
 pip install -r requirements.txt
