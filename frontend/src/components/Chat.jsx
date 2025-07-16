@@ -77,6 +77,7 @@ const Chat = ({ layoutMode }) => {
   const [manuallyStoppedAudio, setManuallyStoppedAudio] = useState(false);
   const [autoplayPaused, setAutoplayPaused] = useState(false);
   const messagesEndRef = useRef(null);
+  const [inputValue, setInputValue] = useState('');
   const [isFocusModeActive, setIsFocusModeActive] = useState(false);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState(null);
   const prevMessageCount = useRef(messages.length);
@@ -2454,6 +2455,8 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     agentConversationActive={agentConversationActive}
     primaryModel={primaryModel}
     webSearchEnabled={webSearchEnabled}
+    inputValue={inputValue}          // ADD THIS
+    setInputValue={setInputValue}  // ADD THIS
 />
   {/* Character Preview Modal */}
   {showCharacterPreview && generatedCharacter && (

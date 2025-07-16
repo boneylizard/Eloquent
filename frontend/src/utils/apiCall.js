@@ -6,7 +6,7 @@ import { retrieveRelevantMemories, formatMemoriesForPrompt } from './memoryUtils
 // Add this function near the top of apiCall.js
 function getBackendUrl() {
   try {
-    const settings = JSON.parse(localStorage.getItem('LiangLocal-settings') || '{}');
+    const settings = JSON.parse(localStorage.getItem('Eloquent-settings') || '{}');
     const isSingleGpuMode = settings.singleGpuMode === true;
     return isSingleGpuMode ? 'http://localhost:8000' : 'http://localhost:8001';
   } catch (error) {
@@ -892,7 +892,7 @@ class TTSWebSocketClient {
     }
 
     // Connect to the new backend endpoint
-    this.socket = new WebSocket("ws://localhost:8001/tts-stream");
+    this.socket = new WebSocket(`${getBackendUrl()}/tts-stream`);
 
     this.socket.onopen = () => {
       console.log("✅ [WebSocket] Connection established.");

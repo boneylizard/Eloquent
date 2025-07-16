@@ -317,6 +317,7 @@ const drawAvatar = (canvas, imageUrl, name) => {
     useLoreAgentForMemoryRetrieval: false,
     useLoreAgentForMemoryObservation: false,
     sttEnabled: false,
+    streamResponses: true,
     sttEngine: "whisper",
     ttsVoice: 'af_heart',
     ttsSpeed: 1.0,

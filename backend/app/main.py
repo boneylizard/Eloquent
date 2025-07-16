@@ -906,6 +906,7 @@ async def lifespan(app: FastAPI):
         gpu_usage_mode = user_gpu_mode
         logging.info(f"🔍 Using user GPU usage mode preference: {gpu_usage_mode}")
     else:
+        gpu_usage_mode = 'unified_model'  # ✅ Add this default
         logging.info(f"🔍 Invalid or missing GPU mode, using default: {gpu_usage_mode}")
 
     # SD model directory
