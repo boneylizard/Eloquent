@@ -8,11 +8,10 @@ echo.
 set "PROJECT_DIR=%~dp0"
 cd /d "%PROJECT_DIR%"
 
-REM --- 1. Clean up old processes and signals ---
+REM --- 1. Clean up old processes on ports ---
 echo Killing any processes on ports 8000, 8001...
 FOR /F "tokens=5" %%P IN ('netstat -aon ^| findstr ":8000" ^| findstr "LISTENING"') DO (taskkill /PID %%P /F /T > nul)
 FOR /F "tokens=5" %%P IN ('netstat -aon ^| findstr ":8001" ^| findstr "LISTENING"') DO (taskkill /PID %%P /F /T > nul)
-if exist "SHUTDOWN_SIGNAL" del "SHUTDOWN_SIGNAL" > nul
 echo Cleanup complete.
 echo.
 timeout /t 2 /nobreak > nul
@@ -42,9 +41,6 @@ if "%GPU_MODE%"=="SINGLE" (
 echo.
 
 REM --- 4. Start All Services ---
-echo Launching Shutdown Monitor (hidden)...
-START /MIN "Shutdown Monitor" shutdown_monitor.bat
-
 echo Launching Backend Servers via launch.py (new window)...
 START "Eloquent Backend" cmd /c "cd /d "%PROJECT_DIR%" && python launch.py"
 
