@@ -1971,28 +1971,69 @@ const MemoryEditorTab = () => {
   }, [activeProfileId, API_URL]);
 
   // Delete memory function - uses clear+recreate since no delete endpoint exists
-  const handleDelete = useCallback(async (memory, index) => {
-    if (!activeProfileId) return;
-    
-    setDeletingIndex(index);
-    
-    try {
-      // Clear all memories for this user
-      const clearResponse = await fetch(`${API_URL}/memory/clear?user_id=${activeProfileId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' }
-      });
+// Replace the handleDelete function in Settings.jsx with this much safer version:
 
-      if (!clearResponse.ok) {
-        throw new Error(`Clear failed: ${clearResponse.status}`);
-      }
+const handleDelete = useCallback(async (memory, index) => {
+  if (!activeProfileId) return;
+  
+  // Confirm deletion first
+  if (!window.confirm(`Delete this memory: "${memory.content.substring(0, 100)}..."`)) {
+    return;
+  }
+  
+  setDeletingIndex(index);
+  
+  try {
+    // Get FRESH data first to avoid working with stale state
+    console.log('Fetching fresh memory data before deletion...');
+    const freshResponse = await fetch(`${API_URL}/memory/get_all?user_id=${activeProfileId}`);
+    if (!freshResponse.ok) {
+      throw new Error(`Failed to fetch fresh data: ${freshResponse.status}`);
+    }
+    
+    const freshData = await freshResponse.json();
+    const freshMemories = Array.isArray(freshData.memories) ? freshData.memories : [];
+    
+    // Find the memory to delete by content and timestamp matching (more reliable than index)
+    const targetMemory = freshMemories.find(m => 
+      m.content === memory.content && 
+      m.created === memory.created
+    );
+    
+    if (!targetMemory) {
+      throw new Error('Memory not found in current data - it may have already been deleted');
+    }
+    
+    // Create the list of memories to keep (exclude the target)
+    const memoriesToKeep = freshMemories.filter(m => 
+      !(m.content === targetMemory.content && m.created === targetMemory.created)
+    );
+    
+    // Validate we're deleting exactly one memory
+    if (memoriesToKeep.length !== freshMemories.length - 1) {
+      throw new Error(`Deletion would affect ${freshMemories.length - memoriesToKeep.length} memories instead of 1`);
+    }
+    
+    console.log(`Will delete 1 memory and keep ${memoriesToKeep.length} memories`);
+    
+    // Clear all memories
+    const clearResponse = await fetch(`${API_URL}/memory/clear?user_id=${activeProfileId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }
+    });
 
-      // Save back all memories except the one being deleted
-      const memoriesToKeep = memories.filter((_, i) => i !== index);
-      let saveCount = 0;
-      
-      for (const memoryToSave of memoriesToKeep) {
-        // Ensure the memory has user_id field (not user)
+    if (!clearResponse.ok) {
+      throw new Error(`Clear failed: ${clearResponse.status}`);
+    }
+    
+    console.log('All memories cleared, recreating the ones to keep...');
+
+    // Recreate the memories we want to keep
+    let saveCount = 0;
+    let errors = [];
+    
+    for (const memoryToSave of memoriesToKeep) {
+      try {
         const memoryWithUserId = {
           ...memoryToSave,
           user_id: activeProfileId
@@ -2008,25 +2049,35 @@ const MemoryEditorTab = () => {
           saveCount++;
         } else {
           const errorData = await saveResponse.json().catch(() => ({}));
-          console.error(`Failed to save memory: ${errorData.detail || saveResponse.status}`);
+          errors.push(`Memory ${saveCount + 1}: ${errorData.detail || saveResponse.status}`);
         }
+      } catch (saveError) {
+        errors.push(`Memory ${saveCount + 1}: ${saveError.message}`);
       }
-
-      if (saveCount === memoriesToKeep.length) {
-        // Update UI immediately
-        setMemories(prev => prev.filter((_, i) => i !== index));
-        // Refresh to confirm
-        setTimeout(fetchMemories, 500);
-      } else {
-        throw new Error(`Only saved ${saveCount}/${memoriesToKeep.length} memories`);
-      }
-
-    } catch (err) {
-      alert(`Failed to delete memory: ${err.message}`);
-    } finally {
-      setDeletingIndex(null);
     }
-  }, [activeProfileId, memories, fetchMemories, API_URL]);
+    
+    console.log(`Successfully saved ${saveCount}/${memoriesToKeep.length} memories`);
+    
+    if (saveCount === memoriesToKeep.length) {
+      // Perfect! Update UI and refresh
+      setMemories(prev => prev.filter((_, i) => i !== index));
+      setTimeout(fetchMemories, 1000); // Longer delay to ensure backend consistency
+    } else {
+      // Partial failure - show what happened but still refresh
+      console.error('Errors during recreation:', errors);
+      alert(`Warning: Only ${saveCount}/${memoriesToKeep.length} memories were restored. Some data may have been lost.`);
+      await fetchMemories(); // Refresh to show current state
+    }
+
+  } catch (err) {
+    console.error('Delete operation failed:', err);
+    alert(`Failed to delete memory: ${err.message}`);
+    // Always refresh to show current state after any error
+    await fetchMemories();
+  } finally {
+    setDeletingIndex(null);
+  }
+}, [activeProfileId, API_URL, fetchMemories]);
 
   // Debug function to check available endpoints
   const debugEndpoints = useCallback(async () => {
