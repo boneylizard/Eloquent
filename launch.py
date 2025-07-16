@@ -1,10 +1,11 @@
-# launch.py - Fixed version
+# launch.py - Final version with single, reliable browser launch
 import os
 import sys
 import uvicorn
 from multiprocessing import Process, freeze_support
 import socket
 import time
+import webbrowser # <-- Re-added this line
 
 def get_project_root():
     """Gets the absolute path to the project's root directory (where launch.py is)."""
@@ -95,11 +96,13 @@ def main():
     model_service_process = start_model_service(project_root)
     
     gpu_count = get_gpu_count()
+    
     if gpu_count == 0:
         print("No NVIDIA GPUs detected. Starting one backend instance on CPU.")
+        print("Please open http://localhost:5173/ in your browser manually after the server starts.")
         start_backend(host="0.0.0.0", port=8000, gpu_id=-1, root_path=project_root)
     else:
-        print(f"Found {gpu_count} NVIDIA GPUs. Starting one server process per GPU.")
+        print(f"Found {gpu_count} NVIDIA GPUs. Starting server processes...")
         processes = []
         
         if model_service_process:
@@ -111,9 +114,18 @@ def main():
             p.start()
             processes.append(p)
         
+        # --- CORRECTED BROWSER LAUNCH LOGIC ---
+        # This code runs in the main process *after* all background processes have started.
+        print("\n--- Backend servers are starting... ---")
+        print("--- Opening frontend in 15 seconds at http://localhost:5173/ ---")
+        time.sleep(15)  # Wait for servers to initialize
+        webbrowser.open("http://localhost:5173/")
+        
+        # This loop waits for you to manually stop the server processes (e.g., with Ctrl+C)
+        # It's a blocking call, so the script will hang here as intended.
         for p in processes:
             p.join()
 
 if __name__ == "__main__":
-    freeze_support()
+    freeze_support() # Important for Windows multiprocessing
     main()
