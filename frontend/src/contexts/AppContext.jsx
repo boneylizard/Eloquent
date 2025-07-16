@@ -529,11 +529,7 @@ const endStreamingTTS = useCallback(() => {
 // …later, inside your component:
 const checkSdStatus = useCallback(async () => {
 
-  console.log("🔍 DEBUG - Full settings object:", settings);
-  console.log("🔍 DEBUG - settings.imageEngine value:", settings.imageEngine);
   const imageEngine = settings.imageEngine || 'auto1111';
-  
-    console.log("[SD] Checking status for engine:", imageEngine);
   
   let automatic1111Status = false;
   let localSdStatus = false;
@@ -547,7 +543,6 @@ const checkSdStatus = useCallback(async () => {
         automatic1111Status = Boolean(data.automatic1111);
       }
     } catch (err) {
-      console.error("[SD] AUTOMATIC1111 status check failed:", err);
     }
   }
   
@@ -560,7 +555,6 @@ const checkSdStatus = useCallback(async () => {
         localSdStatus = Boolean(data.available);
       }
     } catch (err) {
-      console.error("[SD] Local SD status check failed:", err);
     }
   }
   
@@ -2099,10 +2093,7 @@ useEffect(() => {
 }, []);
 
 // Then add a new, separate useEffect that runs just once at startup:
-useEffect(() => {
-  // Check SD status when the component mounts AND when the engine setting changes.
-  checkSdStatus();
-}, [checkSdStatus]); // Add checkSdStatus as a dependency
+
   const updateSettings = useCallback((newSettings) => {
     setSettings(prevSettings => {
       const updatedSettings = { ...prevSettings, ...newSettings };
