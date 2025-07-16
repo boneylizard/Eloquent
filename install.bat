@@ -40,20 +40,14 @@ REM --- 6. Install all remaining requirements.txt packages ---
 echo Installing full requirements.txt...
 pip install -r requirements.txt
 
-REM --- 6.5. Force install nemo-toolkit separately ---
-echo Installing nemo-toolkit separately (complex dependency)...
-pip install --force-reinstall nemo-toolkit
+REM --- 6.5. Force install specific nemo-toolkit version ---
+echo Installing nemo-toolkit version 2.3.2 (force reinstall)...
+pip install nemo-toolkit==2.3.2 --force-reinstall
 if errorlevel 1 (
-    echo WARNING: nemo-toolkit installation failed, trying alternative approach...
-    pip install --no-deps nemo-toolkit
-    if errorlevel 1 (
-        echo WARNING: nemo-toolkit could not be installed automatically
-        echo You may need to install it manually with: pip install nemo-toolkit
-    ) else (
-        echo nemo-toolkit installed successfully with --no-deps
-    )
+    echo WARNING: nemo-toolkit 2.3.2 installation failed
+    echo You may need to install it manually with: pip install nemo-toolkit==2.3.2
 ) else (
-    echo nemo-toolkit installed successfully
+    echo nemo-toolkit 2.3.2 installed successfully
 )
 
 REM --- 7. Node.js version check ---
@@ -84,12 +78,27 @@ REM --- 8. Install frontend dependencies ---
 if exist frontend (
     echo Installing frontend dependencies via npm...
     cd frontend
+    
+    REM Clean any existing install artifacts that might cause issues
+    if exist node_modules (
+        echo Cleaning existing node_modules...
+        rmdir /s /q node_modules
+    )
+    if exist package-lock.json (
+        echo Cleaning existing package-lock.json...
+        del package-lock.json
+    )
+    
+    REM Force fresh install
+    echo Running fresh npm install...
     call npm install
+    
     if errorlevel 1 (
         echo ERROR: npm install failed
         cd ..
         exit /b 1
     )
+    
     cd ..
 ) else (
     echo ERROR: 'frontend' folder not found. Skipping npm install.
