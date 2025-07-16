@@ -35,19 +35,7 @@ pip install torch==2.3.1+cu121 torchvision==0.18.1+cu121 torchaudio==2.3.1 --ind
 
 REM Preinstall core runtime dependencies (to prevent resolver conflict)
 echo 📦 Installing critical FastAPI / audio / vision packages...
-pip install ^
-    pynvml ^                 :: NVIDIA GPU monitoring ^
-    httpx ^                 :: HTTP client (FastAPI compatible) ^
-    fastapi ^               :: Core API framework ^
-    uvicorn ^               :: ASGI server ^
-    soundfile ^             :: Audio I/O ^
-    librosa ^               :: Audio processing ^
-    python-multipart ^      :: File uploads ^
-    opencv-python ^         :: Camera/video support ^
-    beautifulsoup4 ^        :: HTML parsing ^
-    kokoro ^                :: SOTA TTS ^
-    websockets ^            :: WebSocket backend ^
-    nemo-toolkit            :: Parakeet ASR
+pip install pynvml httpx fastapi uvicorn soundfile librosa python-multipart opencv-python beautifulsoup4 kokoro websockets nemo-toolkit sentence-transformers
 
 REM Install all remaining pinned dependencies
 echo 📜 Installing full requirements.txt...
