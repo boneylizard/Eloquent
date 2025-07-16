@@ -338,21 +338,6 @@ const drawAvatar = (canvas, imageUrl, name) => {
   const VITE_API_URL = isSingleGpuMode ? "http://127.0.0.1:8000" : "http://127.0.0.1:8001";
 
 
-  // One-time memory initialization on app load
-  useEffect(() => {
-    if (memoryContext) {
-      initializeMemories(memoryContext)
-        .then(success => {
-          console.log("🧠 Memory system initialized");    // always log
-          if (success) {
-            console.log("🧠 Memory system is ready to use.");
-          }
-        })
-      .catch(err => {
-        console.error("🧠 Memory system failed to initialize:", err);
-        });
-    }
-  }, [memoryContext]);
 
 
 
