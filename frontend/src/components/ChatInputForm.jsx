@@ -13,9 +13,10 @@ const ChatInputForm = ({
     isTranscribing,
     agentConversationActive, 
     primaryModel,
-    webSearchEnabled
+    webSearchEnabled,
+    inputValue,
+    setInputValue
 }) => {
-  const [inputValue, setInputValue] = useState('');
   const inputRef = useRef(null);
 
   const handleKeyDown = (e) => {
