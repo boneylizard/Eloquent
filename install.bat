@@ -40,16 +40,6 @@ REM --- 6. Install all remaining requirements.txt packages ---
 echo Installing full requirements.txt...
 pip install -r requirements.txt
 
-REM --- 6.5. Force install specific nemo-toolkit version ---
-echo Installing nemo-toolkit version 2.3.2 (force reinstall)...
-pip install nemo-toolkit==2.3.2 --force-reinstall
-if errorlevel 1 (
-    echo WARNING: nemo-toolkit 2.3.2 installation failed
-    echo You may need to install it manually with: pip install nemo-toolkit==2.3.2
-) else (
-    echo nemo-toolkit 2.3.2 installed successfully
-)
-
 REM --- 7. Node.js version check ---
 echo Checking Node.js version...
 node -v > temp_node_version.txt 2>nul
