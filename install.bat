@@ -40,6 +40,22 @@ REM --- 6. Install all remaining requirements.txt packages ---
 echo Installing full requirements.txt...
 pip install -r requirements.txt
 
+REM --- 6.5. Force install nemo-toolkit separately ---
+echo Installing nemo-toolkit separately (complex dependency)...
+pip install --force-reinstall nemo-toolkit
+if errorlevel 1 (
+    echo WARNING: nemo-toolkit installation failed, trying alternative approach...
+    pip install --no-deps nemo-toolkit
+    if errorlevel 1 (
+        echo WARNING: nemo-toolkit could not be installed automatically
+        echo You may need to install it manually with: pip install nemo-toolkit
+    ) else (
+        echo nemo-toolkit installed successfully with --no-deps
+    )
+) else (
+    echo nemo-toolkit installed successfully
+)
+
 REM --- 7. Node.js version check ---
 echo Checking Node.js version...
 node -v > temp_node_version.txt 2>nul
