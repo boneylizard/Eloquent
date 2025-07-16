@@ -20,6 +20,7 @@ build/
 # Ignore frontend build system artifacts
 frontend/node_modules/
 frontend/.next/
+frontend/package-lock.json
 frontend/.vite/
 frontend/.cache/
 frontend/dist/
