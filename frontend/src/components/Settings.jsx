@@ -155,11 +155,6 @@ useEffect(() => {
     }
   }, [checkSdStatus, sdStatus]);
 
-  // Fetch SD status on mount
-  useEffect(() => {
-    handleCheckSdStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty deps: run only once
   
 // full list of Kokoro voices by language
 const voices = [
