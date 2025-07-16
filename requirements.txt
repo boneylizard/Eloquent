@@ -78,7 +78,6 @@ gguf==0.17.1
 gguf-parser==0.1.1
 gitdb==4.0.12
 GitPython==3.1.44
-googleapis-common-protos==1.70.0
 graphviz==0.20.3
 greenlet==3.2.3
 grpcio==1.72.1
@@ -146,7 +145,6 @@ msgspec==0.19.0
 multidict==6.4.4
 multiprocess==0.70.16
 murmurhash==1.0.13
-nemo-toolkit==2.3.2
 nest-asyncio==1.6.0
 networkx==3.3
 ninja==1.11.1.4
@@ -157,8 +155,6 @@ numpy==1.26.4
 nvidia-ml-py==12.575.51
 omegaconf==2.3.0
 onnx==1.17.0
-onnxruntime==1.22.0
-openai==1.91.0
 openai-whisper==20240930
 opencv-python==4.11.0.86
 opencv-python-headless==4.11.0.86
@@ -167,7 +163,6 @@ opentelemetry-exporter-otlp==1.34.1
 opentelemetry-exporter-otlp-proto-common==1.34.1
 opentelemetry-exporter-otlp-proto-grpc==1.34.1
 opentelemetry-exporter-otlp-proto-http==1.34.1
-opentelemetry-proto==1.34.1
 opentelemetry-sdk==1.34.1
 opentelemetry-semantic-conventions==0.55b1
 opentelemetry-semantic-conventions-ai==0.4.9
