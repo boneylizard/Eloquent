@@ -2,6 +2,10 @@
 
 Eloquent is a sophisticated, locally-hosted frontend for open-weight Large Language Models, designed around a dual-GPU architecture, advanced memory systems, and multi-modal AI interaction. It provides a powerful and private environment for interacting with, testing, and managing large language models.
 
+![Eloquent Overview](https://github.com/boneylizard/Eloquent/blob/main/assets/chat.jpg)
+
+---
+
 ## Key Features
 
 ### Dual-GPU Architecture
@@ -10,11 +14,33 @@ Eloquent is designed to leverage a dual-GPU setup for optimal performance. One G
 ### Intelligent Memory System
 The application features a persistent memory system that analyzes conversations and stores relevant information about user preferences, expertise, and context. This allows for truly personalized AI responses that improve over time.
 
+---
+
 ### Advanced Chat & Character System
 
-- **Customizable AI Personas**: Create and customize AI characters with detailed backgrounds, personalities, and speech patterns.
+- **Customizable AI Personas**: Create and customize AI characters with detailed backgrounds, personalities, and speech patterns.  
+  ![Character Library](https://github.com/boneylizard/Eloquent/blob/main/assets/characters.jpg)
+
 - **Dynamic Conversation Management**: Enjoy features like auto-generated chat titles, editable messages, and a full conversation history.
+
 - **World Lore Integration**: Build rich, consistent fictional worlds with keyword-triggered contextual injection from a custom lore book.
+
+---
+
+### Auto-Character Creator
+
+Eloquent includes an advanced Auto-Character Creator — a tool that streamlines the process of creating AI characters through natural dialogue.
+
+- Have a conversation with an AI about your new character idea.
+- When you're ready, click the **Auto-Generate** button.
+- Eloquent sends a prompt to the model, asking it to fill out a detailed character JSON structure.
+- The response is parsed and rendered into a fully editable character sheet, complete with persona, dialogue style, memory usage, and visual portrait options.
+
+This system enables rapid iteration and experimentation with new AI personas.
+
+![AutoCharacter Creator](https://github.com/boneylizard/Eloquent/blob/main/assets/autocharacter%20creator.jpg)
+
+---
 
 ### Comprehensive Document Intelligence (RAG)
 
@@ -22,11 +48,17 @@ The application features a persistent memory system that analyzes conversations 
 - Eloquent intelligently chunks and embeds document content for efficient retrieval.
 - Relevant document chunks are automatically injected into the conversation context.
 
+---
+
 ### Model ELO Testing System
 
 - **Single Model Testing**: Evaluate the performance of individual models with automated LLM judges providing scores and feedback.
 - **Comparison Testing**: Pit models against each other in head-to-head competitions with ELO rating calculations.
 - **Advanced ELO Algorithm**: The system uses a category-weighted, performance-scaled rating system to provide a nuanced view of model capabilities.
+
+![ELO Tester](https://github.com/boneylizard/Eloquent/blob/main/assets/elo%20tester.jpg)
+
+---
 
 ### Multi-modal Interaction
 
@@ -34,10 +66,15 @@ The application features a persistent memory system that analyzes conversations 
 - **ADetailer Integration**: Automatically enhance generated images with face and detail correction using ADetailer.
 - **Voice-to-Text and Text-to-Speech**: Interact with the AI using your voice and receive spoken responses.
 
+---
+
 ### Focus and Call Modes
 
-- **Focus Mode**: A clean, distraction-free chat interface for immersive conversations.
-- **Call Mode**: An audio-only interaction mode for a more natural, hands-free experience.
+- **Focus Mode**: A clean, distraction-free chat interface for immersive conversations.  
+  ![Focus Mode](https://github.com/boneylizard/Eloquent/blob/main/assets/focus.jpg)
+
+- **Call Mode**: An audio-only interaction mode for a more natural, hands-free experience.  
+  ![Call Mode](https://github.com/boneylizard/Eloquent/blob/main/assets/call.jpg)
 
 ---
 
