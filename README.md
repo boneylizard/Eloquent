@@ -1,80 +1,100 @@
 # Eloquent: Advanced Local AI Interface
 
-Eloquent is a sophisticated, locally-hosted frontend for open-weight Large Language Models, designed around a dual-GPU architecture, advanced memory systems, and multi-modal AI interaction. It provides a powerful and private environment for interacting with, testing, and managing large language models.
+Eloquent is a sophisticated, locally-hosted frontend for open-weight Large Language Models, designed around a dual-GPU architecture, advanced memory systems, and multi-modal AI interaction. It provides a powerful and private environment for interacting with, testing, and managing large language models with performance rivaling commercial AI platforms.
 
-![Eloquent Overview](https://github.com/boneylizard/Eloquent/blob/main/assets/chat.jpg)
-
----
+![Chat UI](https://github.com/boneylizard/Eloquent/blob/main/assets/chat.jpg)
 
 ## Key Features
 
-### Dual-GPU Architecture
-Eloquent is designed to leverage a dual-GPU setup for optimal performance. One GPU is dedicated to primary model inference, while the second GPU handles memory-related tasks, ensuring smooth and responsive interactions even with large models.
+### High-Performance Dual-GPU Architecture
+
+Eloquent is engineered to maximize performance through intelligent GPU resource allocation. The primary GPU handles model inference with optimized speeds (approximately 37 tokens/second on Gemma 3 27B with RTX 3090), while the secondary GPU manages memory operations, RAG processing, and auxiliary tasks. This architecture ensures responsive interactions even with large 27B+ parameter models.
+
+### OpenAI-Compatible API Integration
+
+- **Inbound API Support**: Full compatibility with OpenAI-compatible APIs including KoboldCPP streaming across networks  
+- **Seamless Model Mixing**: Combine local GGUF models with remote API endpoints in the same interface  
+- **Network Streaming**: Real-time streaming support for distributed inference setups  
 
 ### Intelligent Memory System
-The application features a persistent memory system that analyzes conversations and stores relevant information about user preferences, expertise, and context. This allows for truly personalized AI responses that improve over time.
 
----
+The application features a sophisticated persistent memory system that analyzes conversations using semantic embeddings and stores contextual information about user preferences, expertise areas, and conversation patterns. The memory system automatically injects relevant context into conversations, enabling truly personalized AI responses that evolve and improve over time through iterative alignment.
 
 ### Advanced Chat & Character System
 
-- **Customizable AI Personas**: Create and customize AI characters with detailed backgrounds, personalities, and speech patterns.  
-  ![Character Library](https://github.com/boneylizard/Eloquent/blob/main/assets/characters.jpg)
+- **Customizable AI Personas**: Create and customize AI characters with detailed backgrounds, personalities, speech patterns, and behavioral traits. Characters support rich metadata including world lore, dialogue styles, and memory preferences.  
+![Characters UI](https://github.com/boneylizard/Eloquent/blob/main/assets/characters.jpg)
 
-- **Dynamic Conversation Management**: Enjoy features like auto-generated chat titles, editable messages, and a full conversation history.
-
-- **World Lore Integration**: Build rich, consistent fictional worlds with keyword-triggered contextual injection from a custom lore book.
-
----
+- **Dynamic Conversation Management**: Features include auto-generated chat titles using AI analysis, fully editable message history, conversation export/import, and intelligent context management  
+- **World Lore Integration**: Build rich, consistent fictional worlds with a comprehensive lore book system  
+- **Multi-Model Conversations**: Engage multiple models simultaneously in structured debates, comparisons, or collaborative discussions  
 
 ### Auto-Character Creator
 
-Eloquent includes an advanced Auto-Character Creator — a tool that streamlines the process of creating AI characters through natural dialogue.
+Eloquent's revolutionary Auto-Character Creator streamlines character development through natural language interaction and intelligent JSON structure filling:
 
-- Have a conversation with an AI about your new character idea.
-- When you're ready, click the **Auto-Generate** button.
-- Eloquent sends a prompt to the model, asking it to fill out a detailed character JSON structure.
-- The response is parsed and rendered into a fully editable character sheet, complete with persona, dialogue style, memory usage, and visual portrait options.
+- Engage in natural dialogue with an AI about your character concept  
+- Click Auto-Generate to trigger intelligent character sheet creation  
+- The system analyzes conversation context and fills out comprehensive character data  
+- **Smart Improvisation**: Fills gaps with consistent, creative details  
+- **Iterative Refinement**: Modify characters using natural prompts  
+- **Automated Avatar Generation**: Built-in Stable Diffusion prompt generation  
+- **One-Click Deployment**: Saves characters directly to your permanent library  
 
-This system enables rapid iteration and experimentation with new AI personas.
-
-![AutoCharacter Creator](https://github.com/boneylizard/Eloquent/blob/main/assets/autocharacter%20creator.jpg)
-
----
+![Auto-Character Creator](https://github.com/boneylizard/Eloquent/blob/main/assets/autocharacter%20creator.jpg)
 
 ### Comprehensive Document Intelligence (RAG)
 
-- Upload and parse a wide range of document types (PDF, DOCX, TXT, etc.).
-- Eloquent intelligently chunks and embeds document content for efficient retrieval.
-- Relevant document chunks are automatically injected into the conversation context.
+- **Multi-Format Support**: PDF, DOCX, TXT and more  
+- **Advanced Chunking**: Semantic segmentation for precision retrieval  
+- **Embedding-Based Retrieval**: Using state-of-the-art embedding models  
+- **Dynamic Context Injection**: Up to 5 chunks automatically injected  
+- **Performance Optimization**: RAG runs on secondary GPU for speed  
 
----
+### Advanced Model ELO Testing System
 
-### Model ELO Testing System
+Eloquent provides research-grade model evaluation capabilities with sophisticated testing frameworks:
 
-- **Single Model Testing**: Evaluate the performance of individual models with automated LLM judges providing scores and feedback.
-- **Comparison Testing**: Pit models against each other in head-to-head competitions with ELO rating calculations.
-- **Advanced ELO Algorithm**: The system uses a category-weighted, performance-scaled rating system to provide a nuanced view of model capabilities.
+- **Single Model Testing**: LLM judges, feedback, scoring  
+- **Head-to-Head Comparisons**: ELO calculations with statistical analysis  
+- **Parameter Optimization**: Systematic testing across temperature, top-p, top-k, etc.  
+- **Multi-Judge Validation**: Disagreement detection and consensus scoring  
+- **Category-Weighted ELO**: Skill domain-specific ratings  
+- **Auto-Suggested Analysis Questions**: Explore model behavior deeply  
+- **Export/Import Results**: For collaboration and replication  
+- **Analysis Chat**: AI-powered review of test outcomes  
 
-![ELO Tester](https://github.com/boneylizard/Eloquent/blob/main/assets/elo%20tester.jpg)
+![Model Tester](https://github.com/boneylizard/Eloquent/blob/main/assets/elo%20tester.jpg)
 
----
+### Cutting-Edge Multi-modal Interaction
 
-### Multi-modal Interaction
+- **Local Image Generation**: SD, SDXL, Flux via stable-diffusion.cpp  
+- **AUTOMATIC1111 Integration**: Seamless compatibility with A1111 workflows  
+- **ADetailer Support**: Built-in face/detail enhancement  
+- **Vision Models**: Upload images for model analysis  
+- **Generate → Analyze Workflows**: Image-to-text pipelines  
 
-- **Image Generation**: Generate images directly within the chat interface using either AUTOMATIC1111 or the built-in "EloDiffusion" engine powered by stable-diffusion.cpp.
-- **ADetailer Integration**: Automatically enhance generated images with face and detail correction using ADetailer.
-- **Voice-to-Text and Text-to-Speech**: Interact with the AI using your voice and receive spoken responses.
+### Push-to-Talk Voice Interaction
 
----
+- **Reliable Control**: Shift key for start/stop recording  
+- **Low-Latency Pipeline**: Fast ASR + TTS loop  
+- **High Accuracy ASR**: Noise filtered, speaker adapted  
+- **Text-to-Speech Output**: Quality voice playback  
 
 ### Focus and Call Modes
 
-- **Focus Mode**: A clean, distraction-free chat interface for immersive conversations.  
-  ![Focus Mode](https://github.com/boneylizard/Eloquent/blob/main/assets/focus.jpg)
+- **Focus Mode**: Minimalist interface for immersive, distraction-free conversation  
+![Focus Mode](https://github.com/boneylizard/Eloquent/blob/main/assets/focus.jpg)
 
-- **Call Mode**: An audio-only interaction mode for a more natural, hands-free experience.  
-  ![Call Mode](https://github.com/boneylizard/Eloquent/blob/main/assets/call.jpg)
+- **Call Mode**: Voice-first interface with real-time audio and avatar feedback  
+![Call Mode](https://github.com/boneylizard/Eloquent/blob/main/assets/call.jpg)
+
+### Cross-Platform Character Compatibility
+
+- **Universal Format**: PNG files embed all character metadata  
+- **SillyTavern Integration**: Full compatibility  
+- **Kobold Support**: JSON export/import  
+- **Metadata Preservation**: Portraits act as character containers  
 
 ---
 
@@ -82,71 +102,98 @@ This system enables rapid iteration and experimentation with new AI personas.
 
 ### Prerequisites
 
-- A Windows operating system.
-- Node.js version 21.7.3 is required for guaranteed compatibility.
-- An NVIDIA GPU is highly recommended for full feature support.
+- Windows 10/11  
+- Node.js 21.7.3  
+- NVIDIA GPU (dual-GPU ideal)  
+- 16GB+ RAM  
+- CUDA-compatible drivers  
 
-### Setup
+### Setup Instructions
 
-1. Clone or download the repository to your local machine.
-2. Run the `install.bat` script located in the root directory. This will install all necessary Python and Node.js dependencies.
-3. Once the installation is complete, run the `run.bat` script to launch the Eloquent application.
+1. Clone or download this repo  
+2. Run `install.bat`  
+   - Installs Python dependencies  
+   - Builds frontend  
+   - Configures backend and initializes systems  
+3. Run `run.bat` to launch  
+4. Navigate to `http://localhost:5173` in your browser  
 
 ---
 
-## 📞 Call Mode (Parakeet TTS/ASR) Setup
+### 📞 Call Mode (Advanced Voice Features)
 
-To enable Call Mode (real-time voice input and speech playback), Eloquent uses NVIDIA’s nemo-toolkit.  
-Due to complex dependencies, it must be installed after the main setup:
+To enable Call Mode:
 
 ```bash
 pip install nemo-toolkit==2.3.1
 ```
 
+This enables high-quality push-to-talk interaction, TTS synthesis, and optimized ASR.
+
 ---
 
 ## Cross-Platform Compatibility
 
-While Eloquent was developed on Windows, the core technologies (Python, FastAPI, React) are cross-platform. However, running it on other operating systems requires manual setup.
-
 ### 🐧 Linux
 
-- **Compatibility**: High  
-- **Notes**:
-  - Eloquent can run very effectively on Linux with an NVIDIA GPU, but requires manual setup.
-  - The `install.bat` and `run.bat` scripts are for Windows only. You must create equivalent `.sh` shell scripts to perform the installation and launch steps.
-  - You will need to manually install system-level dependencies like `espeak-ng` for the TTS service:
-    ```bash
-    sudo apt-get install espeak-ng
-    ```
-  - Full functionality assumes an NVIDIA GPU and the appropriate CUDA drivers.
+- Manual setup required  
+- Equivalent `.sh` scripts needed  
+- Install audio dependencies:
+```bash
+sudo apt-get install espeak-ng portaudio19-dev
+```
+- CUDA drivers mandatory for GPU acceleration  
 
 ### 🍎 macOS
 
-- **Compatibility**: Low / Not Recommended  
-- **Limitations**:
-  - The application is designed for a dual-GPU setup using NVIDIA's CUDA platform. Most Macs, especially modern ones with Apple Silicon (M1/M2/M3), do not have NVIDIA GPUs.
-  - The application would likely fall back to a very slow CPU-only mode, defeating its primary purpose.
-  - macOS cannot run `.bat` files.
-  - Manual installation of dependencies like `espeak-ng` (via Homebrew) would be required.
+- CPU-only fallback  
+- Not recommended due to lack of CUDA support  
+- Manual dependency installation via Homebrew  
 
 ---
 
 ## Technical Architecture
 
-Eloquent is built with a React frontend and a Python backend using FastAPI. Here's a breakdown of the key components:
+### Frontend Highlights
 
-### Frontend (`/src`)
+- `AppContext.jsx`: Central state management  
+- `Chat.jsx`: Main chat interface  
+- `ModelTester.jsx`: ELO testing interface  
+- `AnalysisChat.jsx`: Post-test model review  
+- `SimpleChatImageButton.jsx`: Image generation controls  
+- `FocusModeOverlay.jsx`, `CallModeOverlay.jsx`: Custom UI overlays  
 
-- **AppContext.jsx**: The core of the frontend, this context provider manages the application's state, including models, conversations, settings, and API interactions.
-- **Chat.jsx**: The main chat interface component, responsible for displaying messages, handling user input, and integrating various features like character selection, RAG, and multi-modal interactions.
-- **ModelTester.jsx**: This component provides the interface for the ELO testing system, allowing users to set up and run single-model or comparison tests.
-- **SimpleChatImageButton.jsx**: Manages the image generation dialog and ADetailer integration.
-- **FocusModeOverlay.jsx & CallModeOverlay.jsx**: These components provide the specialized interfaces for the Focus and Call modes.
+### Backend Highlights
 
-### Backend (`/app`)
+- `main.py`: FastAPI server  
+- `inference.py`: Streaming model inference  
+- `memory_intelligence.py`: Long-term memory system  
+- `tts_service.py`: TTS playback  
+- `model_manager.py`: GPU-aware model loader  
+- `rag_utils.py`: Document chunking and retrieval  
 
-- **main.py**: The main FastAPI application file, defining API endpoints and managing the application's lifecycle.
-- **inference.py**: Handles the core text generation logic, providing a unified interface for interacting with different model backends.
-- **memory_intelligence.py**: The heart of the memory system, responsible for semantic retrieval, creation, and curation of memories.
-- **tts_service.py**: This service provides text-to-speech functionality, supporting multiple TTS engines.
+---
+
+## Performance Specifications
+
+- **Text Gen Speed**: ~37 tokens/sec (Gemma 3 27B on RTX 3090)  
+- **ASR + TTS**: Near real-time with optimized latency  
+- **Concurrent Tasks**: Dual-GPU architecture supports simultaneous operations  
+- **Model Format Support**: Optimized for **GGUF** models  
+- **API Support**: Full OpenAI-compatible inbound streaming  
+
+---
+
+## Contributing
+
+We welcome contributions for:
+
+- Model backend improvements  
+- UI/UX enhancements  
+- Multi-modal tools  
+- Linux/macOS setup scripts  
+- Advanced testing frameworks  
+
+Please respect the dual-GPU design and performance standards that define Eloquent’s identity.
+
+---
