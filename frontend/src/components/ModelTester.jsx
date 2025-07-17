@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../contexts/AppContext';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import { Textarea } from './ui/textarea';
 import { Progress } from './ui/progress';
@@ -10,7 +10,11 @@ import { Badge } from './ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { ScrollArea } from './ui/scroll-area';
 import ModelSelector from './ModelSelector';
+import { Separator } from './ui/separator';
+import { Switch } from './ui/switch';
 import AnalysisChat from './AnalysisChat';
+import { Label } from './ui/label';
+import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { 
   Play, 
   Upload, 
@@ -29,6 +33,7 @@ import {
   Users,
   Send,
   Loader2,
+  AlertTriangle
 } from 'lucide-react';
 
 const ModelTester = () => {
@@ -64,6 +69,13 @@ const ModelTester = () => {
   const [eloRatings, setEloRatings] = useState({});
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [parameterSweepEnabled, setParameterSweepEnabled] = useState(false);
+const [parameterConfig, setParameterConfig] = useState({
+  temperature: { enabled: false, min: 0.1, max: 1.0, step: 0.1, current: 0.7 },
+  top_p: { enabled: false, min: 0.1, max: 1.0, step: 0.1, current: 0.9 },
+  top_k: { enabled: false, min: 1, max: 100, step: 5, current: 40 },
+  repetition_penalty: { enabled: false, min: 1.0, max: 2.0, step: 0.1, current: 1.1 }
+});
   const [activeTab, setActiveTab] = useState('setup');
   const [judgeMode, setJudgeMode] = useState('automated'); // 'automated', 'human', 'both'
   const [judgeModel, setJudgeModel] = useState('');
@@ -892,15 +904,18 @@ const exportResults = useCallback(() => {
     lowestScore: Math.min(...categoryStats[category].scores)
   })).sort((a, b) => parseFloat(b.averageScore) - parseFloat(a.averageScore));
 
-  const exportData = {
-    exportInfo: {
-      collectionName,
-      testingMode,
-      exportDate: new Date().toISOString(),
-      totalTests: testResults.length,
-      overallAverageScore: testResults.length > 0 ? 
-        (testResults.reduce((sum, r) => sum + r.score, 0) / testResults.length).toFixed(1) : null
-    },
+const exportData = {
+  exportInfo: {
+    collectionName,
+    testingMode,
+    exportDate: new Date().toISOString(),
+    totalTests: testResults.length,
+    overallAverageScore: testResults.length > 0 ? 
+      (testResults.reduce((sum, r) => sum + r.score, 0) / testResults.length).toFixed(1) : null,
+    // ADD THESE TWO LINES:
+    parameterSweepEnabled,
+    parameterConfig: parameterSweepEnabled ? parameterConfig : null
+  },
     testConfiguration: {
       testModel: selectedTestModel,
       judgeModel: judgeModel,
@@ -908,12 +923,14 @@ const exportResults = useCallback(() => {
       modelsCompared: testingMode === 'comparison' ? selectedModels : null
     },
     categoryAnalysis,
-    results: testResults.map(result => ({
-      prompt: result.prompt,
-      category: result.category,
-  testModel: result.model,
+results: testResults.map(result => ({
+  prompt: result.prompt,
+  category: result.category,
+  testModel: result.model, // This now includes parameter label if present
+  baseModel: result.baseModel, // NEW: Original model name without parameters
+  parameters: result.parameters, // NEW: Actual parameter values used
   judgeModel: result.judgeModel,
-  // ADD NEW DUAL JUDGE EXPORT FIELDS
+  // Existing dual judge export fields
   secondaryJudgeModel: result.secondaryJudgeModel,
   isDualJudged: result.isDualJudged,
   primaryJudgment: result.primaryJudgment,
@@ -944,7 +961,7 @@ const exportResults = useCallback(() => {
   a.download = `model-test-results-${testingMode}-${Date.now()}.json`;
   a.click();
   URL.revokeObjectURL(url);
-}, [collectionName, testingMode, testResults, selectedTestModel, judgeModel, judgeMode, selectedModels]);
+}, [collectionName, testingMode, testResults, selectedTestModel, judgeModel, judgeMode, selectedModels, parameterSweepEnabled, parameterConfig]);
 
 const handleImportResults = useCallback((event) => {
   const file = event.target.files[0];
@@ -956,45 +973,45 @@ const handleImportResults = useCallback((event) => {
       const importedData = JSON.parse(e.target.result);
       
       // Import results - ensure each has an ID for React keys and proper dual judge fields
-      if (importedData.results) {
-        const resultsWithIds = importedData.results.map((result, index) => ({
-          ...result,
-          id: result.id || `imported-${Date.now()}-${index}`, // Ensure unique ID
-          model: result.testModel || result.model, // Handle field name differences
-          
-          // ENHANCED DUAL JUDGE COMPATIBILITY
-          secondaryJudgeModel: result.secondaryJudgeModel || null,
-          isDualJudged: result.isDualJudged || false,
-          
-          // Handle primary judgment structure (for both single and comparison tests)
-          primaryJudgment: result.primaryJudgment || null,
-          secondaryJudgment: result.secondaryJudgment || null,
-          reconciliationReason: result.reconciliationReason || null,
-          
-          // Backwards compatibility for legacy single judge results
-          // If no dual judge data exists, preserve original fields
-          score: result.score || (result.primaryJudgment?.score) || 50,
-          feedback: result.feedback || (result.primaryJudgment?.feedback) || 'No feedback available',
-          
-          // Backwards compatibility for comparison results
-          judgment: result.judgment || (result.primaryJudgment?.verdict) || 'TIE',
-          explanation: result.explanation || (result.primaryJudgment?.explanation) || 'No explanation available',
-          
-          // Ensure all required fields exist for both test types
-          ...(result.model1 && {
-            model1: result.model1,
-            model2: result.model2,
-            response1: result.response1,
-            response2: result.response2
-          }),
-          
-          // Single model test fields
-          ...(result.response && {
-            response: result.response
-          })
-        }));
-        setTestResults(resultsWithIds);
-      }
+if (importedData.results) {
+const resultsWithIds = importedData.results.map((result, index) => ({
+  ...result,
+  id: result.id || `imported-${Date.now()}-${index}`,
+  model: result.testModel || result.model, // Handle field name differences
+  // ADD THESE TWO LINES:
+  baseModel: result.baseModel || result.testModel || result.model,
+  parameters: result.parameters || null,
+    
+    // Enhanced dual judge compatibility
+    secondaryJudgeModel: result.secondaryJudgeModel || null,
+    isDualJudged: result.isDualJudged || false,
+    primaryJudgment: result.primaryJudgment || null,
+    secondaryJudgment: result.secondaryJudgment || null,
+    reconciliationReason: result.reconciliationReason || null,
+    
+    // Backwards compatibility for legacy single judge results
+    score: result.score || (result.primaryJudgment?.score) || 50,
+    feedback: result.feedback || (result.primaryJudgment?.feedback) || 'No feedback available',
+    
+    // Backwards compatibility for comparison results
+    judgment: result.judgment || (result.primaryJudgment?.verdict) || 'TIE',
+    explanation: result.explanation || (result.primaryJudgment?.explanation) || 'No explanation available',
+    
+    // Ensure all required fields exist for both test types
+    ...(result.model1 && {
+      model1: result.model1,
+      model2: result.model2,
+      response1: result.response1,
+      response2: result.response2
+    }),
+    
+    // Single model test fields
+    ...(result.response && {
+      response: result.response
+    })
+  }));
+  setTestResults(resultsWithIds);
+}
       
       // Import test configuration if available
       if (importedData.testConfiguration) {
@@ -1009,16 +1026,30 @@ const handleImportResults = useCallback((event) => {
       if (importedData.eloRatings) {
         setEloRatings(importedData.eloRatings);
       }
-      
+      if (importedData.exportInfo?.parameterSweepEnabled) {
+  setParameterSweepEnabled(true);
+  if (importedData.exportInfo.parameterConfig) {
+    setParameterConfig(importedData.exportInfo.parameterConfig);
+  }
+}
       // Determine what type of results were imported
       const singleModelResults = importedData.results?.filter(r => r.model && !r.model1)?.length || 0;
       const comparisonResults = importedData.results?.filter(r => r.model1 && r.model2)?.length || 0;
       const dualJudgedResults = importedData.results?.filter(r => r.isDualJudged)?.length || 0;
       
-      let importMessage = `Successfully imported ${importedData.results?.length || 0} test results!`;
-      if (singleModelResults > 0) importMessage += `\n• Single model tests: ${singleModelResults}`;
-      if (comparisonResults > 0) importMessage += `\n• Comparison tests: ${comparisonResults}`;
-      if (dualJudgedResults > 0) importMessage += `\n• Dual-judged results: ${dualJudgedResults}`;
+let importMessage = `Successfully imported ${importedData.results?.length || 0} test results!`;
+if (singleModelResults > 0) importMessage += `\n• Single model tests: ${singleModelResults}`;
+if (comparisonResults > 0) importMessage += `\n• Comparison tests: ${comparisonResults}`;
+if (dualJudgedResults > 0) importMessage += `\n• Dual-judged results: ${dualJudgedResults}`;
+
+// ADD THESE LINES:
+const parameterizedResults = importedData.results?.filter(r => r.parameters)?.length || 0;
+if (parameterizedResults > 0) {
+  importMessage += `\n• Parameter sweep tests: ${parameterizedResults}`;
+}
+if (importedData.exportInfo?.parameterSweepEnabled) {
+  importMessage += `\n• Parameter configuration imported`;
+}
       
       alert(importMessage);
     } catch (error) {
@@ -1060,13 +1091,20 @@ const generateApiResponse = useCallback(async (modelName, prompt, apiUrl) => {
     }
 }, []);
 
-const generateResponse = useCallback(async (modelName, prompt, apiUrl) => {
+const generateResponse = useCallback(async (modelName, prompt, apiUrl, paramOverrides = {}, requestPurpose = 'user_chat') => {
+    // Parameter hierarchy: defaults → global settings → sweep overrides
+const params = {
+    temperature: settings.temperature || 0.7,
+    top_p: settings.top_p || 0.9,
+    top_k: settings.top_k || 40,
+    repetition_penalty: settings.repetition_penalty || 1.1,
+    ...paramOverrides
+};
     if (isApiModel(modelName)) {
-        // Now this can be called safely because it's defined above
         return generateApiResponse(modelName, prompt, apiUrl);
     }
 
-    // Use the existing logic for local GGUF models
+    // Use the calculated params for local models
     try {
         const response = await fetch(`${apiUrl}/generate`, {
             method: 'POST',
@@ -1074,26 +1112,27 @@ const generateResponse = useCallback(async (modelName, prompt, apiUrl) => {
             body: JSON.stringify({
                 prompt: prompt,
                 model_name: modelName,
-                temperature: 0.7,
-                max_tokens: 1024,
-                memoryEnabled: false,
-                stream: false,
-                userProfile: {},
-                request_purpose: 'model_testing',
-                chat_template_kwargs: {
-                    enable_thinking: false
-                }
+                temperature: params.temperature,
+                top_p: params.top_p,
+                top_k: params.top_k,
+                repetition_penalty: params.repetition_penalty,
+                request_purpose: requestPurpose
             })
         });
 
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`API Error ${response.status}: ${errorText}`);
+        }
+
         const data = await response.json();
-        return data.text || '';
+        return data.text || ''; // Return the 'text' field from the response
+
     } catch (error) {
-        console.error(`Error generating response from ${modelName}:`, error);
-        return `Error: ${error.message}`;
+        console.error(`Error generating response from local model ${modelName}:`, error);
+        return `Error: ${error.message}`; // Return an error message on failure
     }
-}, [userProfile, generateApiResponse]); // The dependency array is now valid
+}, [userProfile, generateApiResponse, settings]); // Add settings to dependencies
 
 // New function to judge a single response
 const judgeSingleResponse = useCallback(async (prompt, response, modelName, judgeModel, judgeModelGpu, secondaryJudgeModel = null, secondaryJudgeModelGpu = null) => {
@@ -1400,11 +1439,88 @@ const runAutomatedTest = useCallback(async () => {
     setIsRunning(false);
     setActiveTab('results');
   }
-}, [testingMode, selectedTestModel, selectedModels, promptCollection, judgeMode, judgeModel, loadedModels, modelPurposes]);
+}, [testingMode, selectedTestModel, selectedModels, promptCollection, judgeMode, judgeModel, loadedModels, modelPurposes, parameterSweepEnabled]);
+
+// Add these utility functions
+// Calculate total parameter combinations
+const calculateTotalCombinations = useCallback(() => {
+  if (!parameterSweepEnabled) return 1;
+  
+  let total = 1;
+  Object.entries(parameterConfig).forEach(([key, config]) => {
+    if (config.enabled) {
+      const steps = Math.floor((config.max - config.min) / config.step) + 1;
+      total *= steps;
+    }
+  });
+  return total;
+}, [parameterSweepEnabled, parameterConfig]);
+
+// Generate all parameter combinations
+const generateParameterCombinations = useCallback(() => {
+  if (!parameterSweepEnabled) {
+    return [{ temperature: 0.7, top_p: 0.9, top_k: 40, repetition_penalty: 1.1 }];
+  }
+
+  const paramKeys = Object.keys(parameterConfig);
+  const ranges = {};
+  
+  // Generate ranges for enabled parameters
+  paramKeys.forEach(key => {
+    const config = parameterConfig[key];
+    if (config.enabled) {
+      ranges[key] = [];
+      for (let val = config.min; val <= config.max; val += config.step) {
+        ranges[key].push(Math.round(val * 100) / 100); // Round to avoid floating point issues
+      }
+    } else {
+      ranges[key] = [config.current];
+    }
+  });
+
+  // Generate cartesian product
+  function cartesianProduct(obj) {
+    const keys = Object.keys(obj);
+    const values = keys.map(key => obj[key]);
+    
+    function* helper(index, current) {
+      if (index === keys.length) {
+        yield { ...current };
+        return;
+      }
+      
+      for (const value of values[index]) {
+        current[keys[index]] = value;
+        yield* helper(index + 1, current);
+      }
+    }
+    
+    return Array.from(helper(0, {}));
+  }
+
+  return cartesianProduct(ranges);
+}, [parameterSweepEnabled, parameterConfig]);
+
+// Create parameter labels for results
+const createParameterLabel = useCallback((params) => {
+  if (!parameterSweepEnabled) return '';
+  
+  const enabledParams = Object.entries(parameterConfig)
+    .filter(([key, config]) => config.enabled)
+    .map(([key]) => {
+      const shortKey = key === 'temperature' ? 'T' : 
+                      key === 'top_p' ? 'P' : 
+                      key === 'top_k' ? 'K' : 'R';
+      return `${shortKey}=${params[key]}`;
+    });
+  
+  return enabledParams.length > 0 ? ` (${enabledParams.join(',')})` : '';
+}, [parameterSweepEnabled, parameterConfig]);
 
 // Single model testing function
 const runSingleModelTest = useCallback(async () => {
-  const totalTests = promptCollection.length;
+  const paramCombinations = generateParameterCombinations();
+  const totalTests = promptCollection.length * paramCombinations.length;
   let completedTests = 0;
   const newResults = [];
 
@@ -1428,57 +1544,81 @@ const runSingleModelTest = useCallback(async () => {
     }
   }
 
-  let currentModelRating = eloRatings[testModel] || 1500;
+  console.log(`🎯 Starting parameter sweep test with ${paramCombinations.length} combinations`);
 
-  for (const promptData of promptCollection) {
-    const response = await generateResponse(testModel, promptData.prompt, testApiUrl);
+  for (const paramCombo of paramCombinations) {
+    const paramLabel = createParameterLabel(paramCombo);
+    const modelDisplayName = `${testModel}${paramLabel}`;
 
-    if ((judgeMode === 'automated' || judgeMode === 'both') && judgeModelName) {
-      const judgment = await judgeSingleResponse(
-        promptData.prompt, 
-        response, 
-        testModel, 
-        judgeModelName, 
-        judgeGpu, // <-- CORRECTED
-        secondaryJudgeModelName, 
-        secondaryJudgeGpu // <-- CORRECTED
-      );
+    // FIX: Get individual rating for THIS parameter combination
+    let currentModelRating = eloRatings[modelDisplayName] || 1500;
+    
+    console.log(`🔄 Testing parameter combination: ${modelDisplayName}, starting ELO: ${currentModelRating}`);
 
-      if (judgment) {
-        const result = {
-          id: Date.now() + Math.random(),
-          promptId: promptData.id,
-          prompt: promptData.prompt,
-          category: promptData.category,
-          model: testModel,
-          judgeModel: judgeModelName,
-          secondaryJudgeModel: secondaryJudgeModelName || null,
-          response: response,
-          score: judgment.score,
-          feedback: judgment.feedback,
-          primaryJudgment: judgment.primaryJudgment,
-          secondaryJudgment: judgment.secondaryJudgment,
-          reconciliationReason: judgment.reconciliationReason,
-          isDualJudged: !!secondaryJudgeModelName,
-          judgeType: 'automated',
-          timestamp: new Date().toISOString()
-        };
+    for (const promptData of promptCollection) {
+      const response = await generateResponse(testModel, promptData.prompt, testApiUrl, paramCombo, 'model_testing');
 
-        newResults.push(result);
-        const oldRating = currentModelRating;
-        const eloChange = calculateEloChange(judgment.score, oldRating, promptData.category);
-        const newRating = Math.max(1000, oldRating + eloChange);
-        currentModelRating = newRating;
-        
-        setEloRatings(prev => ({ ...prev, [testModel]: newRating }));
-        saveEloUpdate(testModel, oldRating, newRating, judgment.score, promptData.category);
+      if ((judgeMode === 'automated' || judgeMode === 'both') && judgeModelName) {
+        const judgment = await judgeSingleResponse(
+          promptData.prompt, 
+          response, 
+          modelDisplayName, 
+          judgeModelName, 
+          judgeGpu,
+          secondaryJudgeModelName, 
+          secondaryJudgeGpu
+        );
+
+        if (judgment) {
+          const result = {
+            id: Date.now() + Math.random(),
+            promptId: promptData.id,
+            prompt: promptData.prompt,
+            category: promptData.category,
+            model: modelDisplayName,
+            baseModel: testModel,
+            parameters: paramCombo,
+            judgeModel: judgeModelName,
+            secondaryJudgeModel: secondaryJudgeModelName || null,
+            response: response,
+            score: judgment.score,
+            feedback: judgment.feedback,
+            primaryJudgment: judgment.primaryJudgment,
+            secondaryJudgment: judgment.secondaryJudgment,
+            reconciliationReason: judgment.reconciliationReason,
+            isDualJudged: !!secondaryJudgeModelName,
+            judgeType: 'automated',
+            timestamp: new Date().toISOString()
+          };
+
+          newResults.push(result);
+          const oldRating = currentModelRating;
+          const eloChange = calculateEloChange(judgment.score, oldRating, promptData.category);
+          const newRating = Math.max(1000, oldRating + eloChange);
+          
+          console.log(`🎯 ELO Update for ${modelDisplayName}:`);
+          console.log(`  Judge Score: ${judgment.score}/100`);
+          console.log(`  Old Rating: ${oldRating}`);
+          console.log(`  ELO Change: ${eloChange}`);
+          console.log(`  New Rating: ${newRating}`);
+          console.log(`  Category: ${promptData.category}`);
+          
+          currentModelRating = newRating;
+          
+          setEloRatings(prev => ({ ...prev, [modelDisplayName]: newRating }));
+          saveEloUpdate(modelDisplayName, oldRating, newRating, judgment.score, promptData.category);
+        }
       }
+      completedTests++;
+      setProgress((completedTests / totalTests) * 100);
     }
-    completedTests++;
-    setProgress((completedTests / totalTests) * 100);
+    
+    console.log(`✅ Completed testing for ${modelDisplayName}, final ELO: ${currentModelRating}`);
   }
+  
+  console.log(`🏁 Parameter sweep test complete. Processed ${newResults.length} results.`);
   setTestResults(prev => [...prev, ...newResults]);
-}, [modelPurposes, promptCollection, judgeMode, generateResponse, judgeSingleResponse, calculateEloChange, eloRatings, saveEloUpdate, PRIMARY_API_URL, SECONDARY_API_URL]);
+}, [modelPurposes, promptCollection, judgeMode, generateResponse, judgeSingleResponse, calculateEloChange, eloRatings, saveEloUpdate, PRIMARY_API_URL, SECONDARY_API_URL, generateParameterCombinations, createParameterLabel]);
 
 // Multi-model comparison function
 const runComparisonTest = useCallback(async () => {
@@ -1511,9 +1651,8 @@ const runComparisonTest = useCallback(async () => {
   const newResults = [];
 
   for (const promptData of promptCollection) {
-    const responseA = await generateResponse(modelA, promptData.prompt, modelAApiUrl);
-    const responseB = await generateResponse(modelB, promptData.prompt, modelBApiUrl);
-
+     const responseA = await generateResponse(modelA, promptData.prompt, modelAApiUrl, {}, 'model_testing');
+    const responseB = await generateResponse(modelB, promptData.prompt, modelBApiUrl, {}, 'model_testing');
     if ((judgeMode === 'automated' || judgeMode === 'both') && judgeModelName) {
       const judgment = await judgeWithModel(
         promptData.prompt,
@@ -1591,23 +1730,79 @@ const runComparisonTest = useCallback(async () => {
 
   return (
     <div className="w-full min-h-screen p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Model ELO Tester</h1>
-        <Badge variant="outline" className="text-lg px-3 py-1">
-          <Trophy className="w-4 h-4 mr-1" />
-          ELO Rating System
-        </Badge>
-      </div>
+<div className="flex items-center justify-between">
+  <h1 className="text-3xl font-bold">Model ELO Tester</h1>
+  <div className="flex items-center gap-3">
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={resetEloRatings}
+      className="text-red-600 hover:text-red-700"
+    >
+      <RefreshCw className="w-4 h-4 mr-2" />
+      Reset All ELO
+    </Button>
+    <Badge variant="outline" className="text-lg px-3 py-1">
+      <Trophy className="w-4 h-4 mr-1" />
+      ELO Rating System
+    </Badge>
+  </div>
+</div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
 <TabsList className="flex w-full h-10">
   <TabsTrigger value="setup" className="flex-1 text-sm">Setup</TabsTrigger>
   <TabsTrigger value="prompts" className="flex-1 text-sm">Prompts</TabsTrigger>
+  <TabsTrigger value="parameters" className="flex-1 text-sm">Parameters</TabsTrigger>
   <TabsTrigger value="testing" className="flex-1 text-sm">Testing</TabsTrigger>
   <TabsTrigger value="results" className="flex-1 text-sm">Results</TabsTrigger>
   <TabsTrigger value="analysis" className="flex-1 text-sm">Analysis</TabsTrigger>
 </TabsList>
-
+<div className="bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800/50 rounded-lg p-4 my-4">
+  <div className="flex items-center justify-between">
+    <div>
+      <h3 className="font-semibold text-base text-blue-900 dark:text-blue-200">Ready to Start Testing?</h3>
+      <div className="text-sm text-blue-700 dark:text-blue-400 mt-1">
+        {promptCollection.length} prompts loaded
+        {parameterSweepEnabled && (
+          <span className="mx-2">•</span>
+        )}
+        {parameterSweepEnabled && (
+          <span>{calculateTotalCombinations()} parameter combinations</span>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground mt-2">
+        Total tests to run: {promptCollection.length * (parameterSweepEnabled ? calculateTotalCombinations() : 1)}
+      </p>
+    </div>
+    <Button
+      onClick={runAutomatedTest}
+      disabled={
+        (testingMode === 'single' && (
+          !modelPurposes?.test_model ||
+          ((judgeMode === 'automated' || judgeMode === 'both') && !modelPurposes?.primary_judge) ||
+          promptCollection.length === 0
+        )) ||
+        (testingMode === 'comparison' && (
+          !modelPurposes?.test_model_a ||
+          !modelPurposes?.test_model_b ||
+          ((judgeMode === 'automated' || judgeMode === 'both') && !modelPurposes?.primary_judge) ||
+          promptCollection.length === 0
+        )) ||
+        isRunning
+      }
+      size="lg"
+      className="bg-blue-600 hover:bg-blue-700 text-white dark:bg-blue-500 dark:hover:bg-blue-600 dark:text-white"
+    >
+      {isRunning ? (
+        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+      ) : (
+        <Play className="w-5 h-5 mr-2" />
+      )}
+      {isRunning ? 'Testing...' : 'Start Test'}
+    </Button>
+  </div>
+</div>
         {/* Setup Tab */}
 <TabsContent value="setup" className="space-y-6">
   <Card>
@@ -2093,44 +2288,174 @@ const runComparisonTest = useCallback(async () => {
           )}
         </ScrollArea>
       </div>
-
-      {/* CLEAR START TESTING BUTTON */}
-      <div className="bg-blue-50 border border-blue-200 rounded p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="font-medium">Ready to Start Testing?</div>
-            <div className="text-sm text-muted-foreground">
-              {promptCollection.length} prompts • Test: {selectedTestModel || 'Not selected'} • Judge: {judgeMode === 'human' ? 'Human' : judgeModel || 'Not selected'}
-            </div>
-          </div>
-<Button 
-  onClick={runAutomatedTest} 
-disabled={
-  // Check purpose-based model loading
-  (testingMode === 'single' && (
-    !modelPurposes?.test_model ||
-    ((judgeMode === 'automated' || judgeMode === 'both') && !modelPurposes?.primary_judge) ||
-    promptCollection.length === 0
-  )) ||
-  (testingMode === 'comparison' && (
-    !modelPurposes?.test_model_a ||
-    !modelPurposes?.test_model_b ||
-    ((judgeMode === 'automated' || judgeMode === 'both') && !modelPurposes?.primary_judge) ||
-    promptCollection.length === 0
-  )) ||
-  isRunning
-}
-  size="lg"
->
-  <Play className="w-4 h-4 mr-2" />
-  {isRunning ? 'Testing...' : 'Start Test'}
-</Button>
-        </div>
-      </div>
     </CardContent>
   </Card>
 </TabsContent>
+{/* Parameters Tab */}
+<TabsContent value="parameters" className="space-y-6">
+  <Card>
+    <CardHeader>
+      <CardTitle>Parameter Sweeping</CardTitle>
+      <CardDescription>
+        Test multiple parameter combinations automatically. Only works with local GGUF models.
+      </CardDescription>
+    </CardHeader>
+    <CardContent className="space-y-6">
+      
+      {/* Enable parameter sweeping */}
+      <div className="flex items-center space-x-2">
+        <Switch 
+          id="enable-sweep" 
+          checked={parameterSweepEnabled}
+          onCheckedChange={setParameterSweepEnabled}
+        />
+        <Label htmlFor="enable-sweep" className="text-sm font-medium">
+          Enable Parameter Sweeping
+        </Label>
+      </div>
 
+      {parameterSweepEnabled && (
+        <>
+          <Separator />
+          
+          {/* API Model Warning */}
+          {(testingMode === 'single' && isApiModel(modelPurposes?.test_model?.name)) || 
+           (testingMode === 'comparison' && (isApiModel(modelPurposes?.test_model_a?.name) || isApiModel(modelPurposes?.test_model_b?.name))) && (
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>API Model Limitation</AlertTitle>
+              <AlertDescription>
+                Parameter sweeping only works with local GGUF models. API models will use their default parameters.
+              </AlertDescription>
+            </Alert>
+          )}
+          
+          {/* Parameter Configuration */}
+          <div className="space-y-4">
+            <h4 className="font-medium">Parameter Ranges</h4>
+            
+            {Object.entries(parameterConfig).map(([paramKey, config]) => (
+              <div key={paramKey} className="border rounded p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      checked={config.enabled}
+                      onCheckedChange={(enabled) => 
+                        setParameterConfig(prev => ({
+                          ...prev,
+                          [paramKey]: { ...prev[paramKey], enabled }
+                        }))
+                      }
+                    />
+                    <Label className="font-medium capitalize">
+                      {paramKey.replace('_', '-')}
+                    </Label>
+                  </div>
+                  <span className="text-sm text-muted-foreground">
+                    Current: {config.current}
+                  </span>
+                </div>
+                
+                {config.enabled && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <Label className="text-xs">Min</Label>
+                      <Input
+                        type="number"
+                        value={config.min}
+                        step={config.step}
+                        onChange={(e) => 
+                          setParameterConfig(prev => ({
+                            ...prev,
+                            [paramKey]: { 
+                              ...prev[paramKey], 
+                              min: parseFloat(e.target.value) 
+                            }
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Max</Label>
+                      <Input
+                        type="number"
+                        value={config.max}
+                        step={config.step}
+                        onChange={(e) => 
+                          setParameterConfig(prev => ({
+                            ...prev,
+                            [paramKey]: { 
+                              ...prev[paramKey], 
+                              max: parseFloat(e.target.value) 
+                            }
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">Step</Label>
+                      <Input
+                        type="number"
+                        value={config.step}
+                        step={config.step}
+                        onChange={(e) => 
+                          setParameterConfig(prev => ({
+                            ...prev,
+                            [paramKey]: { 
+                              ...prev[paramKey], 
+                              step: parseFloat(e.target.value) 
+                            }
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <Separator />
+
+          {/* Combination Summary */}
+          <div className={`p-4 rounded border ${
+            calculateTotalCombinations() > 200 ? 'bg-red-50 border-red-200 dark:bg-red-900/20' : 
+            calculateTotalCombinations() > 50 ? 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20' : 
+            'bg-green-50 border-green-200 dark:bg-green-900/20'
+          }`}>
+            <div className="flex items-center gap-2">
+              {calculateTotalCombinations() > 200 && <AlertTriangle className="w-5 h-5 text-red-600" />}
+              {calculateTotalCombinations() > 50 && calculateTotalCombinations() <= 200 && <AlertTriangle className="w-5 h-5 text-yellow-600" />}
+              <span className="font-medium">
+                Total Combinations: {calculateTotalCombinations()}
+              </span>
+            </div>
+            
+            {calculateTotalCombinations() > 200 && (
+              <p className="text-sm text-red-600 mt-1">
+                ⚠️ This will take a very long time! Consider reducing parameter ranges.
+              </p>
+            )}
+            {calculateTotalCombinations() > 50 && calculateTotalCombinations() <= 200 && (
+              <p className="text-sm text-yellow-600 mt-1">
+                ⚠️ This will take a while. Each combination × number of prompts = total tests.
+              </p>
+            )}
+            {calculateTotalCombinations() <= 50 && (
+              <p className="text-sm text-green-600 mt-1">
+                ✓ Reasonable number of combinations for testing.
+              </p>
+            )}
+            
+            <p className="text-xs text-muted-foreground mt-2">
+              With {promptCollection.length} prompts: {calculateTotalCombinations() * promptCollection.length} total tests
+            </p>
+          </div>
+        </>
+      )}
+    </CardContent>
+  </Card>
+</TabsContent>
 
         {/* Testing Tab */}
         <TabsContent value="testing" className="space-y-6">
