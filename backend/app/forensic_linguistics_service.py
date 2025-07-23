@@ -131,7 +131,10 @@ class ForensicLinguisticsService:
             'inf_retriever': {'enabled': False, 'dimensions': 3584, 'priority': 4},
             'sentence_t5': {'enabled': False, 'dimensions': 768, 'priority': 5},
             'star': {'enabled': False, 'dimensions': 1024, 'priority': 6},
-            'roberta': {'enabled': False, 'dimensions': 768, 'priority': 7}
+            'roberta': {'enabled': False, 'dimensions': 768, 'priority': 7},
+            'jina_v3': {'enabled': False, 'dimensions': 1024, 'priority': 8},
+            'nomic_v1_5': {'enabled': False, 'dimensions': 768, 'priority': 9},  
+            'arctic_embed': {'enabled': False, 'dimensions': 768, 'priority': 10}
         }
         # --- END CORRECTION ---
 
@@ -207,6 +210,29 @@ class ForensicLinguisticsService:
         except Exception as e:
             logger.error(f"Failed to load RoBERTa model: {e}")
             self.embedding_models['roberta']['enabled'] = False # <-- ADD THIS LINE
+
+    def _get_gguf_patterns_for_model(self, model_name: str, model_key: str) -> List[str]:
+        """Get specific GGUF filename patterns for a model to avoid collisions"""
+        
+        # Exact model-specific patterns
+        specific_patterns = {
+            'jina_v3': ['jina-embeddings-v3.gguf', 'jinaai-jina-embeddings-v3.gguf'],
+            'nomic_v1_5': ['nomic-embed-text-v1.5.gguf', 'nomic-ai-nomic-embed-text-v1.5.gguf'],
+            'arctic_embed': ['arctic-embed-m-v1.5.gguf', 'snowflake-arctic-embed-m-v1.5.gguf'],
+            'gte_qwen2': ['gte-qwen2-7b-instruct.gguf', 'alibaba-nlp-gte-qwen2-7b-instruct.gguf'],
+            'inf_retriever': ['inf-retriever-v1.gguf', 'infly-inf-retriever-v1.gguf'],
+            'sentence_t5': ['sentence-t5-xxl.gguf']
+        }
+        
+        if model_key in specific_patterns:
+            return specific_patterns[model_key]
+        
+        # Fallback to generic patterns for other models
+        return [
+            f"{model_name.split('/')[-1]}.gguf",
+            f"{model_name.replace('/', '-')}.gguf",
+            f"{model_name.replace('/', '_')}.gguf"
+        ]            
     def _get_embedding_gpu_config(self):
         """Determine GPU configuration for embeddings based on system mode"""
         # Force all forensic embedding models to use GPU 0 (the RTX 3090)
@@ -220,7 +246,10 @@ class ForensicLinguisticsService:
             'bge_m3': "BAAI/bge-m3",
             'gte_qwen2': "Alibaba-NLP/gte-Qwen2-7B-instruct",
             'inf_retriever': "infly/inf-retriever-v1",
-            'sentence_t5': "sentence-transformers/sentence-t5-xxl"
+            'sentence_t5': "sentence-transformers/sentence-t5-xxl",
+            'jina_v3': "jinaai/jina-embeddings-v3",
+            'nomic_v1_5': "nomic-ai/nomic-embed-text-v1.5",
+            'arctic_embed': "Snowflake/snowflake-arctic-embed-l-v2.0"
         }
 
         if model_type not in model_configs:
@@ -229,6 +258,8 @@ class ForensicLinguisticsService:
         model_name = model_configs[model_type]
 
         try:
+            success = False  # Initialize success variable
+            
             logger.info(f"🧹 Unloading existing forensic model before loading '{model_type}'")
             await self.model_manager.unload_model_purpose('forensic_embeddings')
             
@@ -242,21 +273,32 @@ class ForensicLinguisticsService:
 
             logger.info(f"🔍 [Forensic] Initializing '{model_type}' ({model_name}) on GPU {gpu_id}")
 
-            # This is a special case for the FlagEmbedding library
+            # Handle different model types
             if model_type == 'bge_m3':
                 success = self._init_bge_m3_model(model_name, model_type)
+            elif model_type in ['jina_v3', 'nomic_v1_5', 'arctic_embed', 'gte_qwen2', 'inf_retriever', 'sentence_t5']:
+                success = await self._init_sentence_transformers_model(model_name, model_type)    
             else:
-                 await self.model_manager.load_model_for_purpose(
+                # Handle GME and other model_manager models
+                await self.model_manager.load_model_for_purpose(
                     purpose="forensic_embeddings",
                     model_name=model_name,
                     gpu_id=gpu_id,
                     context_length=8192 if model_type == 'bge_m3' else 4096
                 )
+                success = True
 
+            # Check if initialization was successful
+            if not success:
+                logger.error(f"❌ Failed to initialize {model_type} model.")
+                return False
+
+            # Set model as active and enabled
             self.embedding_models[model_type]['enabled'] = True
             self.active_embedding_model = model_type
             logger.info(f"✅ Set '{model_type}' as the new active embedding model.")
 
+            # Test the model with a sample embedding
             test_embedding = self._get_semantic_embeddings("test")
 
             if test_embedding and len(test_embedding) > 0:
@@ -290,12 +332,17 @@ class ForensicLinguisticsService:
 
             # 1. FIRST: Try to find GGUF version using your existing ModelManager
             if hasattr(self, 'model_manager'):
-                gguf_patterns = [
-                    f"{model_name.split('/')[-1]}.gguf",
-                    f"{model_name.split('/')[-1].lower()}.gguf",
-                    f"{model_name.replace('/', '-')}.gguf",
-                    f"{model_name.replace('/', '_')}.gguf",
-                ]
+                if model_key == 'jina_v3':
+                    gguf_patterns = ['jina-embeddings-v3.gguf']
+                elif model_key == 'nomic_v1_5':
+                    gguf_patterns = ['nomic-embed-text-v1.5.gguf']
+                elif model_key == 'arctic_embed':
+                    gguf_patterns = ['arctic-embed-m-v1.5.gguf']
+                else:
+                    gguf_patterns = [
+                        f"{model_name.split('/')[-1]}.gguf",
+                        f"{model_name.replace('/', '-')}.gguf",
+                    ]
 
                 for pattern in gguf_patterns:
                     try:
@@ -548,12 +595,45 @@ class ForensicLinguisticsService:
                 result = model.embed(text)
                 if result and result.get("status") == "success":
                     embedding = result.get("embedding", [])
+                    
+                    # --- FIX FOR GGUF PER-TOKEN EMBEDDINGS ---
+                    # Check if the GGUF model returned a list of embeddings (one for each token)
+                    if embedding and isinstance(embedding, (list, np.ndarray)) and embedding[0] and isinstance(embedding[0], (list, np.ndarray)):
+                        logger.debug(f"Detected per-token embeddings from GGUF model (token count: {len(embedding)}). Performing mean pooling.")
+                        try:
+                            # Convert to numpy array, calculate mean across all token embeddings, convert back to list
+                            pooled_embedding = np.array(embedding, dtype=np.float32).mean(axis=0).tolist()
+                            logger.debug(f"GGUF pooled embedding dimension: {len(pooled_embedding)}D")
+                            return pooled_embedding
+                        except Exception as e:
+                            logger.error(f"Failed to perform mean pooling on GGUF output: {e}")
+                            return [] # Return empty on failure
+                    # --- END FIX ---
+                    
                     return embedding if isinstance(embedding, list) else embedding.tolist()
                 return []
             else:
                 # Use sentence-transformers model
                 embedding = model.encode(text)
-                return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+                
+                # DEBUG: Check what GTE is actually returning
+                if model_key == 'gte_qwen2':
+                    logger.error(f"GTE raw output type: {type(embedding)}")
+                    logger.error(f"GTE raw output shape: {getattr(embedding, 'shape', 'no shape attr')}")
+                    logger.error(f"GTE raw output length: {len(embedding) if hasattr(embedding, '__len__') else 'no len'}")
+                    if hasattr(embedding, '__len__') and len(embedding) > 0:
+                        logger.error(f"GTE first element type: {type(embedding[0])}")
+                        if hasattr(embedding[0], '__len__'):
+                            logger.error(f"GTE first element length: {len(embedding[0])}")
+                
+                result = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+
+                # FIX: GTE specifically returns nested lists
+                if model_key == 'gte_qwen2' and result and isinstance(result[0], list):
+                    result = result[0]  # Take the inner list for GTE
+                    logger.debug(f"Fixed GTE nested list: {len(result)}D")
+
+                return result
 
         except Exception as e:
             logger.warning(f"{model_key} embedding failed: {e}")
@@ -913,7 +993,74 @@ class ForensicLinguisticsService:
         except Exception as e:
             logger.warning(f"RoBERTa embeddings failed: {e}")
             return []    
+    def _get_jina_v3_embeddings(self, text: str) -> List[float]:
+        """Get embeddings from Jina v3 with task-specific LoRA adapter"""
+        try:
+            model = getattr(self, 'jina_v3_model', None)
+            is_gguf = getattr(self, 'jina_v3_is_gguf', False)
+            
+            if not model:
+                return []
+                
+            if is_gguf:
+                result = model.embed(text)
+                if result and result.get("status") == "success":
+                    return result.get("embedding", [])
+                return []
+            else:
+                # For forensic analysis, use the "separation" task for clustering-like analysis
+                # This seems most appropriate for stylometric analysis
+                embedding = model.encode(text, task="separation")
+                return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+        except Exception as e:
+            logger.warning(f"Jina v3 embedding failed: {e}")
+            return []
 
+    def _get_nomic_v1_5_embeddings(self, text: str) -> List[float]:
+        """Get embeddings from Nomic v1.5 with instruction prefix"""
+        try:
+            model = getattr(self, 'nomic_v1_5_model', None)
+            is_gguf = getattr(self, 'nomic_v1_5_is_gguf', False)
+            
+            if not model:
+                return []
+                
+            # For forensic analysis, treat text as documents to be analyzed
+            prefixed_text = f"clustering: {text}"
+            
+            if is_gguf:
+                result = model.embed(prefixed_text)
+                if result and result.get("status") == "success":
+                    return result.get("embedding", [])
+                return []
+            else:
+                embedding = model.encode(prefixed_text)
+                return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+        except Exception as e:
+            logger.warning(f"Nomic v1.5 embedding failed: {e}")
+            return []
+
+    def _get_arctic_embeddings(self, text: str) -> List[float]:
+        """Get embeddings from Snowflake Arctic"""
+        try:
+            model = getattr(self, 'arctic_embed_model', None)
+            is_gguf = getattr(self, 'arctic_embed_is_gguf', False)
+            
+            if not model:
+                return []
+                
+            if is_gguf:
+                result = model.embed(text)
+                if result and result.get("status") == "success":
+                    return result.get("embedding", [])
+                return []
+            else:
+                # Arctic doesn't need prefix for document embeddings, only for queries
+                embedding = model.encode(text)
+                return embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+        except Exception as e:
+            logger.warning(f"Arctic embedding failed: {e}")
+            return []    
     async def extract_style_vector(self, text: str, platform: str = None) -> StyleVector:
         """Extract comprehensive stylometric features from text"""
         
@@ -977,7 +1124,7 @@ class ForensicLinguisticsService:
         # Semantic embeddings
         loop = asyncio.get_event_loop()
         semantic_embeddings = await loop.run_in_executor(None, self._get_semantic_embeddings, text)
-        # --- NEW: Standardize embedding dimension ---
+    
         # Pad with zeros if shorter, truncate if longer
         current_len = len(semantic_embeddings)
         if current_len < TARGET_EMBEDDING_DIM:
@@ -985,7 +1132,7 @@ class ForensicLinguisticsService:
             semantic_embeddings.extend([0.0] * (TARGET_EMBEDDING_DIM - current_len))
         elif current_len > TARGET_EMBEDDING_DIM:
             # Truncate the vector
-            semantic_embeddings = semantic_embeddings[:TARGET_EMBEDDING_DIM]        
+            semantic_embeddings = semantic_embeddings[:TARGET_EMBEDDING_DIM]     
         # Sentiment analysis (basic)
         sentiment_scores = self._analyze_sentiment(text)
         
@@ -1309,6 +1456,12 @@ class ForensicLinguisticsService:
             try:
                 if model_key == 'gme':
                     embeddings = self._get_gme_embeddings(text)
+                elif model_key == 'jina_v3':
+                    embeddings = self._get_jina_v3_embeddings(text)
+                elif model_key == 'nomic_v1_5':
+                    embeddings = self._get_nomic_v1_5_embeddings(text)
+                elif model_key == 'arctic_embed':
+                    embeddings = self._get_arctic_embeddings(text)
                 elif model_key == 'bge_m3':
                     embeddings = self._get_bge_m3_embeddings(text)
                 elif model_key in ['gte_qwen2', 'inf_retriever', 'sentence_t5']:
@@ -1322,12 +1475,7 @@ class ForensicLinguisticsService:
 
                 if embeddings:
                     logger.debug(f"Using active model {model_key.upper()} embeddings: {len(embeddings)}D")
-                    # Standardize dimension
-                    current_len = len(embeddings)
-                    if current_len < TARGET_EMBEDDING_DIM:
-                        embeddings.extend([0.0] * (TARGET_EMBEDDING_DIM - current_len))
-                    elif current_len > TARGET_EMBEDDING_DIM:
-                        embeddings = embeddings[:TARGET_EMBEDDING_DIM]
+
                     return embeddings
             except Exception as e:
                 logger.warning(f"Active model {model_key} failed, falling back to priority list. Error: {e}")
@@ -1358,13 +1506,13 @@ class ForensicLinguisticsService:
                 if embeddings:
                     logger.debug(f"Using {model_key.upper()} embeddings: {len(embeddings)}D")
 
-                    # Standardize dimension to TARGET_EMBEDDING_DIM
-                    current_len = len(embeddings)
-                    if current_len < TARGET_EMBEDDING_DIM:
-                        embeddings.extend([0.0] * (TARGET_EMBEDDING_DIM - current_len))
-                    elif current_len > TARGET_EMBEDDING_DIM:
-                        embeddings = embeddings[:TARGET_EMBEDDING_DIM]
 
+                    if embeddings:
+                        logger.debug(f"Raw embedding type: {type(embeddings)}, length: {len(embeddings) if hasattr(embeddings, '__len__') else 'unknown'}")
+                        if len(embeddings) > 50000:  # Something is very wrong
+                            logger.error(f"CRITICAL: Embedding dimension too large ({len(embeddings)}), using fallback")
+                            return [0.0] * TARGET_EMBEDDING_DIM   
+                        
                     return embeddings
 
             except Exception as e:
@@ -1445,44 +1593,32 @@ class ForensicLinguisticsService:
         return (pos_sim * 0.4 + dep_sim * 0.4 + complexity_sim * 0.2)
     
     def _calculate_semantic_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """
-        Calculates cosine similarity between two vectors, now with robust flattening.
-        """
+        """Simple cosine similarity calculation"""
         if not vec1 or not vec2:
             return 0.0
+
+        # DEBUG: Check what's actually in the vectors
+        for i, item in enumerate(vec1[:10]):  # Check first 10 items
+            if not isinstance(item, (int, float)):
+                logger.error(f"vec1[{i}] is not a number: {type(item)} = {item}")
+                return 0.0
+
+        for i, item in enumerate(vec2[:10]):  # Check first 10 items  
+            if not isinstance(item, (int, float)):
+                logger.error(f"vec2[{i}] is not a number: {type(item)} = {item}")
+                return 0.0
 
         try:
             import numpy as np
             from sklearn.metrics.pairwise import cosine_similarity
 
-            # --- ROBUST FLATTENING LOGIC ---
-            # If the first element is a list or numpy array, flatten it.
-            if isinstance(vec1[0], (list, np.ndarray)):
-                vec1 = [item for sublist in vec1 for item in sublist]
-            if isinstance(vec2[0], (list, np.ndarray)):
-                vec2 = [item for sublist in vec2 for item in sublist]
-            # --- END FLATTENING LOGIC ---
+            vec1_np = np.array(vec1, dtype=float).reshape(1, -1)
+            vec2_np = np.array(vec2, dtype=float).reshape(1, -1)
 
-            # Ensure both vectors are numpy arrays for the calculation
-            vec1_2d = np.array(vec1, dtype=float).reshape(1, -1)
-            vec2_2d = np.array(vec2, dtype=float).reshape(1, -1)
-
-            # Check for dimension mismatch after potential errors
-            if vec1_2d.shape[1] != vec2_2d.shape[1]:
-                logger.warning(f"Semantic vector dimension mismatch after cleaning: {vec1_2d.shape[1]} vs {vec2_2d.shape[1]}. Padding shorter vector.")
-                # Pad the shorter vector to match the longer one
-                if vec1_2d.shape[1] < vec2_2d.shape[1]:
-                    padding = np.zeros((1, vec2_2d.shape[1] - vec1_2d.shape[1]))
-                    vec1_2d = np.hstack([vec1_2d, padding])
-                else:
-                    padding = np.zeros((1, vec1_2d.shape[1] - vec2_2d.shape[1]))
-                    vec2_2d = np.hstack([vec2_2d, padding])
-
-            similarity_matrix = cosine_similarity(vec1_2d, vec2_2d)
-            return float(similarity_matrix[0][0])
+            return float(cosine_similarity(vec1_np, vec2_np)[0][0])
 
         except Exception as e:
-            logger.error(f"CRITICAL Similarity calculation error: {e}. vec1 shape: {np.array(vec1, dtype=object).shape}, vec2 shape: {np.array(vec2, dtype=object).shape}", exc_info=True)
+            logger.error(f"Similarity calculation error: {e}")
             return 0.0
     
     def _calculate_stylistic_similarity(self, target: StyleVector, corpus: StyleVector) -> float:

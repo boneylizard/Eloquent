@@ -686,26 +686,26 @@ const EmbeddingModelSection = () => (
     </div>
 
     {/* Model Status Grid */}
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-      {Object.entries(embeddingModels.models).map(([modelName, modelInfo]) => (
-        <div key={modelName} className={`p-3 rounded-lg border ${
-          modelInfo.enabled ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'
-        }`}>
-          <div className="flex items-center justify-between mb-1">
-            <span className="font-medium text-sm uppercase">{modelName}</span>
-            <span className={`w-2 h-2 rounded-full ${
-              modelInfo.enabled ? 'bg-green-500' : 'bg-gray-400'
-            }`}></span>
-          </div>
-          <div className="text-xs text-muted-foreground">
-            {modelInfo.enabled ? `${modelInfo.dimensions}D` : 'Not loaded'}
-          </div>
-          <div className="text-xs text-muted-foreground">
-            Priority: {modelInfo.priority}
-          </div>
-        </div>
-      ))}
+<div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+  {Object.entries(embeddingModels.models).map(([modelName, modelInfo]) => (
+    <div key={modelName} className={`p-3 rounded-lg border ${
+      modelInfo.enabled ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'
+    }`}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="font-medium text-sm uppercase">{modelName.replace('_', '-')}</span>
+        <span className={`w-2 h-2 rounded-full ${
+          modelInfo.enabled ? 'bg-green-500' : 'bg-gray-400'
+        }`}></span>
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {modelInfo.enabled ? `${modelInfo.dimensions}D` : 'Not loaded'}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        Priority: {modelInfo.priority}
+      </div>
     </div>
+  ))}
+</div>
 
     {/* GME Initialization */}
     {!gmeAvailable && (
@@ -1477,6 +1477,9 @@ if (!scores) {
                   embeddingModels.active_model === 'BGE_M3' ? 'bg-yellow-100 text-yellow-800' :   
                   embeddingModels.active_model === 'STAR' ? 'bg-teal-100 text-teal-800' :
                   embeddingModels.active_model === 'ROBERTA' ? 'bg-pink-100 text-pink-800' :
+                  embeddingModels.active_model === 'JINA_V3' ? 'bg-purple-100 text-purple-800' :
+                  embeddingModels.active_model === 'NOMIC_V1_5' ? 'bg-orange-100 text-orange-800' :
+                  embeddingModels.active_model === 'ARCTIC_EMBED' ? 'bg-gray-100 text-gray-800' :
                   'bg-gray-100 text-gray-800'
                 }`}>
                   {embeddingModels.active_model}
@@ -1548,12 +1551,56 @@ if (!scores) {
                   </button>
                 </div>
 
-                
-                {/* BGE-M3 */}
-                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
-                  <div>
-                    <div className="font-medium text-sm text-foreground">BGE-M3 (1024D)</div>
-                    <div className="text-xs text-muted-foreground">Multi-lingual, multi-functionality</div>
+                {/* Jina v3 */}
+<div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+  <div>
+    <div className="font-medium text-sm text-foreground">Jina Embeddings v3 (1024D)</div>
+    <div className="text-xs text-muted-foreground">Task-specific LoRA adapters, multilingual</div>
+  </div>
+  <button
+    onClick={() => initializeEmbeddingModel('jina_v3', 0)}
+    disabled={initializingGME || embeddingModels.models?.jina_v3?.enabled}
+    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+  >
+    {embeddingModels.models?.jina_v3?.enabled ? 'Ready' : initializingGME ? 'Loading...' : 'Initialize'}
+  </button>
+</div>
+
+{/* Nomic v1.5 */}
+<div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+  <div>
+    <div className="font-medium text-sm text-foreground">Nomic Embed v1.5 (768D)</div>
+    <div className="text-xs text-muted-foreground">Popular open-source, instruction-tuned</div>
+  </div>
+  <button
+    onClick={() => initializeEmbeddingModel('nomic_v1_5', 0)}
+    disabled={initializingGME || embeddingModels.models?.nomic_v1_5?.enabled}
+    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+  >
+    {embeddingModels.models?.nomic_v1_5?.enabled ? 'Ready' : initializingGME ? 'Loading...' : 'Initialize'}
+  </button>
+</div>
+
+{/* Arctic Embed */}
+<div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+  <div>
+    <div className="font-medium text-sm text-foreground">Arctic Embed m-v1.5 (768D)</div>
+    <div className="text-xs text-muted-foreground">Production-optimized, compression-friendly</div>
+  </div>
+  <button
+    onClick={() => initializeEmbeddingModel('arctic_embed', 0)}
+    disabled={initializingGME || embeddingModels.models?.arctic_embed?.enabled}
+    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+  >
+    {embeddingModels.models?.arctic_embed?.enabled ? 'Ready' : initializingGME ? 'Loading...' : 'Initialize'}
+  </button>
+</div>
+
+{/* BGE-M3 */}
+<div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+  <div>
+    <div className="font-medium text-sm text-foreground">BGE-M3 (1024D)</div>
+    <div className="text-xs text-muted-foreground">Multi-lingual, multi-functionality</div>
                   </div>
                   <button
                     onClick={() => initializeEmbeddingModel('bge_m3', 0)}
