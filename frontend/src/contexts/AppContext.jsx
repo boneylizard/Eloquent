@@ -233,6 +233,7 @@ const drawAvatar = (canvas, imageUrl, name) => {
   const [conversations, setConversations] = useState([]);
   const [activeConversation, setActiveConversation] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [taskProgress, setTaskProgress] = useState({ progress: 0, status: '', active: false });
   const deleteConversation = useCallback((id) => {
     try {
       // Update state first
@@ -573,21 +574,32 @@ const generateImage = useCallback(async (prompt, opts) => {
   const imageEngine = settings.imageEngine || 'auto1111';
 
   // Nest the mapSampler function here so it has access to imageEngine
-  const mapSampler = (sampler) => {
-    if (imageEngine === 'EloDiffusion') {
-      const samplerMap = {
-        'Euler a': 'euler_a',
-        'Euler': 'euler',
-        'Heun': 'heun',
-        'DPM2': 'dpm2',
-        'DPM++ 2S a': 'dpmpp2s_a',
-        'DPM++ 2M': 'dpmpp2m',
-        'DDIM': 'ddim_trailing'
-      };
-      return samplerMap[sampler] || 'euler_a';
-    }
-    return sampler; // Keep original for A1111
+const mapSamplerForBackend = (samplerNameFromFrontend) => {
+  if (imageEngine === 'EloDiffusion') {
+    // For EloDiffusion (stable-diffusion-cpp), the frontend already sends
+    // the sampler names in the correct snake_case format (e.g., 'euler_a', 'dpmpp2m').
+    // So, we just return it directly.
+    return samplerNameFromFrontend;
+  }
+
+  // This part is for Automatic1111 (External API).
+  // A1111 generally expects human-readable names (e.g., "Euler a", "DPM++ 2M Karras").
+  // If SimpleChatImageButton.jsx sends snake_case names, we need a mapping here.
+  const automatic1111SamplerMapping = {
+    'euler_a': 'Euler a',
+    'euler': 'Euler',
+    'dpmpp2m': 'DPM++ 2M Karras', // Common A1111 name
+    'dpmpp2s_a': 'DPM++ 2S a Karras',
+    'heun': 'Heun',
+    'dpm2': 'DPM2',
+    'ddim_trailing': 'DDIM',
+    // Add more mappings here if other samplers from SimpleChatImageButton.jsx
+    // have different human-readable names in A1111.
+    // If a sampler is not found here, it defaults to sending the snake_case name directly.
   };
+  // Attempt to map, or fall back to sending the original name if no specific A1111 map exists.
+  return automatic1111SamplerMapping[samplerNameFromFrontend] || samplerNameFromFrontend;
+};
 
   setIsImageGenerating(true);
   clearError();
@@ -599,12 +611,12 @@ const generateImage = useCallback(async (prompt, opts) => {
       height: opts.height || 512,
       steps: opts.steps || 20,
       guidance_scale: opts.guidance_scale || 7.0,
-      sampler: mapSampler(opts.sampler || "Euler a"), // This now works correctly
+      sampler: mapSamplerForBackend(opts.sampler || "euler_a"), // Default to 'euler_a' for EloDiffusion if opts.sampler is not set
       seed: opts.seed || -1,
       ...(imageEngine !== 'EloDiffusion' && {
         model: opts.model,
         cfg_scale: opts.guidance_scale || 7.0,
-        sampler_name: opts.sampler || "Euler a"
+        sampler_name: mapSamplerForBackend(opts.sampler || "Euler a") // Default for A1111 if opts.sampler is not set
       })
     };
 
@@ -2209,6 +2221,8 @@ useEffect(() => {
 const contextValue = useMemo(() => ({
     messages,
     setMessages,
+    taskProgress,
+    setTaskProgress,
     availableModels,
     setAvailableModels,
     loadedModels,

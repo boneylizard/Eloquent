@@ -1924,6 +1924,7 @@ const handleContinueGeneration = useCallback(async (messageId) => {
       {/* Message Display Area with Floating Controls */}
       <div className="relative flex-1">
         <ScrollArea className="h-full p-4 bg-background">
+            <div className="max-w-4xl mx-auto p-4">
           {/* Floating controls - positioned fixed relative to viewport */}
           {showFloatingControls && (
             <div className="fixed right-6 top-1/2 transform -translate-y-1/2 z-50 flex flex-col gap-2 bg-background/80 backdrop-blur-sm p-2 rounded-md border border-border shadow-md">
@@ -2428,10 +2429,12 @@ const handleContinueGeneration = useCallback(async (messageId) => {
               );
             })
           )}
+          </div>
         </ScrollArea>
       </div>
 {/* Add this right before your existing <form className="border-t border-border p-4..."> */}
-<div className="border-t border-border px-4 py-2 bg-muted/5 flex items-center justify-between">
+<div className="border-t border-border bg-muted/5">
+<div className="max-w-4xl mx-auto px-4 py-2 flex items-center justify-between">
   <WebSearchControl
     webSearchEnabled={webSearchEnabled}
     setWebSearchEnabled={setWebSearchEnabled}
@@ -2444,7 +2447,10 @@ const handleContinueGeneration = useCallback(async (messageId) => {
       Search enabled for next message
     </div>
   )}
+  </div>
 </div>
+<div className="border-t border-border">
+  <div className="max-w-4xl mx-auto">
       {/* Input Form with Image Button */}
 <ChatInputForm 
     onSubmit={handleSubmit}
@@ -2458,6 +2464,8 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     inputValue={inputValue}          // ADD THIS
     setInputValue={setInputValue}  // ADD THIS
 />
+</div>
+</div>
   {/* Character Preview Modal */}
   {showCharacterPreview && generatedCharacter && (
     <Dialog open={showCharacterPreview} onOpenChange={setShowCharacterPreview}>

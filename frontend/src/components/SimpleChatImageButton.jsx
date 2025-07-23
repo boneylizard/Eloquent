@@ -257,13 +257,14 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
 
         clearError();
         try {
+            console.log("DEBUGGING SAMPLER - selectedSampler before generateImage:", selectedSampler); // <--- ADD THIS LINE HERE
             const responseData = await generateImage(prompt, {
                 negative_prompt: negativePrompt,
                 width,
                 height,
                 steps,
                 guidance_scale: guidanceScale,
-                sampler: 'Euler a',
+                sampler: selectedSampler,  // ✅ Correct parameter name
                 seed: seed,
                 model: selectedModel
             });
@@ -286,7 +287,7 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
                         steps: responseData.parameters?.steps || steps,
                         guidance_scale: responseData.parameters?.cfg_scale || guidanceScale,
                         model: responseData.parameters?.sd_model_checkpoint || selectedModel,
-                        sampler: responseData.parameters?.sampler_name || 'Euler a',
+                        sampler: responseData.parameters?.sampler || selectedSampler,
                         seed: responseData.parameters?.seed !== undefined ? responseData.parameters.seed : -1,
                         timestamp: new Date().toISOString()
                     };

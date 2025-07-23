@@ -185,7 +185,7 @@ class SDManager:
                     strength=0.34,          # bolder redraw, still below “plastic”
                     width=w,
                     height=h,
-                    sample_steps=90,        # already maxed
+                    sample_steps=60,        # already maxed
                     cfg_scale=8.5,          # extra pop in colour / texture
                     sample_method="dpmpp2m"
                 )

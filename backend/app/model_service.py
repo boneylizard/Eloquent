@@ -20,6 +20,7 @@ class ModelService:
     def load_model(self, model_name, model_path, gpu_id, context_length, params):
         """Load a model with clean CUDA state"""
         key = (model_name, gpu_id)
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
         if key in self.models:
             if self.models[key]['context_length'] != context_length:
@@ -27,8 +28,8 @@ class ModelService:
             else:
                 return {"status": "already_loaded"}
 
-        # REMOVE THIS LINE:
-        # os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
         logging.info(f"Loading {model_name} on GPU {gpu_id} with context {context_length}")
 
@@ -39,7 +40,12 @@ class ModelService:
 
             # ADD THIS: Force model onto specific GPU using tensor_split
             model_params['main_gpu'] = gpu_id  # Set main GPU
-
+            # --- ADD THESE TWO LINES ---
+            is_embedding_model = "embed" in model_name.lower() or "gme" in model_name.lower() or "gte" in model_name.lower()
+            if is_embedding_model:
+                model_params['embedding'] = True
+                logging.info(f"Loading {model_name} as embedding model")
+            # --- END OF ADDITION ---
             # If you have the tensor_split in params from model_manager, it should work
             # Otherwise add this:
             if 'tensor_split' not in model_params:
@@ -48,10 +54,22 @@ class ModelService:
                 tensor_split[gpu_id] = 1.0
                 model_params['tensor_split'] = tensor_split
 
+            is_embedding_model = "embed" in model_name.lower() or "gme" in model_name.lower()
+
+            # add embedding model specific params
+            if is_embedding_model:
+                model_params['embedding'] = True
+                logging.info(f"Loading {model_name} as embedding model")
+
+            logging.info(f"Attempting to instantiate Llama object for {model_name} on GPU {gpu_id}...")
+            logging.info(f"Using parameters: {json.dumps(model_params, indent=2)}")
+            
             model = Llama(
                 model_path=model_path,
                 **model_params
             )
+            
+            logging.info("✅ Llama object instantiated successfully.")
 
             self.models[key] = {
                 'model': model,
@@ -100,7 +118,19 @@ class ModelService:
         except Exception as e:
             logging.error(f"Generation error: {e}")
             return {"error": str(e)}
-
+    def embed(self, model_name, gpu_id, text):
+        """Generate embeddings"""
+        key = (model_name, gpu_id)
+        if key not in self.models:
+            return {"error": "Model not loaded for embedding"}
+        
+        try:
+            # The embed method in llama-cpp-python returns the embeddings directly
+            embedding_result = self.models[key]['model'].embed(text)
+            return {"status": "success", "embedding": embedding_result}
+        except Exception as e:
+            logging.error(f"Embedding error: {e}")
+            return {"error": str(e)}
 def send_msg(sock, data):
     """Send a message with a length prefix"""
     msg = pickle.dumps(data)
@@ -190,6 +220,9 @@ while True:
                 gpu_id=params.get('gpu_id')
             )
             send_msg(client, result)        
+        elif action == 'embed':
+            result = service.embed(**params)
+            send_msg(client, result)
         else:
             result = {"error": "Unknown action"}
             send_msg(client, result)

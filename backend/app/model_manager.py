@@ -217,6 +217,10 @@ class RemoteModelWrapper:
     def unload(self):
         """Tell the service to unload this model"""
         return self._remote_call('unload', model_name=self.model_name, gpu_id=self.gpu_id)
+    def embed(self, text: str):
+        """Tell the service to generate embeddings for the given text."""
+        return self._remote_call('embed', model_name=self.model_name, gpu_id=self.gpu_id, text=text)
+    
 class ModelManager:
     def __init__(self, gpu_usage_mode="split_services"):
         self.loaded_models: Dict[Tuple[str, int], Dict[str, Any]] = {}  # Stores model objects with composite key (model_name, gpu_id)
@@ -228,6 +232,7 @@ class ModelManager:
             'secondary_judge_model': None, # {'name': 'model_name', 'gpu_id': 0}
             'test_model_a': None,         # {'name': 'model_name', 'gpu_id': 0}
             'test_model_b': None,         # {'name': 'model_name', 'gpu_id': 0}
+            'forensic_embeddings': None    # {'name': 'model_name', 'gpu_id': 0}
         }
         self.models_dir = Path(MODEL_DIR)
         self.has_gpu = self._detect_gpu()
@@ -314,28 +319,25 @@ class ModelManager:
 
         params = {
             "n_ctx": context_length,
-            "n_batch": 8192,  # Batch size for inference
+            "n_batch": 8192,
             "n_threads": 32,
             "verbose": True,
             "seed": 42,
-            "n_gpu_layers": -1,  # Offload all layers
+            "n_gpu_layers": -1,
             "main_gpu": gpu_id,
-            "offload_kqv": True, # THE MAGIC BOOLEAN ✨
+            "offload_kqv": True,
             "f16_kv": True,
             "use_mmap": True,
-            "use_mlock": True,  # Lock model in memory
+            "use_mlock": True,
             "low_vram": False,
             "rope_scaling": {"type": "yarn", "factor": 1.0},
             "use_cache": True,
             "logits_all": False,
             "embedding": False,
             "vocab_only": False,
-            "flash_attn": True,  # Enable flash attention for speed
+            "flash_attn": True,
         }
 
-        # --- RESTORED TENSOR SPLIT LOGIC ---
-        # This logic is now aware of the fact that the process might only see one GPU
-        # due to CUDA_VISIBLE_DEVICES being set in main.py.
         effective_gpu_count = self.gpu_info.get("count", 1)
 
         if effective_gpu_count > 1:
@@ -359,12 +361,10 @@ class ModelManager:
                 params["tensor_split"] = tensor_split
                 logging.info(f"⭐ Unified model mode: Setting tensor_split based on memory ratios: {tensor_split}")
         else:
-            # If only one GPU is visible, no tensor split is needed.
             logging.info("Only one GPU visible to the process, skipping tensor_split.")
 
         os.environ["GGML_CUDA_NO_PINNED"] = "0"
         return params
-
 
     def _ensure_model_purposes(self):
         """Ensure model_purposes dictionary exists (for backward compatibility)"""
@@ -374,7 +374,8 @@ class ModelManager:
                 'primary_judge': None,
                 'secondary_judge': None,
                 'test_model_a': None,
-                'test_model_b': None
+                'test_model_b': None,
+                'forensic_embeddings': None
             }
 
     async def _load_with_llama_cpp(self, model_path: str, gpu_id: Optional[int] = None, n_ctx: Optional[int] = 4096, **kwargs):
@@ -392,6 +393,8 @@ class ModelManager:
             
             # Send load request to service
             wrapper = RemoteModelWrapper(os.path.basename(model_path), gpu_id)
+            
+            logging.info(f"🚀 [ModelManager] Dispatching 'load' command to ModelService for {os.path.basename(model_path)} on GPU {gpu_id}.")
             result = wrapper._remote_call(
                 'load',
                 model_name=os.path.basename(model_path),
@@ -400,6 +403,7 @@ class ModelManager:
                 context_length=n_ctx,
                 params=model_params
             )
+            logging.info(f"👍 [ModelManager] Received response from ModelService: {result}")
             
             if "error" in result:
                 raise Exception(result["error"])
@@ -548,13 +552,42 @@ class ModelManager:
 
             # If model_path not provided, search for it
             if not model_path:
-                print(f"DEBUG: Searching for model {model_name} in {self.models_dir}", flush=True)
-                model_files = glob.glob(os.path.join(self.models_dir, "**", model_name), recursive=True)
-                print(f"DEBUG: Found model files: {model_files}", flush=True)
-                if not model_files:
-                    raise FileNotFoundError(f"Model {model_name} not found in {self.models_dir}")
-                model_path = model_files[0]
-                print(f"DEBUG: Using model path: {model_path}", flush=True)
+                print(f"DEBUG: Searching for model file containing '{model_name}' within '{self.models_dir}'", flush=True)
+
+                # Use a clean, simple search for any .gguf file recursively
+                all_gguf_files = glob.glob(os.path.join(self.models_dir, "**", "*.gguf"), recursive=True)
+
+            # --- NEW: Intelligent Search Logic ---
+            # Clean the model name and split into keywords
+            cleaned_name = model_name.lower().replace('/', '-').replace('_', '-')
+            keywords = [word for word in cleaned_name.split('-') if word]
+
+            logging.info(f"🔍 Searching for file with keywords: {keywords}")
+
+            best_match = None
+            highest_score = 0
+            
+            for file_path in all_gguf_files:
+                file_name_lower = os.path.basename(file_path).lower()
+                
+                # Score based on number of matching keywords
+                score = sum(1 for keyword in keywords if keyword in file_name_lower)
+                
+                # Boost score for the most important part of the name
+                core_model_name = keywords[-1]
+                if core_model_name in file_name_lower:
+                    score += 5 # Add a significant boost
+
+                if score > highest_score:
+                    highest_score = score
+                    best_match = file_path
+
+            if not best_match:
+                # The error message now shows the cleaned keywords for easier debugging
+                raise FileNotFoundError(f"Could not find a GGUF file matching keywords: {keywords} in '{self.models_dir}'")
+
+            model_path = best_match
+            print(f"DEBUG: Found best model match: {model_path}", flush=True)
 
             logging.info(f"⭐ Loading model {model_name} from {model_path} on GPU {target_gpu_id} with context length {context_length}")
 
@@ -671,7 +704,7 @@ class ModelManager:
 
     async def load_model_for_purpose(self, purpose: str, model_name: str, gpu_id: int, context_length: int = 4096):
         """Load a model for a specific testing purpose"""
-        valid_purposes = ['test_model', 'primary_judge', 'secondary_judge', 'test_model_a', 'test_model_b']
+        valid_purposes = ['test_model', 'primary_judge', 'secondary_judge', 'test_model_a', 'test_model_b', 'forensic_embeddings']
         if purpose not in valid_purposes:
             raise ValueError(f"Invalid purpose. Must be one of: {valid_purposes}")
         
@@ -683,6 +716,7 @@ class ModelManager:
                 'primary_judge': None,
                 'secondary_judge': None,
                 'test_model': None,
+                'forensic_embeddings': None,
             }
         
         # Unload any existing model for this purpose first
@@ -716,6 +750,7 @@ class ModelManager:
                 'primary_judge': None,
                 'secondary_judge': None,
                 'test_model': None,
+                'forensic_embeddings': None,
             }
         
         result = {}
@@ -835,17 +870,17 @@ class ModelManager:
         return info
 
         
-    async def find_suitable_model(self, gpu_id=None): # Still async def
+    async def find_suitable_model(self, gpu_id=None):  # Still async def
         """
         Find the first available model loaded on the specified GPU.
         Ensures thread-safe access to the loaded_models dictionary.
         (Simplified: Removed keyword-based prioritization entirely)
         """
-        logging.info(f"[DIAGNOSTIC] find_suitable_model called for GPU {gpu_id}. Checking state within lock.") # Updated log
-        logging.info(f"Looking for *any* suitable model on GPU {gpu_id}")
+        logging.info(f"[DIAGNOSTIC] find_suitable_model called for GPU {gpu_id}. Checking state within lock.")  # Updated log
 
-        # Default to GPU 1 for memory tasks if no gpu_id is specified
+        # Force memory agent tasks to ALWAYS default to GPU 1 (the 4060 Ti)
         target_gpu_id = 1 if gpu_id is None else gpu_id
+        logging.info(f"Forcing memory agent to look for a model on GPU {target_gpu_id}")
         suitable_model_name = None # Variable to hold the result
 
         # --- Acquire the lock before reading the shared dictionary ---

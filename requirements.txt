@@ -21,6 +21,7 @@ blis
 braceexpand
 cachetools
 catalogue
+cbor
 certifi
 cffi
 charset-normalizer
@@ -57,7 +58,7 @@ docopt
 editdistance
 einops
 email_validator
-en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 espeakng-loader
 executing
 faiss-cpu
@@ -67,8 +68,10 @@ faster-whisper
 ffmpeg
 fiddle
 filelock
+FlagEmbedding
 flatbuffers
 fonttools
+form
 frozenlist
 fsspec
 future
@@ -78,6 +81,7 @@ gguf
 gguf-parser
 gitdb
 GitPython
+googleapis-common-protos
 graphviz
 greenlet
 grpcio
@@ -90,13 +94,16 @@ huggingface-hub
 humanfriendly
 hydra-core
 idna
+ijson
 importlib_metadata
 inflect
 iniconfig
+inscriptis
 interegular
 intervaltree
 ipython
 ipython_pygments_lexers
+ir_datasets
 isodate
 jedi
 Jinja2
@@ -125,6 +132,8 @@ llvmlite
 lm-format-enforcer
 logging
 loguru
+lxml
+lz4
 Mako
 marisa-trie
 Markdown
@@ -145,6 +154,7 @@ msgspec
 multidict
 multiprocess
 murmurhash
+nemo-toolkit
 nest-asyncio
 networkx
 ninja
@@ -153,8 +163,11 @@ num2words
 numba
 numpy
 nvidia-ml-py
+oauthlib
 omegaconf
 onnx
+onnxruntime
+openai
 openai-whisper
 opencv-python
 opencv-python-headless
@@ -163,6 +176,7 @@ opentelemetry-exporter-otlp
 opentelemetry-exporter-otlp-proto-common
 opentelemetry-exporter-otlp-proto-grpc
 opentelemetry-exporter-otlp-proto-http
+opentelemetry-proto
 opentelemetry-sdk
 opentelemetry-semantic-conventions
 opentelemetry-semantic-conventions-ai
@@ -174,6 +188,7 @@ pandas
 parso
 partial-json-parser
 pathspec
+pd
 peft
 phonemizer-fork
 pillow
@@ -220,11 +235,13 @@ pytz
 pywin32
 PyYAML
 pyzmq
+qwen-vl-utils
 RapidFuzz
 rdflib
 referencing
 regex
 requests
+requests-oauthlib
 resampy
 rfc3986
 rich
@@ -276,10 +293,15 @@ threadpoolctl
 tiktoken
 tokenizers
 toolz
+torch
+torchaudio
 torchmetrics
+torchvision
 tqdm
 traitlets
 transformers
+trec-car-tools
+tweepy
 typeguard
 typer
 typing-inspection
@@ -287,11 +309,14 @@ typing_extensions
 tzdata
 ultralytics
 ultralytics-thop
+unlzw3
 uritemplate
 urllib3
 uvicorn
 vllm
 wandb
+warc3-wet
+warc3-wet-clueweb09
 wasabi
 watchfiles
 wcwidth
@@ -307,5 +332,6 @@ wrapt
 xxhash
 yarl
 zipp
+zlib-state
 zope.event
 zope.interface
