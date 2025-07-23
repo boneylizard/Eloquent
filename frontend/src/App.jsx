@@ -18,7 +18,7 @@ import { useApp, AppProvider } from './contexts/AppContext';
 import SimpleModelSelector from './components/SimpleModelSelector';
 import CharacterManager from './components/CharacterManager';
 import ModelTester from './components/ModelTester';
-
+import ForensicLinguistics from './components/ForensicLinguistics';
 
 
 // Inner component to access theme context easily
@@ -45,6 +45,8 @@ function AppContent() {
         return <ImageGen />;
       case 'documents':
         return <Documents />;
+      case 'forensics': // ADD THIS CASE
+        return <ForensicLinguistics />;
       case 'models':
         return <SimpleModelSelector />;
       case 'characters':

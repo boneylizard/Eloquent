@@ -9,7 +9,8 @@ import {
   FileText,
   UserCircle,
   BookOpen,
-  Zap
+  Zap,
+  Search
 } from 'lucide-react';
 
 const Navbar = ({ toggleSidebar }) => {
@@ -27,6 +28,7 @@ const Navbar = ({ toggleSidebar }) => {
     { id: 'image', label: 'Image Gen', icon: <Image className="mr-2 h-4 w-4" /> },
     { id: 'documents', label: 'Documents', icon: <FileText className="mr-2 h-4 w-4" /> },
     { id: 'characters', label: 'Characters', icon: <UserCircle className="mr-2 h-4 w-4" /> },
+    { id: 'forensics', label: 'Forensic Linguistics', icon: <Search className="mr-2 h-4 w-4" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="mr-2 h-4 w-4" /> },
     { id: 'memory', label: 'Memory', icon: <BookOpen className="mr-2 h-4 w-4" /> },
     { id: 'modeltester', label: 'Model Tester', icon: <Zap className="mr-2 h-4 w-4" /> }

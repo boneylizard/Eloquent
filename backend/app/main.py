@@ -8,13 +8,19 @@ os.environ["GGML_CUDA_NO_PINNED"] = "0"
 
 # --- END: DEFINITIVE GPU ISOLATION ---
 from pyexpat.errors import messages
-from fastapi import FastAPI, HTTPException, Depends, APIRouter, File, UploadFile, BackgroundTasks, Request, Query, Body, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, APIRouter, File, UploadFile, BackgroundTasks, Request, Query, Body, WebSocket, WebSocketDisconnect, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import os
 import json
+import threading
+import pandas as pd
+import json
+import xml.etree.ElementTree as ET
+import yaml
+import io
 import asyncio
 import datetime
 from contextlib import asynccontextmanager
@@ -26,6 +32,7 @@ from fastapi.logger import logger # Use FastAPI's logger
 import sys
 import time
 import shutil
+from .forensic_linguistics_service import ForensicLinguisticsService, TextDocument, SimilarityScore
 import uuid
 from .tts_service import clean_markdown_for_tts, _synthesize_with_kokoro
 from pathlib import Path
@@ -35,6 +42,7 @@ from .model_manager import ModelManager
 from . import inference
 from .tts_service import synthesize_speech # Assuming this is the correct import path for your TTS service
 import io
+import yaml
 import tempfile
 from . import tts_service # Assuming this is the correct import path for your TTS service
 from .stt_service import transcribe_audio # Assuming this is the correct import path for your STT service
@@ -60,6 +68,7 @@ import pynvml
 from .kyutai_streaming_service import kyutai_streaming, create_text_stream_from_llm, create_sentence_stream
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 # Only set DEBUG-level loggers to WARNING to suppress their excessive output
@@ -68,6 +77,12 @@ logging.getLogger('numba.byteflow').setLevel(logging.WARNING)
 logging.getLogger('graphviz').setLevel(logging.WARNING)
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logging.getLogger('PIL').setLevel(logging.WARNING)
+logging.getLogger('huggingface_hub').setLevel(logging.WARNING)
+logging.getLogger('transformers').setLevel(logging.WARNING)
+logging.getLogger('transformers.modeling_utils').setLevel(logging.WARNING)
+logging.getLogger('transformers.configuration_utils').setLevel(logging.WARNING)
+logging.getLogger('transformers.tokenization_utils_base').setLevel(logging.WARNING)
+logging.getLogger('sentence_transformers').setLevel(logging.WARNING)
 
 # NeMo's logging can be very verbose at DEBUG level
 logging.getLogger('nemo').setLevel(logging.WARNING)
@@ -401,6 +416,10 @@ async def websocket_chat_with_streaming_tts(websocket: WebSocket, model_manager:
         logger.error(f"🗣️ [Chat Stream] Error in session {session_id}: {e}")
     finally:
         await kyutai_streaming.disconnect()
+async def get_forensic_service(request: Request) -> ForensicLinguisticsService:
+    if not hasattr(request.app.state, 'forensic_service') or request.app.state.forensic_service is None:
+        raise HTTPException(status_code=503, detail="Forensic Linguistics Service is not available.")
+    return request.app.state.forensic_service
 
 @app.post("/tts/stream-test")
 async def test_streaming_tts(request: dict, model_manager: ModelManager = Depends(get_model_manager)):
@@ -549,6 +568,698 @@ async def update_gpu_mode(
         logger.error(f"Failed to update GPU mode setting: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 # Add this endpoint with your other router endpoints
+
+# Add these endpoints to your router in main.py
+
+@router.post("/forensic/build-corpus")
+async def build_forensic_corpus(
+    background_tasks: BackgroundTasks,
+    data: dict = Body(...),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+    
+):
+    """Build a comprehensive stylometric corpus for a public figure."""
+    try:
+        person_name = data.get("person_name")
+        platforms = data.get("platforms", ["twitter", "speeches", "press_releases", "interviews"])
+        max_documents = data.get("max_documents", 1000)
+        
+        if not person_name:
+            raise HTTPException(status_code=400, detail="person_name is required")
+        
+        logger.info(f"🔍 [Forensic] Building corpus for {person_name}")
+        
+        # Check if corpus already exists
+        existing_corpus = forensic_service._load_cached_corpus(person_name)
+        if existing_corpus and len(existing_corpus) > 50:
+            return {
+                "status": "exists",
+                "message": f"Corpus for {person_name} already exists with {len(existing_corpus)} documents",
+                "corpus_size": len(existing_corpus),
+                "person_name": person_name,
+                "platforms": list(set(doc.platform for doc in existing_corpus))
+            }
+        
+        # Build corpus in background
+        async def build_corpus_task():
+            try:
+                corpus = await forensic_service.build_corpus(
+                    person_name=person_name,
+                    platforms=platforms,
+                    max_documents=max_documents
+                )
+                logger.info(f"✅ [Forensic] Completed corpus building for {person_name}: {len(corpus)} documents")
+            except Exception as e:
+                logger.error(f"❌ [Forensic] Corpus building failed for {person_name}: {e}")
+
+        corpus = await forensic_service.build_corpus(
+            person_name=person_name,
+            platforms=platforms,
+            max_documents=max_documents
+        )
+
+        return {
+            "status": "building",
+            "message": f"Corpus building started for {person_name}",
+            "person_name": person_name,
+            "platforms": platforms,
+            "max_documents": max_documents
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error in build-corpus: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/forensic/corpus-status/{person_name}")
+async def get_corpus_status(person_name: str, forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)):
+    """Check the status of a person's corpus."""
+    try:
+        corpus = forensic_service._load_cached_corpus(person_name)
+        
+        if not corpus:
+            return {
+                "status": "not_found",
+                "person_name": person_name,
+                "corpus_size": 0,
+                "message": "No corpus found for this person"
+            }
+        
+        # Analyze corpus composition
+        platform_breakdown = {}
+        for doc in corpus:
+            platform_breakdown[doc.platform] = platform_breakdown.get(doc.platform, 0) + 1
+        
+        # Calculate date range
+        dates = [doc.date for doc in corpus if doc.date]
+        date_range = {
+            "earliest": min(dates).isoformat() if dates else None,
+            "latest": max(dates).isoformat() if dates else None
+        }
+        
+        return {
+            "status": "ready",
+            "person_name": person_name,
+            "corpus_size": len(corpus),
+            "platform_breakdown": platform_breakdown,
+            "date_range": date_range,
+            "message": f"Corpus ready with {len(corpus)} documents"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error checking corpus status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/forensic/analyze-file")
+async def analyze_file_content(
+    file: UploadFile = File(...),
+    person_name: str = Query(None, description="Public figure to compare against"),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Analyze uploaded file content for forensic linguistics."""
+    try:
+        # Validate file size (10MB limit)
+        if file.size > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File too large (max 10MB)")
+        
+        # Use the cleaning function
+        content = await process_uploaded_file_with_cleaning(file)
+        
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="File appears to be empty or unreadable after cleaning")
+        
+        logger.info(f"🧹 [Forensic] Cleaned content from {file.filename}: {len(content)} characters")
+        
+        if person_name:
+            # Compare against specific person's corpus
+            logger.info(f"🔍 [Forensic] Analyzing uploaded file against {person_name}")
+            
+            corpus = forensic_service._load_cached_corpus(person_name)
+            if not corpus:
+                raise HTTPException(status_code=404, detail=f"No corpus found for {person_name}")
+            
+            similarity_scores = forensic_service.analyze_authorship(content, corpus)
+            interpretation = forensic_service._interpret_similarity_scores(similarity_scores)
+            
+            return {
+                "status": "success",
+                "analysis_type": "authorship_attribution",
+                "file_name": file.filename,
+                "person_analyzed": person_name,
+                "similarity_scores": {
+                    "overall_similarity": similarity_scores.overall_similarity,
+                    "lexical_similarity": similarity_scores.lexical_similarity,
+                    "syntactic_similarity": similarity_scores.syntactic_similarity,
+                    "semantic_similarity": similarity_scores.semantic_similarity,
+                    "stylistic_similarity": similarity_scores.stylistic_similarity
+                },
+                "interpretation": interpretation,
+                "confidence_level": forensic_service._calculate_confidence(similarity_scores),
+                "analysis_timestamp": datetime.now().isoformat(),
+                "cleaned_content_length": len(content)
+            }
+        else:
+            # Extract features only
+            logger.info(f"🔍 [Forensic] Extracting features from uploaded file: {file.filename}")
+            
+            style_vector = forensic_service.extract_style_vector(content)
+            
+            return {
+                "status": "success",
+                "analysis_type": "feature_extraction",
+                "file_name": file.filename,
+                "features": {
+                    "lexical_features": {
+                        "avg_word_length": round(style_vector.avg_word_length, 2),
+                        "avg_sentence_length": round(style_vector.avg_sentence_length, 2),
+                        "vocab_richness": round(style_vector.vocab_richness, 3),
+                        "hapax_legomena_ratio": round(style_vector.hapax_legomena_ratio, 3),
+                        "yule_k": round(style_vector.yule_k, 2)
+                    },
+                    "syntactic_features": {
+                        "pos_distribution": {k: round(v, 3) for k, v in style_vector.pos_distribution.items()},
+                        "sentence_complexity": round(style_vector.sentence_complexity, 2)
+                    },
+                    "stylistic_features": {
+                        "modal_verb_usage": round(style_vector.modal_verb_usage, 3),
+                        "passive_voice_ratio": round(style_vector.passive_voice_ratio, 3),
+                        "question_ratio": round(style_vector.question_ratio, 3),
+                        "exclamation_ratio": round(style_vector.exclamation_ratio, 3),
+                        "capitalization_ratio": round(style_vector.capitalization_ratio, 3)
+                    },
+                    "punctuation_features": {k: round(v, 4) for k, v in style_vector.punctuation_ratios.items()},
+                    "function_word_features": {k: round(v, 3) for k, v in style_vector.function_word_ratios.items()},
+                    "sentiment_features": {k: round(v, 3) for k, v in style_vector.sentiment_scores.items()},
+                    "text_statistics": {
+                        "character_count": len(content),
+                        "word_count": len(content.split()),
+                        "sentence_count": len(content.split('.')),
+                        "paragraph_count": len(content.split('\n\n'))
+                    }
+                },
+                "text_preview": content[:300] + "..." if len(content) > 300 else content,
+                "analysis_timestamp": datetime.now().isoformat()
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error analyzing uploaded file: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def process_uploaded_file_with_cleaning(file: UploadFile) -> str:
+    """Enhanced file processing with a new robust cleaning function."""
+    content_bytes = await file.read()
+    raw_text = ""
+    
+    # Try to decode the file content
+    try:
+        raw_text = content_bytes.decode('utf-8')
+    except UnicodeDecodeError:
+        # Fallback to another common encoding if UTF-8 fails
+        try:
+            raw_text = content_bytes.decode('latin-1')
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unable to decode file content: {e}"
+            )
+            
+    # Apply our new, single, robust cleaning function
+    cleaned_text = robust_text_cleaning(raw_text)
+    
+    is_valid, validation_message = validate_cleaned_content(cleaned_text)
+    if not is_valid:
+        logger.warning(f"Content validation failed for {file.filename}: {validation_message}")
+        # Return the raw text if cleaning makes it invalid
+        return raw_text
+        
+    logger.info(f"Successfully cleaned {file.filename}: {len(raw_text)} -> {len(cleaned_text)} chars")
+    return cleaned_text
+@router.post("/forensic/compare-texts")
+async def compare_texts(
+    data: dict = Body(...),
+    model_manager: ModelManager = Depends(get_model_manager),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Compare two texts for stylometric similarity without using a pre-built corpus."""
+    try:
+        text1 = data.get("text1")
+        text2 = data.get("text2")
+        text1_label = data.get("text1_label", "Text 1")
+        text2_label = data.get("text2_label", "Text 2")
+        
+        if not text1 or not text2:
+            raise HTTPException(status_code=400, detail="Both text1 and text2 are required")
+        
+        if len(text1.strip()) < 50 or len(text2.strip()) < 50:
+            raise HTTPException(status_code=400, detail="Both texts must be at least 50 characters for meaningful analysis")
+        
+        logger.info(f"🔍 [Forensic] Comparing two texts directly")
+        
+        # Extract style vectors
+        vector1 = forensic_service.extract_style_vector(text1)
+        vector2 = forensic_service.extract_style_vector(text2)
+        
+        # Compare the vectors
+        similarity = forensic_service.compare_styles(text1, [vector2])
+        
+        # Generate comparison report
+        comparison_result = {
+            "text1_label": text1_label,
+            "text2_label": text2_label,
+            "text1_preview": text1[:200] + "..." if len(text1) > 200 else text1,
+            "text2_preview": text2[:200] + "..." if len(text2) > 200 else text2,
+            "similarity_scores": {
+                "overall_similarity": round(similarity.overall_score, 3),
+                "lexical_similarity": round(similarity.lexical_score, 3),
+                "syntactic_similarity": round(similarity.syntactic_score, 3),
+                "semantic_similarity": round(similarity.semantic_score, 3),
+                "stylistic_similarity": round(similarity.stylistic_score, 3),
+                "confidence": round(similarity.confidence, 3)
+            },
+            "interpretation": forensic_service._interpret_similarity_score(similarity.overall_score),
+            "detailed_breakdown": similarity.breakdown,
+            "style_comparison": {
+                "text1_features": {
+                    "avg_word_length": round(vector1.avg_word_length, 2),
+                    "avg_sentence_length": round(vector1.avg_sentence_length, 2),
+                    "vocab_richness": round(vector1.vocab_richness, 3),
+                    "question_ratio": round(vector1.question_ratio, 3),
+                    "exclamation_ratio": round(vector1.exclamation_ratio, 3)
+                },
+                "text2_features": {
+                    "avg_word_length": round(vector2.avg_word_length, 2),
+                    "avg_sentence_length": round(vector2.avg_sentence_length, 2),
+                    "vocab_richness": round(vector2.vocab_richness, 3),
+                    "question_ratio": round(vector2.question_ratio, 3),
+                    "exclamation_ratio": round(vector2.exclamation_ratio, 3)
+                }
+            },
+            "analysis_timestamp": datetime.now().isoformat()
+        }
+        
+        return {
+            "status": "success",
+            "comparison": comparison_result
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error in text comparison: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/forensic/available-figures")
+async def get_available_figures(forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)):
+    """Get list of public figures with available corpora."""
+    try:
+        cache_dir = Path(forensic_service.cache_dir)
+        
+        if not cache_dir.exists():
+            return {"figures": [], "count": 0}
+        
+        figures = []
+        
+        for cache_file in cache_dir.glob("*_corpus.pkl"):
+            try:
+                # Extract person name from filename
+                person_name = cache_file.stem.replace("_corpus", "").replace("_", " ").title()
+                
+                # Load corpus to get stats
+                corpus = forensic_service._load_cached_corpus(person_name)
+                
+                if corpus:
+                    platform_breakdown = {}
+                    for doc in corpus:
+                        platform_breakdown[doc.platform] = platform_breakdown.get(doc.platform, 0) + 1
+                    
+                    figures.append({
+                        "name": person_name,
+                        "corpus_size": len(corpus),
+                        "platforms": list(platform_breakdown.keys()),
+                        "platform_breakdown": platform_breakdown,
+                        "last_updated": cache_file.stat().st_mtime
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Error processing cache file {cache_file}: {e}")
+                continue
+        
+        # Sort by corpus size (descending)
+        figures.sort(key=lambda x: x["corpus_size"], reverse=True)
+        
+        return {
+            "figures": figures,
+            "count": len(figures)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error listing available figures: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/forensic/corpus/{person_name}")
+async def delete_corpus(person_name: str, forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)):
+    """Delete a person's cached corpus."""
+    try:
+        cache_file = forensic_service.cache_dir / f"{person_name.lower().replace(' ', '_')}_corpus.pkl"
+        
+        if not cache_file.exists():
+            raise HTTPException(status_code=404, detail=f"No corpus found for {person_name}")
+        
+        cache_file.unlink()
+        
+        return {
+            "status": "success",
+            "message": f"Corpus for {person_name} deleted successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error deleting corpus: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/forensic/batch-analyze-files")
+async def batch_analyze_files(
+    files: List[UploadFile] = File(...),
+    person_name: str = Query(None, description="Public figure to compare against"),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Analyze multiple files in batch."""
+    try:
+        if len(files) > 10000:
+            raise HTTPException(status_code=400, detail="Maximum 10,000 files allowed")
+        
+        results = []
+        combined_content = []
+        
+        for file in files:
+            try:
+                content = await process_uploaded_file_with_cleaning(file)
+                combined_content.append(f"=== {file.filename} ===\n{content}")
+                
+                logger.info(f"🧹 [Forensic] Cleaned {file.filename}: {len(content)} characters")
+                
+                # Individual file analysis
+                if person_name:
+                    corpus = forensic_service._load_cached_corpus(person_name)
+                    if corpus:
+                        similarity_scores = forensic_service.analyze_authorship(content, corpus)
+                        results.append({
+                            "file_name": file.filename,
+                            "similarity_score": similarity_scores.overall_similarity,
+                            "interpretation": forensic_service._interpret_similarity_scores(similarity_scores),
+                            "cleaned_length": len(content),
+                            "detailed_scores": {
+                                "lexical_similarity": similarity_scores.lexical_similarity,
+                                "syntactic_similarity": similarity_scores.syntactic_similarity,
+                                "semantic_similarity": similarity_scores.semantic_similarity,
+                                "stylistic_similarity": similarity_scores.stylistic_similarity
+                            }
+                        })
+                
+            except Exception as e:
+                logger.warning(f"Failed to process file {file.filename}: {e}")
+                results.append({
+                    "file_name": file.filename,
+                    "error": str(e)
+                })
+        
+        # Combined analysis
+        full_content = "\n\n".join(combined_content)
+        
+        if person_name and full_content.strip():
+            corpus = forensic_service._load_cached_corpus(person_name)
+            if corpus:
+                combined_similarity = forensic_service.analyze_authorship(full_content, corpus)
+                
+                return {
+                    "status": "success",
+                    "batch_analysis": {
+                        "files_processed": len(files),
+                        "person_analyzed": person_name,
+                        "combined_similarity": {
+                            "overall_similarity": combined_similarity.overall_similarity,
+                            "lexical_similarity": combined_similarity.lexical_similarity,
+                            "syntactic_similarity": combined_similarity.syntactic_similarity,
+                            "semantic_similarity": combined_similarity.semantic_similarity,
+                            "stylistic_similarity": combined_similarity.stylistic_similarity
+                        },
+                        "individual_results": results,
+                        "interpretation": forensic_service._interpret_similarity_scores(combined_similarity),
+                        "confidence_level": forensic_service._calculate_confidence(combined_similarity),
+                        "total_content_length": len(full_content)
+                    },
+                    "analysis_timestamp": datetime.now().isoformat()
+                }
+        
+        # Feature extraction for combined content
+        if full_content.strip():
+            style_vector = forensic_service.extract_style_vector(full_content)
+            
+            return {
+                "status": "success",
+                "batch_features": {
+                    "files_processed": len(files),
+                    "combined_word_count": len(full_content.split()),
+                    "combined_character_count": len(full_content),
+                    "lexical_diversity": round(style_vector.vocab_richness, 3),
+                    "avg_sentence_length": round(style_vector.avg_sentence_length, 2),
+                    "stylistic_markers": {
+                        "question_ratio": round(style_vector.question_ratio, 3),
+                        "exclamation_ratio": round(style_vector.exclamation_ratio, 3),
+                        "passive_voice_ratio": round(style_vector.passive_voice_ratio, 3)
+                    },
+                    "individual_results": [r for r in results if "error" not in r],
+                    "detailed_features": {
+                        "lexical_features": {
+                            "avg_word_length": round(style_vector.avg_word_length, 2),
+                            "vocab_richness": round(style_vector.vocab_richness, 3),
+                            "hapax_legomena_ratio": round(style_vector.hapax_legomena_ratio, 3)
+                        },
+                        "syntactic_features": {
+                            "pos_distribution": {k: round(v, 3) for k, v in style_vector.pos_distribution.items()},
+                            "sentence_complexity": round(style_vector.sentence_complexity, 2)
+                        },
+                        "stylistic_features": {
+                            "modal_verb_usage": round(style_vector.modal_verb_usage, 3),
+                            "passive_voice_ratio": round(style_vector.passive_voice_ratio, 3),
+                            "question_ratio": round(style_vector.question_ratio, 3),
+                            "exclamation_ratio": round(style_vector.exclamation_ratio, 3)
+                        }
+                    }
+                },
+                "analysis_timestamp": datetime.now().isoformat()
+            }
+        
+        raise HTTPException(status_code=400, detail="No valid content found in uploaded files")
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error in batch file analysis: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/forensic/preview-cleaning")
+async def preview_text_cleaning(file: UploadFile = File(...)):
+    """Preview how text cleaning affects a file (for debugging/testing)."""
+    try:
+        # Get raw content
+        file_extension = file.filename.split('.')[-1].lower()
+        raw_content = await file.read()
+        raw_text = raw_content.decode('utf-8')
+        
+        # Get cleaned content
+        await file.seek(0)  # Reset file pointer
+        cleaned_text = await process_uploaded_file_with_cleaning(file)
+        
+        # Validation info
+        is_valid, validation_message = validate_cleaned_content(cleaned_text)
+        
+        # Calculate what was removed
+        removed_percentage = round((len(raw_text) - len(cleaned_text)) / len(raw_text) * 100, 1) if len(raw_text) > 0 else 0
+        
+        return {
+            "status": "success",
+            "file_name": file.filename,
+            "file_type": file_extension,
+            "raw_stats": {
+                "character_count": len(raw_text),
+                "word_count": len(raw_text.split()),
+                "line_count": len(raw_text.split('\n'))
+            },
+            "cleaned_stats": {
+                "character_count": len(cleaned_text),
+                "word_count": len(cleaned_text.split()),
+                "line_count": len(cleaned_text.split('\n'))
+            },
+            "validation": {
+                "is_valid": is_valid,
+                "message": validation_message
+            },
+            "preview": {
+                "raw_sample": raw_text[:500] + "..." if len(raw_text) > 500 else raw_text,
+                "cleaned_sample": cleaned_text[:500] + "..." if len(cleaned_text) > 500 else cleaned_text
+            },
+            "reduction_percentage": removed_percentage,
+            "content_removed": len(raw_text) - len(cleaned_text)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error previewing cleaning: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/forensic/batch-analyze")
+async def batch_analyze_statements(
+    background_tasks: BackgroundTasks,
+    data: dict = Body(...),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Analyze multiple statements against a corpus in batch."""
+    try:
+        statements = data.get("statements", [])
+        person_name = data.get("person_name")
+        
+        if not statements or not person_name:
+            raise HTTPException(status_code=400, detail="Both statements list and person_name are required")
+        
+        if len(statements) > 50:
+            raise HTTPException(status_code=400, detail="Maximum 50 statements per batch")
+        
+        # Process batch analysis in background
+        async def batch_analysis_task():
+            results = []
+            
+            for i, statement in enumerate(statements):
+                try:
+                    analysis = forensic_service.analyze_statement(statement, person_name)
+                    results.append({
+                        "index": i,
+                        "statement": statement[:100] + "..." if len(statement) > 100 else statement,
+                        "analysis": analysis
+                    })
+                    logger.info(f"🔍 [Forensic] Batch analysis {i+1}/{len(statements)} completed")
+                    
+                except Exception as e:
+                    logger.error(f"❌ [Forensic] Error in batch item {i}: {e}")
+                    results.append({
+                        "index": i,
+                        "statement": statement[:100] + "..." if len(statement) > 100 else statement,
+                        "error": str(e)
+                    })
+            
+            # Cache batch results
+            batch_id = hashlib.md5(f"{person_name}_{time.time()}".encode()).hexdigest()[:8]
+            batch_cache_file = forensic_service.cache_dir / f"batch_{batch_id}.json"
+            
+            with open(batch_cache_file, 'w') as f:
+                json.dump({
+                    "person_name": person_name,
+                    "timestamp": datetime.now().isoformat(),
+                    "results": results
+                }, f, indent=2)
+            
+            logger.info(f"✅ [Forensic] Batch analysis completed for {person_name}: {len(results)} statements")
+        
+        background_tasks.add_task(batch_analysis_task)
+        
+        return {
+            "status": "processing",
+            "message": f"Batch analysis of {len(statements)} statements started for {person_name}",
+            "statements_count": len(statements),
+            "person_name": person_name
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error in batch analysis: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/forensic/corpus-preview/{person_name}")
+async def get_corpus_preview(person_name: str, limit: int = 10, forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)):
+    """Get a preview of documents in a person's corpus."""
+    try:
+        corpus = forensic_service._load_cached_corpus(person_name)
+        
+        if not corpus:
+            raise HTTPException(status_code=404, detail=f"No corpus found for {person_name}")
+        
+        # Create preview of documents
+        preview_docs = []
+        for i, doc in enumerate(corpus[:limit]):
+            preview_docs.append({
+                "index": i,
+                "content_preview": doc.content[:200] + "..." if len(doc.content) > 200 else doc.content,
+                "platform": doc.platform,
+                "date": doc.date.isoformat() if doc.date else None,
+                "source_url": doc.source_url,
+                "title": doc.title,
+                "word_count": len(doc.content.split()),
+                "char_count": len(doc.content)
+            })
+        
+        return {
+            "status": "success",
+            "person_name": person_name,
+            "total_documents": len(corpus),
+            "preview_count": len(preview_docs),
+            "documents": preview_docs
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error getting corpus preview: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/forensic/extract-features")
+async def extract_stylometric_features(data: dict = Body(...), forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)):
+    """Extract detailed stylometric features from a text."""
+    try:
+        text = data.get("text")
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Text is required")
+        
+        if len(text.strip()) < 20:
+            raise HTTPException(status_code=400, detail="Text too short for feature extraction (minimum 20 characters)")
+        
+        logger.info(f"🔍 [Forensic] Extracting features from text ({len(text)} chars)")
+        
+        # Extract comprehensive style vector
+        style_vector = forensic_service.extract_style_vector(text)
+        
+        # Convert to serializable format
+        features = {
+            "lexical_features": {
+                "avg_word_length": round(style_vector.avg_word_length, 2),
+                "avg_sentence_length": round(style_vector.avg_sentence_length, 2),
+                "vocab_richness": round(style_vector.vocab_richness, 3),
+                "hapax_legomena_ratio": round(style_vector.hapax_legomena_ratio, 3),
+                "yule_k": round(style_vector.yule_k, 2)
+            },
+            "syntactic_features": {
+                "pos_distribution": {k: round(v, 3) for k, v in style_vector.pos_distribution.items()},
+                "sentence_complexity": round(style_vector.sentence_complexity, 2)
+            },
+            "stylistic_features": {
+                "modal_verb_usage": round(style_vector.modal_verb_usage, 3),
+                "passive_voice_ratio": round(style_vector.passive_voice_ratio, 3),
+                "question_ratio": round(style_vector.question_ratio, 3),
+                "exclamation_ratio": round(style_vector.exclamation_ratio, 3),
+                "capitalization_ratio": round(style_vector.capitalization_ratio, 3)
+            },
+            "punctuation_features": {k: round(v, 4) for k, v in style_vector.punctuation_ratios.items()},
+            "function_word_features": {k: round(v, 3) for k, v in style_vector.function_word_ratios.items()},
+            "sentiment_features": {k: round(v, 3) for k, v in style_vector.sentiment_scores.items()},
+            "text_statistics": {
+                "character_count": len(text),
+                "word_count": len(text.split()),
+                "sentence_count": len(text.split('.')),
+                "paragraph_count": len(text.split('\n\n'))
+            }
+        }
+        
+        return {
+            "status": "success",
+            "features": features,
+            "text_preview": text[:200] + "..." if len(text) > 200 else text
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error extracting features: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/export_character_png")
 async def export_character_png(character_data: dict):
     """Export character as PNG with embedded JSON data in tEXt chunk."""
@@ -727,7 +1438,28 @@ async def export_character_png(character_data: dict):
     except Exception as e:
         logger.error(f"Error exporting character PNG: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"PNG export failed: {str(e)}")
+def robust_text_cleaning(content: str) -> str:
+    """
+    A simplified and more robust text cleaning function that avoids complex regex.
+    """
+    # Remove URLs
+    content = re.sub(r'http[s]?://\S+', '', content)
+    
+    # Remove email addresses
+    content = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', content)
 
+    # Remove bracketed metadata like [APPLAUSE] or (inaudible)
+    content = re.sub(r'\[.*?\]', '', content)
+    content = re.sub(r'\(.*?\)', '', content)
+    
+    # Remove speaker annotations like "TRUMP:" or "MODERATOR:"
+    content = re.sub(r'^[A-Z\s]+:', '', content, flags=re.MULTILINE)
+
+    # Normalize whitespace
+    content = re.sub(r'\s+', ' ', content)
+    content = re.sub(r'\n\s*\n+', '\n\n', content)
+
+    return content.strip()
 async def generate_text_with_vision(
     model_manager,
     model_name: str,
@@ -870,6 +1602,136 @@ def create_default_character_image(character_name: str) -> Image.Image:
         draw.text((x, y), character_name, font=font, fill=text_color)
     
     return img
+
+
+
+def remove_common_metadata(content: str) -> str:
+    """Remove common metadata patterns found across all file types."""
+    
+    # Remove attribution lines
+    attribution_patterns = [
+        r'^.*(?:said|stated|remarked|declared|announced).*$',
+        r'^.*(?:according to|as reported by|source:).*$',
+        r'^.*(?:transcript|remarks|speech) (?:by|from|of).*$',
+        r'^\s*-+\s*$',  # Horizontal lines
+        r'^\s*=+\s*$',  # Equal sign lines
+    ]
+    
+    for pattern in attribution_patterns:
+        content = re.sub(pattern, '', content, flags=re.MULTILINE | re.IGNORECASE)
+    
+    # Remove bracketed metadata
+    metadata_brackets = [
+        r'\[.*(?:applause|laughter|cheering|booing|interruption|inaudible).*\]',
+        r'\(.*(?:applause|laughter|cheering|booing|interruption|inaudible).*\)',
+        r'\[.*(?:date|time|location|venue).*\]',
+        r'\[.*(?:begin|end) (?:transcript|recording).*\]',
+    ]
+    
+    for pattern in metadata_brackets:
+        content = re.sub(pattern, '', content, flags=re.IGNORECASE)
+    
+    # Remove stage directions and speaker annotations
+    stage_directions = [
+        r'^[A-Z\s]+:',  # Speaker names like "TRUMP:" or "THE PRESIDENT:"
+        r'^\s*(?:MODERATOR|INTERVIEWER|REPORTER|AUDIENCE MEMBER):.*$',
+        r'^\s*\[.*\]\s*$',  # Lines that are just bracketed content
+        r'^\s*\(.*\)\s*$',  # Lines that are just parenthetical content
+    ]
+    
+    for pattern in stage_directions:
+        content = re.sub(pattern, '', content, flags=re.MULTILINE | re.IGNORECASE)
+    
+    # Remove question/answer markers that aren't the actual content
+    content = re.sub(r'^Q[:\.]?\s*', '', content, flags=re.MULTILINE)
+    content = re.sub(r'^A[:\.]?\s*', '', content, flags=re.MULTILINE)
+    
+    return content
+
+def clean_whitespace(content: str) -> str:
+    """Clean up whitespace and formatting issues."""
+    
+    # Replace multiple whitespace with single space
+    content = re.sub(r'\s+', ' ', content)
+    
+    # Remove empty lines and excessive line breaks
+    content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
+    
+    # Strip leading/trailing whitespace
+    content = content.strip()
+    
+    return content
+
+def validate_cleaned_content(content: str, min_length: int = 50) -> Tuple[bool, str]:
+    """
+    Validate that the cleaned content is suitable for forensic analysis.
+    Returns (is_valid, reason)
+    """
+    
+    if len(content.strip()) < min_length:
+        return False, f"Content too short after cleaning ({len(content)} chars)"
+    
+    # Count actual words vs potential metadata
+    words = content.split()
+    if len(words) < 10:
+        return False, f"Too few words after cleaning ({len(words)} words)"
+    
+    # Check for reasonable sentence structure
+    sentences = content.split('.')
+    avg_sentence_length = sum(len(s.split()) for s in sentences) / len(sentences) if sentences else 0
+    
+    if avg_sentence_length < 3:
+        return False, "Content appears to be metadata or fragmented text"
+    
+    # Check for excessive metadata markers
+    metadata_ratio = len(re.findall(r'[\[\(\{].*?[\]\)\}]', content)) / len(words)
+    if metadata_ratio > 0.1:  # More than 10% metadata markers
+        return False, "Content contains too much metadata"
+    
+    return True, "Content validated successfully"
+
+@router.post("/forensic/analyze")
+async def analyze_statement_endpoint(
+    data: dict = Body(...), 
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Start an analysis task in a real background thread."""
+    try:
+        statement = data.get("statement")
+        person_name = data.get("person_name")
+        
+        if not statement or not person_name:
+            raise HTTPException(status_code=400, detail="Both statement and person_name are required")
+        
+        task_id = str(uuid.uuid4())
+        logger.info(f"🔍 [Forensic] Starting analysis task {task_id} for {person_name}")
+        
+        # Run in actual background thread instead of FastAPI background_tasks
+        def run_analysis():
+            try:
+                asyncio.run(forensic_service.analyze_statement(task_id, statement, person_name))
+            except Exception as e:
+                logger.error(f"Analysis task {task_id} failed: {e}")
+        
+        thread = threading.Thread(target=run_analysis)
+        thread.daemon = True
+        thread.start()
+        
+        logger.info(f"🚀 Task {task_id} started in thread, returning immediately")
+        
+        # This should now return immediately
+        return {"status": "processing_started", "task_id": task_id}
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error starting analysis task: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+@router.get("/forensic/progress/{task_id}")
+async def get_analysis_progress(task_id: str, forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)):
+    """Get the progress of a forensic analysis task."""
+    progress = forensic_service.get_progress(task_id)
+    if not progress:
+        raise HTTPException(status_code=404, detail="Task ID not found.")
+    return progress
 # --- Lifespan Function ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -960,6 +1822,13 @@ async def lifespan(app: FastAPI):
     except Exception as sd_err:
         logger.error(f"Failed to initialize SD Manager: {sd_err}")
         app.state.sd_manager = None
+    try:
+        # Pass the model_manager instance to the service
+        app.state.forensic_service = ForensicLinguisticsService(model_manager=app.state.model_manager)
+        logger.info("✅ Forensic Linguistics Service initialized successfully.")
+    except Exception as forensic_err:
+        logger.error(f"❌ Failed to initialize Forensic Linguistics Service: {forensic_err}", exc_info=True)
+        app.state.forensic_service = None        
     
     # Initialize RAG system
     try:
@@ -996,6 +1865,44 @@ async def lifespan(app: FastAPI):
     logger.info("Server shutdown complete.")
 
 app.router.lifespan_context = lifespan # Register the lifespan context with the app
+
+@router.post("/forensic/initialize-gme")
+async def initialize_gme_endpoint(
+    request: Request,
+    data: dict = Body(...),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Initialize GME model for enhanced forensic embeddings"""
+    try:
+        model_name = data.get("model_name", "Alibaba-NLP/gme-Qwen2-VL-7B-Instruct")
+        gpu_id = data.get("gpu_id", 0)
+        
+        logger.info(f"🔍 [Forensic] Initializing GME: {model_name} on GPU {gpu_id}")
+        
+        success = await forensic_service.initialize_gme_model(model_name, gpu_id)
+        
+        if success:
+            status = forensic_service.get_embedding_status()
+            return {
+                "status": "success",
+                "message": f"GME model {model_name} initialized on GPU {gpu_id}",
+                "embedding_status": status
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to initialize GME model")
+            
+    except Exception as e:
+        logger.error(f"❌ [Forensic] GME initialization error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/forensic/embedding-status")
+async def get_embedding_status(forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)):
+    """Get current status of all embedding models"""
+    try:
+        return forensic_service.get_embedding_status()
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error getting embedding status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.router.get("/user/profile/current")
 async def get_current_profile(request: Request):
@@ -1096,7 +2003,62 @@ async def get_local_models_by_purpose_endpoint(
         logger.error(f"Error getting local models by purpose: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/forensic/initialize-embedding")
+async def initialize_embedding_endpoint(
+    request: Request,
+    data: dict = Body(...),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Initialize any embedding model"""
+    try:
+        model_type = data.get("model_type")
+        gpu_id = data.get("gpu_id", 0)
 
+        if not model_type:
+            raise HTTPException(status_code=400, detail="model_type is required")
+
+        logger.info(f"🔍 [Forensic] Initializing {model_type} on GPU {gpu_id}")
+
+        success = await forensic_service.initialize_embedding_model(model_type, gpu_id)
+
+        if success:
+            status = forensic_service.get_embedding_status()
+            return {
+                "status": "success",
+                "message": f"{model_type} model initialized successfully",
+                "embedding_status": status
+            }
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize {model_type}")
+
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Embedding initialization error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/forensic/set-active-embedding-model")
+async def set_active_embedding_model_endpoint(
+    data: dict = Body(...),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Set the active embedding model for forensic analysis."""
+    try:
+        model_key = data.get("model_key")
+        if not model_key:
+            raise HTTPException(status_code=400, detail="model_key is required")
+
+        success = forensic_service.set_active_embedding_model(model_key)
+
+        if success:
+            status = forensic_service.get_embedding_status()
+            return {
+                "status": "success", 
+                "message": f"Active embedding model set to {model_key}",
+                "embedding_status": status
+            }
+        else:
+            raise HTTPException(status_code=400, detail=f"Could not set active model to {model_key}")
+    except Exception as e:
+        logger.error(f"Error setting active embedding model: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 # MODIFIED existing endpoint to be smarter
 @router.get("/models/by-purpose")
 async def get_models_by_purpose_endpoint(
@@ -1560,6 +2522,38 @@ def check_gpu_count():
         # For this fix, we assume it is installed. If not: pip install pynvml
         return 0
 
+@router.post("/forensic/initialize-embedding")
+async def initialize_embedding_endpoint(
+    request: Request,
+    data: dict = Body(...),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Initialize any embedding model"""
+    try:
+        model_type = data.get("model_type")
+        gpu_id = data.get("gpu_id", 0)
+        
+        if not model_type:
+            raise HTTPException(status_code=400, detail="model_type is required")
+        
+        logger.info(f"🔍 [Forensic] Initializing {model_type} on GPU {gpu_id}")
+        
+        success = await forensic_service.initialize_embedding_model(model_type, gpu_id)
+        
+        if success:
+            status = forensic_service.get_embedding_status()
+            return {
+                "status": "success",
+                "message": f"{model_type} model initialized successfully",
+                "embedding_status": status
+            }
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize {model_type}")
+            
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Embedding initialization error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/sd-local/list-models")
 async def list_local_sd_models(request: Request):
     """List available local Stable Diffusion models from the configured directory."""
@@ -2019,7 +3013,88 @@ async def detect_and_store(
         logger.error(f"🧠 Unhandled error in memory processing pipeline: {e}", exc_info=True) # Changed to .error and added exc_info
 # This endpoint handles the generation of text based on user input and model settings.
 
-
+@router.post("/forensic/build-corpus-from-files")
+async def build_corpus_from_files(
+    background_tasks: BackgroundTasks,
+    person_name: str = Form(...),
+    files: List[UploadFile] = File(...),
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Build a corpus from uploaded files instead of auto-scraping."""
+    try:
+        if len(files) > 10000:  # Limit to 10,000 files to prevent abuse
+            raise HTTPException(status_code=400, detail="Maximum 10,000 files allowed")
+        
+        if not person_name.strip():
+            raise HTTPException(status_code=400, detail="Person name is required")
+        
+        logger.info(f"🏗️ [Forensic] Building corpus for {person_name} from {len(files)} uploaded files")
+        
+        # Process all uploaded files
+        corpus_documents = []
+        total_chars = 0
+        
+        for i, file in enumerate(files):
+            try:
+                # Clean the content
+                content = await process_uploaded_file_with_cleaning(file)
+                
+                if len(content.strip()) < 50:  # Skip very short content
+                    logger.warning(f"Skipping {file.filename}: too short after cleaning")
+                    continue
+                
+                # Create a document object for the corpus
+                doc = TextDocument(  # ✅ Correct
+                    content=content,
+                    platform="uploaded_file",
+                    date=datetime.datetime.now(),
+                    author=person_name,  # Add this line
+                    source_url=f"uploaded:{file.filename}",
+                    title=file.filename,
+                    metadata={"file_size": file.size, "file_type": file.filename.split('.')[-1]}
+                )
+                
+                corpus_documents.append(doc)
+                total_chars += len(content)
+                
+                logger.info(f"✅ Processed {file.filename}: {len(content)} chars")
+                
+            except Exception as e:
+                logger.warning(f"❌ Failed to process {file.filename}: {e}")
+                continue
+        
+        if len(corpus_documents) == 0:
+            raise HTTPException(status_code=400, detail="No valid files could be processed")
+        
+        if len(corpus_documents) < 3:
+            logger.warning(f"Only {len(corpus_documents)} files processed - corpus may be too small for reliable analysis")
+        
+        # Save the corpus
+        forensic_service._cache_corpus(person_name, corpus_documents)
+        
+        logger.info(f"🎉 [Forensic] Successfully built corpus for {person_name}: {len(corpus_documents)} documents, {total_chars:,} total characters")
+        
+        return {
+            "status": "success",
+            "message": f"Corpus built successfully for {person_name}",
+            "corpus_stats": {
+                "person_name": person_name,
+                "total_documents": len(corpus_documents),
+                "total_characters": total_chars,
+                "total_words": sum(len(doc.content.split()) for doc in corpus_documents),
+                "files_processed": len([f for f in files if any(doc.title == f.filename for doc in corpus_documents)]),
+                "files_skipped": len(files) - len(corpus_documents),
+                "platform_breakdown": {
+                    "uploaded_file": len(corpus_documents)
+                },
+                "average_document_length": total_chars // len(corpus_documents) if corpus_documents else 0
+            },
+            "build_timestamp": datetime.datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error building corpus from files: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/generate")
 async def generate(

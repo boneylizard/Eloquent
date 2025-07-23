@@ -49,7 +49,7 @@ const ChatImageButton = ({ onImageGenerated }) => {
         height,
         steps,
         guidance_scale: guidanceScale,
-        sampler: 'Euler a', // Default sampler
+        sample_method: selectedSampler,  // <-- Correct parameter name
         seed: -1 // Random seed
       });
       

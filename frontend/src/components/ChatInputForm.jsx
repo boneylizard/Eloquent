@@ -41,7 +41,30 @@ const ChatInputForm = ({
       inputRef.current?.focus({ preventScroll: true });
     }
   }, [isGenerating, isRecording, isTranscribing]);
-
+useEffect(() => {
+  const textarea = inputRef.current;
+  if (!textarea) return;
+  
+  // Reset height to get accurate scrollHeight
+  textarea.style.height = 'auto';
+  
+  // Calculate line height dynamically
+  const computedStyle = window.getComputedStyle(textarea);
+  const lineHeight = parseInt(computedStyle.lineHeight) || 24; // fallback to 24px
+  
+  const minHeight = lineHeight; // 1 line
+  const maxHeight = lineHeight * 16; // 16 lines exactly
+  
+  const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+  textarea.style.height = newHeight + 'px';
+  
+  // Show scrollbar only when we hit 16 lines
+  if (textarea.scrollHeight > maxHeight) {
+    textarea.style.overflowY = 'auto';
+  } else {
+    textarea.style.overflowY = 'hidden';
+  }
+}, [inputValue]);
   const isDisabled = !primaryModel || isGenerating || isModelLoading || agentConversationActive || isRecording || isTranscribing;
   const placeholderText = 
       !primaryModel ? "Load a model first" :
@@ -52,18 +75,23 @@ const ChatInputForm = ({
       "Type a message or click mic...";
 
   return (
-    <form className="border-t border-border p-4 flex items-center gap-2 bg-background" onSubmit={handleSubmit}>
+    <form className="border-t border-border p-4 pb-12 flex items-center gap-2 bg-background" onSubmit={handleSubmit}>
       <div className="relative flex-1">
-        <Textarea
-          ref={inputRef}
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholderText}
-          disabled={isDisabled}
-          className="flex-1 resize-none border-input bg-background pr-20" // Increased padding for buttons
-          rows={1}
-        />
+<Textarea
+  ref={inputRef}
+  value={inputValue}
+  onChange={(e) => setInputValue(e.target.value)}
+  onKeyDown={handleKeyDown}
+  placeholder={placeholderText}
+  disabled={isDisabled}
+  className="flex-1 resize-none border-input bg-background pr-20"
+  rows={1}
+  style={{ 
+    minHeight: '24px', 
+    overflowY: 'hidden',
+    transition: 'height 0.1s ease'
+  }}
+/>
         <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex gap-1">
           <SimpleChatImageButton />
           <ChatImageUploadButton />
