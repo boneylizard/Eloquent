@@ -80,6 +80,7 @@ class StyleVector:
     
     # Semantic features
     semantic_embeddings: List[float]  # From STAR model
+    semantic_embedding_dim: int
     sentiment_scores: Dict[str, float]
     
     # Stylistic patterns
@@ -134,7 +135,12 @@ class ForensicLinguisticsService:
             'roberta': {'enabled': False, 'dimensions': 768, 'priority': 7},
             'jina_v3': {'enabled': False, 'dimensions': 1024, 'priority': 8},
             'nomic_v1_5': {'enabled': False, 'dimensions': 768, 'priority': 9},  
-            'arctic_embed': {'enabled': False, 'dimensions': 768, 'priority': 10}
+            'arctic_embed': {'enabled': False, 'dimensions': 768, 'priority': 10},
+            'mxbai_large': {'enabled': False, 'dimensions': 1024, 'priority': 11},
+            'multilingual_e5': {'enabled': False, 'dimensions': 1024, 'priority': 12},
+            'qwen3_8b': {'enabled': False, 'dimensions': None, 'priority': 13},
+            'qwen3_4b': {'enabled': False, 'dimensions': None, 'priority': 14},
+            'frida': {'enabled': False, 'dimensions': 1024, 'priority': 15},
         }
         # --- END CORRECTION ---
 
@@ -196,20 +202,10 @@ class ForensicLinguisticsService:
             
     def _init_roberta_model(self):
         """Initialize RoBERTa for additional semantic analysis"""
-        try:
-            logger.info("Loading RoBERTa model...")
-            self.roberta_tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
-            self.roberta_model = RobertaModel.from_pretrained('roberta-base')
-            
-            if torch.cuda.is_available():
-                self.roberta_model = self.roberta_model.to('cuda')
-                
-            self.roberta_model.eval()
-            self.embedding_models['roberta']['enabled'] = True # <-- ADD THIS LINE
-            logger.info("RoBERTa model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load RoBERTa model: {e}")
-            self.embedding_models['roberta']['enabled'] = False # <-- ADD THIS LINE
+        logger.warning("RoBERTa model is disabled due to providing unreliable stylometric results.")
+        self.embedding_models['roberta']['enabled'] = False
+        self.roberta_tokenizer = None
+        self.roberta_model = None
 
     def _get_gguf_patterns_for_model(self, model_name: str, model_key: str) -> List[str]:
         """Get specific GGUF filename patterns for a model to avoid collisions"""
@@ -221,7 +217,12 @@ class ForensicLinguisticsService:
             'arctic_embed': ['arctic-embed-m-v1.5.gguf', 'snowflake-arctic-embed-m-v1.5.gguf'],
             'gte_qwen2': ['gte-qwen2-7b-instruct.gguf', 'alibaba-nlp-gte-qwen2-7b-instruct.gguf'],
             'inf_retriever': ['inf-retriever-v1.gguf', 'infly-inf-retriever-v1.gguf'],
-            'sentence_t5': ['sentence-t5-xxl.gguf']
+            'sentence_t5': ['sentence-t5-xxl.gguf'],
+            'mxbai_large': ['mxbai-embed-large-v1.gguf', 'mixedbread-ai-mxbai-embed-large-v1.gguf'],
+            'multilingual_e5': ['multilingual-e5-large.gguf', 'sentence-transformers-multilingual-e5-large.gguf'],
+            'qwen3_8b': ['qwen3-8b.gguf', 'qwen3-qwen3-8b.gguf'],
+            'qwen3_4b': ['qwen3-4b.gguf', 'qwen3-qwen3-4b.gguf'],
+            'frida': ['frida.gguf', 'ai-forever-frida.gguf']
         }
         
         if model_key in specific_patterns:
@@ -249,7 +250,12 @@ class ForensicLinguisticsService:
             'sentence_t5': "sentence-transformers/sentence-t5-xxl",
             'jina_v3': "jinaai/jina-embeddings-v3",
             'nomic_v1_5': "nomic-ai/nomic-embed-text-v1.5",
-            'arctic_embed': "Snowflake/snowflake-arctic-embed-l-v2.0"
+            'arctic_embed': "Snowflake/snowflake-arctic-embed-l-v2.0",
+            'mxbai_large': "MixedBread/mxbai-embed-large-v1",
+            'multilingual_e5': "intfloat/multilingual-e5-large",
+            'qwen3_8b': "Qwen/qwen3-embedding-8b",
+            'qwen3_4b': "Qwen/qwen3-embedding-4b",
+            'frida': "AI-Forever/frida-embedding"
         }
 
         if model_type not in model_configs:
@@ -276,8 +282,8 @@ class ForensicLinguisticsService:
             # Handle different model types
             if model_type == 'bge_m3':
                 success = self._init_bge_m3_model(model_name, model_type)
-            elif model_type in ['jina_v3', 'nomic_v1_5', 'arctic_embed', 'gte_qwen2', 'inf_retriever', 'sentence_t5']:
-                success = await self._init_sentence_transformers_model(model_name, model_type)    
+            elif model_type in ['jina_v3', 'nomic_v1_5', 'arctic_embed', 'gte_qwen2', 'inf_retriever', 'sentence_t5', 'mxbai_large', 'multilingual_e5', 'frida']:
+                success = await self._init_sentence_transformers_model(model_name, model_type)
             else:
                 # Handle GME and other model_manager models
                 await self.model_manager.load_model_for_purpose(
@@ -298,18 +304,37 @@ class ForensicLinguisticsService:
             self.active_embedding_model = model_type
             logger.info(f"✅ Set '{model_type}' as the new active embedding model.")
 
-            # Test the model with a sample embedding
-            test_embedding = self._get_semantic_embeddings("test")
+            # --- NEW: Direct Verification Logic ---
+            logger.info(f"Verifying new model '{model_type}' with a direct embedding test...")
+            test_embedding = []
+            
+            if model_type in ['gme', 'qwen3_8b', 'qwen3_4b']:
+                # For models loaded by ModelManager, use the dedicated function
+                test_embedding = self._get_model_manager_embeddings("test")
+            elif model_type == 'bge_m3':
+                test_embedding = self._get_bge_m3_embeddings("test")
+            elif model_type in ['jina_v3', 'nomic_v1_5', 'arctic_embed', 'gte_qwen2', 'inf_retriever', 'sentence_t5', 'mxbai_large', 'multilingual_e5', 'frida']:
+                # For sentence-transformers models
+                test_embedding = self._get_sentence_transformers_embeddings("test", model_type)
+            else:
+                # Fallback for any other type (like star, roberta)
+                logger.warning(f"Using standard _get_semantic_embeddings for verification of '{model_type}'.")
+                test_embedding = self._get_semantic_embeddings("test")
 
             if test_embedding and len(test_embedding) > 0:
                 self.embedding_models[model_type]['dimensions'] = len(test_embedding)
-                logger.info(f"✅ {model_type.upper()} model initialized and verified successfully.")
+                self.active_embedding_model = model_type
+                logger.info(f"✅ Set '{model_type}' as the new active embedding model.")
+                logger.info(f"✅ {model_type.upper()} model initialized and verified successfully with {len(test_embedding)} dimensions.")
                 return True
             else:
                 self.embedding_models[model_type]['enabled'] = False
-                self.active_embedding_model = 'star'
-                logger.error(f"❌ Failed to initialize {model_type}, test embedding failed.")
+                self.active_embedding_model = 'star' # Revert to default
+                logger.error(f"❌ Failed to initialize {model_type}, test embedding failed or returned empty.")
+                # Attempt to unload the failed model to free VRAM
+                await self.model_manager.unload_model_purpose('forensic_embeddings')
                 return False
+            # --- END of NEW LOGIC ---
 
         except Exception as e:
             logger.error(f"❌ Error initializing {model_type}: {e}", exc_info=True)
@@ -338,6 +363,10 @@ class ForensicLinguisticsService:
                     gguf_patterns = ['nomic-embed-text-v1.5.gguf']
                 elif model_key == 'arctic_embed':
                     gguf_patterns = ['arctic-embed-m-v1.5.gguf']
+                elif model_key == 'frida':
+                    gguf_patterns = ['frida-embed-m-v1.5.gguf']
+                elif model_key in ['mxbai_large', 'multilingual_e5', 'qwen3_8b', 'qwen3_4b']:
+                    gguf_patterns = self._get_gguf_patterns_for_model(model_name, model_key)
                 else:
                     gguf_patterns = [
                         f"{model_name.split('/')[-1]}.gguf",
@@ -429,7 +458,6 @@ class ForensicLinguisticsService:
                             wrapper = LocalSentenceTransformer(model, tokenizer, device)
                             test_embedding = wrapper.encode("test")
 
-                            test_embedding = model.encode("test")
                             if test_embedding is not None and len(test_embedding) > 0:
                                 setattr(self, f'{model_key}_model', model)
                                 setattr(self, f'{model_key}_is_gguf', False)
@@ -459,7 +487,8 @@ class ForensicLinguisticsService:
                                 except Exception as cpu_error:
                                     logger.warning(f"CPU fallback also failed: {cpu_error}")
                             continue
-
+            
+            # --- START OF MOVED BLOCK ---
             from sentence_transformers import SentenceTransformer
             cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
             local_model_dir = cache_dir / f"models--{model_name.replace('/', '--')}"
@@ -1124,6 +1153,7 @@ class ForensicLinguisticsService:
         # Semantic embeddings
         loop = asyncio.get_event_loop()
         semantic_embeddings = await loop.run_in_executor(None, self._get_semantic_embeddings, text)
+        original_embedding_dim = len(semantic_embeddings)
     
         # Pad with zeros if shorter, truncate if longer
         current_len = len(semantic_embeddings)
@@ -1132,7 +1162,7 @@ class ForensicLinguisticsService:
             semantic_embeddings.extend([0.0] * (TARGET_EMBEDDING_DIM - current_len))
         elif current_len > TARGET_EMBEDDING_DIM:
             # Truncate the vector
-            semantic_embeddings = semantic_embeddings[:TARGET_EMBEDDING_DIM]     
+            semantic_embeddings = semantic_embeddings[:TARGET_EMBEDDING_DIM]
         # Sentiment analysis (basic)
         sentiment_scores = self._analyze_sentiment(text)
         
@@ -1166,6 +1196,7 @@ class ForensicLinguisticsService:
             capitalization_ratio=cap_ratio,
             avg_paragraph_length=avg_paragraph_length,
             semantic_embeddings=semantic_embeddings,
+            semantic_embedding_dim=original_embedding_dim, # ADD THIS LINE
             sentiment_scores=sentiment_scores,
             function_word_ratios=function_word_ratios,
             modal_verb_usage=modal_verb_usage,
@@ -1189,7 +1220,14 @@ class ForensicLinguisticsService:
         for i, corpus_vector in enumerate(corpus_vectors):
             lexical_scores.append(self._calculate_lexical_similarity(target_vector, corpus_vector))
             syntactic_scores.append(self._calculate_syntactic_similarity(target_vector, corpus_vector))
-            semantic_scores.append(self._calculate_semantic_similarity(target_vector.semantic_embeddings, corpus_vector.semantic_embeddings))
+            semantic_scores.append(
+                self._calculate_semantic_similarity(
+                    target_vector.semantic_embeddings,
+                    corpus_vector.semantic_embeddings,
+                    target_vector.semantic_embedding_dim,
+                    corpus_vector.semantic_embedding_dim
+                )
+            )
             stylistic_scores.append(self._calculate_stylistic_similarity(target_vector, corpus_vector))
             
             # If a task_id is provided, report progress for this intensive loop.
@@ -1451,11 +1489,13 @@ class ForensicLinguisticsService:
         """Enhanced semantic embeddings with multiple model support"""
 
         # Try the explicitly set active model first
+        # Try the explicitly set active model first
         if self.active_embedding_model and self.embedding_models.get(self.active_embedding_model, {}).get('enabled'):
             model_key = self.active_embedding_model
             try:
-                if model_key == 'gme':
-                    embeddings = self._get_gme_embeddings(text)
+                # NEW: Unified logic for all ModelManager-loaded models
+                if model_key in ['gme', 'qwen3_8b', 'qwen3_4b']:
+                    embeddings = self._get_model_manager_embeddings(text)
                 elif model_key == 'jina_v3':
                     embeddings = self._get_jina_v3_embeddings(text)
                 elif model_key == 'nomic_v1_5':
@@ -1464,12 +1504,10 @@ class ForensicLinguisticsService:
                     embeddings = self._get_arctic_embeddings(text)
                 elif model_key == 'bge_m3':
                     embeddings = self._get_bge_m3_embeddings(text)
-                elif model_key in ['gte_qwen2', 'inf_retriever', 'sentence_t5']:
+                elif model_key in ['gte_qwen2', 'inf_retriever', 'sentence_t5', 'mxbai_large', 'multilingual_e5', 'frida']:
                     embeddings = self._get_sentence_transformers_embeddings(text, model_key)
                 elif model_key == 'star':
                     embeddings = self._get_star_embeddings(text)
-                elif model_key == 'roberta':
-                    embeddings = self._get_roberta_embeddings(text)
                 else:
                     embeddings = []
 
@@ -1492,14 +1530,13 @@ class ForensicLinguisticsService:
                 continue
 
             try:
-                if model_key == 'gme':
-                    embeddings = self._get_gme_embeddings(text)
-                elif model_key in ['gte_qwen2', 'inf_retriever', 'sentence_t5']:
+                # NEW: Unified logic for all ModelManager-loaded models
+                if model_key in ['gme', 'qwen3_8b', 'qwen3_4b']:
+                    embeddings = self._get_model_manager_embeddings(text)
+                elif model_key in ['gte_qwen2', 'inf_retriever', 'sentence_t5', 'mxbai_large', 'multilingual_e5', 'frida']:
                     embeddings = self._get_sentence_transformers_embeddings(text, model_key)
                 elif model_key == 'star':
                     embeddings = self._get_star_embeddings(text)
-                elif model_key == 'roberta':
-                    embeddings = self._get_roberta_embeddings(text)
                 else:
                     continue
 
@@ -1592,33 +1629,28 @@ class ForensicLinguisticsService:
         
         return (pos_sim * 0.4 + dep_sim * 0.4 + complexity_sim * 0.2)
     
-    def _calculate_semantic_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """Simple cosine similarity calculation"""
-        if not vec1 or not vec2:
+    def _calculate_semantic_similarity(self, vec1: List[float], vec2: List[float], dim1: int, dim2: int) -> float:
+        """Calculates cosine similarity on the original, unpadded dimensions of the vectors."""
+        # If the original dimensions are different, the vectors are not comparable.
+        if dim1 != dim2 or dim1 == 0:
             return 0.0
-
-        # DEBUG: Check what's actually in the vectors
-        for i, item in enumerate(vec1[:10]):  # Check first 10 items
-            if not isinstance(item, (int, float)):
-                logger.error(f"vec1[{i}] is not a number: {type(item)} = {item}")
-                return 0.0
-
-        for i, item in enumerate(vec2[:10]):  # Check first 10 items  
-            if not isinstance(item, (int, float)):
-                logger.error(f"vec2[{i}] is not a number: {type(item)} = {item}")
-                return 0.0
 
         try:
             import numpy as np
             from sklearn.metrics.pairwise import cosine_similarity
 
-            vec1_np = np.array(vec1, dtype=float).reshape(1, -1)
-            vec2_np = np.array(vec2, dtype=float).reshape(1, -1)
+            # Slice the vectors to their original, meaningful length before comparison
+            vec1_sliced = np.array(vec1[:dim1], dtype=np.float32).reshape(1, -1)
+            vec2_sliced = np.array(vec2[:dim1], dtype=np.float32).reshape(1, -1)
 
-            return float(cosine_similarity(vec1_np, vec2_np)[0][0])
+            # Check for zero vectors after slicing
+            if np.all(vec1_sliced == 0) or np.all(vec2_sliced == 0):
+                return 0.0
+                
+            return float(cosine_similarity(vec1_sliced, vec2_sliced)[0][0])
 
         except Exception as e:
-            logger.error(f"Similarity calculation error: {e}")
+            logger.error(f"Semantic similarity calculation error: {e}")
             return 0.0
     
     def _calculate_stylistic_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
@@ -1822,38 +1854,35 @@ class ForensicLinguisticsService:
             exclamation_ratio=0.0
         )
 
-    def _get_gme_embeddings(self, text: str) -> List[float]:
-        """Get GME embeddings and ensure the result is a flat list of floats."""
+    def _get_model_manager_embeddings(self, text: str) -> List[float]:
+        """Get embeddings from a model loaded via the ModelManager service."""
         try:
-            if not self.embedding_models.get('gme', {}).get('enabled', False):
-                return []
-                
             model_info = self.model_manager.model_purposes.get('forensic_embeddings')
             if not model_info:
+                logger.warning("No forensic_embeddings model is set in model_manager.")
                 return []
-            
+
             model_proxy = self.model_manager.get_model(model_info['name'], model_info['gpu_id'])
 
             # Use the .embed() method on the remote model proxy
-            result = model_proxy.embed(text[:1024]) # Truncate for performance
+            result = model_proxy.embed(text[:4096]) # Increased context for larger models
             
-            if result.get("status") == "success":
+            if result and result.get("status") == "success":
                 embeddings = result.get("embedding", [])
                 
-                # --- NEW: Flattening Logic ---
-                # Check if the result is a list containing another list (e.g., [[...]])
+                # Flattening Logic: Handle cases where the model returns a list of lists
                 if embeddings and isinstance(embeddings[0], list):
-                    # Flatten the list of lists into a single list
                     return [item for sublist in embeddings for item in sublist]
                 else:
-                    # The result is already a flat list
                     return embeddings
             else:
-                logger.warning(f"GME remote embedding failed: {result.get('error')}")
+                error_msg = result.get('error', 'Unknown error')
+                logger.warning(f"ModelManager remote embedding failed for {model_info['name']}: {error_msg}")
                 return []
 
         except Exception as e:
-            logger.warning(f"GME embedding generation failed: {e}", exc_info=True)
+            model_name = self.model_manager.model_purposes.get('forensic_embeddings', {}).get('name', 'unknown model')
+            logger.warning(f"ModelManager embedding generation failed for {model_name}: {e}", exc_info=True)
             return []
 
     def set_active_embedding_model(self, model_key: str) -> bool:

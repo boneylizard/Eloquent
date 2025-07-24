@@ -17,11 +17,23 @@ const ForensicLinguistics = () => {
 const [embeddingModels, setEmbeddingModels] = useState({
   models: {
     gme: { enabled: false, dimensions: null, priority: 1 },
-    star: { enabled: false, dimensions: 1024, priority: 2 },
-    roberta: { enabled: false, dimensions: 768, priority: 3 }
+    mxbai_large: { enabled: false, dimensions: 1024, priority: 2 },
+    multilingual_e5: { enabled: false, dimensions: 1024, priority: 3 },
+    qwen3_8b: { enabled: false, dimensions: null, priority: 4 },
+    qwen3_4b: { enabled: false, dimensions: null, priority: 5 },
+    frida: { enabled: false, dimensions: 1024, priority: 6 },
+    bge_m3: { enabled: false, dimensions: 1024, priority: 7 },
+    gte_qwen2: { enabled: false, dimensions: 3584, priority: 8 },
+    inf_retriever: { enabled: false, dimensions: 3584, priority: 9 },
+    sentence_t5: { enabled: false, dimensions: 768, priority: 10 },
+    star: { enabled: false, dimensions: 1024, priority: 11 },
+    roberta: { enabled: false, dimensions: 768, priority: 12 },
+    jina_v3: { enabled: false, dimensions: 1024, priority: 13 },
+    nomic_v1_5: { enabled: false, dimensions: 768, priority: 14 },
+    arctic_embed: { enabled: false, dimensions: 768, priority: 15 }
   },
   active_model: 'None'
-});  
+});
 
 
   // Main states
@@ -671,17 +683,27 @@ const EmbeddingModelSection = () => (
     <div className="mb-4 p-3 bg-muted rounded-lg">
       <div className="flex items-center justify-between">
         <span className="font-medium">Active Model:</span>
-        <span className={`px-2 py-1 rounded text-sm font-medium ${
-          embeddingModels.active_model === 'GME' ? 'bg-green-100 text-green-800' :
-          embeddingModels.active_model === 'STAR' ? 'bg-blue-100 text-blue-800' :
-          embeddingModels.active_model === 'ROBERTA' ? 'bg-purple-100 text-purple-800' :
-          'bg-gray-100 text-gray-800'
-        }`}>
-          {embeddingModels.active_model}
-          {embeddingModels.active_model !== 'None' && embeddingModels.models[embeddingModels.active_model.toLowerCase()]?.dimensions && 
-            ` (${embeddingModels.models[embeddingModels.active_model.toLowerCase()].dimensions}D)`
-          }
-        </span>
+<span className={`px-2 py-1 rounded text-sm font-medium ${
+  embeddingModels.active_model === 'GME' ? 'bg-green-100 text-green-800' :
+  embeddingModels.active_model === 'MXBAI_LARGE' ? 'bg-blue-100 text-blue-800' :
+  embeddingModels.active_model === 'MULTILINGUAL_E5' ? 'bg-purple-100 text-purple-800' :
+  embeddingModels.active_model === 'QWEN3_8B' ? 'bg-red-100 text-red-800' :
+  embeddingModels.active_model === 'QWEN3_4B' ? 'bg-pink-100 text-pink-800' :
+  embeddingModels.active_model === 'FRIDA' ? 'bg-indigo-100 text-indigo-800' :
+  embeddingModels.active_model === 'GTE_QWEN2' ? 'bg-blue-100 text-blue-800' :
+  embeddingModels.active_model === 'BGE_M3' ? 'bg-yellow-100 text-yellow-800' :   
+  embeddingModels.active_model === 'STAR' ? 'bg-teal-100 text-teal-800' :
+  embeddingModels.active_model === 'ROBERTA' ? 'bg-pink-100 text-pink-800' :
+  embeddingModels.active_model === 'JINA_V3' ? 'bg-purple-100 text-purple-800' :
+  embeddingModels.active_model === 'NOMIC_V1_5' ? 'bg-orange-100 text-orange-800' :
+  embeddingModels.active_model === 'ARCTIC_EMBED' ? 'bg-gray-100 text-gray-800' :
+  'bg-gray-100 text-gray-800'
+}`}>
+  {embeddingModels.active_model}
+  {embeddingModels.active_model !== 'None' && embeddingModels.models[embeddingModels.active_model.toLowerCase()]?.dimensions && 
+    ` (${embeddingModels.models[embeddingModels.active_model.toLowerCase()].dimensions}D)`
+  }
+</span>
       </div>
     </div>
 
@@ -1473,6 +1495,11 @@ if (!scores) {
                 <span className="font-medium text-foreground">Active Model:</span>
                 <span className={`px-2 py-1 rounded text-sm font-medium ${
                   embeddingModels.active_model === 'GME' ? 'bg-green-100 text-green-800' :
+                  embeddingModels.active_model === 'MXBAI_LARGE' ? 'bg-blue-100 text-blue-800' :
+                  embeddingModels.active_model === 'MULTILINGUAL_E5' ? 'bg-purple-100 text-purple-800' :
+                  embeddingModels.active_model === 'QWEN3_8B' ? 'bg-red-100 text-red-800' :
+                  embeddingModels.active_model === 'QWEN3_4B' ? 'bg-pink-100 text-pink-800' :
+                  embeddingModels.active_model === 'FRIDA' ? 'bg-indigo-100 text-indigo-800' :
                   embeddingModels.active_model === 'GTE_QWEN2' ? 'bg-blue-100 text-blue-800' :
                   embeddingModels.active_model === 'BGE_M3' ? 'bg-yellow-100 text-yellow-800' :   
                   embeddingModels.active_model === 'STAR' ? 'bg-teal-100 text-teal-800' :
@@ -1551,6 +1578,80 @@ if (!scores) {
                   </button>
                 </div>
 
+{/* MXBai Large */}
+                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                  <div>
+                    <div className="font-medium text-sm text-foreground">MXBai Embed Large v1 (1024D)</div>
+                    <div className="text-xs text-muted-foreground">High-performance retrieval embeddings</div>
+                  </div>
+                  <button
+                    onClick={() => initializeEmbeddingModel('mxbai_large', 0)}
+                    disabled={initializingGME || embeddingModels.models?.mxbai_large?.enabled}
+                    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+                  >
+                    {embeddingModels.models?.mxbai_large?.enabled ? 'Loaded' : initializingGME ? '...' : 'Initialize'}
+                  </button>
+                </div>
+
+                {/* Multilingual E5 Large */}
+                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                  <div>
+                    <div className="font-medium text-sm text-foreground">Multilingual E5 Large (1024D)</div>
+                    <div className="text-xs text-muted-foreground">100+ languages, Microsoft research</div>
+                  </div>
+                  <button
+                    onClick={() => initializeEmbeddingModel('multilingual_e5', 0)}
+                    disabled={initializingGME || embeddingModels.models?.multilingual_e5?.enabled}
+                    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+                  >
+                    {embeddingModels.models?.multilingual_e5?.enabled ? 'Loaded' : initializingGME ? '...' : 'Initialize'}
+                  </button>
+                </div>
+
+                {/* Qwen3 8B */}
+                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                  <div>
+                    <div className="font-medium text-sm text-foreground">Qwen3 Embedding 8B</div>
+                    <div className="text-xs text-muted-foreground">Latest Qwen embedding model</div>
+                  </div>
+                  <button
+                    onClick={() => initializeEmbeddingModel('qwen3_8b', 0)}
+                    disabled={initializingGME || embeddingModels.models?.qwen3_8b?.enabled}
+                    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+                  >
+                    {embeddingModels.models?.qwen3_8b?.enabled ? 'Loaded' : initializingGME ? '...' : 'Initialize'}
+                  </button>
+                </div>
+
+                {/* Qwen3 4B */}
+                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                  <div>
+                    <div className="font-medium text-sm text-foreground">Qwen3 Embedding 4B</div>
+                    <div className="text-xs text-muted-foreground">Compact Qwen embedding model</div>
+                  </div>
+                  <button
+                    onClick={() => initializeEmbeddingModel('qwen3_4b', 0)}
+                    disabled={initializingGME || embeddingModels.models?.qwen3_4b?.enabled}
+                    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+                  >
+                    {embeddingModels.models?.qwen3_4b?.enabled ? 'Loaded' : initializingGME ? '...' : 'Initialize'}
+                  </button>
+                </div>
+
+                {/* FRIDA */}
+                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                  <div>
+                    <div className="font-medium text-sm text-foreground">FRIDA (1024D)</div>
+                    <div className="text-xs text-muted-foreground">Russian & English specialized embeddings</div>
+                  </div>
+                  <button
+                    onClick={() => initializeEmbeddingModel('frida', 0)}
+                    disabled={initializingGME || embeddingModels.models?.frida?.enabled}
+                    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+                  >
+                    {embeddingModels.models?.frida?.enabled ? 'Loaded' : initializingGME ? '...' : 'Initialize'}
+                  </button>
+                </div>
                 {/* Jina v3 */}
 <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
   <div>
@@ -1622,21 +1723,6 @@ if (!scores) {
                     className="bg-primary hover:bg-primary/90 disabled:bg-muted disabled:opacity-50 text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
                   >
                     {embeddingModels.active_model === 'STAR' ? 'Active' : 'Set Active'}
-                  </button>
-                </div>
-
-                {/* RoBERTa */}
-                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
-                  <div>
-                    <div className="font-medium text-sm text-foreground">RoBERTa (768D)</div>
-                    <div className="text-xs text-muted-foreground">Established semantic embeddings</div>
-                  </div>
-                  <button
-                    onClick={() => handleSetActiveModel('roberta')}
-                    disabled={embeddingModels.active_model === 'ROBERTA' || !embeddingModels.models?.roberta?.enabled}
-                    className="bg-primary hover:bg-primary/90 disabled:bg-muted disabled:opacity-50 text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
-                  >
-                    {embeddingModels.active_model === 'ROBERTA' ? 'Active' : 'Set Active'}
                   </button>
                 </div>
               </div>

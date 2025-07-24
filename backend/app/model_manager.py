@@ -578,7 +578,7 @@ class ModelManager:
                 if core_model_name in file_name_lower:
                     score += 5 # Add a significant boost
 
-                if score > highest_score:
+                if score >= 2 and score > highest_score:
                     highest_score = score
                     best_match = file_path
 
