@@ -2522,37 +2522,7 @@ def check_gpu_count():
         # For this fix, we assume it is installed. If not: pip install pynvml
         return 0
 
-@router.post("/forensic/initialize-embedding")
-async def initialize_embedding_endpoint(
-    request: Request,
-    data: dict = Body(...),
-    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
-):
-    """Initialize any embedding model"""
-    try:
-        model_type = data.get("model_type")
-        gpu_id = data.get("gpu_id", 0)
-        
-        if not model_type:
-            raise HTTPException(status_code=400, detail="model_type is required")
-        
-        logger.info(f"🔍 [Forensic] Initializing {model_type} on GPU {gpu_id}")
-        
-        success = await forensic_service.initialize_embedding_model(model_type, gpu_id)
-        
-        if success:
-            status = forensic_service.get_embedding_status()
-            return {
-                "status": "success",
-                "message": f"{model_type} model initialized successfully",
-                "embedding_status": status
-            }
-        else:
-            raise HTTPException(status_code=500, detail=f"Failed to initialize {model_type}")
-            
-    except Exception as e:
-        logger.error(f"❌ [Forensic] Embedding initialization error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/sd-local/list-models")
 async def list_local_sd_models(request: Request):

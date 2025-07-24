@@ -41,11 +41,13 @@ class ModelService:
             # ADD THIS: Force model onto specific GPU using tensor_split
             model_params['main_gpu'] = gpu_id  # Set main GPU
             # --- ADD THESE TWO LINES ---
-            is_embedding_model = "embed" in model_name.lower() or "gme" in model_name.lower() or "gte" in model_name.lower()
+            # --- START OF MODIFICATION ---
+            # Check for various embedding model name patterns
+            is_embedding_model = any(keyword in model_name.lower() for keyword in ["embed", "gme", "gte", "qwen"])
             if is_embedding_model:
                 model_params['embedding'] = True
-                logging.info(f"Loading {model_name} as embedding model")
-            # --- END OF ADDITION ---
+                logging.info(f"✅ Loading {model_name} as embedding model.")
+            # --- END OF MODIFICATION ---
             # If you have the tensor_split in params from model_manager, it should work
             # Otherwise add this:
             if 'tensor_split' not in model_params:
