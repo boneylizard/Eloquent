@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
 import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
 import { Globe, Cpu } from 'lucide-react';
 import { getContextLength, saveContextLength } from '../utils/apiCall';
 
@@ -25,12 +26,37 @@ const ModelSelector = () => {
     setPrimaryIsAPI,
     setSecondaryIsAPI,
     setPrimaryModel,
-    setSecondaryModel
+    setSecondaryModel,
+    PRIMARY_API_URL
   } = useApp();
 
-  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedApiModel, setSelectedApiModel] = useState('');
+  const [selectedLocalModel, setSelectedLocalModel] = useState('');
   const [selectedGpu, setSelectedGpu] = useState('0');
   const [contextLength, setContextLength] = useState(getContextLength());
+  const [gpuCount, setGpuCount] = useState(2); // Default to 2, will be updated from backend
+
+  // Fetch GPU count from backend
+  useEffect(() => {
+    const fetchGpuCount = async () => {
+      try {
+        const response = await fetch(`${PRIMARY_API_URL}/system/gpu_info`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.gpu_count) {
+            setGpuCount(data.gpu_count);
+            // If selected GPU is beyond available GPUs, reset to 0
+            if (parseInt(selectedGpu) >= data.gpu_count) {
+              setSelectedGpu('0');
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching GPU count:", error);
+      }
+    };
+    fetchGpuCount();
+  }, [PRIMARY_API_URL, selectedGpu]);
 
   // Get API model options from settings
   const getAPIModels = () => {
@@ -104,18 +130,29 @@ const getAPIInfo = (modelId) => {
     return displayName;
   };
 
-  // Get model info for a specific GPU
+  // Get model info for a specific GPU (supports any number of GPUs)
   const getModelForGpu = (gpuId) => {
-    if (gpuId === 0) {
-      return primaryIsAPI ? primaryModel : loadedModels.find(m => m.gpu_id === 0)?.name || null;
-    } else {
-      return secondaryIsAPI ? secondaryModel : loadedModels.find(m => m.gpu_id === 1)?.name || null;
+    // Check loadedModels first (works for any GPU)
+    const loadedModel = loadedModels.find(m => m.gpu_id === gpuId);
+    if (loadedModel) {
+      return loadedModel.name;
     }
+    
+    // Fallback to primary/secondary for backward compatibility (GPU 0/1 only)
+    if (gpuId === 0 && primaryIsAPI) {
+      return primaryModel;
+    } else if (gpuId === 1 && secondaryIsAPI) {
+      return secondaryModel;
+    }
+    
+    return null;
   };
 
   // Check if a GPU has an API model active
   const getIsAPIForGpu = (gpuId) => {
-    return gpuId === 0 ? primaryIsAPI : secondaryIsAPI;
+    // For now, only GPU 0/1 can have API models (backward compatibility)
+    // This could be expanded later to support API models on any GPU
+    return gpuId === 0 ? primaryIsAPI : (gpuId === 1 ? secondaryIsAPI : false);
   };
 
   // Format the context length for display
@@ -136,70 +173,48 @@ const getAPIInfo = (modelId) => {
     saveContextLength(value);
   };
 
-  // Enhanced model loading/API selection
-const handleLoadModel = async () => {
-  if (!selectedModel) return;
-
-  // DEBUG: Log the detection results
-  console.log("🔍 [ModelSelector] Selected model:", selectedModel);
-  console.log("🔍 [ModelSelector] isAPIModel check:", isAPIModel(selectedModel));
-  console.log("🔍 [ModelSelector] API_MODELS:", API_MODELS);
-  console.log("🔍 [ModelSelector] Starts with endpoint-:", selectedModel.startsWith('endpoint-'));
-
-  const gpuId = parseInt(selectedGpu);
-  
-  if (isAPIModel(selectedModel)) {
-    console.log("🌐 [DEBUG] Setting API model:", selectedModel, "for GPU", gpuId);
-    const apiInfo = getAPIInfo(selectedModel);
-    console.log(`🌐 Selecting API model: ${apiInfo.name} for GPU ${gpuId}`);
+  // Handle API model selection (independent of GPUs)
+  const handleSelectApi = async () => {
+    if (!selectedApiModel) return;
     
-    // Update the appropriate API state
-    if (gpuId === 0) {
-      console.log("🌐 [DEBUG] About to call setPrimaryIsAPI(true)");  
-      setPrimaryIsAPI(true);
-      console.log("🌐 [DEBUG] About to call setPrimaryModel with:", selectedModel);
-      setPrimaryModel(selectedModel);
-      console.log("🌐 [DEBUG] Primary API setup complete");
-    } else {
-      setSecondaryIsAPI(true);
-      setSecondaryModel(selectedModel);
-    }
-  } else {
-    // Handle regular model loading
-    console.log(`🔧 Loading model: ${selectedModel} on GPU ${gpuId}`);
+    console.log(`🌐 Selecting API model: ${selectedApiModel}`);
+    const apiInfo = getAPIInfo(selectedApiModel);
     
-    // Clear API state for this GPU
-    if (gpuId === 0) {
-      setPrimaryIsAPI(false);
-    } else {
-      setSecondaryIsAPI(false);
-    }
+    // Set as primary API (for chat) - doesn't use a GPU slot
+    setPrimaryIsAPI(true);
+    setPrimaryModel(selectedApiModel);
+    setSelectedApiModel(''); // Clear selection
+  };
+
+  // Handle local model loading on GPU
+  const handleLoadLocalModel = async () => {
+    if (!selectedLocalModel) return;
+    
+    const gpuId = parseInt(selectedGpu);
+    console.log(`🔧 Loading model: ${selectedLocalModel} on GPU ${gpuId}`);
+    
+    // Clear API state for this GPU (if any) - but only if it was set for this specific GPU
+    // Note: API is now independent, so we don't need to clear it here
     
     // Load the model normally
-    await loadModel(selectedModel, gpuId, contextLength);
-  }
-};
+    await loadModel(selectedLocalModel, gpuId, contextLength);
+    setSelectedLocalModel(''); // Clear selection
+  };
 
-  // Enhanced model unloading
+  // Handle clearing API (separate from GPU unloading)
+  const handleClearApi = () => {
+    setPrimaryIsAPI(false);
+    setPrimaryModel(null);
+  };
+
+  // Enhanced model unloading (for local GPU models only)
   const handleUnloadModel = async () => {
     const gpuId = parseInt(selectedGpu);
+    const model = getModelForGpu(gpuId);
     
-    if (getIsAPIForGpu(gpuId)) {
-      // Clear API model
-      console.log(`🌐 Clearing API model for GPU ${gpuId}`);
-      if (gpuId === 0) {
-        setPrimaryIsAPI(false);
-        setPrimaryModel(null);
-      } else {
-        setSecondaryIsAPI(false);
-        setSecondaryModel(null);
-      }
-    } else {
-      // Unload regular model
-      const modelToUnload = gpuId === 0 ? primaryModel : secondaryModel;
-      if (modelToUnload) {
-        await unloadModel(modelToUnload);
-      }
+    if (model && !getIsAPIForGpu(gpuId)) {
+      // Only unload if it's a local model (not API)
+      await unloadModel(model, gpuId);
     }
   };
 
@@ -228,97 +243,145 @@ const handleLoadModel = async () => {
     <div className="rounded-md border p-4 mb-4">
       <h3 className="text-lg font-medium mb-3">Model Selection</h3>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        {/* GPU 0 Status */}
-        <div className="rounded-md bg-muted p-3">
+      {/* API Status (separate from GPUs) */}
+      {primaryIsAPI && (
+        <div className="rounded-md bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 p-3 mb-4">
           <div className="flex items-center justify-between mb-1">
-            <h4 className="font-medium">GPU 0</h4>
-            {primaryIsAPI && <Badge variant="secondary" className="text-xs"><Globe className="w-3 h-3 mr-1" />API</Badge>}
+            <h4 className="font-medium flex items-center gap-2">
+              <Globe className="w-4 h-4 text-blue-500" />
+              API Model (Chat)
+            </h4>
+            <Badge variant="secondary" className="text-xs"><Globe className="w-3 h-3 mr-1" />Active</Badge>
           </div>
           <div className="flex items-center gap-2">
-            <div className={`w-3 h-3 rounded-full ${getModelForGpu(0) ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <div className="w-3 h-3 rounded-full bg-green-500"></div>
             <span className="text-sm truncate">
-              {getModelForGpu(0) ? formatModelName(getModelForGpu(0)) : 'No model loaded'}
+              {formatModelName(primaryModel)}
             </span>
           </div>
+          <p className="text-xs text-muted-foreground mt-1">Using external API - GPUs are free for local models</p>
         </div>
+      )}
 
-        {/* GPU 1 Status */}
-        <div className="rounded-md bg-muted p-3">
-          <div className="flex items-center justify-between mb-1">
-            <h4 className="font-medium">GPU 1</h4>
-            {secondaryIsAPI && <Badge variant="secondary" className="text-xs"><Globe className="w-3 h-3 mr-1" />API</Badge>}
-          </div>
-          <div className="flex items-center gap-2">
-            <div className={`w-3 h-3 rounded-full ${getModelForGpu(1) ? 'bg-green-500' : 'bg-red-500'}`}></div>
-            <span className="text-sm truncate">
-              {getModelForGpu(1) ? formatModelName(getModelForGpu(1)) : 'No model loaded'}
-            </span>
-          </div>
-        </div>
+      <div className={`grid grid-cols-1 ${gpuCount <= 2 ? 'md:grid-cols-2' : gpuCount <= 4 ? 'md:grid-cols-2 lg:grid-cols-4' : 'md:grid-cols-3 lg:grid-cols-4'} gap-4 mb-4`}>
+        {/* Dynamically render GPU status for all available GPUs */}
+        {Array.from({ length: gpuCount }, (_, i) => {
+          const model = getModelForGpu(i);
+          const isApi = getIsAPIForGpu(i);
+          // Only show local models on GPUs (API doesn't use GPU slots anymore)
+          const displayModel = isApi ? null : model;
+          
+          return (
+            <div key={i} className="rounded-md bg-muted p-3">
+              <div className="flex items-center justify-between mb-1">
+                <h4 className="font-medium">GPU {i}</h4>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className={`w-3 h-3 rounded-full ${displayModel ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span className="text-sm truncate">
+                  {displayModel ? formatModelName(displayModel) : 'No model loaded'}
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      <div className="space-y-3">
-        {/* Model Selection */}
-        <div className="flex flex-col md:flex-row gap-3">
-          <div className="flex-1">
-            <label className="text-sm font-medium mb-1 block">Select Model or API</label>
-            <Select value={selectedModel} onValueChange={setSelectedModel}>
-              <SelectTrigger>
-                <SelectValue placeholder="Choose a model or API endpoint" />
+      <div className="space-y-4">
+        {/* API Model Selection (Independent of GPUs) */}
+        <div className="border rounded-md p-3 bg-blue-50/50 dark:bg-blue-950/10">
+          <label className="text-sm font-medium mb-2 block flex items-center gap-2">
+            <Globe className="w-4 h-4 text-blue-500" />
+            API Model (for Chat) - Doesn't use GPU
+          </label>
+          <div className="flex gap-2">
+            <Select value={selectedApiModel} onValueChange={setSelectedApiModel}>
+              <SelectTrigger className="flex-1">
+                <SelectValue placeholder={API_MODELS.length > 0 ? "Select API endpoint" : "No API endpoints configured"} />
               </SelectTrigger>
               <SelectContent>
                 {API_MODELS.length > 0 ? (
-                  <>
-                    <div className="px-2 py-1 text-xs font-medium text-muted-foreground">API Endpoints</div>
-                    {API_MODELS.map((api) => (
-                      <SelectItem key={api.id} value={api.id}>
-                        <div className="flex items-center gap-2">
-                          <Globe className="w-4 h-4 text-blue-500" />
-                          {api.name}
-                        </div>
-                      </SelectItem>
-                    ))}
-                    <div className="px-2 py-1 text-xs font-medium text-muted-foreground border-t mt-1 pt-2">Local Models</div>
-                  </>
+                  API_MODELS.map((api) => (
+                    <SelectItem key={api.id} value={api.id}>
+                      <div className="flex items-center gap-2">
+                        <Globe className="w-4 h-4 text-blue-500" />
+                        {api.name}
+                      </div>
+                    </SelectItem>
+                  ))
                 ) : (
                   <div className="px-2 py-2 text-xs text-muted-foreground">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Globe className="w-4 h-4" />
-                      No API endpoints configured
-                    </div>
                     <div className="text-[10px]">Add custom endpoints in Settings → LLM Settings</div>
-                    <div className="border-t mt-2 pt-2 text-xs font-medium">Local Models</div>
                   </div>
                 )}
-                {availableModels.map((model) => (
-                  <SelectItem key={model} value={model}>
-                    <div className="flex items-center gap-2">
-                      <Cpu className="w-4 h-4 text-green-500" />
-                      {formatModelName(model)}
-                    </div>
-                  </SelectItem>
-                ))}
               </SelectContent>
             </Select>
+            <Button 
+              onClick={handleSelectApi}
+              disabled={!selectedApiModel || isModelLoading}
+              variant="outline"
+            >
+              {primaryIsAPI ? 'Update API' : 'Select API'}
+            </Button>
+            {primaryIsAPI && (
+              <Button 
+                onClick={handleClearApi}
+                variant="outline"
+                className="text-red-600 hover:text-red-700"
+              >
+                Clear API
+              </Button>
+            )}
           </div>
+          {primaryIsAPI && (
+            <p className="text-xs text-muted-foreground mt-2">
+              ✓ Using API: {formatModelName(primaryModel)} - Your GPUs are free for other models
+            </p>
+          )}
+        </div>
 
-          <div className="w-24">
-            <label className="text-sm font-medium mb-1 block">Target</label>
-            <Select value={selectedGpu} onValueChange={setSelectedGpu}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                            <SelectItem value="0">GPU 0</SelectItem>
-            <SelectItem value="1">GPU 1</SelectItem>
-              </SelectContent>
-            </Select>
+        <Separator />
+
+        {/* Local GPU Model Selection */}
+        <div>
+          <label className="text-sm font-medium mb-2 block">Local GPU Models</label>
+          <div className="flex flex-col md:flex-row gap-3">
+            <div className="flex-1">
+              <Select value={selectedLocalModel} onValueChange={setSelectedLocalModel}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a local model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableModels.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      <div className="flex items-center gap-2">
+                        <Cpu className="w-4 h-4 text-green-500" />
+                        {formatModelName(model)}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="w-24">
+              <label className="text-sm font-medium mb-1 block">GPU</label>
+              <Select value={selectedGpu} onValueChange={setSelectedGpu}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.from({ length: gpuCount }, (_, i) => (
+                    <SelectItem key={i} value={i.toString()}>GPU {i}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 
         {/* Context Length Adjuster - only show for local models */}
-        {selectedModel && !isAPIModel(selectedModel) && (
+        {selectedLocalModel && (
           <div className="border rounded-md p-3 bg-muted/30">
             <div className="flex justify-between items-center mb-2">
               <label className="text-sm font-medium">Context Length</label>
@@ -354,36 +417,22 @@ const handleLoadModel = async () => {
           </div>
         )}
 
-        {/* API Info - show when API model is selected */}
-        {selectedModel && isAPIModel(selectedModel) && (
-          <div className="border rounded-md p-3 bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
-            <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300 mb-2">
-              <Globe className="w-4 h-4" />
-              <span className="font-medium text-sm">OpenAI API Mode</span>
-            </div>
-            <p className="text-xs text-blue-600 dark:text-blue-400">
-              This will use the OpenAI-compatible endpoint at /v1/chat/completions. 
-              Make sure you have models loaded on the backend for the API to work.
-            </p>
-          </div>
-        )}
-
-        {/* Action Buttons */}
+        {/* Action Buttons for Local Models */}
         <div className="flex gap-2">
           <Button 
             className="flex-1" 
-            onClick={handleLoadModel} 
-            disabled={!selectedModel || isModelLoading}
+            onClick={handleLoadLocalModel} 
+            disabled={!selectedLocalModel || isModelLoading}
           >
-            {isModelLoading ? 'Loading...' : isAPIModel(selectedModel) ? 'Select API' : 'Load Model'}
+            {isModelLoading ? 'Loading...' : 'Load Model'}
           </Button>
           <Button 
             className="flex-1" 
             variant="outline" 
             onClick={handleUnloadModel}
-            disabled={!getModelForGpu(parseInt(selectedGpu)) || isModelLoading}
+            disabled={!getModelForGpu(parseInt(selectedGpu)) || getIsAPIForGpu(parseInt(selectedGpu)) || isModelLoading}
           >
-            {getIsAPIForGpu(parseInt(selectedGpu)) ? 'Clear API' : 'Unload'}
+            Unload
           </Button>
         </div>
       </div>
