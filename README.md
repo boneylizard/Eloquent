@@ -233,4 +233,4 @@ Created by **Bernard Peter Fitzgerald** ([@boneylizard](https://github.com/boney
 
 ---
 
-*Eloquent - Your local AI companion for stories worth telling.*
+*Eloquent - Your local AI companion with limitless possibilities*
