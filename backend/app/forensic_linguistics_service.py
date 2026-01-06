@@ -60,37 +60,55 @@ except OSError:
 
 @dataclass
 class StyleVector:
-    """Comprehensive stylometric feature vector"""
-    # Lexical features
+    """Comprehensive stylometric feature vector - OVERHAULED for topic-independent authorship"""
+    
+    # === CORE STYLOMETRIC FEATURES (Topic-Independent) ===
+    
+    # Character-level (Most reliable for cross-topic)
+    char_trigrams: Dict[str, float]  # Character 3-grams (e.g., " th", "the", "he ")
+    char_bigrams: Dict[str, float]   # Character 2-grams
+    
+    # Function words (Subconscious patterns)
+    function_word_frequencies: Dict[str, float]  # Per 1000 words
+    function_word_bigrams: Dict[str, float]      # "of the", "in a", etc.
+    
+    # Lexical complexity
     avg_word_length: float
     avg_sentence_length: float
+    sentence_length_variance: float  # Consistency measure
     vocab_richness: float  # Type-token ratio
     hapax_legomena_ratio: float  # Words appearing once
-    yule_k: float  # Vocabulary diversity measure
+    yule_k: float  # Vocabulary diversity
+    word_length_distribution: Dict[int, float]  # Distribution of word lengths
     
-    # Syntactic features
-    pos_distribution: Dict[str, float]  # Part-of-speech ratios
+    # Syntactic patterns (Structure over content)
+    pos_distribution: Dict[str, float]
+    pos_bigrams: Dict[str, float]    # POS 2-grams (e.g., "DT-NN")
+    pos_trigrams: Dict[str, float]   # POS 3-grams (e.g., "DT-NN-VB")
     dependency_patterns: Dict[str, float]
-    sentence_complexity: float  # Avg depth of parse tree
+    sentence_complexity: float
+    clause_patterns: Dict[str, float]  # Subordinate vs coordinate
     
     # Punctuation and formatting
     punctuation_ratios: Dict[str, float]
+    punctuation_sequences: Dict[str, float]  # "..", "!?", etc.
     capitalization_ratio: float
+    all_caps_ratio: float
+    contraction_ratio: float  # "don't" vs "do not"
     avg_paragraph_length: float
     
-    # Semantic features
-    semantic_embeddings: List[float]  # From STAR model
-    semantic_embedding_dim: int
-    sentiment_scores: Dict[str, float]
-    
-    # Stylistic patterns
-    function_word_ratios: Dict[str, float]
+    # Stylistic markers (Unconscious habits)
     modal_verb_usage: float
     passive_voice_ratio: float
     question_ratio: float
     exclamation_ratio: float
+    sentence_starter_patterns: Dict[str, float]  # How sentences begin
     
-    # Temporal metadata
+    # === OPTIONAL/MINIMAL SEMANTIC FEATURES ===
+    semantic_embeddings: List[float]  # ONLY for topic mismatch detection
+    semantic_embedding_dim: int
+    
+    # Metadata
     extracted_date: Optional[str] = None
     platform: Optional[str] = None
 
@@ -107,12 +125,19 @@ class TextDocument:
 
 @dataclass
 class SimilarityScore:
-    """Similarity analysis result"""
+    """Similarity analysis result - OVERHAULED scoring"""
     overall_score: float
-    lexical_score: float
-    syntactic_score: float
-    semantic_score: float
-    stylistic_score: float
+    
+    # Core stylometric scores (topic-independent)
+    function_word_score: float    # 35% weight - most reliable
+    syntactic_score: float         # 30% weight - structure patterns
+    character_ngram_score: float   # 20% weight - unconscious habits  
+    lexical_complexity_score: float # 10% weight - vocabulary patterns
+    punctuation_score: float       # 5% weight - formatting habits
+    
+    # Optional/diagnostic
+    topic_mismatch_warning: Optional[str]  # If topics are very different
+    
     confidence: float
     breakdown: Dict[str, float]
 
@@ -122,7 +147,7 @@ class ForensicLinguisticsService:
         self.cache_dir.mkdir(exist_ok=True)
         self.progress_cache = {}
         self.progress_lock = asyncio.Lock()
-        self.active_embedding_model = 'star' # Default to STAR model for forensic embeddings
+        self.active_embedding_model = None  # No embedding model loaded at startup - load manually via UI
         # --- CORRECTED INITIALIZATION ORDER ---
         self.model_manager = model_manager
         self.embedding_models = {
@@ -150,12 +175,14 @@ class ForensicLinguisticsService:
         # Initialize STAR model for authorship embeddings
         self.star_tokenizer = None
         self.star_model = None
-        self._init_star_model()
+        # NOTE: STAR model disabled - "Princeton-NLP/STAR" doesn't exist on HuggingFace
+        # self._init_star_model()
         
-        # Initialize RoBERTa for additional semantic analysis
+        # RoBERTa model - loaded manually via UI, not at startup
         self.roberta_tokenizer = None
         self.roberta_model = None
-        self._init_roberta_model()
+        # NOTE: RoBERTa auto-load disabled - use the Forensic Models UI to load embeddings manually
+        # self._init_roberta_model()
         
         # Stylometric analyzers
         self.tfidf_vectorizer = TfidfVectorizer(
@@ -165,14 +192,75 @@ class ForensicLinguisticsService:
         )
         self.scaler = StandardScaler()
 
-        # Function words for stylometric analysis
+        # EXPANDED function words for robust stylometric analysis
+        # These are the most reliable indicators - people use them subconsciously
         self.function_words = {
             'articles': ['a', 'an', 'the'],
-            'pronouns': ['i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them'],
-            'prepositions': ['in', 'on', 'at', 'by', 'for', 'with', 'to', 'of', 'from', 'about'],
-            'conjunctions': ['and', 'or', 'but', 'so', 'yet', 'because', 'although', 'while'],
-            'modal_verbs': ['can', 'could', 'may', 'might', 'shall', 'should', 'will', 'would', 'must']
+            
+            'pronouns': [
+                # Personal
+                'i', 'you', 'he', 'she', 'it', 'we', 'they', 
+                'me', 'him', 'her', 'us', 'them',
+                # Possessive
+                'my', 'your', 'his', 'her', 'its', 'our', 'their',
+                'mine', 'yours', 'hers', 'ours', 'theirs',
+                # Demonstrative  
+                'this', 'that', 'these', 'those',
+                # Relative
+                'who', 'whom', 'whose', 'which', 'that',
+                # Reflexive
+                'myself', 'yourself', 'himself', 'herself', 'itself', 
+                'ourselves', 'yourselves', 'themselves'
+            ],
+            
+            'prepositions': [
+                'in', 'on', 'at', 'by', 'for', 'with', 'to', 'of', 'from', 'about',
+                'into', 'onto', 'upon', 'within', 'without', 'throughout', 'between',
+                'among', 'beside', 'besides', 'beneath', 'below', 'under', 'over',
+                'above', 'across', 'through', 'during', 'until', 'since', 'before',
+                'after', 'behind', 'beyond', 'against', 'toward', 'towards', 'around'
+            ],
+            
+            'conjunctions': [
+                # Coordinating
+                'and', 'or', 'but', 'nor', 'for', 'yet', 'so',
+                # Subordinating
+                'because', 'although', 'though', 'while', 'whereas', 'if', 'unless',
+                'until', 'when', 'whenever', 'since', 'as', 'than', 'whether'
+            ],
+            
+            'modal_verbs': ['can', 'could', 'may', 'might', 'shall', 'should', 'will', 'would', 'must', 'ought'],
+            
+            'auxiliary_verbs': ['be', 'am', 'is', 'are', 'was', 'were', 'been', 'being', 
+                               'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing'],
+            
+            'determiners': ['a', 'an', 'the', 'this', 'that', 'these', 'those', 'my', 'your', 
+                           'his', 'her', 'its', 'our', 'their', 'some', 'any', 'each', 'every',
+                           'either', 'neither', 'much', 'many', 'few', 'little', 'several', 
+                           'all', 'both', 'half', 'no', 'none'],
+            
+            'adverbs_common': [
+                # Frequency
+                'always', 'often', 'usually', 'sometimes', 'rarely', 'never', 'ever',
+                # Degree
+                'very', 'quite', 'rather', 'too', 'so', 'enough', 'almost', 'nearly',
+                # Manner
+                'well', 'just', 'really', 'actually', 'probably', 'perhaps', 'maybe',
+                # Time
+                'now', 'then', 'soon', 'still', 'yet', 'already',
+                # Place
+                'here', 'there', 'everywhere', 'anywhere', 'somewhere', 'nowhere'
+            ],
+            
+            'negations': ['no', 'not', 'never', 'neither', 'nor', 'none', 'nobody', 'nothing', 'nowhere'],
+            
+            'wh_words': ['what', 'when', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how']
         }
+        
+        # Flatten for easy lookup
+        self.function_words_flat = set()
+        for category in self.function_words.values():
+            self.function_words_flat.update(category)
         
         # Platform-specific scrapers
         self.scrapers = {
@@ -185,17 +273,92 @@ class ForensicLinguisticsService:
 
     def _init_star_model(self):
         """Initialize STAR model for authorship attribution"""
-        logger.warning("STAR model is disabled due to providing unreliable stylometric results.")
-        self.embedding_models['star']['enabled'] = False
-        self.star_tokenizer = None
-        self.star_model = None
+        try:
+            logger.info("Initializing STAR model for stylometric analysis...")
+            from transformers import AutoTokenizer, AutoModel
+            import torch
+            
+            model_name = "Princeton-NLP/STAR"
+            self.star_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.star_model = AutoModel.from_pretrained(model_name)
+            
+            if torch.cuda.is_available():
+                self.star_model = self.star_model.to('cuda')
+                logger.info("STAR model loaded on CUDA")
+            else:
+                logger.info("STAR model loaded on CPU")
+            
+            self.star_model.eval()
+            self.embedding_models['star']['enabled'] = True
+            logger.info("✅ STAR model initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize STAR model: {e}")
+            self.embedding_models['star']['enabled'] = False
+            self.star_tokenizer = None
+            self.star_model = None
             
     def _init_roberta_model(self):
         """Initialize RoBERTa for additional semantic analysis"""
-        logger.warning("RoBERTa model is disabled due to providing unreliable stylometric results.")
-        self.embedding_models['roberta']['enabled'] = False
-        self.roberta_tokenizer = None
-        self.roberta_model = None
+        try:
+            logger.info("Initializing RoBERTa model for semantic analysis...")
+            from transformers import RobertaTokenizer, RobertaModel
+            import torch
+            
+            model_name = "roberta-base"
+            self.roberta_tokenizer = RobertaTokenizer.from_pretrained(model_name)
+            self.roberta_model = RobertaModel.from_pretrained(model_name)
+            
+            if torch.cuda.is_available():
+                self.roberta_model = self.roberta_model.to('cuda')
+                logger.info("RoBERTa model loaded on CUDA")
+            else:
+                logger.info("RoBERTa model loaded on CPU")
+            
+            self.roberta_model.eval()
+            self.embedding_models['roberta']['enabled'] = True
+            logger.info("✅ RoBERTa model initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize RoBERTa model: {e}")
+            self.embedding_models['roberta']['enabled'] = False
+            self.roberta_tokenizer = None
+            self.roberta_model = None
+
+    async def unload_forensic_models(self):
+        """Unload roberta and star models from memory to free VRAM"""
+        try:
+            import torch
+            
+            # Unload RoBERTa model
+            if self.roberta_model is not None:
+                logger.info("🧹 Unloading RoBERTa model...")
+                del self.roberta_model
+                self.roberta_model = None
+                self.roberta_tokenizer = None
+                self.embedding_models['roberta']['enabled'] = False
+                logger.info("✅ RoBERTa model unloaded")
+            
+            # Unload STAR model
+            if self.star_model is not None:
+                logger.info("🧹 Unloading STAR model...")
+                del self.star_model
+                self.star_model = None
+                self.star_tokenizer = None
+                self.embedding_models['star']['enabled'] = False
+                logger.info("✅ STAR model unloaded")
+            
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("✅ CUDA cache cleared")
+            
+            # Also unload any model manager models
+            if hasattr(self, 'model_manager'):
+                await self.model_manager.unload_model_purpose('forensic_embeddings')
+            
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error unloading forensic models: {e}", exc_info=True)
+            return False
 
     def _get_gguf_patterns_for_model(self, model_name: str, model_key: str) -> List[str]:
         """Get specific GGUF filename patterns for a model to avoid collisions"""
@@ -226,13 +389,15 @@ class ForensicLinguisticsService:
         ]            
     def _get_embedding_gpu_config(self):
         """Determine GPU configuration for embeddings based on system mode"""
-        # Force all forensic embedding models to use GPU 0 (the RTX 3090)
-        logging.info("Forcing forensic embedding models to GPU 0 (RTX 3090)")
+        # Use GPU 0 for forensic embedding models
+        logging.info("Using GPU 0 for forensic embedding models")
         return {"gpu_id": 0, "device": "cuda:0", "allow_multi_gpu": False}
     async def initialize_embedding_model(self, model_type: str, gpu_id: int = 0):
         """Initialize any embedding model, unload existing ones first, and set the new one as active."""
 
         model_configs = {
+            'star': "Princeton-NLP/STAR",
+            'roberta': "roberta-base",
             'gme': "Alibaba-NLP/gme-Qwen2-VL-7B-Instruct",
             'bge_m3': "BAAI/bge-m3",
             'gte_qwen2': "Alibaba-NLP/gte-Qwen2-7B-instruct",
@@ -270,7 +435,13 @@ class ForensicLinguisticsService:
             logger.info(f"🔍 [Forensic] Initializing '{model_type}' ({model_name}) on GPU {gpu_id}")
 
             # Handle different model types
-            if model_type == 'bge_m3':
+            if model_type == 'star':
+                self._init_star_model()
+                success = self.embedding_models['star']['enabled']
+            elif model_type == 'roberta':
+                self._init_roberta_model()
+                success = self.embedding_models['roberta']['enabled']
+            elif model_type == 'bge_m3':
                 success = self._init_bge_m3_model(model_name, model_type)
             elif model_type in ['jina_v3', 'nomic_v1_5', 'arctic_embed', 'gte_qwen2', 'inf_retriever', 'sentence_t5', 'mxbai_large', 'multilingual_e5', 'frida']:
                 success = await self._init_sentence_transformers_model(model_name, model_type)
@@ -319,7 +490,7 @@ class ForensicLinguisticsService:
                 return True
             else:
                 self.embedding_models[model_type]['enabled'] = False
-                self.active_embedding_model = 'star' # Revert to default
+                # Don't revert to 'star' - keep existing active model or fall back to roberta
                 logger.error(f"❌ Failed to initialize {model_type}, test embedding failed or returned empty.")
                 # Attempt to unload the failed model to free VRAM
                 await self.model_manager.unload_model_purpose('forensic_embeddings')
@@ -329,7 +500,7 @@ class ForensicLinguisticsService:
         except Exception as e:
             logger.error(f"❌ Error initializing {model_type}: {e}", exc_info=True)
             self.embedding_models[model_type]['enabled'] = False
-            self.active_embedding_model = 'star'
+            # Don't revert to 'star' - keep existing active model
             return False
 
     async def _init_sentence_transformers_model(self, model_name: str, model_key: str):
@@ -1173,26 +1344,145 @@ class ForensicLinguisticsService:
         question_ratio = text.count('?') / len(sentences) if sentences else 0
         exclamation_ratio = text.count('!') / len(sentences) if sentences else 0
         
+        # Calculate new features for overhauled system
+        # Character n-grams (simple implementation)
+        char_trigrams = {}
+        char_bigrams = {}
+        text_lower = text.lower()
+        for i in range(len(text_lower) - 2):
+            trigram = text_lower[i:i+3]
+            char_trigrams[trigram] = char_trigrams.get(trigram, 0) + 1
+        for i in range(len(text_lower) - 1):
+            bigram = text_lower[i:i+2]
+            char_bigrams[bigram] = char_bigrams.get(bigram, 0) + 1
+        
+        # Normalize to frequencies
+        total_trigrams = sum(char_trigrams.values())
+        total_bigrams = sum(char_bigrams.values())
+        if total_trigrams > 0:
+            char_trigrams = {k: v/total_trigrams for k, v in char_trigrams.items()}
+        if total_bigrams > 0:
+            char_bigrams = {k: v/total_bigrams for k, v in char_bigrams.items()}
+        
+        # Function word frequencies (per 1000 words)
+        function_word_frequencies = {}
+        total_words_count = len(words_no_punct) if words_no_punct else 1
+        for word in self.function_words_flat:
+            count = words_no_punct.count(word)
+            function_word_frequencies[word] = (count / total_words_count) * 1000
+        
+        # Function word bigrams
+        function_word_bigrams = {}
+        for i in range(len(words_no_punct) - 1):
+            if words_no_punct[i] in self.function_words_flat and words_no_punct[i+1] in self.function_words_flat:
+                bigram = f"{words_no_punct[i]}_{words_no_punct[i+1]}"
+                function_word_bigrams[bigram] = function_word_bigrams.get(bigram, 0) + 1
+        
+        # Sentence length variance
+        sent_lengths = [len(sent.split()) for sent in sentences]
+        sentence_length_variance = np.var(sent_lengths) if len(sent_lengths) > 1 else 0.0
+        
+        # Word length distribution
+        word_length_distribution = {}
+        for word in words_no_punct:
+            length = len(word)
+            word_length_distribution[length] = word_length_distribution.get(length, 0) + 1
+        total_words_for_dist = sum(word_length_distribution.values())
+        if total_words_for_dist > 0:
+            word_length_distribution = {k: v/total_words_for_dist for k, v in word_length_distribution.items()}
+        
+        # POS n-grams
+        pos_bigrams = {}
+        pos_trigrams = {}
+        pos_only = [tag for _, tag in pos_tags]
+        for i in range(len(pos_only) - 1):
+            bigram = f"{pos_only[i]}_{pos_only[i+1]}"
+            pos_bigrams[bigram] = pos_bigrams.get(bigram, 0) + 1
+        for i in range(len(pos_only) - 2):
+            trigram = f"{pos_only[i]}_{pos_only[i+1]}_{pos_only[i+2]}"
+            pos_trigrams[trigram] = pos_trigrams.get(trigram, 0) + 1
+        
+        # Punctuation sequences
+        punctuation_sequences = {}
+        for i in range(len(text) - 1):
+            if text[i] in '.,!?;:\'"' and text[i+1] in '.,!?;:\'"':
+                seq = text[i:i+2]
+                punctuation_sequences[seq] = punctuation_sequences.get(seq, 0) + 1
+        
+        # All caps ratio
+        words_all_caps = sum(1 for w in words if w.isupper() and len(w) > 1)
+        all_caps_ratio = words_all_caps / len(words) if words else 0
+        
+        # Contraction ratio
+        contractions = ["n't", "'ll", "'ve", "'re", "'d", "'m", "'s"]
+        contraction_count = sum(text.lower().count(c) for c in contractions)
+        contraction_ratio = contraction_count / len(words) if words else 0
+        
+        # Sentence starter patterns
+        sentence_starter_patterns = {}
+        for sent in sentences:
+            sent_words = sent.split()
+            if sent_words:
+                starter = sent_words[0].lower()
+                if starter in self.function_words_flat or len(starter) <= 3:
+                    sentence_starter_patterns[starter] = sentence_starter_patterns.get(starter, 0) + 1
+        
+        # Clause patterns (simplified)
+        clause_patterns = {'subordinate': 0, 'coordinate': 0}
+        subordinating = ['because', 'although', 'if', 'when', 'while', 'since', 'unless', 'until']
+        coordinating = ['and', 'but', 'or', 'nor', 'for', 'yet', 'so']
+        for word in words_no_punct:
+            if word in subordinating:
+                clause_patterns['subordinate'] += 1
+            elif word in coordinating:
+                clause_patterns['coordinate'] += 1
+        
         return StyleVector(
+            # Character-level
+            char_trigrams=char_trigrams,
+            char_bigrams=char_bigrams,
+            
+            # Function words
+            function_word_frequencies=function_word_frequencies,
+            function_word_bigrams=function_word_bigrams,
+            
+            # Lexical
             avg_word_length=avg_word_length,
             avg_sentence_length=avg_sentence_length,
+            sentence_length_variance=sentence_length_variance,
             vocab_richness=vocab_richness,
             hapax_legomena_ratio=hapax_ratio,
             yule_k=yule_k,
+            word_length_distribution=word_length_distribution,
+            
+            # Syntactic
             pos_distribution=pos_distribution,
+            pos_bigrams=pos_bigrams,
+            pos_trigrams=pos_trigrams,
             dependency_patterns=dependency_patterns,
             sentence_complexity=sentence_complexity,
+            clause_patterns=clause_patterns,
+            
+            # Punctuation
             punctuation_ratios=punctuation_ratios,
+            punctuation_sequences=punctuation_sequences,
             capitalization_ratio=cap_ratio,
+            all_caps_ratio=all_caps_ratio,
+            contraction_ratio=contraction_ratio,
             avg_paragraph_length=avg_paragraph_length,
-            semantic_embeddings=semantic_embeddings,
-            semantic_embedding_dim=original_embedding_dim, # ADD THIS LINE
-            sentiment_scores=sentiment_scores,
-            function_word_ratios=function_word_ratios,
+            
+            # Stylistic
             modal_verb_usage=modal_verb_usage,
             passive_voice_ratio=passive_voice_ratio,
             question_ratio=question_ratio,
             exclamation_ratio=exclamation_ratio,
+            sentence_starter_patterns=sentence_starter_patterns,
+            
+            # Semantic (minimal)
+            semantic_embeddings=semantic_embeddings,
+            semantic_embedding_dim=original_embedding_dim,
+            
+            # Metadata
             platform=platform
         )
 
@@ -1202,14 +1492,45 @@ class ForensicLinguisticsService:
         target_vector = await self.extract_style_vector(target_text)
         
         if not corpus_vectors:
-            return SimilarityScore(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, {})
+            return SimilarityScore(
+                overall_score=0.0,
+                function_word_score=0.0,
+                syntactic_score=0.0,
+                character_ngram_score=0.0,
+                lexical_complexity_score=0.0,
+                punctuation_score=0.0,
+                topic_mismatch_warning="No corpus available",
+                confidence=0.0,
+                breakdown={}
+            )
         
-        lexical_scores, syntactic_scores, semantic_scores, stylistic_scores = [], [], [], []
+        # === CALCULATE ALL 5 SCORES SEPARATELY ===
+        function_word_scores = []
+        syntactic_scores = []
+        character_ngram_scores = []
+        lexical_complexity_scores = []
+        punctuation_scores = []
+        semantic_scores = []
+        
         total_vectors = len(corpus_vectors)
         
         for i, corpus_vector in enumerate(corpus_vectors):
-            lexical_scores.append(self._calculate_lexical_similarity(target_vector, corpus_vector))
+            # Function word similarity (most reliable)
+            function_word_scores.append(self._calculate_function_word_similarity(target_vector, corpus_vector))
+            
+            # Syntactic patterns
             syntactic_scores.append(self._calculate_syntactic_similarity(target_vector, corpus_vector))
+            
+            # Character n-gram similarity
+            character_ngram_scores.append(self._calculate_character_ngram_similarity(target_vector, corpus_vector))
+            
+            # Lexical complexity
+            lexical_complexity_scores.append(self._calculate_lexical_similarity(target_vector, corpus_vector))
+            
+            # Punctuation style
+            punctuation_scores.append(self._calculate_punctuation_similarity(target_vector, corpus_vector))
+            
+            # Semantic (for topic mismatch detection only)
             semantic_scores.append(
                 self._calculate_semantic_similarity(
                     target_vector.semantic_embeddings,
@@ -1218,7 +1539,6 @@ class ForensicLinguisticsService:
                     corpus_vector.semantic_embedding_dim
                 )
             )
-            stylistic_scores.append(self._calculate_stylistic_similarity(target_vector, corpus_vector))
             
             # If a task_id is provided, report progress for this intensive loop.
             if task_id:
@@ -1226,39 +1546,77 @@ class ForensicLinguisticsService:
                 progress = starting_progress + ((i + 1) / total_vectors) * 45
                 await self._update_progress(task_id, progress, f"Comparing with document {i + 1}/{total_vectors}")
         
-        # Aggregate scores
-        lexical_score = np.mean(lexical_scores) if lexical_scores else 0.0
+        # Aggregate all scores
+        function_word_score = np.mean(function_word_scores) if function_word_scores else 0.0
         syntactic_score = np.mean(syntactic_scores) if syntactic_scores else 0.0
+        character_ngram_score = np.mean(character_ngram_scores) if character_ngram_scores else 0.0
+        lexical_complexity_score = np.mean(lexical_complexity_scores) if lexical_complexity_scores else 0.0
+        punctuation_score = np.mean(punctuation_scores) if punctuation_scores else 0.0
         semantic_score = np.mean(semantic_scores) if semantic_scores else 0.0
-        stylistic_score = np.mean(stylistic_scores) if stylistic_scores else 0.0
         
-        # Weighted overall score - with reduced emphasis on the less reliable semantic score
-        weights = {'lexical': 0.3, 'syntactic': 0.4, 'semantic': 0.1, 'stylistic': 0.2}
+        # === WEIGHTS - High Semantic Weight (Option 2) ===
+        # Semantic has HIGHEST weight to clearly show embedding model differences
+        weights = {
+            'function_words': 0.25,      # Still very reliable - unconscious patterns
+            'semantic': 0.30,             # HIGHEST - embedding model performance comparison
+            'syntactic': 0.20,            # Sentence structure
+            'character_ngrams': 0.15,    # Unconscious habits
+            'lexical': 0.05,              # Vocabulary complexity
+            'punctuation': 0.05           # Formatting style
+        }
+        
+        logger.info(f"[SCORING] FuncWords: {function_word_score:.3f}, Syntactic: {syntactic_score:.3f}, "
+                   f"CharNgrams: {character_ngram_score:.3f}, Lexical: {lexical_complexity_score:.3f}, "
+                   f"Punct: {punctuation_score:.3f}, Semantic: {semantic_score:.3f}")
+        
         overall_score = (
-            weights['lexical'] * lexical_score +
+            weights['function_words'] * function_word_score +
             weights['syntactic'] * syntactic_score +
-            weights['semantic'] * semantic_score +
-            weights['stylistic'] * stylistic_score
+            weights['character_ngrams'] * character_ngram_score +
+            weights['lexical'] * lexical_complexity_score +
+            weights['punctuation'] * punctuation_score +
+            weights['semantic'] * semantic_score  # Include semantic so embedding choice matters
         )
         
-        score_variance = np.var([lexical_score, syntactic_score, semantic_score, stylistic_score])
+        # Better confidence calculation
+        # Penalize variance but boost if function words (most reliable) are strong
+        score_list = [function_word_score, syntactic_score, character_ngram_score, lexical_complexity_score, punctuation_score]
+        score_variance = np.var(score_list)
         confidence = max(0.0, 1.0 - score_variance)
         
+        # Bonus confidence if function words (most reliable) are high
+        if function_word_score > 0.7:
+            confidence = min(1.0, confidence * 1.15)
+        
+        # Penalty if topic very different (but don't penalize too much - this is expected)
+        if semantic_score < 0.2:
+            logger.info(f"[SCORING] Low semantic similarity ({semantic_score:.3f}) - texts may be on different topics (expected for stylometry)")
+            confidence *= 0.90  # Minimal penalty
+        
         breakdown = {
-            'vocabulary_similarity': lexical_score,
-            'sentence_structure_similarity': syntactic_score,
+            'function_word_similarity': function_word_score,
+            'syntactic_similarity': syntactic_score,
+            'character_ngram_similarity': character_ngram_score,
+            'lexical_complexity_similarity': lexical_complexity_score,
+            'punctuation_similarity': punctuation_score,
             'semantic_coherence': semantic_score,
-            'writing_style_consistency': stylistic_score,
             'corpus_size': len(corpus_vectors),
             'feature_variance': score_variance
         }
 
+        # Check for topic mismatch warning
+        topic_warning = None
+        if semantic_score < 0.15:
+            topic_warning = f"Warning: Very low semantic similarity ({semantic_score:.1%}). Texts are on very different topics."
+        
         return SimilarityScore(
             overall_score=overall_score,
-            lexical_score=lexical_score,
+            function_word_score=function_word_score,
             syntactic_score=syntactic_score,
-            semantic_score=semantic_score,
-            stylistic_score=stylistic_score,
+            character_ngram_score=character_ngram_score,
+            lexical_complexity_score=lexical_complexity_score,
+            punctuation_score=punctuation_score,
+            topic_mismatch_warning=topic_warning,
             confidence=confidence,
             breakdown=breakdown
         )
@@ -1318,11 +1676,14 @@ class ForensicLinguisticsService:
                 'analysis_timestamp': datetime.now().isoformat(),
                 'similarity_scores': {
                     'overall_similarity': round(similarity.overall_score, 3),
-                    'lexical_similarity': round(similarity.lexical_score, 3),
-                    'syntactic_similarity': round(similarity.syntactic_score, 3),
-                    'semantic_similarity': round(similarity.semantic_score, 3),
-                    'stylistic_similarity': round(similarity.stylistic_score, 3),
-                    'confidence': round(similarity.confidence, 3)
+                    'function_words': round(similarity.function_word_score, 3),  # Most reliable
+                    'syntactic_patterns': round(similarity.syntactic_score, 3),
+                    'character_patterns': round(similarity.character_ngram_score, 3),
+                    'lexical_complexity': round(similarity.lexical_complexity_score, 3),
+                    'punctuation_style': round(similarity.punctuation_score, 3),
+                    'semantic_score': round(similarity.breakdown.get('semantic_coherence', 0.0), 3),  # Varies by embedding model
+                    'confidence': round(similarity.confidence, 3),
+                    'topic_warning': similarity.topic_mismatch_warning
                 },
                 'interpretation': self._interpret_similarity_score(similarity.overall_score),
                 'detailed_breakdown': similarity.breakdown,
@@ -1475,31 +1836,13 @@ class ForensicLinguisticsService:
         
         return {dep: count/total_deps for dep, count in patterns.items()}
     def _get_semantic_embeddings(self, text: str) -> List[float]:
-        """
-        Get semantic embeddings. This function is now locked to the STAR model
-        to ensure stylometric reliability. Other models were producing misleading
-        topical similarities rather than stylistic ones.
-        """
-        if self.embedding_models.get('star', {}).get('enabled'):
-            try:
-                embeddings = self._get_star_embeddings(text)
-                if embeddings:
-                    logger.debug("Using STAR embeddings for stylometric analysis.")
-                    return embeddings
-            except Exception as e:
-                logger.error(f"STAR model failed during embedding generation: {e}")
-        
-        logger.warning("STAR model not available or failed. Returning empty vector for semantic analysis.")
-        return []   
-   # def _get_semantic_embeddings(self, text: str) -> List[float]:
         """Enhanced semantic embeddings with multiple model support"""
 
-        # Try the explicitly set active model first
         # Try the explicitly set active model first
         if self.active_embedding_model and self.embedding_models.get(self.active_embedding_model, {}).get('enabled'):
             model_key = self.active_embedding_model
             try:
-                # NEW: Unified logic for all ModelManager-loaded models
+                # Unified logic for all models
                 if model_key in ['gme', 'qwen3_8b', 'qwen3_4b']:
                     embeddings = self._get_model_manager_embeddings(text)
                 elif model_key == 'jina_v3':
@@ -1514,12 +1857,14 @@ class ForensicLinguisticsService:
                     embeddings = self._get_sentence_transformers_embeddings(text, model_key)
                 elif model_key == 'star':
                     embeddings = self._get_star_embeddings(text)
+                elif model_key == 'roberta':
+                    embeddings = self._get_roberta_embeddings(text)
                 else:
+                    logger.warning(f"Unknown model type: {model_key}")
                     embeddings = []
 
                 if embeddings:
-                    logger.debug(f"Using active model {model_key.upper()} embeddings: {len(embeddings)}D")
-
+                    logger.debug(f"Using {model_key.upper()} embeddings: {len(embeddings)}D")
                     return embeddings
             except Exception as e:
                 logger.warning(f"Active model {model_key} failed, falling back to priority list. Error: {e}")
@@ -1536,26 +1881,31 @@ class ForensicLinguisticsService:
                 continue
 
             try:
-                # NEW: Unified logic for all ModelManager-loaded models
+                # Unified logic for all models
                 if model_key in ['gme', 'qwen3_8b', 'qwen3_4b']:
                     embeddings = self._get_model_manager_embeddings(text)
+                elif model_key == 'jina_v3':
+                    embeddings = self._get_jina_v3_embeddings(text)
+                elif model_key == 'nomic_v1_5':
+                    embeddings = self._get_nomic_v1_5_embeddings(text)
+                elif model_key == 'arctic_embed':
+                    embeddings = self._get_arctic_embeddings(text)
+                elif model_key == 'bge_m3':
+                    embeddings = self._get_bge_m3_embeddings(text)
                 elif model_key in ['gte_qwen2', 'inf_retriever', 'sentence_t5', 'mxbai_large', 'multilingual_e5', 'frida']:
                     embeddings = self._get_sentence_transformers_embeddings(text, model_key)
                 elif model_key == 'star':
                     embeddings = self._get_star_embeddings(text)
+                elif model_key == 'roberta':
+                    embeddings = self._get_roberta_embeddings(text)
                 else:
                     continue
 
                 if embeddings:
-                    logger.debug(f"Using {model_key.upper()} embeddings: {len(embeddings)}D")
-
-
-                    if embeddings:
-                        logger.debug(f"Raw embedding type: {type(embeddings)}, length: {len(embeddings) if hasattr(embeddings, '__len__') else 'unknown'}")
-                        if len(embeddings) > 50000:  # Something is very wrong
-                            logger.error(f"CRITICAL: Embedding dimension too large ({len(embeddings)}), using fallback")
-                            return [0.0] * TARGET_EMBEDDING_DIM   
-                        
+                    logger.debug(f"Using fallback {model_key.upper()} embeddings: {len(embeddings)}D")
+                    if len(embeddings) > 50000:  # Something is very wrong
+                        logger.error(f"CRITICAL: Embedding dimension too large ({len(embeddings)}), using fallback")
+                        return [0.0] * TARGET_EMBEDDING_DIM   
                     return embeddings
 
             except Exception as e:
@@ -1597,48 +1947,180 @@ class ForensicLinguisticsService:
     
     # Similarity calculation methods
     
-    def _calculate_lexical_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
-        """Calculate lexical similarity using a stable feature-wise comparison."""
-        features = ['avg_word_length', 'avg_sentence_length', 'vocab_richness', 'hapax_legomena_ratio', 'yule_k']
+    def _calculate_function_word_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
+        """
+        Calculate function word similarity - THE MOST RELIABLE metric for authorship.
+        Function words are unconscious patterns that are very hard to fake.
+        """
         scores = []
-        for feature in features:
+        
+        # Function word frequencies (triple weight - most reliable)
+        func_word_sim = self._calculate_distribution_similarity(
+            target.function_word_frequencies, 
+            corpus.function_word_frequencies
+        )
+        scores.extend([func_word_sim] * 3)
+        
+        # Function word bigrams (how function words combine)
+        func_bigram_sim = self._calculate_distribution_similarity(
+            target.function_word_bigrams,
+            corpus.function_word_bigrams
+        )
+        scores.extend([func_bigram_sim] * 2)
+        
+        return np.mean(scores) if scores else 0.0
+    
+    def _calculate_character_ngram_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
+        """
+        Calculate character n-gram similarity - captures unconscious typing/writing patterns.
+        Very reliable as these are subconscious habits.
+        """
+        scores = []
+        
+        # Character trigrams (most informative)
+        # Compare top 50 most common trigrams
+        common_trigrams_target = dict(sorted(target.char_trigrams.items(), 
+                                            key=lambda x: x[1], 
+                                            reverse=True)[:50])
+        common_trigrams_corpus = dict(sorted(corpus.char_trigrams.items(), 
+                                             key=lambda x: x[1], 
+                                             reverse=True)[:50])
+        trigram_sim = self._calculate_distribution_similarity(
+            common_trigrams_target,
+            common_trigrams_corpus
+        )
+        scores.extend([trigram_sim] * 2)  # Double weight
+        
+        # Character bigrams
+        common_bigrams_target = dict(sorted(target.char_bigrams.items(), 
+                                           key=lambda x: x[1], 
+                                           reverse=True)[:50])
+        common_bigrams_corpus = dict(sorted(corpus.char_bigrams.items(), 
+                                            key=lambda x: x[1], 
+                                            reverse=True)[:50])
+        bigram_sim = self._calculate_distribution_similarity(
+            common_bigrams_target,
+            common_bigrams_corpus
+        )
+        scores.append(bigram_sim)
+        
+        return np.mean(scores) if scores else 0.0
+    
+    def _calculate_punctuation_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
+        """
+        Calculate punctuation and formatting similarity.
+        Punctuation habits are moderately reliable for authorship.
+        """
+        scores = []
+        
+        # Punctuation ratios (how often each punctuation mark is used)
+        punct_ratio_sim = self._calculate_distribution_similarity(
+            target.punctuation_ratios, 
+            corpus.punctuation_ratios
+        )
+        scores.extend([punct_ratio_sim] * 2)  # Double weight
+        
+        # Punctuation sequences ("..", "!?", etc.)
+        punct_seq_sim = self._calculate_distribution_similarity(
+            target.punctuation_sequences,
+            corpus.punctuation_sequences
+        )
+        scores.append(punct_seq_sim)
+        
+        # Formatting habits
+        simple_features = [
+            'capitalization_ratio', 'all_caps_ratio', 'contraction_ratio',
+            'question_ratio', 'exclamation_ratio'
+        ]
+        for feature in simple_features:
             target_val = getattr(target, feature, 0.0)
             corpus_val = getattr(corpus, feature, 0.0)
-            # Use a stable normalization method
             if max(target_val, corpus_val) > 0:
                 score = 1.0 - abs(target_val - corpus_val) / max(target_val, corpus_val)
                 scores.append(score)
+        
+        return np.mean(scores) if scores else 0.0
+
+    def _calculate_lexical_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
+        """
+        OVERHAULED: Calculate lexical similarity focusing on vocabulary complexity patterns.
+        This measures writing sophistication, not topic.
+        """
+        scores = []
+        
+        # Basic lexical measures
+        simple_features = ['avg_word_length', 'avg_sentence_length', 
+                          'vocab_richness', 'hapax_legomena_ratio', 'yule_k']
+        for feature in simple_features:
+            target_val = getattr(target, feature, 0.0)
+            corpus_val = getattr(corpus, feature, 0.0)
+            if max(target_val, corpus_val) > 0:
+                score = 1.0 - abs(target_val - corpus_val) / max(target_val, corpus_val)
+                scores.append(score)
+        
+        # Word length distribution (more nuanced than just average)
+        word_len_sim = self._calculate_distribution_similarity(
+            target.word_length_distribution,
+            corpus.word_length_distribution
+        )
+        scores.extend([word_len_sim] * 2)  # Double weight - very informative
+        
         return np.mean(scores) if scores else 0.0
 
     def _calculate_syntactic_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
-        """Calculate syntactic similarity using a stable feature-wise comparison."""
-        # Compare POS Distribution
-        pos_sim = self._calculate_distribution_similarity(target.pos_distribution, corpus.pos_distribution)
+        """
+        OVERHAULED: Calculate syntactic similarity focusing on sentence structure patterns.
+        Captures HOW someone structures sentences, not what they say.
+        """
+        scores = []
         
-        # Compare sentence complexity
-        complexity_score = 0.0
+        # POS distribution (basic patterns)
+        pos_sim = self._calculate_distribution_similarity(
+            target.pos_distribution, 
+            corpus.pos_distribution
+        )
+        scores.append(pos_sim)
+        
+        # POS bigrams (more specific structural patterns) - MOST RELIABLE
+        pos_bigram_sim = self._calculate_distribution_similarity(
+            target.pos_bigrams,
+            corpus.pos_bigrams
+        )
+        scores.extend([pos_bigram_sim] * 2)  # Double weight - very reliable
+        
+        # POS trigrams (very specific patterns)
+        pos_trigram_sim = self._calculate_distribution_similarity(
+            target.pos_trigrams,
+            corpus.pos_trigrams
+        )
+        scores.append(pos_trigram_sim)
+        
+        # Dependency patterns
+        dep_sim = self._calculate_distribution_similarity(
+            target.dependency_patterns,
+            corpus.dependency_patterns
+        )
+        scores.append(dep_sim)
+        
+        # Clause patterns (subordinate vs coordinate)
+        clause_sim = self._calculate_distribution_similarity(
+            target.clause_patterns,
+            corpus.clause_patterns
+        )
+        scores.append(clause_sim)
+        
+        # Sentence complexity
         if max(target.sentence_complexity, corpus.sentence_complexity) > 0:
             complexity_score = 1.0 - abs(target.sentence_complexity - corpus.sentence_complexity) / max(target.sentence_complexity, corpus.sentence_complexity)
-            
-        return np.mean([pos_sim, complexity_score]) if [pos_sim, complexity_score] else 0.0
-
-    def _calculate_stylistic_similarity(self, target: StyleVector, corpus: StyleVector) -> float:
-        """Calculate stylistic similarity using a stable feature-wise comparison."""
-        features = ['modal_verb_usage', 'passive_voice_ratio', 'question_ratio', 'exclamation_ratio', 'capitalization_ratio']
-        scores = []
-        for feature in features:
-            target_val = getattr(target, feature, 0.0)
-            corpus_val = getattr(corpus, feature, 0.0)
-            if max(target_val, corpus_val) > 0:
-                score = 1.0 - abs(target_val - corpus_val) / max(target_val, corpus_val)
-                scores.append(score)
+            scores.append(complexity_score)
         
-        # Add distribution similarities
-        scores.append(self._calculate_distribution_similarity(target.function_word_ratios, corpus.function_word_ratios))
-        scores.append(self._calculate_distribution_similarity(target.punctuation_ratios, corpus.punctuation_ratios))
-
+        # Sentence length variance (writing consistency)
+        if max(target.sentence_length_variance, corpus.sentence_length_variance) > 0:
+            variance_score = 1.0 - abs(target.sentence_length_variance - corpus.sentence_length_variance) / max(target.sentence_length_variance, corpus.sentence_length_variance)
+            scores.append(variance_score)
+            
         return np.mean(scores) if scores else 0.0
-    
+
 
     
     def _calculate_semantic_similarity(self, vec1: List[float], vec2: List[float], dim1: int, dim2: int) -> float:
@@ -1759,23 +2241,52 @@ class ForensicLinguisticsService:
         }
     
     def _generate_recommendations(self, similarity: SimilarityScore) -> List[str]:
-        """Generate recommendations based on analysis results"""
+        """OVERHAULED: Generate recommendations based on stylometric analysis"""
         recommendations = []
         
+        # Overall assessment
+        if similarity.overall_score > 0.7 and similarity.confidence > 0.75:
+            recommendations.append("✅ STRONG MATCH: High confidence authorship match across multiple stylometric features")
+        elif similarity.overall_score > 0.5 and similarity.confidence > 0.6:
+            recommendations.append("✓ PROBABLE MATCH: Moderate to high confidence - stylistic patterns align")
+        elif similarity.overall_score < 0.3:
+            recommendations.append("⚠️ WEAK MATCH: Low similarity - likely different author")
+        
+        # Confidence warnings
         if similarity.confidence < 0.5:
-            recommendations.append("Low confidence in results - consider building larger corpus")
+            recommendations.append("⚠️ Low confidence - consider building a larger corpus for more reliable results")
         
-        if similarity.semantic_score < 0.3:
-            recommendations.append("Semantic similarity is low - statement content differs significantly from corpus")
+        # Function words (most reliable indicator)
+        if similarity.function_word_score > 0.8:
+            recommendations.append("💪 Strong function word similarity - highly reliable indicator of same author")
+        elif similarity.function_word_score < 0.4:
+            recommendations.append("⚠️ Function word patterns differ significantly - strong indicator of different author")
         
+        # Syntactic patterns
         if similarity.syntactic_score > 0.7:
-            recommendations.append("Strong syntactic similarity detected - sentence structure patterns match")
+            recommendations.append("✓ Strong syntactic similarity - sentence structure patterns match")
+        elif similarity.syntactic_score < 0.4:
+            recommendations.append("⚠️ Sentence structure patterns differ - possible different author")
         
-        if similarity.lexical_score < 0.4:
-            recommendations.append("Vocabulary usage differs from typical patterns")
+        # Character patterns
+        if similarity.character_ngram_score > 0.75:
+            recommendations.append("✓ Character-level patterns match - unconscious writing habits align")
         
-        if similarity.overall_score > 0.6 and similarity.confidence > 0.7:
-            recommendations.append("High confidence match - stylometric patterns strongly align")
+        # Punctuation habits
+        if similarity.punctuation_score > 0.7:
+            recommendations.append("✓ Punctuation and formatting habits match")
+        
+        # Topic mismatch warning
+        if similarity.topic_mismatch_warning:
+            recommendations.append(f"ℹ️ {similarity.topic_mismatch_warning}")
+            recommendations.append("Note: Low topic similarity is expected for cross-domain analysis")
+        
+        # Discrepancy warnings
+        if similarity.function_word_score > 0.7 and similarity.syntactic_score < 0.4:
+            recommendations.append("⚠️ MIXED SIGNALS: Function words match but syntax differs - investigate further")
+        
+        if similarity.overall_score < 0.5 and similarity.function_word_score > 0.6:
+            recommendations.append("⚠️ Function words match despite low overall score - possible same author with different context")
         
         return recommendations
     
@@ -1844,18 +2355,33 @@ class ForensicLinguisticsService:
             # Use the .embed() method on the remote model proxy
             result = model_proxy.embed(text[:4096]) # Increased context for larger models
             
-            if result and result.get("status") == "success":
+            # Handle both dict response (remote) and list response (direct GGUF)
+            if isinstance(result, list):
+                # Direct list response from GGUF model
+                embeddings = result
+            elif result and isinstance(result, dict) and result.get("status") == "success":
+                # Dict response from remote model
                 embeddings = result.get("embedding", [])
-                
-                # Flattening Logic: Handle cases where the model returns a list of lists
-                if embeddings and isinstance(embeddings[0], list):
-                    return [item for sublist in embeddings for item in sublist]
-                else:
-                    return embeddings
             else:
-                error_msg = result.get('error', 'Unknown error')
+                # Error case
+                error_msg = result.get('error', 'Unknown error') if isinstance(result, dict) else 'Invalid response'
                 logger.warning(f"ModelManager remote embedding failed for {model_info['name']}: {error_msg}")
                 return []
+            
+            # Flattening Logic: Handle cases where the model returns a list of lists
+            if embeddings and len(embeddings) > 0 and isinstance(embeddings[0], list):
+                embeddings = [item for sublist in embeddings for item in sublist]
+            
+            # Normalize embeddings for qwen3 models (critical for similarity tasks)
+            if embeddings and model_info['name'] and 'qwen3' in model_info['name'].lower():
+                import numpy as np
+                embeddings_array = np.array(embeddings)
+                norm = np.linalg.norm(embeddings_array)
+                if norm > 0:
+                    embeddings = (embeddings_array / norm).tolist()
+                    logger.debug(f"Normalized qwen3 embedding vector (norm was {norm:.4f})")
+            
+            return embeddings
 
         except Exception as e:
             model_name = self.model_manager.model_purposes.get('forensic_embeddings', {}).get('name', 'unknown model')

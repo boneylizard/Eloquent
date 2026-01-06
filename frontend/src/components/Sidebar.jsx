@@ -18,9 +18,12 @@ import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '.
 import DeleteConfirmDialog from './ui/DeleteConfirmDialog';
 
 const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => {
-  const { conversations, activeConversation, createNewConversation, setActiveConversation, setAvailableModels, availableModels, API_URL, deleteConversation, autoDeleteChats, setAutoDeleteChats  } = useApp();
+  const { conversations, activeConversation, createNewConversation, setActiveConversation, setAvailableModels, availableModels, API_URL, deleteConversation, deleteAllConversations, autoDeleteChats, setAutoDeleteChats  } = useApp();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [chatToDelete, setChatToDelete] = useState(null);
+  const [deleteDialogPosition, setDeleteDialogPosition] = useState({ x: 0, y: 0 });
+  const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
+  const [deleteAllPosition, setDeleteAllPosition] = useState({ x: 0, y: 0 });
   const [loadedModels, setLoadedModels] = useState([]);
 
   const [selectedGpu, setSelectedGpu] = useState("0");
@@ -105,10 +108,27 @@ useEffect(() => {
         <div className="flex flex-col flex-1 overflow-hidden">
           {activeTab === 'chat' && (
             <>
-              <div className="p-4 border-b">
+              <div className="p-4 border-b space-y-2">
                 <Button variant="default" className="w-full justify-start" onClick={handleNewChat}>
                   + New Chat
                 </Button>
+                {conversations.length > 0 && (
+                  <Button 
+                    variant="outline" 
+                    className="w-full justify-start text-red-500 hover:text-red-700 hover:bg-red-50"
+                    onClick={(e) => {
+                      setDeleteAllPosition({ x: e.clientX, y: e.clientY });
+                      setDeleteAllDialogOpen(true);
+                    }}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2">
+                      <path d="M3 6h18"></path>
+                      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                    </svg>
+                    Delete All Chats
+                  </Button>
+                )}
               </div>
 
  <ScrollArea className="flex-1">
@@ -140,6 +160,11 @@ useEffect(() => {
             if (autoDeleteChats) {
               deleteConversation(conv.id);
             } else {
+              // Use clientX/clientY - actual mouse position on screen
+              setDeleteDialogPosition({ 
+                x: e.clientX, 
+                y: e.clientY 
+              });
               setChatToDelete(conv);
               setDeleteDialogOpen(true);
             }
@@ -179,22 +204,6 @@ useEffect(() => {
     )}
   </div>
 </ScrollArea>
-
-              <DeleteConfirmDialog 
-  isOpen={deleteDialogOpen}
-  onClose={() => setDeleteDialogOpen(false)}
-  onConfirm={(dontAskAgain) => {
-    if (chatToDelete) {
-      deleteConversation(chatToDelete.id);
-      if (dontAskAgain) {
-        setAutoDeleteChats(true);
-      }
-    }
-    setChatToDelete(null);
-    setDeleteDialogOpen(false); // Make sure dialog closes after confirmation
-  }}
-  title={chatToDelete?.name || ''}
-/>
             </>
           )}
 
@@ -236,6 +245,36 @@ useEffect(() => {
           <ChevronRight className="h-5 w-5" />
         </Button>
       )}
+
+      {/* Render dialog at root level, outside all containers */}
+      <DeleteConfirmDialog 
+        isOpen={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        onConfirm={(dontAskAgain) => {
+          if (chatToDelete) {
+            deleteConversation(chatToDelete.id);
+            if (dontAskAgain) {
+              setAutoDeleteChats(true);
+            }
+          }
+          setChatToDelete(null);
+          setDeleteDialogOpen(false);
+        }}
+        title={chatToDelete?.name || ''}
+        position={deleteDialogPosition}
+      />
+
+      {/* Delete All confirmation dialog */}
+      <DeleteConfirmDialog 
+        isOpen={deleteAllDialogOpen}
+        onClose={() => setDeleteAllDialogOpen(false)}
+        onConfirm={() => {
+          deleteAllConversations();
+          setDeleteAllDialogOpen(false);
+        }}
+        title={`all ${conversations.length} chats`}
+        position={deleteAllPosition}
+      />
     </>
   );
 };

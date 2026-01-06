@@ -7,10 +7,102 @@ import re  # <-- Added missing import for regex
 from typing import List, AsyncGenerator, Dict, Any, Optional, Union
 from fastapi import HTTPException # <-- Added missing import
 import random
+
+def _normalize_completion(c: Any) -> Dict[str, Any]:
+    """
+    Normalize various completion return shapes to:
+      {"choices":[{"text": "..."}], "usage":{...}} minimally.
+    Accepts dict, JSON-string, plain string, bytes.
+    """
+    if c is None:
+        return {"choices": []}
+
+    # bytes → str
+    if isinstance(c, (bytes, bytearray)):
+        try:
+            c = c.decode("utf-8", errors="ignore")
+        except Exception:
+            return {"choices": []}
+
+    # JSON-string → dict, or plain string → wrap
+    if isinstance(c, str):
+        c_str = c.strip()
+        if c_str.startswith("{") or c_str.startswith("["):
+            try:
+                c = json.loads(c_str)
+            except Exception:
+                # fall through and wrap as text
+                pass
+        if isinstance(c, str):
+            return {"choices": [{"text": c}]}
+
+    # Already a dict but maybe not OpenAI shape
+    if isinstance(c, dict):
+        if "choices" in c and isinstance(c["choices"], list):
+            return c
+        # Llama.cpp / custom services sometimes return {'content': '...'} or {'text': '...'}
+        if "content" in c and isinstance(c["content"], str):
+            return {"choices": [{"text": c["content"]}], **{k:v for k,v in c.items() if k not in ("content",)}}
+        if "text" in c and isinstance(c["text"], str):
+            return {"choices": [{"text": c["text"]}], **{k:v for k,v in c.items() if k not in ("text",)}}
+
+    # Unknown shape → empty (avoid TypeError)
+    return {"choices": []}
+
+def _extract_text_from_chunk(c: Any) -> str:
+    """
+    Given any streaming chunk shape (dict / str / bytes) return ONLY the text/content.
+    Handles OpenAI-style streaming deltas, llama.cpp/ctransformers shapes, and plain strings.
+    Returns '' on anything non-textual.
+    """
+    try:
+        # bytes → str
+        if isinstance(c, (bytes, bytearray)):
+            c = c.decode("utf-8", errors="ignore")
+
+        # JSON string → dict
+        if isinstance(c, str):
+            s = c.strip()
+            if s.startswith("{") or s.startswith("["):
+                try:
+                    c = json.loads(s)
+                except Exception:
+                    # if it's a plain string chunk, return it as-is
+                    return c
+            else:
+                # plain text chunk
+                return c
+
+        # dict-like chunks
+        if isinstance(c, dict):
+            # OpenAI Chat stream: {"choices":[{"delta":{"content":"..."}}], ...}
+            if "choices" in c and isinstance(c["choices"], list) and c["choices"]:
+                ch = c["choices"][0]
+                if isinstance(ch, dict):
+                    delta = ch.get("delta")
+                    if isinstance(delta, dict):
+                        return delta.get("content", "") or ""
+                    # Some providers use {"choices":[{"text":"..."}]}
+                    if "text" in ch and isinstance(ch["text"], str):
+                        return ch["text"]
+                    # Some non-streaming shapes
+                    msg = ch.get("message")
+                    if isinstance(msg, dict):
+                        return msg.get("content", "") or ""
+
+            # Non-OpenAI variants
+            if "text" in c and isinstance(c["text"], str):
+                return c["text"]
+            if "content" in c and isinstance(c["content"], str):
+                return c["content"]
+
+        # Anything else → nothing
+        return ""
+    except Exception:
+        return ""   
 # Assume ModelManager is imported correctly if needed for type hinting,
 # but it's primarily passed as an argument.
 # from .model_manager import ModelManager
-
 logging.basicConfig(
     level=logging.DEBUG, 
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -206,396 +298,14 @@ async def generate_text(
                 )
                 generated_text = completion["choices"][0]["text"]
                 logger.debug(f"[inference] RAW MODEL OUTPUT >>>\n{generated_text}\n<<<")
-
-                # NEW CODE - Filter for instruction leakage - MOVED HERE
-                if False and generated_text and isinstance(generated_text, str):
-                    # Check for common instruction leakage patterns
-                    instruction_patterns = [
-                        "and include all relevant information in the answer",
-                        "and include all information in your response",
-                        "be concise and clear",
-                        "please provide a detailed explanation",
-                        "please summarize the key points",
-                        "please provide a comprehensive answer",
-                        "please provide a detailed response",
-                        "please provide a complete answer",
-                        "please provide a thorough explanation",
-                        "remember to address all parts of the question",
-                        "please provide a complete response",
-                        "please provide a detailed summary",
-                        "please provide a thorough summary",
-                        "please provide a comprehensive summary",
-                        "please provide a complete explanation",
-                        "please provide a thorough answer",
-                        "please provide a detailed analysis",
-                        "please provide a comprehensive analysis",
-                        "please provide a complete analysis",
-                        "please provide a thorough analysis",
-                        "please provide a detailed overview",
-                        "please provide a comprehensive overview",
-                        "please provide a complete overview",
-                        "please provide a thorough overview",
-                        "please provide a detailed breakdown",
-                        "and include all relevant details",
-                        "and include all relevant context",
-                        "and include all relevant examples",
-                        "and include all relevant data",
-                        "and include all relevant information",
-                        "and include all relevant facts",
-                        "and include all relevant evidence",
-                        "and include all relevant arguments",
-                        "and include all relevant points",
-                        "and include all relevant insights",
-                        "and include all relevant perspectives",
-                        "and include all relevant considerations",
-                        "and include all relevant implications",
-                        "and include all relevant conclusions",
-                        "and include all relevant recommendations",
-                        "and include all relevant suggestions",
-                        "and include all relevant observations",
-                        "and include all relevant interpretations",
-                        "and include all relevant analyses",
-                        "and include all relevant evaluations",
-                        "and include all relevant assessments",
-                        "and include all relevant judgments",
-                        "and include all relevant critiques",
-                        "and include all relevant reviews",
-                        "and include all relevant feedback",
-                        "and include all relevant responses",
-                        "and include all relevant reactions",
-                        "and include all relevant comments",
-                        "and include all relevant notes",
-                        "and include all relevant annotations",
-                        "and include all relevant references",
-                        "to include all relevant information",
-                        "to include all relevant context",
-                        "to include all relevant examples",
-                        "to include all relevant data",
-                        "to include all relevant information",
-                        "to include all relevant facts",
-                        "to include all relevant evidence",
-                        "to include all relevant arguments",
-                        "to include all relevant points",
-                        "to include all relevant insights",
-                        "to include all relevant perspectives",
-                        "to include all relevant considerations",
-                        "to include all relevant implications",
-                        "to include all relevant conclusions",
-                        "to include all relevant recommendations",
-                        "to include all relevant suggestions",
-                        "to include all relevant observations",
-                        "to include all relevant interpretations",
-                        "to include all relevant analyses",
-                        "to include all relevant evaluations",
-                        "to include all relevant assessments",
-                        "to include all relevant judgments",
-                        "to indicate the end of the response",
-                        "to indicate the end of the answer",
-                        "to indicate the end of the text",
-                        "to indicate the end of the output",
-                        "to indicate the end of the message",
-                        "to indicate the end of the conversation",
-                        "to indicate the end of the discussion",
-                        "to indicate the end of the explanation",
-                        "to indicate the end of the summary",
-                        "to indicate the end of the analysis",
-                        "to indicate the end of the overview",
-                        "to indicate the end of the breakdown",
-                        "to indicate the end of the response",
-                        "to indicate the end of the answer",
-                        "to indicate the end of the text",
-                        "to indicate the end of the output",
-                        "to indicate the end of the message",
-                        "to indicate the end of the conversation",
-                        "to indicate the end of the discussion",
-                        "to indicate the end of the explanation",
-                        "to indicate the end of the summary",
-                        "to indicate the end of the analysis",
-                        "to indicate the end of the overview",
-                        "to indicate the end of the breakdown",
-                        "to indicate the end of the response",
-                        "to indicate the end of the answer",
-                        "to indicate the end of the text",
-                        "to indicate the end of the output",
-                        "to indicate the end of the message",
-                        "to indicate the end of the conversation",
-                        "to indicate the end of the discussion",
-                        "to indicate the end of the explanation",
-                        "to indicate the end of the summary",
-                        "to indicate the end of the analysis",
-                        "to indicate the end of the overview",
-                        "to indicate the end of the breakdown",
-                        "be sure to include all relevant information",
-                        "be sure to include all relevant context",
-                        "be sure to include all relevant examples",
-                        "be sure to include all relevant data",
-                        "be sure to include all relevant information",
-                        "be sure to include all relevant facts",
-                        "be sure to include all relevant evidence",
-                        "be sure to include all relevant arguments",
-                        "be sure to include all relevant points",
-                        "be sure to include all relevant insights",
-                        "be sure to include all relevant perspectives",
-                        "be sure to include all relevant considerations",
-                        "be sure to include all relevant implications",
-                        "be sure to include all relevant conclusions",
-                        "be sure to include all relevant recommendations",
-                        "be sure to include all relevant suggestions",
-                        "be sure to include all relevant observations",
-                        "be sure to include all relevant interpretations",
-                        "be sure to include all relevant analyses",
-                    ]
-                    
-                    # Check if the text starts with any of these patterns
-                    for pattern in instruction_patterns:
-                        if generated_text.lower().startswith(pattern.lower()):
-                            # Split at the first period and take everything after
-                            parts = generated_text.split('.', 1)
-                            if len(parts) > 1 and parts[1].strip():
-                                logger.info(f"[inference] Filtered instruction leakage: {pattern}")
-                                generated_text = parts[1].strip()
-                                break
-                    
-                    # 2. Then check regex patterns for broader coverage
-                    regex_patterns = [
-                        # Pattern for "and include/to include all relevant..."
-                        r"^(?:and|to|be sure to) include all (?:relevant|important|necessary|detailed|complete).*?\.(\s|$)",
-                        
-                        # Pattern for "please provide a..."
-                        r"^please provide a (?:detailed|comprehensive|complete|thorough).*?\.(\s|$)",
-                        
-                        # Pattern for "please summarize..." and similar
-                        r"^please (?:summarize|explain|describe|list|discuss|analyze|evaluate|assess).*?\.(\s|$)",
-                        
-                        # Pattern for "remember to address..."
-                        r"^remember to (?:address|include|consider|mention|discuss).*?\.(\s|$)",
-                        
-                        # Pattern for "be concise..."
-                        r"^be (?:concise|clear|detailed|thorough|comprehensive).*?\.(\s|$)",
-                        
-                        # Pattern for "to indicate the end..."
-                        r"^to (?:indicate|signal|mark|show|signify) the end.*?\.(\s|$)"
-                    ]
-                    
-                    # Check if the text starts with any of these patterns
-                    for pattern in regex_patterns:
-                        match = re.search(pattern, generated_text, re.IGNORECASE)
-                        if match:
-                            # Get the matched text
-                            matched_prefix = match.group(0)
-                            logger.info(f"[inference] Filtered pattern instruction: {matched_prefix}")
-                            
-                            # Remove the matched prefix
-                            generated_text = generated_text[len(matched_prefix):].strip()
-                            
-                            # If we're left with nothing, break
-                            if not generated_text:
-                                break
-                                
-                            # If the instruction was followed by another sentence, keep checking
-                            if re.match(r"^[A-Z]", generated_text):
-                                continue
-                            break
-                
                 token_count = completion["usage"]["completion_tokens"]
             elif 'ctransformers' in backend:
-                 generated_text = model(
+                generated_text = model(
                     prompt, max_new_tokens=max_tokens, temperature=temperature,
                     top_p=top_p, top_k=top_k, repetition_penalty=repetition_penalty,
                     stop=stop_sequences or [], echo=False
-                 )
-                 
-                 # NEW CODE - Filter for instruction leakage - MOVED HERE TOO
-                 if False and generated_text and isinstance(generated_text, str):
-                    # Check for common instruction leakage patterns
-                    instruction_patterns = [
-                        "and include all relevant information in the answer",
-                        "and include all information in your response",
-                        "be concise and clear",
-                        "please provide a detailed explanation",
-                        "please summarize the key points",
-                        "please provide a comprehensive answer",
-                        "please provide a detailed response",
-                        "please provide a complete answer",
-                        "please provide a thorough explanation",
-                        "remember to address all parts of the question",
-                        "please provide a complete response",
-                        "please provide a detailed summary",
-                        "please provide a thorough summary",
-                        "please provide a comprehensive summary",
-                        "please provide a complete explanation",
-                        "please provide a thorough answer",
-                        "please provide a detailed analysis",
-                        "please provide a comprehensive analysis",
-                        "please provide a complete analysis",
-                        "please provide a thorough analysis",
-                        "please provide a detailed overview",
-                        "please provide a comprehensive overview",
-                        "please provide a complete overview",
-                        "please provide a thorough overview",
-                        "please provide a detailed breakdown",
-                        "and include all relevant details",
-                        "and include all relevant context",
-                        "and include all relevant examples",
-                        "and include all relevant data",
-                        "and include all relevant information",
-                        "and include all relevant facts",
-                        "and include all relevant evidence",
-                        "and include all relevant arguments",
-                        "and include all relevant points",
-                        "and include all relevant insights",
-                        "and include all relevant perspectives",
-                        "and include all relevant considerations",
-                        "and include all relevant implications",
-                        "and include all relevant conclusions",
-                        "and include all relevant recommendations",
-                        "and include all relevant suggestions",
-                        "and include all relevant observations",
-                        "and include all relevant interpretations",
-                        "and include all relevant analyses",
-                        "and include all relevant evaluations",
-                        "and include all relevant assessments",
-                        "and include all relevant judgments",
-                        "and include all relevant critiques",
-                        "and include all relevant reviews",
-                        "and include all relevant feedback",
-                        "and include all relevant responses",
-                        "and include all relevant reactions",
-                        "and include all relevant comments",
-                        "and include all relevant notes",
-                        "and include all relevant annotations",
-                        "and include all relevant references",
-                        "to include all relevant information",
-                        "to include all relevant context",
-                        "to include all relevant examples",
-                        "to include all relevant data",
-                        "to include all relevant information",
-                        "to include all relevant facts",
-                        "to include all relevant evidence",
-                        "to include all relevant arguments",
-                        "to include all relevant points",
-                        "to include all relevant insights",
-                        "to include all relevant perspectives",
-                        "to include all relevant considerations",
-                        "to include all relevant implications",
-                        "to include all relevant conclusions",
-                        "to include all relevant recommendations",
-                        "to include all relevant suggestions",
-                        "to include all relevant observations",
-                        "to include all relevant interpretations",
-                        "to include all relevant analyses",
-                        "to include all relevant evaluations",
-                        "to include all relevant assessments",
-                        "to include all relevant judgments",
-                        "to indicate the end of the response",
-                        "to indicate the end of the answer",
-                        "to indicate the end of the text",
-                        "to indicate the end of the output",
-                        "to indicate the end of the message",
-                        "to indicate the end of the conversation",
-                        "to indicate the end of the discussion",
-                        "to indicate the end of the explanation",
-                        "to indicate the end of the summary",
-                        "to indicate the end of the analysis",
-                        "to indicate the end of the overview",
-                        "to indicate the end of the breakdown",
-                        "to indicate the end of the response",
-                        "to indicate the end of the answer",
-                        "to indicate the end of the text",
-                        "to indicate the end of the output",
-                        "to indicate the end of the message",
-                        "to indicate the end of the conversation",
-                        "to indicate the end of the discussion",
-                        "to indicate the end of the explanation",
-                        "to indicate the end of the summary",
-                        "to indicate the end of the analysis",
-                        "to indicate the end of the overview",
-                        "to indicate the end of the breakdown",
-                        "to indicate the end of the response",
-                        "to indicate the end of the answer",
-                        "to indicate the end of the text",
-                        "to indicate the end of the output",
-                        "to indicate the end of the message",
-                        "to indicate the end of the conversation",
-                        "to indicate the end of the discussion",
-                        "to indicate the end of the explanation",
-                        "to indicate the end of the summary",
-                        "to indicate the end of the analysis",
-                        "to indicate the end of the overview",
-                        "to indicate the end of the breakdown",
-                        "be sure to include all relevant information",
-                        "be sure to include all relevant context",
-                        "be sure to include all relevant examples",
-                        "be sure to include all relevant data",
-                        "be sure to include all relevant information",
-                        "be sure to include all relevant facts",
-                        "be sure to include all relevant evidence",
-                        "be sure to include all relevant arguments",
-                        "be sure to include all relevant points",
-                        "be sure to include all relevant insights",
-                        "be sure to include all relevant perspectives",
-                        "be sure to include all relevant considerations",
-                        "be sure to include all relevant implications",
-                        "be sure to include all relevant conclusions",
-                        "be sure to include all relevant recommendations",
-                        "be sure to include all relevant suggestions",
-                        "be sure to include all relevant observations",
-                        "be sure to include all relevant interpretations",
-                        "be sure to include all relevant analyses",
-                    ]
-                    
-                    # Check if the text starts with any of these patterns
-                    for pattern in instruction_patterns:
-                        if generated_text.lower().startswith(pattern.lower()):
-                            # Split at the first period and take everything after
-                            parts = generated_text.split('.', 1)
-                            if len(parts) > 1 and parts[1].strip():
-                                logger.info(f"[inference] Filtered instruction leakage: {pattern}")
-                                generated_text = parts[1].strip()
-                                break
-                    
-                    # 2. Then check regex patterns for broader coverage
-                    regex_patterns = [
-                        # Pattern for "and include/to include all relevant..."
-                        r"^(?:and|to|be sure to) include all (?:relevant|important|necessary|detailed|complete).*?\.(\s|$)",
-                        
-                        # Pattern for "please provide a..."
-                        r"^please provide a (?:detailed|comprehensive|complete|thorough).*?\.(\s|$)",
-                        
-                        # Pattern for "please summarize..." and similar
-                        r"^please (?:summarize|explain|describe|list|discuss|analyze|evaluate|assess).*?\.(\s|$)",
-                        
-                        # Pattern for "remember to address..."
-                        r"^remember to (?:address|include|consider|mention|discuss).*?\.(\s|$)",
-                        
-                        # Pattern for "be concise..."
-                        r"^be (?:concise|clear|detailed|thorough|comprehensive).*?\.(\s|$)",
-                        
-                        # Pattern for "to indicate the end..."
-                        r"^to (?:indicate|signal|mark|show|signify) the end.*?\.(\s|$)"
-                    ]
-                    
-                    # Check if the text starts with any of these patterns
-                    for pattern in regex_patterns:
-                        match = re.search(pattern, generated_text, re.IGNORECASE)
-                        if match:
-                            # Get the matched text
-                            matched_prefix = match.group(0)
-                            logger.info(f"[inference] Filtered pattern instruction: {matched_prefix}")
-                            
-                            # Remove the matched prefix
-                            generated_text = generated_text[len(matched_prefix):].strip()
-                            
-                            # If we're left with nothing, break
-                            if not generated_text:
-                                break
-                                
-                            # If the instruction was followed by another sentence, keep checking
-                            if re.match(r"^[A-Z]", generated_text):
-                                continue
-                            break
-                 
-                 token_count = len(generated_text.split()) # Rough estimate
+                )
+                token_count = len(generated_text.split()) # Rough estimate
             else:
                 raise ValueError(f"Unknown backend for generation: {backend}")
 
@@ -636,28 +346,9 @@ async def generate_text_streaming(
     """
     Stream text generation from a model.
     Ensures the correct model instance and context length are used on the specified GPU.
-
-    Args:
-        model_manager: The model manager instance
-        model_name: Name of the model to use
-        prompt: Input text prompt
-        max_tokens: Maximum tokens to generate (-1 for auto-sizing)
-        temperature: Controls randomness, higher = more random
-        top_p: Cumulative probability cutoff for token selection
-        top_k: Number of highest probability tokens to consider
-        repetition_penalty: Penalty for repeating tokens
-        stop_sequences: List of sequences at which to stop generation
-        gpu_id: Which GPU to use
-        skip_local_check: If True, assume model is already loaded
-        extract_memories: If True, extract memories from prompt
-        echo: Whether to echo the prompt in the output
-        **kwargs: Additional parameters like n_ctx
-
-    Yields:
-        Generated text tokens one by one
     """
     start_time = time.time()
-    token_count = 0
+    emitted_tokens = 0
     
     if stop_sequences is None:
         stop_sequences = []
@@ -668,13 +359,10 @@ async def generate_text_streaming(
     model = None
     
     # --- AUTO-SIZE max_tokens from the loaded model's n_ctx ---
-    # Do this early, so both memory extraction and streaming use the same value
     if max_tokens < 0:
         model_info = model_manager.loaded_models.get(model_key, {})
-        # Default to 4096 if not found
         full_ctx = model_info.get("n_ctx", 4096)
         safety_margin = 50
-        # Ensure we leave room for prompt and any stop tokens
         max_tokens = max(full_ctx - safety_margin, 1)
         logger.info(f"[inference] Autosized max_tokens to {max_tokens} based on n_ctx={full_ctx}")
 
@@ -691,7 +379,8 @@ async def generate_text_streaming(
             except ValueError as e:
                 error_msg = f"Model '{model_name}' required for testing was not pre-loaded on GPU {target_gpu_id}."
                 logger.error(f"[inference] CRITICAL: {error_msg} Error: {e}")
-                yield f"Error: {error_msg}"
+                yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                yield "data: [DONE]\n\n"
                 return
 
         # For all other requests (e.g., normal chat), use the existing check-and-load logic.
@@ -702,7 +391,6 @@ async def generate_text_streaming(
             needs_loading = not is_loaded or not context_matches
 
             if needs_loading:
-                # Model needs loading or reloading
                 reason = "not loaded" if not is_loaded else f"context mismatch (current={current_context}, intended={intended_n_ctx})"
                 logger.info(f"[inference] Model {model_name} on GPU {target_gpu_id} {reason}, loading now for streaming.")
                 try:
@@ -711,10 +399,10 @@ async def generate_text_streaming(
                 except Exception as e:
                     error_msg = f"Failed to load model {model_name} on GPU {target_gpu_id}: {e}"
                     logger.error(f"[inference] {error_msg}")
-                    yield f"Error: {error_msg}"
+                    yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                    yield "data: [DONE]\n\n"
                     return
             else:
-                # Model already loaded with correct context
                 logger.info(f"[inference] Using already loaded model {model_name} on GPU {target_gpu_id} for streaming.")
                 model = model_manager.get_model(model_name, target_gpu_id)
 
@@ -722,7 +410,8 @@ async def generate_text_streaming(
         if model is None:
             error_msg = f"Failed to get model object for {model_name} after all checks"
             logger.error(f"[inference] {error_msg}")
-            yield f"Error: {error_msg}"
+            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+            yield "data: [DONE]\n\n"
             return
 
         # Get backend type for generation method
@@ -736,19 +425,17 @@ async def generate_text_streaming(
             memory_extraction_prompt = f"Analyze the following text and extract key information for memory. Format as JSON array.\nText:\n{prompt}"
             memory_tokens = ""
             
-            # Use streaming to collect all tokens for memory extraction
-            memory_generator = model.create_completion(
+            # Use non-streaming for memory extraction (ModelService handles this)
+            memory_result = model.create_completion(
                 memory_extraction_prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
-                repeat_penalty=repetition_penalty, stop=stop_sequences or [], stream=True
+                repeat_penalty=repetition_penalty, stop=stop_sequences or []
             )
             
-            # FIX: Use regular for loop instead of async for
-            for completion in memory_generator:
-                if completion and "choices" in completion and len(completion["choices"]) > 0:
-                    token = completion["choices"][0].get("text", "")
-                    memory_tokens += token
-                    # Let other tasks run
-                    await asyncio.sleep(0)
+            # Process the non-streaming result
+            completion_norm = _normalize_completion(memory_result)
+            choices = completion_norm.get("choices") or []
+            first = choices[0] if choices else {}
+            memory_tokens = first.get("text") or first.get("delta", {}).get("content") or ""
             
             # Process the complete memory text
             extracted_memories = process_model_output(memory_tokens)
@@ -757,69 +444,99 @@ async def generate_text_streaming(
             # Send memories as a special event type
             yield f"event: memory\ndata: {json.dumps({'memories': extracted_memories})}\n\n"
         
-        # --- Main Text Generation Streaming ---
+        # --- Main Text Generation (Streaming) ---
+        def _extract_text(cobj):
+            cobj = _normalize_completion(cobj)
+            choices = cobj.get("choices") or []
+            if not choices:
+                return ""
+            first = choices[0] or {}
+            # Support both llama.cpp text and OpenAI-style delta content
+            return first.get("text") or (first.get("delta") or {}).get("content") or ""
+        
         if 'llama_cpp' in backend:
-            # Create the completion generator
             completion_generator = model.create_completion(
-                prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
-                repeat_penalty=repetition_penalty, stop=stop_sequences or [], stream=True, echo=echo,
-                seed=random.randint(0, 2_147_483_647)
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repetition_penalty,
+                stop=stop_sequences or [],
+                stream=True,
+                echo=echo,
+                seed=random.randint(0, 2_147_483_647),
             )
-            # FIX: Use regular for loop instead of async for
+
+            # IMPORTANT: do NOT iterate the dict; always extract the text
             for completion in completion_generator:
-                if completion and "choices" in completion and len(completion["choices"]) > 0:
-                    token = completion["choices"][0].get("text", "")
-                    if token:
-                        token_count += 1
-                        yield token
-                        # Use sleep(0) to yield control without delay
-                        await asyncio.sleep(0)
-                else:
-                    # Handle unexpected format better
-                    logger.warning(f"[inference] Unexpected completion format: {completion}")
-                    if token_count == 0:
-                        # If this is the first token, send an error
-                        yield "Error: Invalid response format from model"
-                        return
+                piece = _extract_text_from_chunk(completion)
+                if not piece:
+                    await asyncio.sleep(0)
+                    continue
+
+                emitted_tokens += 1
+                # Emit SSE JSON line
+                yield f"data: {json.dumps({'text': piece})}\n\n"
+                await asyncio.sleep(0)
 
         elif 'ctransformers' in backend:
             logger.warning("[inference] Using token-by-token approach for ctransformers streaming")
             try:
-                # Synchronous approach, still blocks the event loop
                 generated_tokens = model.generate(
-                    model.tokenize(prompt), top_k=top_k, top_p=top_p, temperature=temperature,
-                    repetition_penalty=repetition_penalty, max_new_tokens=max_tokens,
-                    stop_sequences=model.tokenize(stop_sequences) if stop_sequences else None, reset=True
+                    model.tokenize(prompt),
+                    top_k=top_k,
+                    top_p=top_p,
+                    temperature=temperature,
+                    repetition_penalty=repetition_penalty,
+                    max_new_tokens=max_tokens,
+                    stop_sequences=model.tokenize(stop_sequences) if stop_sequences else None,
+                    reset=True,
                 )
-                
+
                 for token_id in generated_tokens:
                     token = model.detokenize([token_id])
-                    token_count += 1
-                    yield token
-                    # Yield control but don't add unnecessary delay
+                    if not token:
+                        await asyncio.sleep(0)
+                        continue
+                    emitted_tokens += 1
+                    yield f"data: {json.dumps({'text': token})}\n\n"
                     await asyncio.sleep(0)
             except Exception as ctransformers_err:
                 logger.error(f"[inference] ctransformers streaming error: {ctransformers_err}")
-                yield f"Error: {str(ctransformers_err)}"
+                # Emit SSE error line instead of raw text
+                yield f"data: {json.dumps({'error': str(ctransformers_err)})}\n\n"
+                yield "data: [DONE]\n\n"
                 return
+
         else:
             error_msg = f"Unsupported backend for streaming: {backend}"
             logger.error(f"[inference] {error_msg}")
-            yield f"Error: {error_msg}"
+            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+            yield "data: [DONE]\n\n"
             return
+
+        # Signal end of stream to the frontend
+        yield "data: [DONE]\n\n"
+        return
 
     except HTTPException as http_exc:
         logger.error(f"[inference] HTTPException during streaming: {http_exc.detail}")
-        yield f"Error: {http_exc.detail}"
+        yield f"data: {json.dumps({'error': http_exc.detail})}\n\n"
+        yield "data: [DONE]\n\n"
+
     except ValueError as val_err:
         logger.error(f"[inference] ValueError during streaming: {val_err}")
-        yield f"Error: {str(val_err)}"
+        yield f"data: {json.dumps({'error': str(val_err)})}\n\n"
+        yield "data: [DONE]\n\n"
+
     except Exception as e:
         logger.error(f"[inference] Unexpected error during streaming: {e}", exc_info=True)
-        yield f"Error during generation: {str(e)}"
+        yield f"data: {json.dumps({'error': f'Error during generation: {str(e)}'})}\n\n"
+        yield "data: [DONE]\n\n"
     finally:
         # Guaranteed to execute for metrics
         end_time = time.time()
         time_taken = end_time - start_time
-        tokens_per_second = token_count / time_taken if time_taken > 0 and token_count > 0 else 0
-        logger.info(f"[inference] Streaming completed: {token_count} tokens in {time_taken:.2f}s ({tokens_per_second:.2f} tokens/s)")
+        tokens_per_second = emitted_tokens / time_taken if time_taken > 0 and emitted_tokens > 0 else 0
+        logger.info(f"[inference] Streaming completed: {emitted_tokens} tokens in {time_taken:.2f}s ({tokens_per_second:.2f} tokens/s)")

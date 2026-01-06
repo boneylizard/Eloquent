@@ -10,7 +10,9 @@ import {
   UserCircle,
   BookOpen,
   Zap,
-  Search
+  Search,
+  Code,
+  Fingerprint
 } from 'lucide-react';
 
 const Navbar = ({ toggleSidebar }) => {
@@ -30,7 +32,9 @@ const Navbar = ({ toggleSidebar }) => {
     { id: 'characters', label: 'Characters', icon: <UserCircle className="mr-2 h-4 w-4" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="mr-2 h-4 w-4" /> },
     { id: 'memory', label: 'Memory', icon: <BookOpen className="mr-2 h-4 w-4" /> },
-    { id: 'modeltester', label: 'Model Tester', icon: <Zap className="mr-2 h-4 w-4" /> }
+    { id: 'modeltester', label: 'Model Tester', icon: <Zap className="mr-2 h-4 w-4" /> },
+    { id: 'codeeditor', label: 'Code Editor', icon: <Code className="mr-2 h-4 w-4" /> },
+    { id: 'forensics', label: 'Forensics', icon: <Fingerprint className="mr-2 h-4 w-4" /> }
   ];
 
   return (

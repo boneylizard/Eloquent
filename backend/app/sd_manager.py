@@ -36,8 +36,8 @@ class ADetailerProcessor:
         self.available_models = [f.name for f in model_files]
         logger.info(f"Found {len(self.available_models)} ADetailer models: {self.available_models}")
         
-    def get_detector(self, model_name: str):
-        """Get or load a specific detector model"""
+    def get_detector(self, model_name: str, gpu_id: int = 0):
+        """Get or load a specific detector model on specified GPU"""
         if model_name not in self.detectors:
             if not self.model_directory:
                 # Fallback to ultralytics auto-download
@@ -49,20 +49,26 @@ class ADetailerProcessor:
                     model_path = model_name
                 else:
                     model_path = str(model_path)
-                
+                    
             try:
                 from ultralytics import YOLO
-                self.detectors[model_name] = YOLO(model_path)
-                logger.info(f"Loaded ADetailer model: {model_name}")
+                model = YOLO(model_path)
+                
+                # Force YOLO to use the specified GPU
+                device = f'cuda:{gpu_id}'
+                model.to(device)
+                
+                self.detectors[model_name] = model
+                logger.info(f"Loaded ADetailer model: {model_name} on GPU {gpu_id}")
             except Exception as e:
                 logger.error(f"Failed to load model {model_name}: {e}")
                 raise
                 
         return self.detectors[model_name]
         
-    def detect_faces(self, image: Image.Image, model_name: str = "face_yolov8n.pt", confidence: float = 0.3):
-        """Detect faces using specified model"""
-        detector = self.get_detector(model_name)
+    def detect_faces(self, image: Image.Image, model_name: str = "face_yolov8n.pt", confidence: float = 0.3, gpu_id: int = 0):
+        """Detect faces using specified model on specified GPU"""
+        detector = self.get_detector(model_name, gpu_id=gpu_id)
         results = detector(image, conf=confidence, verbose=False)
         
         boxes = []
@@ -104,10 +110,9 @@ class ADetailerProcessor:
 
 class SDManager:
     def __init__(self):
-        self.loaded_model: Optional[StableDiffusion] = None
-        self.current_model_path: Optional[str] = None
-        self.is_flux_model: bool = False
-        self.is_sdxl_model: bool = False
+        self.loaded_models: Dict[int, StableDiffusion] = {}
+        self.current_model_paths: Dict[int, str] = {}
+        self.model_info: Dict[int, Dict[str, bool]] = {}
         self.adetailer_processor = ADetailerProcessor()
 
         # Set ADetailer model directory from settings
@@ -118,7 +123,7 @@ class SDManager:
                     settings = json.load(f)
                     adetailer_dir = settings.get('adetailerModelDirectory')
                     if adetailer_dir and os.path.isdir(adetailer_dir):
-                        self.adetailer_processor.set_model_directory(adetailer_dir)  # FIXED: was self.adetailer
+                        self.adetailer_processor.set_model_directory(adetailer_dir)
         except Exception as e:
             logger.warning(f"Could not load ADetailer model directory: {e}")        
         logger.info("SDManager initialized with ADetailer support")
@@ -129,28 +134,30 @@ class SDManager:
         """Backward compatibility property"""
         return self.adetailer_processor
 
-    def enhance_image_with_adetailer(self, image_path: str, original_prompt: str = "", 
-                                     face_prompt: str = "", strength: float = 0.35,  # FIXED: Reduced default
-                                     confidence: float = 0.3, model_name: str = "face_yolov8n.pt") -> bytes:
+    def enhance_image_with_adetailer(self, image_path: str, original_prompt: str = "",
+                                     face_prompt: str = "", strength: float = 0.35,
+                                     confidence: float = 0.3, model_name: str = "face_yolov8n_v2.pt", gpu_id: int = 0) -> bytes:
         """
-        STABLE-DIFFUSION.CPP COMPATIBLE - Post-process image with ADetailer face enhancement
+        STABLE-DIFFUSION.CPP COMPATIBLE - Post-process image with ADetailer face enhancement on a specific GPU.
         """
-        if not self.loaded_model:
-            raise RuntimeError("No SD model loaded for ADetailer enhancement")
+        # CRITICAL FIX: Select the model for the requested GPU
+        model_instance = self.loaded_models.get(gpu_id)
+        if not model_instance:
+            raise RuntimeError(f"No SD model loaded for ADetailer enhancement on GPU {gpu_id}")
 
         try:
             original_image = Image.open(image_path)
             logger.info(f"Loaded image for ADetailer enhancement: {original_image.size}")
 
-            # Detect faces
-            face_boxes = self.adetailer_processor.detect_faces(original_image, model_name=model_name, confidence=confidence)
+            # CRITICAL FIX: Use the correct GPU ID for face detection
+            face_boxes = self.adetailer_processor.detect_faces(original_image, model_name=model_name, confidence=confidence, gpu_id=gpu_id)
 
             if not face_boxes:
                 logger.info("No faces detected, returning original image")
                 with open(image_path, 'rb') as f:
                     return f.read()
 
-            logger.info(f"Detected {len(face_boxes)} faces for enhancement using {model_name}")
+            logger.info(f"Detected {len(face_boxes)} faces for enhancement using {model_name} on GPU {gpu_id}")
 
             # Process each face
             enhanced_image = original_image.copy()
@@ -158,39 +165,39 @@ class SDManager:
             for i, box in enumerate(face_boxes):
                 logger.info(f"Processing face {i+1}/{len(face_boxes)}: {box}")
 
-                # 1) Build the per-face prompt – keep ultra-sharp phrasing
+                # 1) Build the per-face prompt
                 if face_prompt.strip():
                     enhance_prompt = f"{face_prompt.strip()}, ultra-sharp 8k facial texture, {original_prompt}"
                 else:
                     enhance_prompt = f"ultra-sharp 8k facial texture, {original_prompt}"
 
-                # 2) Mask: tighter padding so effects stay on the face
+                # 2) Create the mask
                 mask = self.adetailer_processor.create_mask_from_box(
                     original_image.size,
                     box,
-                    padding=12,    # was 16 – stronger focus
-                    blur=24,       # heavier feather for safety
+                    padding=12,
+                    blur=24,
                     dilation=10
                 )
 
-                # 3) Full-frame inpaint with explicit size
+                # 3) Inpaint
                 w = (original_image.width  // 8) * 8
                 h = (original_image.height // 8) * 8
                 logger.info(f"Inpainting full frame at {w}×{h}")
 
-                enhanced_result = self.loaded_model.img_to_img(
+                enhanced_result = model_instance.img_to_img( # Use the correct model_instance
                     prompt=enhance_prompt,
                     image=enhanced_image,
                     mask_image=mask,
-                    strength=0.34,          # bolder redraw, still below “plastic”
+                    strength=0.30,
                     width=w,
                     height=h,
-                    sample_steps=60,        # already maxed
-                    cfg_scale=8.5,          # extra pop in colour / texture
+                    sample_steps=45,
+                    cfg_scale=8.5,
                     sample_method="dpmpp2m"
                 )
                 if enhanced_result and len(enhanced_result) > 0:
-                    enhanced_image = enhanced_result[0]   # replace whole canvas
+                    enhanced_image = enhanced_result[0]
                     logger.info(f"Successfully enhanced face {i+1}")
                 else:
                     logger.warning(f"No result from inpainting for face {i+1}")
@@ -248,15 +255,23 @@ class SDManager:
             'vae_path': str(model_dir / 'ae.safetensors')
         }
         
-    def load_model(self, model_path: str) -> bool:
-        """Load a Stable Diffusion or FLUX model"""
+    def load_model(self, model_path: str, gpu_id: int = 0) -> bool:
+        """Load a Stable Diffusion model on specified GPU"""
         try:
-            logger.info(f"Loading SD model: {model_path}")
-            
-            self.is_flux_model = self._is_flux_model_path(model_path)
-            self.is_sdxl_model = self._is_sdxl_model_path(model_path)
+            logger.info(f"Loading SD model: {model_path} on GPU {gpu_id}")
 
-            if self.is_flux_model:
+            # Set CUDA device for this process
+            import os
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            logger.info(f"Set CUDA_VISIBLE_DEVICES to {gpu_id}")
+
+            is_flux = self._is_flux_model_path(model_path)
+            is_sdxl = self._is_sdxl_model_path(model_path)
+            
+            # Store model info
+            self.model_info[gpu_id] = {'is_flux': is_flux, 'is_sdxl': is_sdxl}
+
+            if is_flux:
                 logger.info("Detected FLUX model, using FLUX initialization")
                 
                 # Get dependency paths
@@ -282,14 +297,14 @@ class SDManager:
                 
                 logger.info("Initializing FLUX model with StableDiffusion library...")
                 try:
-                    self.loaded_model = StableDiffusion(
+                    model_instance = StableDiffusion(
                         diffusion_model_path=model_path,  # Use diffusion_model_path for FLUX
-                            clip_l_path=deps['clip_l_path'],
-                            t5xxl_path=deps['t5xxl_path'],
-                            vae_path=deps['vae_path'],
-                            vae_decode_only=True,  # FLUX optimization
-                            wtype="default",
-                            verbose=True, # Enable verbose for debugging
+                        clip_l_path=deps['clip_l_path'],
+                        t5xxl_path=deps['t5xxl_path'],
+                        vae_path=deps['vae_path'],
+                        vae_decode_only=True,  # FLUX optimization
+                        wtype="default",
+                        verbose=True, # Enable verbose for debugging
                     )
                     logger.info("FLUX StableDiffusion object created successfully")
                 except Exception as flux_init_error:
@@ -298,10 +313,10 @@ class SDManager:
                     logger.error(f"Full traceback: {traceback.format_exc()}")
                     raise flux_init_error
                 
-            elif self.is_sdxl_model:
+            elif is_sdxl:
                 logger.info("Detected SDXL model, using SDXL initialization with CPU VAE")
                 try:
-                    self.loaded_model = StableDiffusion(
+                    model_instance = StableDiffusion(
                         model_path=model_path,
                         wtype="default",
                         verbose=True,
@@ -313,12 +328,12 @@ class SDManager:
                 except TypeError as e:
                     logger.error(f"Parameter error (keep_vae_on_cpu may not be supported): {e}")
                     logger.info("Falling back to standard SDXL initialization...")
-                    self.loaded_model = StableDiffusion(
+                    model_instance = StableDiffusion(
                         model_path=model_path,
                         wtype="default", 
                         verbose=True,
                     )
-                if not self.loaded_model:
+                if not model_instance:
                     logger.error("Failed to initialize SDXL model")
                     return False
 
@@ -326,39 +341,48 @@ class SDManager:
             else:
                 # Standard Stable Diffusion model
                 logger.info("Detected standard SD model, using standard initialization")
-                self.loaded_model = StableDiffusion(
+                model_instance = StableDiffusion(
                     model_path=model_path,
                     wtype="default",
                     verbose=True,
                 )
             
-            self.current_model_path = model_path
-            model_type = 'FLUX' if self.is_flux_model else ('SDXL' if self.is_sdxl_model else 'SD')
-            logger.info(f"{model_type} model loaded successfully: {model_path}")
+            self.loaded_models[gpu_id] = model_instance
+            self.current_model_paths[gpu_id] = model_path
+            
+            model_type = 'FLUX' if is_flux else ('SDXL' if is_sdxl else 'SD')
+            logger.info(f"{model_type} model loaded successfully on GPU {gpu_id}: {model_path}")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to load model {model_path}: {type(e).__name__}: {e}")
+            logger.error(f"Failed to load model {model_path} on GPU {gpu_id}: {type(e).__name__}: {e}")
             import traceback
             logger.error(f"Full error traceback: {traceback.format_exc()}")
-            self.loaded_model = None
-            self.current_model_path = None
-            self.is_flux_model = False
+            self.loaded_models.pop(gpu_id, None)
+            self.current_model_paths.pop(gpu_id, None)
+            self.model_info.pop(gpu_id, None)
             return False
     
     def is_loaded(self) -> bool:
         """Check if a model is currently loaded"""
         return self.loaded_model is not None
     
-    def generate_image(self, prompt: str, **kwargs) -> bytes:
-        """Generate image from prompt and return as bytes."""
-        logger.info(f"Generating image with prompt: {prompt[:50]}...")  # Log first 50 chars of prompt
-        logger.info(f"Using model: {self.current_model_path if self.current_model_path else 'No model loaded'}")
-        logger.info(f"Model type: {'FLUX' if self.is_flux_model else ('SDXL' if self.is_sdxl_model else 'Standard SD')}")
+    def generate_image(self, prompt: str, gpu_id: int = 0, **kwargs) -> bytes:
+        """Generate image from prompt on a specific GPU and return as bytes."""
+        logger.info(f"Generating image with prompt: {prompt[:50]}... on GPU {gpu_id}")
+        
+        # CRITICAL FIX: Select the model for the requested GPU
+        model_instance = self.loaded_models.get(gpu_id)
+        if not model_instance:
+            raise RuntimeError(f"No SD model loaded on GPU {gpu_id}")
+
+        model_info = self.model_info.get(gpu_id, {})
+        is_flux = model_info.get('is_flux', False)
+        is_sdxl = model_info.get('is_sdxl', False)
+
+        logger.info(f"Using model: {self.current_model_paths.get(gpu_id, 'N/A')}")
+        logger.info(f"Model type: {'FLUX' if is_flux else ('SDXL' if is_sdxl else 'Standard SD')}")
         logger.info(f"Additional parameters: {kwargs}")
-        # Ensure a model is loaded
-        if not self.loaded_model:
-            raise RuntimeError("No SD model loaded")
         
         # Extract parameters with FLUX-appropriate defaults
         width = kwargs.get('width', 512)
@@ -366,13 +390,13 @@ class SDManager:
         negative_prompt = kwargs.get('negative_prompt', '')
         seed = kwargs.get('seed', random.randint(0, 2**32 - 1))
         
-        if self.is_flux_model:
+        if is_flux:
             # FLUX-specific settings
             steps = kwargs.get('steps', 4)
             cfg_scale = kwargs.get('cfg_scale', 1.0)
             sample_method = "euler"
             logger.info(f"Generating FLUX image: {steps} steps, cfg_scale={cfg_scale}")
-        elif self.is_sdxl_model:
+        elif is_sdxl:
             # SDXL-specific settings
             steps = kwargs.get('steps', 20)
             cfg_scale = kwargs.get('cfg_scale', 7.0)
@@ -388,11 +412,8 @@ class SDManager:
         # Generate image using the appropriate parameters
         try:
             logger.info(f"Starting generation: {width}x{height}, {steps} steps, cfg={cfg_scale}, seed={seed}")
-            model_type = 'FLUX' if self.is_flux_model else ('SDXL' if self.is_sdxl_model else 'Standard SD')
-            logger.info(f"Model type: {model_type}")
-
             
-            images_list = self.loaded_model.txt_to_img(
+            images_list = model_instance.txt_to_img(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 width=width,

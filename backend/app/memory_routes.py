@@ -182,7 +182,7 @@ async def detect_memory_intent_api(
     
     # Correctly access app state from request_obj
     single_gpu_mode = getattr(request_obj.app.state, "single_gpu_mode", False)
-    target_gpu_id = 0 if single_gpu_mode else 1
+    target_gpu_id = 0 if single_gpu_mode else 1  # Use GPU 0 (3090) for peripheral memory operations
 
     
     
@@ -1088,7 +1088,7 @@ async def model_based_extraction(
     try:
         # Correctly access app state from request_obj
         single_gpu_mode = getattr(request_obj.app.state, "single_gpu_mode", False)
-        target_gpu_id = 0 if single_gpu_mode else 1
+        target_gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
         
         logger.info(f"Using GPU {target_gpu_id} for memory extraction (single_gpu_mode: {single_gpu_mode})")
 

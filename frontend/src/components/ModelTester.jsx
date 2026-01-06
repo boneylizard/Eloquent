@@ -52,12 +52,19 @@ const ModelTester = () => {
     isModelLoading,
     fetchLoadedModels,
   } = useApp();
-
+const { characters, buildSystemPrompt } = useApp();
   // State management
   const [selectedModels, setSelectedModels] = useState([]);
   const [modelGpuAssignments, setModelGpuAssignments] = useState({}); // {modelName: gpuId}
-  const [judgeModelGpu, setJudgeModelGpu] = useState(1);
-  const [selectedTestModelGpu, setSelectedTestModelGpu] = useState(0);
+  const [judgeModelGpu, setJudgeModelGpu] = useState(0); // Default to GPU 0
+  const [selectedTestCharacter, setSelectedTestCharacter] = useState(null);
+const [selectedTestCharacterA, setSelectedTestCharacterA] = useState(null);
+const [selectedTestCharacterB, setSelectedTestCharacterB] = useState(null);
+const [selectedPrimaryJudgeCharacter, setSelectedPrimaryJudgeCharacter] = useState(null);
+const [selectedSecondaryJudgeCharacter, setSelectedSecondaryJudgeCharacter] = useState(null);
+const [customJudgingCriteria, setCustomJudgingCriteria] = useState('');
+
+  const [selectedTestModelGpu, setSelectedTestModelGpu] = useState(0); // Default to GPU 0
   const [testingMode, setTestingMode] = useState('single'); // 'single' or 'comparison'
   const [newPromptText, setNewPromptText] = useState('');
   const [newPromptCategory, setNewPromptCategory] = useState('');
@@ -80,7 +87,7 @@ const [parameterConfig, setParameterConfig] = useState({
   const [judgeMode, setJudgeMode] = useState('automated'); // 'automated', 'human', 'both'
   const [judgeModel, setJudgeModel] = useState('');
   const [secondaryJudgeModel, setSecondaryJudgeModel] = useState('');
-  const [secondaryJudgeModelGpu, setSecondaryJudgeModelGpu] = useState(0);
+  const [secondaryJudgeModelGpu, setSecondaryJudgeModelGpu] = useState(0); // Default to GPU 0
   const fileInputRef = useRef(null);
   const [modelPurposes, setModelPurposes] = useState({
     test_model: null,
@@ -166,6 +173,64 @@ Respond with ONLY the score and reason.`;
     }
 }, [settings.customApiEndpoints]);
 
+const getModelDisplayName = useCallback((modelName, character, paramLabel = '') => {
+  let displayName = modelName;
+  if (character) {
+    displayName += ` (as ${character.name})`;
+  }
+  return displayName + paramLabel;
+}, []);
+
+// Helper function to build character-aware system prompt for judges
+const buildJudgePrompt = useCallback((prompt, response, judgeCharacter, customCriteria, isComparison = false, response1 = null, response2 = null, model1Name = null, model2Name = null) => {
+  // Add character context if judge character exists
+  let basePrompt = '';
+  if (judgeCharacter) {
+    const characterContext = buildSystemPrompt(judgeCharacter);
+    basePrompt = characterContext + '\n\n';
+  }
+  
+  if (isComparison) {
+    // Comparison judging
+    basePrompt += `Compare these two responses and determine which is better.
+
+${customCriteria ? `CRITERIA: ${customCriteria}\n\n` : ''}PROMPT: "${prompt}"
+
+RESPONSE A: "${response1}"
+
+RESPONSE B: "${response2}"
+
+You must respond in EXACTLY this format:
+
+Winner: Response A
+Explanation: [Your explanation here]
+
+OR
+
+Winner: Response B  
+Explanation: [Your explanation here]
+
+OR
+
+Winner: TIE
+Explanation: [Your explanation here]
+
+Be precise - start with "Winner:" followed by exactly "Response A", "Response B", or "TIE".`;
+  } else {
+    // Single response judging
+    basePrompt += `You are a STRICT evaluation system. Rate this response using this exact format:
+SCORE: [number 1-100]
+REASON: [brief critical assessment]
+
+${customCriteria ? `CRITERIA: ${customCriteria}\n\n` : ''}PROMPT: "${prompt}"
+RESPONSE: "${response}"
+
+Respond with ONLY the score and reason.`;
+  }
+  
+  return basePrompt;
+}, [buildSystemPrompt]);
+
 const judgeWithApiModel = useCallback(async (prompt, judgeModelName) => {
     const endpointInfo = (settings.customApiEndpoints || []).find(e => e.id === judgeModelName);
     if (!endpointInfo) {
@@ -243,7 +308,10 @@ const loadModelForPurpose = useCallback(async (purpose, modelName, gpuId, contex
     const targetApiUrl = gpuId === 0 ? PRIMARY_API_URL : SECONDARY_API_URL;
     const finalUrl = `${targetApiUrl}/models/load-for-purpose/${purpose}`;
 
-    console.log(`[Local] Sending load request to: ${finalUrl}`);
+    console.log(`[Local] Loading ${modelName} for ${purpose}`);
+    console.log(`[Local] Requested GPU: ${gpuId}`);
+    console.log(`[Local] Routing to: ${targetApiUrl} (${gpuId === 0 ? 'PRIMARY_API_URL' : 'SECONDARY_API_URL'})`);
+    console.log(`[Local] Full URL: ${finalUrl}`);
 
     try {
         const response = await fetch(finalUrl, {
@@ -260,9 +328,27 @@ const loadModelForPurpose = useCallback(async (purpose, modelName, gpuId, contex
             await fetchModelsByPurpose();
             console.log(`✅ Successfully sent load request for ${modelName} as ${purpose} to GPU ${gpuId}`);
         } else {
-            const error = await response.text();
-            console.error(`Failed to load ${modelName} for ${purpose}: `, error);
-            alert(`Failed to load ${modelName} for ${purpose}: ${error}`);
+            const errorText = await response.text();
+            let errorMessage = errorText;
+            
+            // Try to parse JSON error
+            try {
+                const errorJson = JSON.parse(errorText);
+                errorMessage = errorJson.detail || errorJson.message || errorText;
+            } catch {
+                // Not JSON, use as-is
+            }
+            
+            console.error(`❌ Failed to load ${modelName} for ${purpose} on GPU ${gpuId}:`, errorMessage);
+            
+            // Check for specific error types
+            if (errorMessage.includes('GPU mismatch') || errorMessage.includes('not accessible')) {
+                alert(`❌ GPU Error: ${errorMessage}\n\nPlease ensure you're loading the model on the correct GPU.\nThe backend instance may not have access to GPU ${gpuId}.`);
+            } else if (errorMessage.includes('Insufficient VRAM') || errorMessage.includes('VRAM')) {
+                alert(`❌ VRAM Error: ${errorMessage}\n\nPlease unload other models to free up GPU memory.`);
+            } else {
+                alert(`❌ Failed to load ${modelName} for ${purpose}: ${errorMessage}`);
+            }
         }
     } catch (error) {
         console.error('Error loading model for purpose:', error);
@@ -1091,75 +1177,182 @@ const generateApiResponse = useCallback(async (modelName, prompt, apiUrl) => {
     }
 }, []);
 
-const generateResponse = useCallback(async (modelName, prompt, apiUrl, paramOverrides = {}, requestPurpose = 'user_chat') => {
-    // Parameter hierarchy: defaults → global settings → sweep overrides
-const params = {
+const generateResponse = useCallback(async (modelName, prompt, apiUrl, paramOverrides = {}, requestPurpose = 'user_chat', character = null) => {
+  const params = {
     temperature: settings.temperature || 0.7,
     top_p: settings.top_p || 0.9,
     top_k: settings.top_k || 40,
     repetition_penalty: settings.repetition_penalty || 1.1,
     ...paramOverrides
-};
-    if (isApiModel(modelName)) {
-        return generateApiResponse(modelName, prompt, apiUrl);
+  };
+
+  if (isApiModel(modelName)) {
+    // For API models, if character is provided, prepend character context to the prompt
+    let finalPrompt = prompt;
+    if (character) {
+      const characterSystemPrompt = buildSystemPrompt(character);
+      finalPrompt = `${characterSystemPrompt}\n\nUser: ${prompt}\n\nAssistant:`;
+    }
+    return generateApiResponse(modelName, finalPrompt, apiUrl);
+  }
+
+  // For local models, build the full prompt with character context if provided
+  let finalPrompt = prompt;
+  if (character) {
+    const characterSystemPrompt = buildSystemPrompt(character);
+    finalPrompt = `${characterSystemPrompt}\n\nUser: ${prompt}\n\nAssistant:`;
+  }
+
+  try {
+    const response = await fetch(`${apiUrl}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: finalPrompt,
+        model_name: modelName,
+        temperature: params.temperature,
+        top_p: params.top_p,
+        top_k: params.top_k,
+        repetition_penalty: params.repetition_penalty,
+        request_purpose: requestPurpose
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API Error ${response.status}: ${errorText}`);
     }
 
-    // Use the calculated params for local models
-    try {
-        const response = await fetch(`${apiUrl}/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                prompt: prompt,
-                model_name: modelName,
-                temperature: params.temperature,
-                top_p: params.top_p,
-                top_k: params.top_k,
-                repetition_penalty: params.repetition_penalty,
-                request_purpose: requestPurpose
-            })
-        });
+    const data = await response.json();
+    return data.text || '';
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`API Error ${response.status}: ${errorText}`);
-        }
-
-        const data = await response.json();
-        return data.text || ''; // Return the 'text' field from the response
-
-    } catch (error) {
-        console.error(`Error generating response from local model ${modelName}:`, error);
-        return `Error: ${error.message}`; // Return an error message on failure
-    }
-}, [userProfile, generateApiResponse, settings]); // Add settings to dependencies
+  } catch (error) {
+    console.error(`Error generating response from local model ${modelName}:`, error);
+    return `Error: ${error.message}`;
+  }
+}, [userProfile, generateApiResponse, settings, buildSystemPrompt, isApiModel]);
 
 // New function to judge a single response
-const judgeSingleResponse = useCallback(async (prompt, response, modelName, judgeModel, judgeModelGpu, secondaryJudgeModel = null, secondaryJudgeModelGpu = null) => {
+const judgeSingleResponse = useCallback(async (prompt, response, modelName, judgeModel, judgeModelGpu, secondaryJudgeModel = null, secondaryJudgeModelGpu = null, judgeCharacter = null, secondaryJudgeCharacter = null) => {
   if (!judgeModel) return null;
 
-  const judgePrompt = `You are a STRICT evaluation system. Generosity is not a virtue in this exercise. Average responses are average (50/100), for a reason.
-
-Rate this response using this exact format:
-SCORE: [number 1-100]
-REASON: [brief critical assessment]
-
-Be tough: 90+ is exceptional, 70+ is good, 50 is average, 30 is poor.
-
-PROMPT: "${prompt}"
-RESPONSE: "${response}"
-
-Respond with ONLY the score and reason in the exact format shown above.`;
-
-  const getSingleJudgment = async (jModel, jGpu, p, r) => {
+  const getSingleJudgment = async (jModel, jGpu, jCharacter) => {
+    const judgePrompt = buildJudgePrompt(prompt, response, jCharacter, customJudgingCriteria);
+    
     // Check if the judge model is an API endpoint
     if (isApiModel(jModel)) {
-        console.log(`⚖️ Judging single response with API Model: ${jModel}`);
-        return await judgeSingleResponseWithApiModel(p, r, jModel);
+      console.log(`⚖️ Judging single response with API Model: ${jModel}${jCharacter ? ` (as ${jCharacter.name})` : ''}`);
+      return await judgeSingleResponseWithApiModel(judgePrompt, response, jModel);
     }
 
     // Otherwise, use the existing local model logic
-    console.log(`⚖️ Judging single response with Local Model: ${jModel} on GPU ${jGpu}`);
+    console.log(`⚖️ Judging single response with Local Model: ${jModel} on GPU ${jGpu}${jCharacter ? ` (as ${jCharacter.name})` : ''}`);
+    const apiUrl = jGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL;
+    const judgeResponse = await fetch(`${apiUrl}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: judgePrompt,
+        model_name: jModel,
+        gpu_id: jGpu,
+        request_purpose: 'model_judging',
+        temperature: 0.3,
+        max_tokens: 150,
+        stream: false,
+        userProfile: {},
+        memoryEnabled: false
+      })
+    });
+    if (!judgeResponse.ok) throw new Error(`HTTP ${judgeResponse.status}`);
+    const data = await judgeResponse.json();
+    return data.text?.trim() || '';
+  };
+
+  let primaryJudgment = null;
+  try {
+    // Primary Judge
+    const primaryJudgmentText = await getSingleJudgment(judgeModel, judgeModelGpu, judgeCharacter);
+    let score = 50;
+    let feedback = primaryJudgmentText;
+    const scoreMatch = primaryJudgmentText.match(/SCORE:\s*(\d+)/i);
+    if (scoreMatch) {
+      score = parseInt(scoreMatch[1], 10);
+      feedback = primaryJudgmentText.replace(/SCORE:\s*\d+/i, '').replace('REASON:', '').trim();
+    }
+    primaryJudgment = { 
+      score, 
+      feedback,
+      judgeCharacter: judgeCharacter?.name || null
+    };
+
+    // Secondary Judge (if applicable)
+    if (!secondaryJudgeModel) {
+      return { 
+        score, 
+        feedback, 
+        primaryJudgment, 
+        secondaryJudgment: null, 
+        reconciliationReason: 'Single judge used',
+        judgeCharacter: judgeCharacter?.name || null
+      };
+    }
+
+    const secondaryJudgmentText = await getSingleJudgment(secondaryJudgeModel, secondaryJudgeModelGpu, secondaryJudgeCharacter);
+    let secondaryScore = 50;
+    let secondaryFeedback = secondaryJudgmentText;
+    const secondaryScoreMatch = secondaryJudgmentText.match(/SCORE:\s*(\d+)/i);
+    if (secondaryScoreMatch) {
+        secondaryScore = parseInt(secondaryScoreMatch[1], 10);
+        secondaryFeedback = secondaryJudgmentText.replace(/SCORE:\s*\d+/i, '').replace('REASON:', '').trim();
+    }
+    const secondaryJudgment = { 
+      score: secondaryScore, 
+      feedback: secondaryFeedback,
+      judgeCharacter: secondaryJudgeCharacter?.name || null
+    };
+    
+    // Reconcile
+    const scoreDiff = Math.abs(score - secondaryScore);
+    const finalScore = Math.round((score + secondaryScore) / 2);
+    const combinedFeedback = `Primary${judgeCharacter ? ` (${judgeCharacter.name})` : ''}: ${feedback} | Secondary${secondaryJudgeCharacter ? ` (${secondaryJudgeCharacter.name})` : ''}: ${secondaryFeedback}`;
+    
+    return {
+      score: finalScore,
+      feedback: combinedFeedback,
+      primaryJudgment,
+      secondaryJudgment,
+      reconciliationReason: scoreDiff <= 15 ? `Scores close (diff: ${scoreDiff}), averaged` : `Scores differed by ${scoreDiff}, averaged`,
+      judgeCharacter: judgeCharacter?.name || null,
+      secondaryJudgeCharacter: secondaryJudgeCharacter?.name || null
+    };
+
+  } catch (error) {
+    console.error('Error in single response judge:', error);
+    if (primaryJudgment) {
+        return {
+            ...primaryJudgment,
+            feedback: primaryJudgment.feedback + ' (Secondary judge failed)',
+            secondaryJudgment: null,
+            reconciliationReason: 'Secondary judge failed, used primary only'
+        };
+    }
+    return null;
+  }
+}, [PRIMARY_API_URL, SECONDARY_API_URL, userProfile, judgeSingleResponseWithApiModel, buildJudgePrompt, customJudgingCriteria, isApiModel]);
+
+  // Judge response quality using secondary model
+const judgeWithModel = useCallback(async (prompt, response1, response2, model1Name, model2Name, judgeModel, judgeModelGpu, secondaryJudgeModel = null, secondaryJudgeModelGpu = null, judgeCharacter = null, secondaryJudgeCharacter = null) => {
+  const getJudgment = async (jModel, jGpu, jCharacter) => {
+    const judgePrompt = buildJudgePrompt(prompt, null, jCharacter, customJudgingCriteria, true, response1, response2, model1Name, model2Name);
+    
+    // Check if the judge model is an API endpoint
+    if (isApiModel(jModel)) {
+        console.log(`⚖️ Judging with API Model: ${jModel}${jCharacter ? ` (as ${jCharacter.name})` : ''}`);
+        return await judgeWithApiModel(judgePrompt, jModel);
+    }
+
+    // Otherwise, use the existing local model logic
+    console.log(`⚖️ Judging with Local Model: ${jModel} on GPU ${jGpu}${jCharacter ? ` (as ${jCharacter.name})` : ''}`);
     const apiUrl = jGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL;
     const response = await fetch(`${apiUrl}/generate`, {
         method: 'POST',
@@ -1183,118 +1376,7 @@ Respond with ONLY the score and reason in the exact format shown above.`;
 
   try {
     // Primary Judge
-    const primaryJudgmentText = await getSingleJudgment(judgeModel, judgeModelGpu, prompt, response);
-    let score = 50;
-    let feedback = primaryJudgmentText;
-    const scoreMatch = primaryJudgmentText.match(/SCORE:\s*(\d+)/i);
-    if (scoreMatch) {
-      score = parseInt(scoreMatch[1], 10);
-      feedback = primaryJudgmentText.replace(/SCORE:\s*\d+/i, '').replace('REASON:', '').trim();
-    }
-    const primaryJudgment = { score, feedback };
-
-    // Secondary Judge (if applicable)
-    if (!secondaryJudgeModel) {
-      return { score, feedback, primaryJudgment, secondaryJudgment: null, reconciliationReason: 'Single judge used' };
-    }
-
-    const secondaryJudgmentText = await getSingleJudgment(secondaryJudgeModel, secondaryJudgeModelGpu, prompt, response);
-    let secondaryScore = 50;
-    let secondaryFeedback = secondaryJudgmentText;
-    const secondaryScoreMatch = secondaryJudgmentText.match(/SCORE:\s*(\d+)/i);
-    if (secondaryScoreMatch) {
-        secondaryScore = parseInt(secondaryScoreMatch[1], 10);
-        secondaryFeedback = secondaryJudgmentText.replace(/SCORE:\s*\d+/i, '').replace('REASON:', '').trim();
-    }
-    const secondaryJudgment = { score: secondaryScore, feedback: secondaryFeedback };
-    
-    // Reconcile
-    const scoreDiff = Math.abs(score - secondaryScore);
-    const finalScore = Math.round((score + secondaryScore) / 2);
-    const combinedFeedback = `Primary: ${feedback} | Secondary: ${secondaryFeedback}`;
-    
-    return {
-      score: finalScore,
-      feedback: combinedFeedback,
-      primaryJudgment,
-      secondaryJudgment,
-      reconciliationReason: scoreDiff <= 15 ? `Scores close (diff: ${scoreDiff}), averaged` : `Scores differed by ${scoreDiff}, averaged`
-    };
-
-  } catch (error) {
-    console.error('Error in single response judge:', error);
-    if (primaryJudgment) {
-        return {
-            ...primaryJudgment,
-            feedback: primaryJudgment.feedback + ' (Secondary judge failed)',
-            secondaryJudgment: null,
-            reconciliationReason: 'Secondary judge failed, used primary only'
-        };
-    }
-    return null; // Return null if primary also failed
-  }
-}, [PRIMARY_API_URL, SECONDARY_API_URL, userProfile, judgeSingleResponseWithApiModel]); // Add the new helper to dependencies
-
-  // Judge response quality using secondary model
-const judgeWithModel = useCallback(async (prompt, response1, response2, model1Name, model2Name, judgeModel, judgeModelGpu, secondaryJudgeModel = null, secondaryJudgeModelGpu = null) => {
-  const judgePrompt = `Compare these two responses and determine which is better.
-
-PROMPT: "${prompt}"
-
-RESPONSE A: "${response1}"
-
-RESPONSE B: "${response2}"
-
-You must respond in EXACTLY this format:
-
-Winner: Response A
-Explanation: [Your explanation here]
-
-OR
-
-Winner: Response B  
-Explanation: [Your explanation here]
-
-OR
-
-Winner: TIE
-Explanation: [Your explanation here]
-
-Be precise - start with "Winner:" followed by exactly "Response A", "Response B", or "TIE".`;
-
-  const getJudgment = async (jModel, jGpu, jPrompt) => {
-    // Check if the judge model is an API endpoint
-    if (isApiModel(jModel)) {
-        console.log(`⚖️ Judging with API Model: ${jModel}`);
-        return await judgeWithApiModel(jPrompt, jModel);
-    }
-
-    // Otherwise, use the existing local model logic
-    console.log(`⚖️ Judging with Local Model: ${jModel} on GPU ${jGpu}`);
-    const apiUrl = jGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL;
-    const response = await fetch(`${apiUrl}/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            prompt: jPrompt,
-            model_name: jModel,
-            gpu_id: jGpu,
-            request_purpose: 'model_judging',
-            temperature: 0.3,
-            max_tokens: 150,
-            stream: false,
-            userProfile: {},
-            memoryEnabled: false
-        })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    return data.text?.trim() || '';
-  };
-
-  try {
-    // Primary Judge
-    const primaryJudgmentText = await getJudgment(judgeModel, judgeModelGpu, judgePrompt);
+    const primaryJudgmentText = await getJudgment(judgeModel, judgeModelGpu, judgeCharacter);
     let verdict = 'TIE';
     let explanation = 'No explanation provided';
     const winnerMatch = primaryJudgmentText.match(/Winner:\s*(Response\s*[AB]|TIE)/i);
@@ -1305,14 +1387,25 @@ Be precise - start with "Winner:" followed by exactly "Response A", "Response B"
     }
     const explanationMatch = primaryJudgmentText.match(/Explanation:\s*(.+)/is);
     if (explanationMatch) explanation = explanationMatch[1].trim();
-    const primaryJudgment = { verdict, explanation };
+    const primaryJudgment = { 
+      verdict, 
+      explanation,
+      judgeCharacter: judgeCharacter?.name || null
+    };
 
     // Secondary Judge (if applicable)
     if (!secondaryJudgeModel) {
-      return { verdict, explanation, primaryJudgment, secondaryJudgment: null, reconciliationReason: 'Single judge used' };
+      return { 
+        verdict, 
+        explanation, 
+        primaryJudgment, 
+        secondaryJudgment: null, 
+        reconciliationReason: 'Single judge used',
+        judgeCharacter: judgeCharacter?.name || null
+      };
     }
 
-    const secondaryJudgmentText = await getJudgment(secondaryJudgeModel, secondaryJudgeModelGpu, judgePrompt);
+    const secondaryJudgmentText = await getJudgment(secondaryJudgeModel, secondaryJudgeModelGpu, secondaryJudgeCharacter);
     let secondaryVerdict = 'TIE';
     let secondaryExplanation = 'No explanation provided';
     const secondaryWinnerMatch = secondaryJudgmentText.match(/Winner:\s*(Response\s*[AB]|TIE)/i);
@@ -1324,28 +1417,35 @@ Be precise - start with "Winner:" followed by exactly "Response A", "Response B"
     const secondaryExplanationMatch = secondaryJudgmentText.match(/Explanation:\s*(.+)/is);
     if (secondaryExplanationMatch) secondaryExplanation = secondaryExplanationMatch[1].trim();
 
+    const secondaryJudgment = {
+      verdict: secondaryVerdict,
+      explanation: secondaryExplanation,
+      judgeCharacter: secondaryJudgeCharacter?.name || null
+    };
+
     // Reconcile
     const { finalVerdict, reconciliationReason } = reconcileJudgments(verdict, secondaryVerdict);
-    const combinedExplanation = `Primary: ${explanation} | Secondary: ${secondaryExplanation}`;
+    const combinedExplanation = `Primary${judgeCharacter ? ` (${judgeCharacter.name})` : ''}: ${explanation} | Secondary${secondaryJudgeCharacter ? ` (${secondaryJudgeCharacter.name})` : ''}: ${secondaryExplanation}`;
 
     return {
       verdict: finalVerdict,
       explanation: combinedExplanation,
-      primaryJudgment: { verdict, explanation },
-      secondaryJudgment: { verdict: secondaryVerdict, explanation: secondaryExplanation },
-      reconciliationReason
+      primaryJudgment,
+      secondaryJudgment,
+      reconciliationReason,
+      judgeCharacter: judgeCharacter?.name || null,
+      secondaryJudgeCharacter: secondaryJudgeCharacter?.name || null
     };
 
   } catch (error) {
     console.error('Error in judge model:', error);
-    // Add primaryJudgment to the error object before returning if it exists
     if (primaryJudgment) {
       error.primaryJudgment = primaryJudgment;
     }
-    // Propagate the error to be handled by the caller
     throw error;
   }
-}, [PRIMARY_API_URL, SECONDARY_API_URL, reconcileJudgments, judgeWithApiModel]); // Add judgeWithApiModel as a dependency
+}, [PRIMARY_API_URL, SECONDARY_API_URL, reconcileJudgments, judgeWithApiModel, buildJudgePrompt, customJudgingCriteria, isApiModel]);
+
 
 // Update ELO ratings
 const updateEloRatings = useCallback((winner, loser, isDraw = false) => {
@@ -1527,11 +1627,14 @@ const runSingleModelTest = useCallback(async () => {
   const testModel = modelPurposes.test_model.name;
   const testModelGpu = modelPurposes.test_model.gpu_id;
   const testApiUrl = testModelGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL;
+  const testCharacter = selectedTestCharacter; // Get selected character
 
   let judgeModelName = null;
   let judgeGpu = null;
   let secondaryJudgeModelName = null;
   let secondaryJudgeGpu = null;
+  let judgeCharacter = selectedPrimaryJudgeCharacter;
+  let secondaryJudgeCharacter = selectedSecondaryJudgeCharacter;
 
   if (judgeMode === 'automated' || judgeMode === 'both') {
     if (modelPurposes.primary_judge) {
@@ -1544,19 +1647,19 @@ const runSingleModelTest = useCallback(async () => {
     }
   }
 
-  console.log(`🎯 Starting parameter sweep test with ${paramCombinations.length} combinations`);
+  console.log(`🎯 Starting parameter sweep test with ${paramCombinations.length} combinations${testCharacter ? ` (as ${testCharacter.name})` : ''}`);
 
   for (const paramCombo of paramCombinations) {
     const paramLabel = createParameterLabel(paramCombo);
-    const modelDisplayName = `${testModel}${paramLabel}`;
+    const modelDisplayName = getModelDisplayName(testModel, testCharacter, paramLabel);
 
-    // FIX: Get individual rating for THIS parameter combination
+    // Get individual rating for THIS parameter+character combination
     let currentModelRating = eloRatings[modelDisplayName] || 1500;
     
     console.log(`🔄 Testing parameter combination: ${modelDisplayName}, starting ELO: ${currentModelRating}`);
 
     for (const promptData of promptCollection) {
-      const response = await generateResponse(testModel, promptData.prompt, testApiUrl, paramCombo, 'model_testing');
+      const response = await generateResponse(testModel, promptData.prompt, testApiUrl, paramCombo, 'model_testing', testCharacter);
 
       if ((judgeMode === 'automated' || judgeMode === 'both') && judgeModelName) {
         const judgment = await judgeSingleResponse(
@@ -1566,7 +1669,9 @@ const runSingleModelTest = useCallback(async () => {
           judgeModelName, 
           judgeGpu,
           secondaryJudgeModelName, 
-          secondaryJudgeGpu
+          secondaryJudgeGpu,
+          judgeCharacter,
+          secondaryJudgeCharacter
         );
 
         if (judgment) {
@@ -1577,9 +1682,12 @@ const runSingleModelTest = useCallback(async () => {
             category: promptData.category,
             model: modelDisplayName,
             baseModel: testModel,
+            character: testCharacter?.name || null,
             parameters: paramCombo,
             judgeModel: judgeModelName,
+            judgeCharacter: judgeCharacter?.name || null,
             secondaryJudgeModel: secondaryJudgeModelName || null,
+            secondaryJudgeCharacter: secondaryJudgeCharacter?.name || null,
             response: response,
             score: judgment.score,
             feedback: judgment.feedback,
@@ -1591,7 +1699,7 @@ const runSingleModelTest = useCallback(async () => {
             timestamp: new Date().toISOString()
           };
 
-          newResults.push(result);
+          setTestResults(prev => [...prev, result]);
           const oldRating = currentModelRating;
           const eloChange = calculateEloChange(judgment.score, oldRating, promptData.category);
           const newRating = Math.max(1000, oldRating + eloChange);
@@ -1617,23 +1725,35 @@ const runSingleModelTest = useCallback(async () => {
   }
   
   console.log(`🏁 Parameter sweep test complete. Processed ${newResults.length} results.`);
-  setTestResults(prev => [...prev, ...newResults]);
-}, [modelPurposes, promptCollection, judgeMode, generateResponse, judgeSingleResponse, calculateEloChange, eloRatings, saveEloUpdate, PRIMARY_API_URL, SECONDARY_API_URL, generateParameterCombinations, createParameterLabel]);
+  
+}, [
+  // Add new dependencies
+  selectedTestCharacter, selectedPrimaryJudgeCharacter, selectedSecondaryJudgeCharacter,
+  customJudgingCriteria, getModelDisplayName, buildJudgePrompt,
+  // Existing dependencies
+  modelPurposes, promptCollection, judgeMode, generateResponse, judgeSingleResponse, 
+  calculateEloChange, eloRatings, saveEloUpdate, PRIMARY_API_URL, SECONDARY_API_URL, 
+  generateParameterCombinations, createParameterLabel
+]);
 
 // Multi-model comparison function
 const runComparisonTest = useCallback(async () => {
   const modelA = modelPurposes.test_model_a.name;
   const modelAGpu = modelPurposes.test_model_a.gpu_id;
   const modelAApiUrl = modelAGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL;
+  const characterA = selectedTestCharacterA;
 
   const modelB = modelPurposes.test_model_b.name;
   const modelBGpu = modelPurposes.test_model_b.gpu_id;
   const modelBApiUrl = modelBGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL;
+  const characterB = selectedTestCharacterB;
 
   let judgeModelName = null;
   let judgeGpu = null;
   let secondaryJudgeModelName = null;
   let secondaryJudgeGpu = null;
+  let judgeCharacter = selectedPrimaryJudgeCharacter;
+  let secondaryJudgeCharacter = selectedSecondaryJudgeCharacter;
 
   if (judgeMode === 'automated' || judgeMode === 'both') {
     if(modelPurposes.primary_judge) {
@@ -1650,20 +1770,28 @@ const runComparisonTest = useCallback(async () => {
   let completedTests = 0;
   const newResults = [];
 
+  const modelADisplayName = getModelDisplayName(modelA, characterA);
+  const modelBDisplayName = getModelDisplayName(modelB, characterB);
+
+  console.log(`🎯 Starting comparison test: ${modelADisplayName} vs ${modelBDisplayName}`);
+
   for (const promptData of promptCollection) {
-     const responseA = await generateResponse(modelA, promptData.prompt, modelAApiUrl, {}, 'model_testing');
-    const responseB = await generateResponse(modelB, promptData.prompt, modelBApiUrl, {}, 'model_testing');
+    const responseA = await generateResponse(modelA, promptData.prompt, modelAApiUrl, {}, 'model_testing', characterA);
+    const responseB = await generateResponse(modelB, promptData.prompt, modelBApiUrl, {}, 'model_testing', characterB);
+    
     if ((judgeMode === 'automated' || judgeMode === 'both') && judgeModelName) {
       const judgment = await judgeWithModel(
         promptData.prompt,
         responseA,
         responseB,
-        modelA,
-        modelB,
+        modelADisplayName,
+        modelBDisplayName,
         judgeModelName,
-        judgeGpu, // <-- CORRECTED
+        judgeGpu,
         secondaryJudgeModelName,
-        secondaryJudgeGpu // <-- CORRECTED
+        secondaryJudgeGpu,
+        judgeCharacter,
+        secondaryJudgeCharacter
       );
 
       if (judgment) {
@@ -1672,14 +1800,18 @@ const runComparisonTest = useCallback(async () => {
           promptId: promptData.id,
           prompt: promptData.prompt,
           category: promptData.category,
-          model1: modelA,
-          model2: modelB,
+          model1: modelADisplayName,
+          model2: modelBDisplayName,
+          character1: characterA?.name || null,
+          character2: characterB?.name || null,
           response1: responseA,
           response2: responseB,
           judgment: judgment.verdict,
           explanation: judgment.explanation,
           judgeModel: judgeModelName,
+          judgeCharacter: judgeCharacter?.name || null,
           secondaryJudgeModel: secondaryJudgeModelName || null,
+          secondaryJudgeCharacter: secondaryJudgeCharacter?.name || null,
           primaryJudgment: judgment.primaryJudgment,
           secondaryJudgment: judgment.secondaryJudgment,
           reconciliationReason: judgment.reconciliationReason,
@@ -1687,21 +1819,29 @@ const runComparisonTest = useCallback(async () => {
           judgeType: 'automated',
           timestamp: new Date().toISOString()
         };
-        newResults.push(result);
+        setTestResults(prev => [...prev, result]);
+        
         if (judgment.verdict === 'A') {
-          updateEloRatings(modelA, modelB);
+          updateEloRatings(modelADisplayName, modelBDisplayName);
         } else if (judgment.verdict === 'B') {
-          updateEloRatings(modelB, modelA);
+          updateEloRatings(modelBDisplayName, modelADisplayName);
         } else if (judgment.verdict === 'TIE') {
-          updateEloRatings(modelA, modelB, true);
+          updateEloRatings(modelADisplayName, modelBDisplayName, true);
         }
       }
     }
     completedTests++;
     setProgress((completedTests / totalTests) * 100);
   }
-  setTestResults(prev => [...prev, ...newResults]);
-}, [modelPurposes, promptCollection, judgeMode, generateResponse, judgeWithModel, updateEloRatings, PRIMARY_API_URL, SECONDARY_API_URL]);
+  
+}, [
+  // Add new dependencies
+  selectedTestCharacterA, selectedTestCharacterB, selectedPrimaryJudgeCharacter, selectedSecondaryJudgeCharacter,
+  customJudgingCriteria, getModelDisplayName,
+  // Existing dependencies
+  modelPurposes, promptCollection, judgeMode, generateResponse, judgeWithModel, updateEloRatings, 
+  PRIMARY_API_URL, SECONDARY_API_URL
+]);
 
 
 // Add these two functions inside your ModelTester component
@@ -1825,60 +1965,437 @@ const runComparisonTest = useCallback(async () => {
     </CardContent>
   </Card>
 
-<Card>
-  <CardHeader>
-    <CardTitle>Purpose-Based Model Loading</CardTitle>
-    <p className="text-sm text-muted-foreground">
-      Load models for specific testing purposes. Tests will run with whatever is currently loaded.
-    </p>
-  </CardHeader>
-  <CardContent className="space-y-6">
-    
-    {/* Test Model Section - Single Model Mode */}
-    {testingMode === 'single' && (
-      <div className="border rounded p-4 bg-muted/30">
-        <h4 className="font-medium mb-3 flex items-center gap-2">
-          <Bot className="w-4 h-4" />
-          Test Model (answers prompts)
-        </h4>
-        
-        {modelPurposes?.test_model ? (
-          <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded">
-            <div className="flex-1">
-              <div className="font-medium">{modelPurposes.test_model.name}</div>
-              <div className="text-sm text-muted-foreground">
-                GPU {modelPurposes.test_model.gpu_id} • Context: {modelPurposes.test_model.context_length}
+  <Card>
+    <CardHeader>
+      <CardTitle>Purpose-Based Model Loading</CardTitle>
+      <p className="text-sm text-muted-foreground">
+        Load models for specific testing purposes. Tests will run with whatever is currently loaded.
+      </p>
+    </CardHeader>
+    <CardContent className="space-y-6">
+      
+      {/* Test Model Section - Single Model Mode */}
+      {testingMode === 'single' && (
+        <div className="border rounded p-4 bg-muted/30">
+          <h4 className="font-medium mb-3 flex items-center gap-2">
+            <Bot className="w-4 h-4" />
+            Test Model (answers prompts)
+          </h4>
+          
+          {modelPurposes?.test_model ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded">
+                <div className="flex-1">
+                  <div className="font-medium">{modelPurposes.test_model.name}</div>
+                  <div className="text-sm text-muted-foreground">
+                    GPU {modelPurposes.test_model.gpu_id} • Context: {modelPurposes.test_model.context_length}
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => unloadModelPurpose('test_model')}
+                  disabled={isUnloadingPurpose.test_model}
+                  className="text-red-600 hover:text-red-700"
+                >
+                  {isUnloadingPurpose.test_model ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
+                </Button>
+              </div>
+              
+              {/* Character Selection for Test Model */}
+              <div className="border rounded p-3 bg-blue-50 dark:bg-blue-900/20">
+                <label className="text-sm font-medium mb-2 block">Character for Test Model (Optional)</label>
+                <Select value={selectedTestCharacter?.id || 'none'} onValueChange={(id) => {
+                  const character = characters.find(c => c.id === id);
+                  setSelectedTestCharacter(character || null);
+                }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="No character (default behavior)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No Character</SelectItem>
+                    {characters.map(char => (
+                      <SelectItem key={char.id} value={char.id}>
+                        {char.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedTestCharacter && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Model will respond as: {selectedTestCharacter.name}
+                  </p>
+                )}
               </div>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => unloadModelPurpose('test_model')}
-              disabled={isUnloadingPurpose.test_model}
-              className="text-red-600 hover:text-red-700"
-            >
-              {isUnloadingPurpose.test_model ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
-            </Button>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <Select value={selectedTestModel} onValueChange={setSelectedTestModel} className="flex-1">
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select model to test" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allModelOptions.map(model => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                
+                <Select 
+                  value={selectedTestModelGpu?.toString() || "0"}
+                  onValueChange={(value) => setSelectedTestModelGpu(parseInt(value))}
+                >
+                  <SelectTrigger className="w-24">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">GPU 0</SelectItem>
+                    <SelectItem value="1">GPU 1</SelectItem>
+                  </SelectContent>
+                </Select>
+                
+                <Button
+                  onClick={() => loadModelForPurpose('test_model', selectedTestModel, selectedTestModelGpu, settings.contextLength)}
+                  disabled={!selectedTestModel || isLoadingPurpose.test_model}
+                  size="sm"
+                >
+                  {isLoadingPurpose.test_model ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Multi-Model Selection - Comparison Mode */}
+      {testingMode === 'comparison' && (
+        <div className="border rounded p-4 bg-muted/30">
+          <h4 className="font-medium mb-3 flex items-center gap-2">
+            <Users className="w-4 h-4" />
+            Competing Models (load 2+ models to compare against each other)
+          </h4>
+          
+          <div className="space-y-4">
+            {/* Test Model A */}
+            <div className="border rounded p-3 bg-muted/50">
+              <h5 className="font-medium mb-2 text-sm">Test Model A</h5>
+              {modelPurposes?.test_model_a ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded">
+                    <div className="flex-1">
+                      <div className="font-medium">{modelPurposes.test_model_a.name}</div>
+                      <div className="text-sm text-muted-foreground">
+                        GPU {modelPurposes.test_model_a.gpu_id} • Context: {modelPurposes.test_model_a.context_length}
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => unloadModelPurpose('test_model_a')}
+                      disabled={isUnloadingPurpose.test_model_a}
+                      className="text-red-600 hover:text-red-700"
+                    >
+                      {isUnloadingPurpose.test_model_a ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
+                    </Button>
+                  </div>
+                  
+                  {/* Character Selection for Test Model A */}
+                  <div className="border rounded p-3 bg-blue-50 dark:bg-blue-900/20">
+                    <label className="text-sm font-medium mb-2 block">Character for Model A (Optional)</label>
+                    <Select value={selectedTestCharacterA?.id || 'none'} onValueChange={(id) => {
+                      const character = characters.find(c => c.id === id);
+                      setSelectedTestCharacterA(character || null);
+                    }}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="No character (default behavior)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No Character</SelectItem>
+                        {characters.map(char => (
+                          <SelectItem key={char.id} value={char.id}>
+                            {char.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Select value={selectedModels[0] || ''} onValueChange={(value) => {
+                    setSelectedModels(prev => [value, prev[1] || '']);
+                    // Initialize GPU assignment if not set (default to GPU 1 for Model A)
+                    if (value && !modelGpuAssignments[value]) {
+                      setModelGpuAssignments(prev => ({ ...prev, [value]: 1 }));
+                    }
+                  }} className="flex-1">
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select first test model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {allModelOptions.map(model => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  
+                  <Select 
+                    value={(modelGpuAssignments[selectedModels[0] || ''] ?? 0).toString()}
+                    onValueChange={(value) => {
+                      const modelName = selectedModels[0] || '';
+                      const gpuId = parseInt(value);
+                      setModelGpuAssignments(prev => ({ 
+                        ...prev, 
+                        [modelName]: gpuId 
+                      }));
+                      console.log(`[GPU Assignment] Set ${modelName} to GPU ${gpuId}`);
+                      console.log(`[GPU Assignment] Updated state. All assignments:`, JSON.stringify({ ...modelGpuAssignments, [modelName]: gpuId }));
+                    }}
+                  >
+                    <SelectTrigger className="w-24">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">GPU 0</SelectItem>
+                      <SelectItem value="1">GPU 1</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  <Button
+                    onClick={() => {
+                      const modelName = selectedModels[0];
+                      if (!modelName) {
+                        alert('Please select a model first');
+                        return;
+                      }
+                      
+                      // Read GPU assignment from state - use explicit fallback
+                      const currentGpuAssignment = modelGpuAssignments[modelName];
+                      const gpuId = currentGpuAssignment !== undefined && currentGpuAssignment !== null 
+                        ? currentGpuAssignment 
+                        : 1; // Default to GPU 1 for Model A
+                      
+                      console.log(`========================================`);
+                      console.log(`[Load Model A] STARTING LOAD`);
+                      console.log(`[Load Model A] Model Name: "${modelName}"`);
+                      console.log(`[Load Model A] All GPU Assignments:`, JSON.stringify(modelGpuAssignments));
+                      console.log(`[Load Model A] Assignment for this model:`, currentGpuAssignment);
+                      console.log(`[Load Model A] FINAL GPU ID: ${gpuId}`);
+                      console.log(`[Load Model A] Will route to: ${gpuId === 0 ? 'PRIMARY_API_URL (port 8000)' : 'SECONDARY_API_URL (port 8001)'}`);
+                      console.log(`========================================`);
+                      
+                      loadModelForPurpose('test_model_a', modelName, gpuId, settings.contextLength);
+                    }}
+                    disabled={!selectedModels[0] || isLoadingPurpose.test_model_a}
+                    size="sm"
+                  >
+                    {isLoadingPurpose.test_model_a ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* Test Model B - Similar structure to Model A */}
+            <div className="border rounded p-3 bg-muted/50">
+              <h5 className="font-medium mb-2 text-sm">Test Model B</h5>
+              {modelPurposes?.test_model_b ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded">
+                    <div className="flex-1">
+                      <div className="font-medium">{modelPurposes.test_model_b.name}</div>
+                      <div className="text-sm text-muted-foreground">
+                        GPU {modelPurposes.test_model_b.gpu_id} • Context: {modelPurposes.test_model_b.context_length}
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => unloadModelPurpose('test_model_b')}
+                      disabled={isUnloadingPurpose.test_model_b}
+                      className="text-red-600 hover:text-red-700"
+                    >
+                      {isUnloadingPurpose.test_model_b ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
+                    </Button>
+                  </div>
+                  
+                  {/* Character Selection for Test Model B */}
+                  <div className="border rounded p-3 bg-blue-50 dark:bg-blue-900/20">
+                    <label className="text-sm font-medium mb-2 block">Character for Model B (Optional)</label>
+                    <Select value={selectedTestCharacterB?.id || 'none'} onValueChange={(id) => {
+                      const character = characters.find(c => c.id === id);
+                      setSelectedTestCharacterB(character || null);
+                    }}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="No character (default behavior)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No Character</SelectItem>
+                        {characters.map(char => (
+                          <SelectItem key={char.id} value={char.id}>
+                            {char.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Select value={selectedModels[1] || ''} onValueChange={(value) => {
+                    setSelectedModels(prev => [prev[0] || '', value]);
+                    // Initialize GPU assignment if not set (default to GPU 0 for Model B to balance load)
+                    if (value && !modelGpuAssignments[value]) {
+                      setModelGpuAssignments(prev => ({ ...prev, [value]: 0 }));
+                    }
+                  }} className="flex-1">
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select second test model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {allModelOptions.map(model => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  
+                  <Select 
+                    value={(modelGpuAssignments[selectedModels[1] || ''] ?? 0).toString()}
+                    onValueChange={(value) => {
+                      const modelName = selectedModels[1] || '';
+                      const gpuId = parseInt(value);
+                      setModelGpuAssignments(prev => ({ 
+                        ...prev, 
+                        [modelName]: gpuId 
+                      }));
+                      console.log(`[GPU Assignment] Set ${modelName} to GPU ${gpuId}`);
+                      console.log(`[GPU Assignment] Updated state. All assignments:`, JSON.stringify({ ...modelGpuAssignments, [modelName]: gpuId }));
+                    }}
+                  >
+                    <SelectTrigger className="w-24">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">GPU 0</SelectItem>
+                      <SelectItem value="1">GPU 1</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  
+                  <Button
+                    onClick={() => {
+                      const modelName = selectedModels[1];
+                      if (!modelName) {
+                        alert('Please select a model first');
+                        return;
+                      }
+                      
+                      // Read GPU assignment from state - use explicit fallback
+                      const currentGpuAssignment = modelGpuAssignments[modelName];
+                      const gpuId = currentGpuAssignment !== undefined && currentGpuAssignment !== null 
+                        ? currentGpuAssignment 
+                        : 0; // Default to GPU 0 for Model B
+                      
+                      console.log(`========================================`);
+                      console.log(`[Load Model B] STARTING LOAD`);
+                      console.log(`[Load Model B] Model Name: "${modelName}"`);
+                      console.log(`[Load Model B] All GPU Assignments:`, JSON.stringify(modelGpuAssignments));
+                      console.log(`[Load Model B] Assignment for this model:`, currentGpuAssignment);
+                      console.log(`[Load Model B] FINAL GPU ID: ${gpuId}`);
+                      console.log(`[Load Model B] Will route to: ${gpuId === 0 ? 'PRIMARY_API_URL (port 8000)' : 'SECONDARY_API_URL (port 8001)'}`);
+                      console.log(`========================================`);
+                      
+                      loadModelForPurpose('test_model_b', modelName, gpuId, settings.contextLength);
+                    }}
+                    disabled={!selectedModels[1] || isLoadingPurpose.test_model_b}
+                    size="sm"
+                  >
+                    {isLoadingPurpose.test_model_b ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Primary Judge Section - Enhanced with Character Selection */}
+      <div className="border rounded p-4 bg-muted/30">
+        <h4 className="font-medium mb-3 flex items-center gap-2">
+          <MessageSquare className="w-4 h-4" />
+          Primary Judge Model (evaluates responses)
+        </h4>
+        
+        {modelPurposes?.primary_judge ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded">
+              <div className="flex-1">
+                <div className="font-medium">{modelPurposes.primary_judge.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  GPU {modelPurposes.primary_judge.gpu_id} • Context: {modelPurposes.primary_judge.context_length}
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => unloadModelPurpose('primary_judge')}
+                disabled={isUnloadingPurpose.primary_judge}
+                className="text-red-600 hover:text-red-700"
+              >
+                {isUnloadingPurpose.primary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
+              </Button>
+            </div>
+            
+            {/* Character Selection for Primary Judge */}
+            <div className="border rounded p-3 bg-purple-50 dark:bg-purple-900/20">
+              <label className="text-sm font-medium mb-2 block">Character for Primary Judge (Optional)</label>
+              <Select value={selectedPrimaryJudgeCharacter?.id || 'none'} onValueChange={(id) => {
+                const character = characters.find(c => c.id === id);
+                setSelectedPrimaryJudgeCharacter(character || null);
+              }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="No character (standard judging)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No Character</SelectItem>
+                  {characters.map(char => (
+                    <SelectItem key={char.id} value={char.id}>
+                      {char.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedPrimaryJudgeCharacter && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Judge will evaluate as: {selectedPrimaryJudgeCharacter.name}
+                </p>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-3">
             <div className="flex gap-2">
-              <Select value={selectedTestModel} onValueChange={setSelectedTestModel} className="flex-1">
+              <Select value={judgeModel} onValueChange={setJudgeModel} className="flex-1">
                 <SelectTrigger>
-                  <SelectValue placeholder="Select model to test" />
+                  <SelectValue placeholder="Select judge model" />
                 </SelectTrigger>
-<SelectContent>
-    {allModelOptions.map(model => (
-        <SelectItem key={model.id} value={model.id}>
-            {model.name}
-        </SelectItem>
-    ))}
-</SelectContent>
+                <SelectContent>
+                  {allModelOptions.map(model => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
               
               <Select 
-                value={selectedTestModelGpu?.toString() || "0"}
-                onValueChange={(value) => setSelectedTestModelGpu(parseInt(value))}
+                value={judgeModelGpu?.toString() || "1"}
+                onValueChange={(value) => setJudgeModelGpu(parseInt(value))}
               >
                 <SelectTrigger className="w-24">
                   <SelectValue />
@@ -1890,307 +2407,170 @@ const runComparisonTest = useCallback(async () => {
               </Select>
               
               <Button
-                onClick={() => loadModelForPurpose('test_model', selectedTestModel, selectedTestModelGpu, settings.contextLength)}
-                disabled={!selectedTestModel || isLoadingPurpose.test_model}
+                onClick={() => loadModelForPurpose('primary_judge', judgeModel, judgeModelGpu, settings.contextLength)}
+                disabled={!judgeModel || isLoadingPurpose.primary_judge}
                 size="sm"
               >
-                {isLoadingPurpose.test_model ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
+                {isLoadingPurpose.primary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
               </Button>
             </div>
           </div>
         )}
       </div>
-    )}
 
-{/* Multi-Model Selection - Comparison Mode */}
-{testingMode === 'comparison' && (
-  <div className="border rounded p-4 bg-muted/30">
-    <h4 className="font-medium mb-3 flex items-center gap-2">
-      <Users className="w-4 h-4" />
-      Competing Models (load 2+ models to compare against each other)
-    </h4>
-    
-    <div className="space-y-4">
-      {/* Test Model A */}
-      <div className="border rounded p-3 bg-muted/50">
-        <h5 className="font-medium mb-2 text-sm">Test Model A</h5>
-        {modelPurposes?.test_model_a ? (
-          <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded">
-            <div className="flex-1">
-              <div className="font-medium">{modelPurposes.test_model_a.name}</div>
-              <div className="text-sm text-muted-foreground">
-                GPU {modelPurposes.test_model_a.gpu_id} • Context: {modelPurposes.test_model_a.context_length}
+      {/* Secondary Judge Section - Enhanced with Character Selection */}
+      <div className="border rounded p-4 bg-muted/30">
+        <h4 className="font-medium mb-3 flex items-center gap-2">
+          <Users className="w-4 h-4" />
+          Secondary Judge Model (optional - for dual judging)
+        </h4>
+        
+        {modelPurposes?.secondary_judge ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded">
+              <div className="flex-1">
+                <div className="font-medium">{modelPurposes.secondary_judge.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  GPU {modelPurposes.secondary_judge.gpu_id} • Context: {modelPurposes.secondary_judge.context_length}
+                </div>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => unloadModelPurpose('secondary_judge')}
+                disabled={isUnloadingPurpose.secondary_judge}
+                className="text-red-600 hover:text-red-700"
+              >
+                {isUnloadingPurpose.secondary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => unloadModelPurpose('test_model_a')}
-              disabled={isUnloadingPurpose.test_model_a}
-              className="text-red-600 hover:text-red-700"
-            >
-              {isUnloadingPurpose.test_model_a ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
-            </Button>
+            
+            {/* Character Selection for Secondary Judge */}
+            <div className="border rounded p-3 bg-purple-50 dark:bg-purple-900/20">
+              <label className="text-sm font-medium mb-2 block">Character for Secondary Judge (Optional)</label>
+              <Select value={selectedSecondaryJudgeCharacter?.id || 'none'} onValueChange={(id) => {
+                const character = characters.find(c => c.id === id);
+                setSelectedSecondaryJudgeCharacter(character || null);
+              }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="No character (standard judging)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No Character</SelectItem>
+                  {characters.map(char => (
+                    <SelectItem key={char.id} value={char.id}>
+                      {char.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedSecondaryJudgeCharacter && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Secondary judge will evaluate as: {selectedSecondaryJudgeCharacter.name}
+                </p>
+              )}
+            </div>
           </div>
         ) : (
-          <div className="flex gap-2">
-            <Select value={selectedModels[0] || ''} onValueChange={(value) => setSelectedModels(prev => [value, prev[1] || ''])} className="flex-1">
-              <SelectTrigger>
-                <SelectValue placeholder="Select first test model" />
-              </SelectTrigger>
-<SelectContent>
-    {allModelOptions.map(model => (
-        <SelectItem key={model.id} value={model.id}>
-            {model.name}
-        </SelectItem>
-    ))}
-</SelectContent>
-            </Select>
-            
-            <Select 
-              value={modelGpuAssignments[selectedModels[0] || '']?.toString() || "0"}
-              onValueChange={(value) => setModelGpuAssignments(prev => ({ 
-                ...prev, 
-                [selectedModels[0] || '']: parseInt(value) 
-              }))}
-            >
-              <SelectTrigger className="w-24">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">GPU 0</SelectItem>
-                <SelectItem value="1">GPU 1</SelectItem>
-              </SelectContent>
-            </Select>
-            
-            <Button
-              onClick={() => loadModelForPurpose('test_model_a', selectedModels[0], modelGpuAssignments[selectedModels[0] || ''] || 0, settings.contextLength)}
-              disabled={!selectedModels[0] || isLoadingPurpose.test_model_a}
-              size="sm"
-            >
-              {isLoadingPurpose.test_model_a ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
-            </Button>
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <Select value={secondaryJudgeModel} onValueChange={setSecondaryJudgeModel} className="flex-1">
+                <SelectTrigger>
+                  <SelectValue placeholder="Select secondary judge (optional)" />
+                </SelectTrigger>
+                <SelectContent>
+                  {allModelOptions.map(model => (
+                    <SelectItem key={model.id} value={model.id}>
+                      {model.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              
+              <Select 
+                value={secondaryJudgeModelGpu?.toString() || "0"}
+                onValueChange={(value) => setSecondaryJudgeModelGpu(parseInt(value))}
+              >
+                <SelectTrigger className="w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">GPU 0</SelectItem>
+                  <SelectItem value="1">GPU 1</SelectItem>
+                </SelectContent>
+              </Select>
+              
+              <Button
+                onClick={() => loadModelForPurpose('secondary_judge', secondaryJudgeModel, secondaryJudgeModelGpu, settings.contextLength)}
+                disabled={!secondaryJudgeModel || isLoadingPurpose.secondary_judge}
+                size="sm"
+              >
+                {isLoadingPurpose.secondary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
+              </Button>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Test Model B */}
-      <div className="border rounded p-3 bg-muted/50">
-        <h5 className="font-medium mb-2 text-sm">Test Model B</h5>
-        {modelPurposes?.test_model_b ? (
-          <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded">
-            <div className="flex-1">
-              <div className="font-medium">{modelPurposes.test_model_b.name}</div>
-              <div className="text-sm text-muted-foreground">
-                GPU {modelPurposes.test_model_b.gpu_id} • Context: {modelPurposes.test_model_b.context_length}
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => unloadModelPurpose('test_model_b')}
-              disabled={isUnloadingPurpose.test_model_b}
-              className="text-red-600 hover:text-red-700"
-            >
-              {isUnloadingPurpose.test_model_b ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
-            </Button>
-          </div>
-        ) : (
-          <div className="flex gap-2">
-            <Select value={selectedModels[1] || ''} onValueChange={(value) => setSelectedModels(prev => [prev[0] || '', value])} className="flex-1">
-              <SelectTrigger>
-                <SelectValue placeholder="Select second test model" />
-              </SelectTrigger>
-<SelectContent>
-    {allModelOptions.map(model => (
-        <SelectItem key={model.id} value={model.id}>
-            {model.name}
-        </SelectItem>
-    ))}
-</SelectContent>
-            </Select>
-            
-            <Select 
-              value={modelGpuAssignments[selectedModels[1] || '']?.toString() || "1"}
-              onValueChange={(value) => setModelGpuAssignments(prev => ({ 
-                ...prev, 
-                [selectedModels[1] || '']: parseInt(value) 
-              }))}
-            >
-              <SelectTrigger className="w-24">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">GPU 0</SelectItem>
-                <SelectItem value="1">GPU 1</SelectItem>
-              </SelectContent>
-            </Select>
-            
-            <Button
-              onClick={() => loadModelForPurpose('test_model_b', selectedModels[1], modelGpuAssignments[selectedModels[1] || ''] || 1, settings.contextLength)}
-              disabled={!selectedModels[1] || isLoadingPurpose.test_model_b}
-              size="sm"
-            >
-              {isLoadingPurpose.test_model_b ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
-            </Button>
-          </div>
-        )}
+      {/* Custom Judging Criteria Section */}
+      <div className="border rounded p-4 bg-muted/30">
+        <h4 className="font-medium mb-3 flex items-center gap-2">
+          <BarChart3 className="w-4 h-4" />
+          Custom Judging Criteria (Optional)
+        </h4>
+        <Textarea
+          placeholder="Enter custom judging criteria here. If empty, will use standard criteria. Example: 'Focus on creativity and originality. Heavily penalize generic responses. Reward unexpected insights and unique perspectives.'"
+          value={customJudgingCriteria}
+          onChange={(e) => setCustomJudgingCriteria(e.target.value)}
+          rows={3}
+          className="w-full"
+        />
+        <p className="text-xs text-muted-foreground mt-2">
+          This will override the default judging prompt. Useful for character-specific evaluation criteria.
+        </p>
       </div>
-    </div>
-  </div>
-)}
 
-    {/* Primary Judge Section */}
-    <div className="border rounded p-4 bg-muted/30">
-      <h4 className="font-medium mb-3 flex items-center gap-2">
-        <MessageSquare className="w-4 h-4" />
-        Primary Judge Model (evaluates responses)
-      </h4>
-      
-      {modelPurposes?.primary_judge ? (
-        <div className="flex items-center justify-between p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded">
-          <div className="flex-1">
-            <div className="font-medium">{modelPurposes.primary_judge.name}</div>
-            <div className="text-sm text-muted-foreground">
-              GPU {modelPurposes.primary_judge.gpu_id} • Context: {modelPurposes.primary_judge.context_length}
+      {/* Test Ready Status */}
+      <div className="bg-muted/50 border rounded p-4">
+        <div className="font-medium mb-2 text-foreground">Test Readiness:</div>
+        <div className="text-sm space-y-1">
+          <div className={`flex items-center gap-2 ${modelPurposes?.test_model || (testingMode === 'comparison' && selectedModels.length >= 2) ? 'text-green-400' : 'text-red-400'}`}>
+            {modelPurposes?.test_model || (testingMode === 'comparison' && selectedModels.length >= 2) ? '✅' : '❌'} 
+            {testingMode === 'single' ? 'Test Model Ready' : `${selectedModels.length}/2+ Models Selected`}
+          </div>
+          <div className={`flex items-center gap-2 ${modelPurposes?.primary_judge ? 'text-green-400' : 'text-red-400'}`}>
+            {modelPurposes?.primary_judge ? '✅' : '❌'} Primary Judge Ready
+          </div>
+          <div className={`flex items-center gap-2 ${modelPurposes?.secondary_judge ? 'text-green-400' : 'text-gray-400'}`}>
+            {modelPurposes?.secondary_judge ? '✅' : '⚪'} Secondary Judge {modelPurposes?.secondary_judge ? 'Ready' : '(Optional)'}
+          </div>
+          
+          {/* Character Status */}
+          {(selectedTestCharacter || selectedTestCharacterA || selectedTestCharacterB || selectedPrimaryJudgeCharacter || selectedSecondaryJudgeCharacter) && (
+            <div className="mt-2 pt-2 border-t border-muted">
+              <div className="text-xs font-medium text-muted-foreground mb-1">Character Assignments:</div>
+              {selectedTestCharacter && (
+                <div className="text-xs text-blue-400">🎭 Test Model: {selectedTestCharacter.name}</div>
+              )}
+              {selectedTestCharacterA && (
+                <div className="text-xs text-blue-400">🎭 Model A: {selectedTestCharacterA.name}</div>
+              )}
+              {selectedTestCharacterB && (
+                <div className="text-xs text-blue-400">🎭 Model B: {selectedTestCharacterB.name}</div>
+              )}
+              {selectedPrimaryJudgeCharacter && (
+                <div className="text-xs text-purple-400">⚖️ Primary Judge: {selectedPrimaryJudgeCharacter.name}</div>
+              )}
+              {selectedSecondaryJudgeCharacter && (
+                <div className="text-xs text-purple-400">⚖️ Secondary Judge: {selectedSecondaryJudgeCharacter.name}</div>
+              )}
             </div>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => unloadModelPurpose('primary_judge')}
-            disabled={isUnloadingPurpose.primary_judge}
-            className="text-red-600 hover:text-red-700"
-          >
-            {isUnloadingPurpose.primary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <Select value={judgeModel} onValueChange={setJudgeModel} className="flex-1">
-              <SelectTrigger>
-                <SelectValue placeholder="Select judge model" />
-              </SelectTrigger>
-<SelectContent>
-    {allModelOptions.map(model => (
-        <SelectItem key={model.id} value={model.id}>
-            {model.name}
-        </SelectItem>
-    ))}
-</SelectContent>
-            </Select>
-            
-            <Select 
-              value={judgeModelGpu?.toString() || "1"}
-              onValueChange={(value) => setJudgeModelGpu(parseInt(value))}
-            >
-              <SelectTrigger className="w-24">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">GPU 0</SelectItem>
-                <SelectItem value="1">GPU 1</SelectItem>
-              </SelectContent>
-            </Select>
-            
-            <Button
-              onClick={() => loadModelForPurpose('primary_judge', judgeModel, judgeModelGpu, settings.contextLength)}
-              disabled={!judgeModel || isLoadingPurpose.primary_judge}
-              size="sm"
-            >
-              {isLoadingPurpose.primary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
-
-    {/* Secondary Judge Section */}
-    <div className="border rounded p-4 bg-muted/30">
-      <h4 className="font-medium mb-3 flex items-center gap-2">
-        <Users className="w-4 h-4" />
-        Secondary Judge Model (optional - for dual judging)
-      </h4>
-      
-      {modelPurposes?.secondary_judge ? (
-        <div className="flex items-center justify-between p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded">
-          <div className="flex-1">
-            <div className="font-medium">{modelPurposes.secondary_judge.name}</div>
-            <div className="text-sm text-muted-foreground">
-              GPU {modelPurposes.secondary_judge.gpu_id} • Context: {modelPurposes.secondary_judge.context_length}
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => unloadModelPurpose('secondary_judge')}
-            disabled={isUnloadingPurpose.secondary_judge}
-            className="text-red-600 hover:text-red-700"
-          >
-            {isUnloadingPurpose.secondary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Unload'}
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <Select value={secondaryJudgeModel} onValueChange={setSecondaryJudgeModel} className="flex-1">
-              <SelectTrigger>
-                <SelectValue placeholder="Select secondary judge (optional)" />
-              </SelectTrigger>
-<SelectContent>
-    {allModelOptions.map(model => (
-        <SelectItem key={model.id} value={model.id}>
-            {model.name}
-        </SelectItem>
-    ))}
-</SelectContent>
-            </Select>
-            
-            <Select 
-              value={secondaryJudgeModelGpu?.toString() || "0"}
-              onValueChange={(value) => setSecondaryJudgeModelGpu(parseInt(value))}
-            >
-              <SelectTrigger className="w-24">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="0">GPU 0</SelectItem>
-                <SelectItem value="1">GPU 1</SelectItem>
-              </SelectContent>
-            </Select>
-            
-            <Button
-              onClick={() => loadModelForPurpose('secondary_judge', secondaryJudgeModel, secondaryJudgeModelGpu, settings.contextLength)}
-              disabled={!secondaryJudgeModel || isLoadingPurpose.secondary_judge}
-              size="sm"
-            >
-              {isLoadingPurpose.secondary_judge ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Load'}
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
-
-    {/* Test Ready Status - FIXED STYLING */}
-    <div className="bg-muted/50 border rounded p-4">
-      <div className="font-medium mb-2 text-foreground">Test Readiness:</div>
-      <div className="text-sm space-y-1">
-        <div className={`flex items-center gap-2 ${modelPurposes?.test_model || (testingMode === 'comparison' && selectedModels.length >= 2) ? 'text-green-400' : 'text-red-400'}`}>
-          {modelPurposes?.test_model || (testingMode === 'comparison' && selectedModels.length >= 2) ? '✅' : '❌'} 
-          {testingMode === 'single' ? 'Test Model Ready' : `${selectedModels.length}/2+ Models Selected`}
-        </div>
-        <div className={`flex items-center gap-2 ${modelPurposes?.primary_judge ? 'text-green-400' : 'text-red-400'}`}>
-          {modelPurposes?.primary_judge ? '✅' : '❌'} Primary Judge Ready
-        </div>
-        <div className={`flex items-center gap-2 ${modelPurposes?.secondary_judge ? 'text-green-400' : 'text-gray-400'}`}>
-          {modelPurposes?.secondary_judge ? '✅' : '⚪'} Secondary Judge {modelPurposes?.secondary_judge ? 'Ready' : '(Optional)'}
+          )}
         </div>
       </div>
-    </div>
 
-  </CardContent>
-</Card>
+    </CardContent>
+  </Card>
 </TabsContent>
 
         {/* Prompts Tab */}
@@ -2507,38 +2887,63 @@ const runComparisonTest = useCallback(async () => {
   
 {/* Top row: Leaderboard and Recent Comparisons side by side */}
 <div className="grid grid-cols-2 gap-6 mb-6">
-  <Card>
-    <CardHeader>
-      <div className="flex items-center justify-between">
-        <CardTitle>ELO Leaderboard</CardTitle>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={resetEloRatings}
-          className="text-red-600 hover:text-red-700"
-        >
-          Reset ELO
-        </Button>
-      </div>
-    </CardHeader>
-    <CardContent>
-      <div className="space-y-2">
-        {Object.entries(eloRatings)
-          .sort(([,a], [,b]) => b - a)
-          .map(([model, rating], index) => (
-            <div key={model} className="flex items-center justify-between p-2 border rounded">
+ <Card>
+  <CardHeader>
+    <div className="flex items-center justify-between">
+      <CardTitle>ELO Leaderboard</CardTitle>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={resetEloRatings}
+        className="text-red-600 hover:text-red-700"
+      >
+        Reset ELO
+      </Button>
+    </div>
+  </CardHeader>
+  <CardContent>
+    <div className="space-y-2">
+      {Object.entries(eloRatings)
+        .sort(([,a], [,b]) => b - a)
+        .map(([modelKey, rating], index) => {
+          // Parse model display name to extract base model and character
+          const isCharacterModel = modelKey.includes(' (as ');
+          let displayName = modelKey;
+          let characterBadge = null;
+          
+          if (isCharacterModel) {
+            const match = modelKey.match(/^(.+?) \(as (.+?)\)(.*)$/);
+            if (match) {
+              const [, baseModel, characterName, paramSuffix] = match;
+              displayName = baseModel + (paramSuffix || '');
+              characterBadge = characterName;
+            }
+          }
+          
+          return (
+            <div key={modelKey} className="flex items-center justify-between p-2 border rounded">
               <div className="flex items-center gap-2">
                 <Badge variant={index === 0 ? "default" : "outline"}>
                   #{index + 1}
                 </Badge>
-                <span className="font-medium text-sm">{model}</span>
+                <div className="flex flex-col">
+                  <span className="font-medium text-sm">{displayName}</span>
+                  {characterBadge && (
+                    <div className="flex items-center gap-1 mt-1">
+                      <Badge variant="secondary" className="text-xs">
+                        🎭 {characterBadge}
+                      </Badge>
+                    </div>
+                  )}
+                </div>
               </div>
               <Badge variant="secondary">{rating}</Badge>
             </div>
-          ))}
-      </div>
-    </CardContent>
-  </Card>
+          );
+        })}
+    </div>
+  </CardContent>
+</Card>
 
 {/* Recent Comparisons */}
 <Card>
@@ -2554,16 +2959,35 @@ const runComparisonTest = useCallback(async () => {
               {result.category} • {new Date(result.timestamp).toLocaleTimeString()}
             </div>
             <div className="mb-1">
-              <span className="font-medium">{result.model1}</span> vs{' '}
-              <span className="font-medium">{result.model2}</span>
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{result.model1}</span>
+                {result.character1 && (
+                  <Badge variant="outline" className="text-xs">🎭 {result.character1}</Badge>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground">vs</div>
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{result.model2}</span>
+                {result.character2 && (
+                  <Badge variant="outline" className="text-xs">🎭 {result.character2}</Badge>
+                )}
+              </div>
             </div>
             <div className="text-xs mb-1">
               Winner: {result.judgment === 'TIE' ? 'Tie' : 
                 result.judgment === 'A' ? result.model1 : result.model2}
             </div>
- <div className="text-xs text-muted-foreground">
-  Judge{result.isDualJudged ? 's' : ''}: {result.judgeModel}{result.secondaryJudgeModel && ` + ${result.secondaryJudgeModel}`} • {result.explanation?.substring(0, 40)}...
-</div>
+            <div className="text-xs text-muted-foreground">
+              Judge{result.isDualJudged ? 's' : ''}: {result.judgeModel}
+              {result.judgeCharacter && (
+                <span className="ml-1">🎭 {result.judgeCharacter}</span>
+              )}
+              {result.secondaryJudgeModel && ` + ${result.secondaryJudgeModel}`}
+              {result.secondaryJudgeCharacter && (
+                <span className="ml-1">🎭 {result.secondaryJudgeCharacter}</span>
+              )}
+              • {result.explanation?.substring(0, 40)}...
+            </div>
           </div>
         ))}
       </div>
@@ -2585,8 +3009,20 @@ const runComparisonTest = useCallback(async () => {
             <div key={result.id} className="border rounded p-3 bg-card text-card-foreground">
               <div className="flex justify-between items-start mb-2">
                 <div className="flex-1">
-                  <div className="font-medium text-sm">
-                    {result.model1} vs {result.model2}
+                  <div className="font-medium text-sm mb-1">
+                    <div className="flex items-center gap-2">
+                      <span>{result.model1}</span>
+                      {result.character1 && (
+                        <Badge variant="outline" className="text-xs">🎭 {result.character1}</Badge>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground my-1">vs</div>
+                    <div className="flex items-center gap-2">
+                      <span>{result.model2}</span>
+                      {result.character2 && (
+                        <Badge variant="outline" className="text-xs">🎭 {result.character2}</Badge>
+                      )}
+                    </div>
                   </div>
                   <div className="text-xs text-muted-foreground">{result.category} • {new Date(result.timestamp).toLocaleTimeString()}</div>
                 </div>
@@ -2597,22 +3033,28 @@ const runComparisonTest = useCallback(async () => {
                 </Badge>
               </div>
               
-<div className="text-sm mb-2">
-  <strong>Judge{result.isDualJudged ? 's' : ''}:</strong> {result.judgeModel}
-  {result.secondaryJudgeModel && <span> + {result.secondaryJudgeModel}</span>}
-</div>
+              <div className="text-sm mb-2">
+                <strong>Judge{result.isDualJudged ? 's' : ''}:</strong> {result.judgeModel}
+                {result.judgeCharacter && (
+                  <Badge variant="outline" className="ml-2 text-xs">🎭 {result.judgeCharacter}</Badge>
+                )}
+                {result.secondaryJudgeModel && <span> + {result.secondaryJudgeModel}</span>}
+                {result.secondaryJudgeCharacter && (
+                  <Badge variant="outline" className="ml-2 text-xs">🎭 {result.secondaryJudgeCharacter}</Badge>
+                )}
+              </div>
 
-{result.isDualJudged && (
-  <div className="text-xs mb-2 bg-blue-50 p-2 rounded">
-    <strong>Primary:</strong> {result.primaryJudgment?.verdict} • 
-    <strong> Secondary:</strong> {result.secondaryJudgment?.verdict} • 
-    <strong> Result:</strong> {result.reconciliationReason}
-  </div>
-)}
+              {result.isDualJudged && (
+                <div className="text-xs mb-2 bg-blue-50 p-2 rounded">
+                  <strong>Primary:</strong> {result.primaryJudgment?.verdict} • 
+                  <strong> Secondary:</strong> {result.secondaryJudgment?.verdict} • 
+                  <strong> Result:</strong> {result.reconciliationReason}
+                </div>
+              )}
 
-<div className="text-sm bg-muted p-2 rounded mb-2">
-  <strong>Explanation:</strong> <span className="text-foreground">{result.explanation}</span>
-</div>
+              <div className="text-sm bg-muted p-2 rounded mb-2">
+                <strong>Explanation:</strong> <span className="text-foreground">{result.explanation}</span>
+              </div>
               
               <details className="text-sm">
                 <summary className="cursor-pointer text-primary hover:text-primary/80 font-medium">
@@ -2625,11 +3067,21 @@ const runComparisonTest = useCallback(async () => {
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <div className="bg-muted p-2 rounded border">
-                      <strong>{result.model1} Response:</strong>
+                      <div className="flex items-center gap-2 mb-1">
+                        <strong>{result.model1} Response:</strong>
+                        {result.character1 && (
+                          <Badge variant="outline" className="text-xs">🎭 {result.character1}</Badge>
+                        )}
+                      </div>
                       <div className="mt-1 whitespace-pre-wrap">{result.response1}</div>
                     </div>
                     <div className="bg-muted p-2 rounded border">
-                      <strong>{result.model2} Response:</strong>
+                      <div className="flex items-center gap-2 mb-1">
+                        <strong>{result.model2} Response:</strong>
+                        {result.character2 && (
+                          <Badge variant="outline" className="text-xs">🎭 {result.character2}</Badge>
+                        )}
+                      </div>
                       <div className="mt-1 whitespace-pre-wrap">{result.response2}</div>
                     </div>
                   </div>
@@ -2642,6 +3094,7 @@ const runComparisonTest = useCallback(async () => {
     </CardContent>
   </Card>
 )}
+  
 
 {/* Single Model Test Results */}
 {testResults.filter(r => r.model && !r.model1).length > 0 && (
@@ -2653,51 +3106,67 @@ const runComparisonTest = useCallback(async () => {
       <ScrollArea className="h-96">
         <div className="space-y-3">
           {testResults.filter(r => r.model && !r.model1).reverse().map(result => (
-<div key={result.id} className="border rounded p-3 bg-card text-card-foreground">
-  <div className="flex justify-between items-start mb-2">
-    <div className="flex-1">
-      <span className="font-medium">{result.model}</span>
-      <div className="text-xs text-muted-foreground">{result.category} • {new Date(result.timestamp).toLocaleTimeString()}</div>
-    </div>
-    <Badge variant={result.score >= 70 ? "default" : result.score >= 40 ? "secondary" : "destructive"}>
-      {result.score}/100
-    </Badge>
-  </div>
-  
-<div className="text-sm mb-2">
-  <strong>Judge{result.isDualJudged ? 's' : ''}:</strong> {result.judgeModel}
-  {result.secondaryJudgeModel && <span> + {result.secondaryJudgeModel}</span>}
-</div>
+            <div key={result.id} className="border rounded p-3 bg-card text-card-foreground">
+              <div className="flex justify-between items-start mb-2">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{result.model}</span>
+                    {result.character && (
+                      <Badge variant="outline" className="text-xs">🎭 {result.character}</Badge>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{result.category} • {new Date(result.timestamp).toLocaleTimeString()}</div>
+                </div>
+                <Badge variant={result.score >= 70 ? "default" : result.score >= 40 ? "secondary" : "destructive"}>
+                  {result.score}/100
+                </Badge>
+              </div>
+              
+              <div className="text-sm mb-2">
+                <strong>Judge{result.isDualJudged ? 's' : ''}:</strong> {result.judgeModel}
+                {result.judgeCharacter && (
+                  <Badge variant="outline" className="ml-2 text-xs">🎭 {result.judgeCharacter}</Badge>
+                )}
+                {result.secondaryJudgeModel && <span> + {result.secondaryJudgeModel}</span>}
+                {result.secondaryJudgeCharacter && (
+                  <Badge variant="outline" className="ml-2 text-xs">🎭 {result.secondaryJudgeCharacter}</Badge>
+                )}
+              </div>
 
-{result.isDualJudged && (
-  <div className="text-xs mb-2 bg-blue-50 p-2 rounded">
-    <strong>Primary:</strong> {result.primaryJudgment?.score}/100 • 
-    <strong> Secondary:</strong> {result.secondaryJudgment?.score}/100 • 
-    <strong> Final:</strong> {result.score}/100 • 
-    <strong> Reason:</strong> {result.reconciliationReason}
-  </div>
-)}
+              {result.isDualJudged && (
+                <div className="text-xs mb-2 bg-blue-50 p-2 rounded">
+                  <strong>Primary:</strong> {result.primaryJudgment?.score}/100 • 
+                  <strong> Secondary:</strong> {result.secondaryJudgment?.score}/100 • 
+                  <strong> Final:</strong> {result.score}/100 • 
+                  <strong> Reason:</strong> {result.reconciliationReason}
+                </div>
+              )}
 
-<div className="text-sm bg-muted p-2 rounded mb-2">
-  <strong>Feedback:</strong> <span className="text-foreground">{result.feedback}</span>
-</div>
-  
-  <details className="text-sm">
-    <summary className="cursor-pointer text-primary hover:text-primary/80 font-medium">
-      View Prompt & Response
-    </summary>
-    <div className="mt-2 space-y-2">
-      <div className="bg-muted p-2 rounded border">
-        <strong>Prompt:</strong>
-        <div className="mt-1">{result.prompt}</div>
-      </div>
-      <div className="bg-muted p-2 rounded border">
-        <strong>Model Response:</strong>
-        <div className="mt-1 whitespace-pre-wrap">{result.response}</div>
-      </div>
-    </div>
-  </details>
-</div>
+              <div className="text-sm bg-muted p-2 rounded mb-2">
+                <strong>Feedback:</strong> <span className="text-foreground">{result.feedback}</span>
+              </div>
+              
+              <details className="text-sm">
+                <summary className="cursor-pointer text-primary hover:text-primary/80 font-medium">
+                  View Prompt & Response
+                </summary>
+                <div className="mt-2 space-y-2">
+                  <div className="bg-muted p-2 rounded border">
+                    <strong>Prompt:</strong>
+                    <div className="mt-1">{result.prompt}</div>
+                  </div>
+                  <div className="bg-muted p-2 rounded border">
+                    <div className="flex items-center gap-2 mb-1">
+                      <strong>Model Response:</strong>
+                      {result.character && (
+                        <Badge variant="outline" className="text-xs">🎭 {result.character}</Badge>
+                      )}
+                    </div>
+                    <div className="mt-1 whitespace-pre-wrap">{result.response}</div>
+                  </div>
+                </div>
+              </details>
+            </div>
           ))}
         </div>
       </ScrollArea>

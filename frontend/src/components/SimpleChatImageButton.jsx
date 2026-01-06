@@ -20,8 +20,10 @@ const SimpleChatImageButton = () => {
         setMessages,
         settings,
         MEMORY_API_URL,
+        PRIMARY_API_URL,
         generateUniqueId,
     } = useApp();
+// Determine which engine and availability
 
     // Existing state
     const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -34,17 +36,18 @@ const SimpleChatImageButton = () => {
     const [sampler, setSampler] = useState('Euler a');
     const [seed, setSeed] = useState(-1);
     const [selectedSampler, setSelectedSampler] = useState("dpmpp2m");
-    
+    const [selectedGpuId, setSelectedGpuId] = useState(0);
     // AUTOMATIC1111 state
     const [selectedModel, setSelectedModel] = useState('');
     const [availableModels, setAvailableModels] = useState([]);
     
     // Local SD state
-    const [localSdStatus, setLocalSdStatus] = useState({ 
-        available: false, 
-        model_loaded: false, 
-        current_model: null 
-    });
+const [localSdStatus, setLocalSdStatus] = useState({ 
+    available: false, 
+    loaded_models: {} // Will store { 0: 'model_name.safetensors', 1: '...' }
+});
+
+
     const [localModels, setLocalModels] = useState([]);
     const [isLocalModelLoading, setIsLocalModelLoading] = useState(false);
 
@@ -81,23 +84,43 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
 });
 
     // Determine which engine and availability
-    const imageEngine = settings?.imageEngine || 'auto1111';
-    const isAvailable = imageEngine === 'EloDiffusion' 
-        ? localSdStatus?.available 
-        : sdStatus?.automatic1111;
+
 
     // Existing functions...
     const checkLocalSdStatus = useCallback(async () => {
-        try {
-            const res = await fetch(`${MEMORY_API_URL}/sd-local/status`);
-            if (res.ok) {
-                const data = await res.json();
-                setLocalSdStatus(data);
-            }
-        } catch (err) {
-            console.error('Local SD status check failed:', err);
+    try {
+        // Query both servers for their status simultaneously
+        const [primaryRes, memoryRes] = await Promise.all([
+            fetch(`${PRIMARY_API_URL}/sd-local/status`).catch(e => null), // Use .catch to prevent one failure from killing both
+            fetch(`${MEMORY_API_URL}/sd-local/status`).catch(e => null)
+        ]);
+
+        let primaryStatus = { loaded_models: {} };
+        let memoryStatus = { loaded_models: {} };
+
+        if (primaryRes && primaryRes.ok) {
+            primaryStatus = await primaryRes.json();
         }
-    }, [MEMORY_API_URL]);
+        if (memoryRes && memoryRes.ok) {
+            memoryStatus = await memoryRes.json();
+        }
+
+        // Merge the results from both servers into a single state object
+        const mergedStatus = {
+            available: (primaryRes && primaryRes.ok) || (memoryRes && memoryRes.ok),
+            loaded_models: {
+                ...primaryStatus.loaded_models,
+                ...memoryStatus.loaded_models
+            }
+        };
+
+        console.log("Merged SD Status:", mergedStatus);
+        setLocalSdStatus(mergedStatus);
+
+    } catch (err) {
+        console.error('Combined local SD status check failed:', err);
+    }
+}, [PRIMARY_API_URL, MEMORY_API_URL]);
 
     const fetchLocalModels = useCallback(async () => {
         try {
@@ -146,33 +169,50 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
         }
     }, [MEMORY_API_URL]);
 
-    const handleLoadLocalModel = useCallback(async (modelFilename) => {
-        if (!modelFilename || typeof modelFilename !== 'string') {
-            console.error("Invalid filename:", modelFilename);
-            return;
+const handleLoadLocalModel = useCallback(async (modelFilename) => {
+    if (!modelFilename) {
+        console.error("Invalid filename provided to handleLoadLocalModel");
+        return;
+    }
+
+    setIsLocalModelLoading(true);
+    const targetApiUrl = selectedGpuId === 0 ? PRIMARY_API_URL : MEMORY_API_URL;
+
+    try {
+        const response = await fetch(`${targetApiUrl}/sd-local/load-model`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model_filename: modelFilename,
+                gpu_id: selectedGpuId
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Server responded with ${response.status}: ${errorText}`);
         }
 
-        setIsLocalModelLoading(true);
-        try {
-            const response = await fetch(`${MEMORY_API_URL}/sd-local/load-model`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model_filename: modelFilename })
-            });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Server responded with ${response.status}: ${errorText}`);
+        // DIRECT STATE UPDATE: This is the critical fix.
+        // We manually update the UI state to reflect what we know is now loaded on the backend.
+        setLocalSdStatus(prevStatus => ({
+            ...prevStatus,
+            available: true,
+            loaded_models: {
+                ...prevStatus.loaded_models,
+                [selectedGpuId]: modelFilename
             }
+        }));
 
-            await checkLocalSdStatus();
-        } catch (err) {
-            alert(`Failed to load model: ${err.message}`);
-            console.error('Model loading failed:', err);
-        } finally {
-            setIsLocalModelLoading(false);
-        }
-    }, [MEMORY_API_URL, checkLocalSdStatus]);
+        console.log(`UI State directly updated for GPU ${selectedGpuId} with model ${modelFilename}`);
+
+    } catch (err) {
+        alert(`Failed to load model: ${err.message}`);
+        console.error('Model loading failed:', err);
+    } finally {
+        setIsLocalModelLoading(false);
+    }
+}, [PRIMARY_API_URL, MEMORY_API_URL, selectedGpuId, setLocalSdStatus]);
 
     // Persist auto-enhance state
     useEffect(() => {
@@ -189,7 +229,7 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
         if (!autoEnhanceEnabled || !adetailerAvailable || !messageId) return;
         
         try {
-            const response = await fetch(`${MEMORY_API_URL}/sd-local/enhance-adetailer`, {
+            const response = await fetch(`${PRIMARY_API_URL}/sd-local/enhance-adetailer`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -239,7 +279,13 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
             fetchAdetailerModels(); // NEW: Fetch ADetailer models
         }
     }, [isDialogOpen, checkSdStatus, checkLocalSdStatus, fetchLocalModels, checkAdetailerStatus, fetchAdetailerModels]);
-
+const imageEngine = settings?.imageEngine || 'auto1111';
+const isAvailable = imageEngine === 'EloDiffusion' 
+    ? localSdStatus?.available 
+    : sdStatus?.automatic1111;
+const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion' 
+    ? Boolean(localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId])
+    : sdStatus?.automatic1111;
     useEffect(() => {
         if (sdStatus?.models?.length) {
             setAvailableModels(sdStatus.models);
@@ -267,7 +313,7 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
                 sampler: selectedSampler,  // ✅ Correct parameter name
                 seed: seed,
                 model: selectedModel
-            });
+            }, selectedGpuId);
 
             if (responseData && Array.isArray(responseData.image_urls) && responseData.image_urls.length > 0) {
                 responseData.image_urls.forEach(imageUrl => {
@@ -280,6 +326,7 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
                         type: 'image',
                         content: prompt,
                         imagePath: imageUrl,
+                        gpuId: selectedGpuId,
                         prompt: prompt,
                         negative_prompt: negativePrompt,
                         width: responseData.parameters?.width || width,
@@ -541,19 +588,32 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
                                             </div>
                                         )}
                                     </div>
-                                    {localSdStatus.current_model && (
-                                        <p className="text-xs text-green-600 dark:text-green-400">
-                                            ✓ Loaded: {localSdStatus.current_model}
-                                        </p>
-                                    )}
-                                    {!localSdStatus.model_loaded && (
-                                        <p className="text-xs text-yellow-600 dark:text-yellow-400">
-                                            ⚠ No model loaded. Select a model above to generate images.
-                                        </p>
-                                    )}
+{localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId] && (
+    <p className="text-xs text-green-600 dark:text-green-400">
+        ✓ Loaded on GPU {selectedGpuId}: {localSdStatus.loaded_models[selectedGpuId]}
+    </p>
+)}
                                 </div>
                             )}
-
+{/* GPU SELECTION - NEW */}
+{imageEngine === 'EloDiffusion' && (
+    <div className="space-y-2">
+        <Label htmlFor="gpu-select" className="text-xs">GPU for Image Generation</Label>
+        <select 
+            id="gpu-select"
+            value={selectedGpuId} 
+            onChange={e => setSelectedGpuId(parseInt(e.target.value))}
+            disabled={isImageGenerating || isLocalModelLoading}
+            className="w-full rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+            <option value={0}>GPU 0 (Primary)</option>
+            <option value={1}>GPU 1 (Secondary)</option>
+        </select>
+        <p className="text-xs text-muted-foreground">
+            Choose which GPU to use for image generation and ADetailer
+        </p>
+    </div>
+)}
                             {/* Prompt inputs */}
                             <div className="space-y-2">
                                 <Label htmlFor="prompt" className="text-xs">Prompt</Label>
@@ -643,11 +703,11 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
                                 <Slider min={1} max={15} step={0.1} value={[guidanceScale]} onValueChange={val => setGuidanceScale(val[0])} disabled={isImageGenerating} />
                             </div>
 
-                            <Button 
-                                className={`w-full ${autoEnhanceEnabled && adetailerAvailable ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700' : ''}`}
-                                onClick={handleGenerateImage} 
-                                disabled={isImageGenerating || !prompt.trim()}
-                            >
+<Button 
+    className={`w-full ${autoEnhanceEnabled && adetailerAvailable ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700' : ''}`}
+    onClick={handleGenerateImage} 
+    disabled={isImageGenerating || !prompt.trim() || !isModelLoadedForSelectedGpu}
+>
                                 {isImageGenerating ? 
                                     <>
                                         <Loader2 className="animate-spin mr-2 h-4 w-4" />

@@ -84,7 +84,8 @@ def get_configured_endpoint(model_id: str = None):
                     return {
                         'url': endpoint.get('url', '').rstrip('/'),
                         'api_key': endpoint.get('apiKey', ''),
-                        'name': endpoint.get('name', 'Custom Endpoint')
+                        'name': endpoint.get('name', 'Custom Endpoint'),
+                        'model': endpoint.get('model', '')  # Model name to send to the API
                     }
             # If the specific endpoint is not found or disabled, it's an error
             return None
@@ -95,14 +96,15 @@ def get_configured_endpoint(model_id: str = None):
                 return {
                     'url': endpoint.get('url', '').rstrip('/'),
                     'api_key': endpoint.get('apiKey', ''),
-                    'name': endpoint.get('name', 'Custom Endpoint')
+                    'name': endpoint.get('name', 'Custom Endpoint'),
+                    'model': endpoint.get('model', '')  # Model name to send to the API
                 }
         return None
     except Exception as e:
         logger.error(f"Error reading settings: {e}")
         return None
-async def forward_to_configured_endpoint_streaming(model_name: str, request_data: dict):
-    """Forward OpenAI streaming request to the configured custom endpoint"""
+def _prepare_endpoint_request(model_name: str, request_data: dict):
+    """Prepare endpoint config and URL - returns (endpoint_config, url, request_data) or raises HTTPException"""
     endpoint_config = get_configured_endpoint(model_name)
     
     if not endpoint_config:
@@ -112,55 +114,127 @@ async def forward_to_configured_endpoint_streaming(model_name: str, request_data
         )
     
     base_url = endpoint_config['url']
-    url = f"{base_url}/v1/chat/completions"
+    # Avoid double /v1 if the base URL already ends with /v1
+    if base_url.endswith('/v1'):
+        url = f"{base_url}/chat/completions"
+    else:
+        url = f"{base_url}/v1/chat/completions"
+    
+    # Don't send internal endpoint ID as model name - use configured model or a default
+    if request_data.get('model', '').startswith('endpoint-'):
+        configured_model = endpoint_config.get('model', '').strip()
+        if configured_model:
+            request_data['model'] = configured_model
+        else:
+            # Use a generic default that most OpenAI-compatible APIs accept
+            request_data['model'] = 'gpt-3.5-turbo'
     
     logger.info(f"[OpenAI Compat] Forwarding {model_name} to {endpoint_config['name']} at {url}")
+    logger.info(f"[OpenAI Compat] Request data: {request_data}")
     
-    headers = {"Content-Type": "application/json"}
-    if endpoint_config['api_key']:
-        headers["Authorization"] = f"Bearer {endpoint_config['api_key']}"
+    return endpoint_config, url, request_data
+
+
+async def forward_to_configured_endpoint_streaming(endpoint_config: dict, url: str, request_data: dict):
+    """Forward OpenAI streaming request to the configured custom endpoint.
+    
+    Note: endpoint_config, url, and request_data should be prepared by _prepare_endpoint_request()
+    before calling this generator to ensure errors are raised before streaming starts.
+    """
+    # Build headers similar to what SillyTavern sends
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+    
+    api_key = endpoint_config.get('api_key', '')
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        # Chub.ai also accepts CH-API-Key header
+        if api_key.startswith('CHK-'):
+            headers["CH-API-Key"] = api_key
+    
+    base_url = endpoint_config['url']
+    
+    logger.info(f"[OpenAI Compat] Making request to {url}")
+    logger.info(f"[OpenAI Compat] Headers (redacted): {list(headers.keys())}")
+    logger.info(f"[OpenAI Compat] Request body keys: {list(request_data.keys())}")
     
     try:
-        async with httpx.AsyncClient(timeout=150.0) as client:
+        # Note: verify=False is for debugging SSL issues - remove in production if not needed
+        async with httpx.AsyncClient(timeout=150.0, follow_redirects=True, verify=True) as client:
+            logger.info(f"[OpenAI Compat] Initiating POST to {url}...")
             async with client.stream("POST", url, headers=headers, json=request_data) as response:
+                logger.info(f"[OpenAI Compat] Got response status: {response.status_code}")
                 if response.status_code != 200:
                     error_text = await response.aread()
-                    raise HTTPException(
-                        status_code=response.status_code, 
-                        detail=f"Remote API error from {base_url}: {error_text.decode()}"
-                    )
+                    # Yield error as SSE event instead of raising (can't raise mid-stream)
+                    error_msg = f"Remote API error ({response.status_code}): {error_text.decode()}"
+                    logger.error(f"[OpenAI Compat] {error_msg}")
+                    error_event = {
+                        "error": {
+                            "message": error_msg,
+                            "type": "api_error",
+                            "code": response.status_code
+                        }
+                    }
+                    yield f"data: {json.dumps(error_event)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                 
                 async for chunk in response.aiter_raw():
                     yield chunk
                     
     except httpx.RequestError as e:
-        logger.error(f"[OpenAI Compat] Connection error to {url}: {e}")
-        raise HTTPException(
-            status_code=502, 
-            detail=f"Cannot connect to {endpoint_config['name']} at {base_url}"
-        )
+        logger.error(f"[OpenAI Compat] Connection error to {url}: {type(e).__name__}: {e}", exc_info=True)
+        # Yield error as SSE event
+        error_event = {
+            "error": {
+                "message": f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(e).__name__}: {str(e)}",
+                "type": "connection_error",
+                "code": 502
+            }
+        }
+        yield f"data: {json.dumps(error_event)}\n\n"
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        logger.error(f"[OpenAI Compat] Unexpected error: {type(e).__name__}: {e}", exc_info=True)
+        error_event = {
+            "error": {
+                "message": f"Unexpected error: {type(e).__name__}: {str(e)}",
+                "type": "unknown_error",
+                "code": 500
+            }
+        }
+        yield f"data: {json.dumps(error_event)}\n\n"
+        yield "data: [DONE]\n\n"
 
-async def forward_to_configured_endpoint_non_streaming(model_name: str, request_data: dict):
-    """Forward OpenAI non-streaming request to the configured custom endpoint"""
-    endpoint_config = get_configured_endpoint(model_name)
+async def forward_to_configured_endpoint_non_streaming(endpoint_config: dict, url: str, request_data: dict):
+    """Forward OpenAI non-streaming request to the configured custom endpoint.
     
-    if not endpoint_config:
-        raise HTTPException(
-            status_code=400, 
-            detail="No custom API endpoints configured. Please add one in Settings → LLM Settings → Custom API Endpoints"
-        )
+    Note: endpoint_config, url, and request_data should be prepared by _prepare_endpoint_request()
+    """
+    # Build headers similar to what SillyTavern sends
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+    
+    api_key = endpoint_config.get('api_key', '')
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        # Chub.ai also accepts CH-API-Key header
+        if api_key.startswith('CHK-'):
+            headers["CH-API-Key"] = api_key
     
     base_url = endpoint_config['url']
-    url = f"{base_url}/v1/chat/completions"
     
-    logger.info(f"[OpenAI Compat] Forwarding {model_name} to {endpoint_config['name']} at {url}")
-    
-    headers = {"Content-Type": "application/json"}
-    if endpoint_config['api_key']:
-        headers["Authorization"] = f"Bearer {endpoint_config['api_key']}"
+    logger.info(f"[OpenAI Compat] Making non-streaming request to {url}")
     
     try:
-        async with httpx.AsyncClient(timeout=150.0) as client:
+        async with httpx.AsyncClient(timeout=150.0, follow_redirects=True) as client:
             response = await client.post(url, headers=headers, json=request_data)
             if response.status_code != 200:
                 raise HTTPException(
@@ -170,10 +244,10 @@ async def forward_to_configured_endpoint_non_streaming(model_name: str, request_
             return response.json()
                     
     except httpx.RequestError as e:
-        logger.error(f"[OpenAI Compat] Connection error to {url}: {e}")
+        logger.error(f"[OpenAI Compat] Connection error to {url}: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(
             status_code=502, 
-            detail=f"Cannot connect to {endpoint_config['name']} at {base_url}"
+            detail=f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(e).__name__}: {str(e)}"
         )
 def convert_messages_to_prompt(messages: List[ChatMessage], model_name: str) -> str:
     """Convert OpenAI messages to Eloquent prompt format"""
@@ -356,13 +430,17 @@ async def chat_completions(raw_request: Request, model_manager: ModelManager = D
             if request.top_k: request_data["top_k"] = request.top_k
             if request.repetition_penalty: request_data["repetition_penalty"] = request.repetition_penalty
 
+            # Prepare endpoint config BEFORE starting stream - this ensures errors are raised
+            # before the response starts, so CORS headers are properly applied
+            endpoint_config, url, request_data = _prepare_endpoint_request(request.model, request_data)
+
             if request.stream:
                 return StreamingResponse(
-                    forward_to_configured_endpoint_streaming(request.model, request_data),
+                    forward_to_configured_endpoint_streaming(endpoint_config, url, request_data),
                     media_type="text/event-stream"
                 )
             else:
-                result = await forward_to_configured_endpoint_non_streaming(request.model, request_data)
+                result = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, request_data)
                 return result
 
         else:

@@ -1,7 +1,8 @@
 # --- Imports ---
 import os
 os.environ["CUDA_MODULE_LOADING"] = "EAGER" # Ensure CUDA modules load eagerly
-os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+# REMOVED: CUDA_LAUNCH_BLOCKING="1" - This can hurt GPU performance!
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["GGML_CUDA_NO_PINNED"] = "0"
 
 # Actually FORCE CUDA initialization with llama_cpp
@@ -18,9 +19,12 @@ import json
 import threading
 import pandas as pd
 import json
+from .model_manager import DevstralHandler
 import xml.etree.ElementTree as ET
 import yaml
 import io
+import subprocess
+import fnmatch
 import asyncio
 import datetime
 from contextlib import asynccontextmanager
@@ -34,19 +38,16 @@ import time
 import shutil
 from .forensic_linguistics_service import ForensicLinguisticsService, TextDocument, SimilarityScore
 import uuid
-from .tts_service import clean_markdown_for_tts, _synthesize_with_kokoro
+from .tts_client import TTSClient  # Use TTS client instead of direct service
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 import re
 from .model_manager import ModelManager
 from . import inference
-from .tts_service import synthesize_speech # Assuming this is the correct import path for your TTS service
 import io
 import yaml
 import tempfile
-from . import tts_service # Assuming this is the correct import path for your TTS service
 from .stt_service import transcribe_audio # Assuming this is the correct import path for your STT service
-import uuid
 from .inference import generate_text
 from . import dual_chat_utils as dcu # Assuming this is the correct import path for your dual chat util
 import base64
@@ -60,17 +61,18 @@ import requests
 from io import BytesIO
 import base64
 from . import character_intelligence
+# Configure logging BEFORE importing modules that use it
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 from .sd_manager import SDManager
 import random
 from .web_search_service import perform_web_search
 from .openai_compat import router as openai_router
 import pynvml
-from .kyutai_streaming_service import kyutai_streaming, create_text_stream_from_llm, create_sentence_stream
-
-logging.basicConfig(level=logging.INFO)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+from .devstral_service import devstral_service, DevstralService
 # Only set DEBUG-level loggers to WARNING to suppress their excessive output
 logging.getLogger('numba.core').setLevel(logging.WARNING)
 logging.getLogger('numba.byteflow').setLevel(logging.WARNING)
@@ -92,6 +94,10 @@ logging.getLogger('nemo.utils').setLevel(logging.WARNING)
 app = FastAPI() # Re-initialize app to avoid conflicts
 SINGLE_GPU_MODE = False # Set to True if running on a single GPU
 
+# TTS API URL (for forwarding requests to TTS service on port 8000)
+# Note: TTS service endpoints are on main backend (port 8000) not separate service
+TTS_API_URL = os.getenv("TTS_API_URL", "http://localhost:8000")
+
 # --- Environment Variable Settings ---
 # Disable tokenizer parallelism to potentially avoid warnings/issues
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -107,7 +113,7 @@ async def get_model_manager(request: Request): # Changed signature to use Reques
     yield request.app.state.model_manager
 def strip_ui_wrappers(s: str) -> str:
     """
-    Remove any lines that are just the model’s name or "’s avatar,"
+    Remove any lines that are just the model's name or "'s avatar,"
     and drop triple-backtick fences.
     """
     cleaned_lines = []
@@ -122,9 +128,81 @@ def strip_ui_wrappers(s: str) -> str:
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines).strip()
 
+class DevstralToolCallParser:
+    """Parse tool calls from Devstral's text-based tool calling format"""
+    
+    @staticmethod
+    def extract_tool_calls_from_content(content: str):
+        """
+        Extract tool calls from content like:
+        list_directory{"path": "/path/to/directory"}
+        read_file{"filepath": "README.md"}
+        """
+        if not content:
+            return [], content
+        
+        tool_calls = []
+        remaining_content = content
+        
+        # Find all potential tool call patterns
+        # Look for function_name followed by { and try to parse as JSON
+        # This is more robust than regex for complex JSON
+        import re
+        
+        # First, find all function names followed by {
+        function_pattern = r'(\w+)\s*\{'
+        function_matches = list(re.finditer(function_pattern, content))
+        
+        for match in function_matches:
+            function_name = match.group(1)
+            start_pos = match.start()
+            
+            # Find the matching closing brace by counting braces
+            brace_count = 0
+            json_start = match.end() - 1  # Start at the opening {
+            json_end = -1
+            
+            for i in range(json_start, len(content)):
+                if content[i] == '{':
+                    brace_count += 1
+                elif content[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = i + 1
+                        break
+            
+            if json_end > 0:
+                json_args_str = content[json_start:json_end]
+                
+                try:
+                    # Parse the JSON arguments
+                    args = json.loads(json_args_str)
+                    
+                    # Create a tool call in OpenAI format
+                    tool_call = {
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {
+                            "name": function_name,
+                            "arguments": json.dumps(args)
+                        }
+                    }
+                    
+                    tool_calls.append(tool_call)
+                    
+                    # Remove this tool call from the content
+                    tool_call_text = content[start_pos:json_end]
+                    remaining_content = remaining_content.replace(tool_call_text, "").strip()
+                    
+                except json.JSONDecodeError:
+                    # If we can't parse the JSON, skip this match
+                    continue
+        
+        return tool_calls, remaining_content
 
 # --- Pydantic Models ---
 class GenerateRequest(BaseModel):
+    directProfileInjection: bool = False # <-- ADD THIS
     prompt: str
     model_name: str
     max_tokens: int = 1024
@@ -132,6 +210,9 @@ class GenerateRequest(BaseModel):
     top_p: float = 0.9
     top_k: int = 40
     repetition_penalty: float = 1.1
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
+    anti_repetition_mode: bool = False
     stop: List[str] = []
     stream: bool = False
     use_rag: bool = False # Keep if used elsewhere
@@ -147,6 +228,7 @@ class GenerateRequest(BaseModel):
     web_search_query: Optional[str] = None  # NEW: Optional web search query
     image_base64: Optional[str] = None  # NEW: Optional base64-encoded image for context
     image_type: Optional[str] = None  # NEW: Optional image type (e.g., "png", "jpg")
+    authorNote: Optional[str] = None  # Author's note for custom session instructions
     # Add any other fields you need for your request
 
 class ImageRequest(BaseModel): # Keep for now
@@ -164,6 +246,27 @@ class DocumentQuery(BaseModel): # Keep for now
     doc_ids: List[str]
     top_k: int = 5
 
+class FileOperationRequest(BaseModel):
+    filepath: str
+    content: Optional[str] = None
+
+class DirectoryListRequest(BaseModel):
+    path: str = "."
+    include_hidden: bool = False
+
+class SearchFilesRequest(BaseModel):
+    query: str
+    path: str = "."
+    file_pattern: str = "*"
+    max_results: int = 100
+
+class RunCommandRequest(BaseModel):
+    command: str
+    working_dir: Optional[str] = None
+    timeout: int = 30
+
+class BackupRequest(BaseModel):
+    filepath: str
 # --- FastAPI App Setup ---
 # Assume 'app = FastAPI(...)' is defined correctly
 app = FastAPI(title="LLM Frontend API") # Example instantiation
@@ -208,6 +311,25 @@ else:
     # Mount the static directory to the /static URL path
     app.mount("/static", StaticFiles(directory=str(static_dir.resolve())), name="static")
 
+# Helper functions for path safety
+def is_safe_path(basedir: str, path: str) -> bool:
+    """Check if path is safe (no directory traversal)"""
+    try:
+        basedir = os.path.abspath(basedir)
+        requested_path = os.path.abspath(os.path.join(basedir, path))
+        return requested_path.startswith(basedir)
+    except (ValueError, OSError):
+        return False
+
+def get_safe_path(basedir: str, path: str) -> Optional[str]:
+    """Get safe absolute path or None if unsafe"""
+    if is_safe_path(basedir, path):
+        return os.path.abspath(os.path.join(basedir, path))
+    return None
+
+CODE_EDITOR_BASE_DIR = os.getcwd()  # You can change this to a specific project directory
+
+
 # Add this to your existing FastAPI app
 async def generate_llm_response(prompt: str, model_manager, model_name: str, **kwargs) -> str:
     """
@@ -230,253 +352,15 @@ async def generate_llm_response(prompt: str, model_manager, model_name: str, **k
         gpu_id=kwargs.get('gpu_id', 0)
     )
     return response
-@app.websocket("/ws/stream-tts")
-async def websocket_streaming_tts(websocket: WebSocket, model_manager: ModelManager = Depends(get_model_manager)):
-    """
-    WebSocket endpoint for real-time streaming TTS
-    
-    Protocol:
-    Client sends: {"type": "start", "prompt": "...", "voice_reference": "path/to/voice.wav"}
-    Server sends: {"type": "audio_chunk", "data": "base64_audio_data"}
-    Server sends: {"type": "complete"} when done
-    """
-    await websocket.accept()
-    session_id = str(uuid.uuid4())
-    
-    try:
-        # Wait for initial message
-        data = await websocket.receive_text()
-        message = json.loads(data)
-        
-        if message.get("type") != "start":
-            await websocket.send_text(json.dumps({
-                "type": "error", 
-                "message": "Expected 'start' message"
-            }))
-            return
-        
-        prompt = message.get("prompt")
-        voice_reference = message.get("voice_reference")  # Optional voice cloning
-        use_streaming_llm = message.get("stream_llm", True)  # Whether to stream from LLM
-        
-        if not prompt:
-            await websocket.send_text(json.dumps({
-                "type": "error", 
-                "message": "No prompt provided"
-            }))
-            return
-        
-        logger.info(f"🗣️ [WebSocket] Starting streaming TTS session {session_id}")
-        
-        # Start Kyutai session
-        kyutai_session_id = await kyutai_streaming.start_stream(voice_reference)
-        
-        # Create text stream based on mode
-        if use_streaming_llm:
-            # Stream directly from LLM as it generates
-            text_stream = create_text_stream_from_llm(
-                prompt=prompt,
-                model_manager=model_manager,
-                model_name=message.get("model_name", "default"),  # Get from message
-                max_tokens=message.get("max_tokens", 1024),
-                temperature=message.get("temperature", 0.7),
-                gpu_id=message.get("gpu_id", 0)
-            )
-        else:
-            # For testing: convert complete LLM response to sentence stream
-            llm_response = await generate_llm_response(prompt, model_manager, message.get("model_name", "default"))
-            text_stream = create_sentence_stream(llm_response)
-        
-        # Send confirmation to client
-        await websocket.send_text(json.dumps({
-            "type": "started",
-            "session_id": session_id
-        }))
-        
-        # Stream audio chunks to client
-        async for audio_chunk in kyutai_streaming.stream_text_and_get_audio(text_stream, kyutai_session_id):
-            try:
-                # Encode audio as base64 for WebSocket transmission
-                import base64
-                audio_b64 = base64.b64encode(audio_chunk).decode('utf-8')
-                
-                await websocket.send_text(json.dumps({
-                    "type": "audio_chunk",
-                    "data": audio_b64,
-                    "session_id": session_id
-                }))
-                
-            except WebSocketDisconnect:
-                logger.info(f"🗣️ [WebSocket] Client disconnected from session {session_id}")
-                break
-        
-        # Send completion message
-        await websocket.send_text(json.dumps({
-            "type": "complete",
-            "session_id": session_id
-        }))
-        
-        logger.info(f"🗣️ [WebSocket] Completed streaming TTS session {session_id}")
-        
-    except WebSocketDisconnect:
-        logger.info(f"🗣️ [WebSocket] Client disconnected from session {session_id}")
-    except Exception as e:
-        logger.error(f"🗣️ [WebSocket] Error in session {session_id}: {e}")
-        try:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": str(e),
-                "session_id": session_id
-            }))
-        except:
-            pass
-    finally:
-        # Cleanup
-        await kyutai_streaming.disconnect()
+# WebSocket TTS streaming endpoint moved to TTS service on port 8002
+# Use /tts-stream endpoint on port 8002 for TTS WebSocket connections
 
-@app.websocket("/ws/chat-stream")
-async def websocket_chat_with_streaming_tts(websocket: WebSocket, model_manager: ModelManager = Depends(get_model_manager)):
-    """
-    Combined chat + streaming TTS WebSocket endpoint
-    
-    This replaces your existing chat flow with real-time audio
-    """
-    await websocket.accept()
-    session_id = str(uuid.uuid4())
-    
-    try:
-        while True:
-            # Wait for message from client
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message.get("type") == "chat":
-                prompt = message.get("message")
-                voice_reference = message.get("voice_reference")
-                tts_enabled = message.get("tts_enabled", True)
-                model_name = message.get("model_name", "default")
-                
-                if not prompt:
-                    continue
-                
-                logger.info(f"🗣️ [Chat Stream] New message in session {session_id}: {prompt[:50]}...")
-                
-                if tts_enabled:
-                    # Start TTS streaming
-                    kyutai_session_id = await kyutai_streaming.start_stream(voice_reference)
-                    
-                    # Create streaming text from LLM
-                    text_stream = create_text_stream_from_llm(
-                        prompt=prompt,
-                        model_manager=model_manager,
-                        model_name=model_name,
-                        max_tokens=message.get("max_tokens", 1024),
-                        temperature=message.get("temperature", 0.7),
-                        gpu_id=message.get("gpu_id", 0)
-                    )
-                    
-                    # Send both text and audio to client
-                    text_buffer = ""
-                    
-                    async for audio_chunk in kyutai_streaming.stream_text_and_get_audio(text_stream, kyutai_session_id):
-                        import base64
-                        audio_b64 = base64.b64encode(audio_chunk).decode('utf-8')
-                        
-                        await websocket.send_text(json.dumps({
-                            "type": "response_chunk",
-                            "text": text_buffer,  # Accumulated text for display
-                            "audio": audio_b64,
-                            "session_id": session_id
-                        }))
-                        
-                        text_buffer = ""  # Reset after sending
-                
-                else:
-                    # Text-only mode (your existing flow)
-                    response = await generate_llm_response(prompt, model_manager, model_name)
-                    await websocket.send_text(json.dumps({
-                        "type": "response_complete",
-                        "text": response,
-                        "session_id": session_id
-                    }))
-            
-            elif message.get("type") == "interrupt":
-                # Handle user interruption
-                logger.info(f"🗣️ [Chat Stream] User interrupted session {session_id}")
-                await kyutai_streaming.disconnect()
-                
-                await websocket.send_text(json.dumps({
-                    "type": "interrupted",
-                    "session_id": session_id
-                }))
-    
-    except WebSocketDisconnect:
-        logger.info(f"🗣️ [Chat Stream] Client disconnected from session {session_id}")
-    except Exception as e:
-        logger.error(f"🗣️ [Chat Stream] Error in session {session_id}: {e}")
-    finally:
-        await kyutai_streaming.disconnect()
+# WebSocket chat + TTS streaming endpoint moved to TTS service on port 8002
+# Use /tts-stream endpoint on port 8002 for TTS WebSocket connections
 async def get_forensic_service(request: Request) -> ForensicLinguisticsService:
     if not hasattr(request.app.state, 'forensic_service') or request.app.state.forensic_service is None:
         raise HTTPException(status_code=503, detail="Forensic Linguistics Service is not available.")
     return request.app.state.forensic_service
-
-@app.post("/tts/stream-test")
-async def test_streaming_tts(request: dict, model_manager: ModelManager = Depends(get_model_manager)):
-    """
-    REST endpoint to test Kyutai streaming
-    Returns audio file instead of streaming (for testing)
-    """
-    text = request.get("text", "")
-    voice_reference = request.get("voice_reference")
-    model_name = request.get("model_name", "default")
-    
-    if not text:
-        raise HTTPException(status_code=400, detail="No text provided")
-    
-    try:
-        # Start streaming session
-        session_id = await kyutai_streaming.start_stream(voice_reference)
-        
-        # Create sentence stream from complete text
-        text_stream = create_sentence_stream(text)
-        
-        # Collect all audio chunks
-        audio_chunks = []
-        async for audio_chunk in kyutai_streaming.stream_text_and_get_audio(text_stream, session_id):
-            audio_chunks.append(audio_chunk)
-        
-        # Concatenate all chunks
-        complete_audio = b''.join(audio_chunks)
-        
-        return StreamingResponse(
-            io.BytesIO(complete_audio),
-            media_type="audio/wav",
-            headers={"Content-Disposition": "attachment; filename=kyutai_test.wav"}
-        )
-        
-    except Exception as e:
-        logger.error(f"🗣️ [Test] Kyutai streaming test failed: {e}")
-        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
-    finally:
-        await kyutai_streaming.disconnect()
-
-async def _synthesize_with_kyutai_streaming(text: str, voice_reference: str = None) -> bytes:
-    """
-    Non-streaming Kyutai synthesis for compatibility with existing REST API
-    """
-    try:
-        session_id = await kyutai_streaming.start_stream(voice_reference)
-        text_stream = create_sentence_stream(text)
-        
-        audio_chunks = []
-        async for audio_chunk in kyutai_streaming.stream_text_and_get_audio(text_stream, session_id):
-            audio_chunks.append(audio_chunk)
-        
-        return b''.join(audio_chunks)
-        
-    finally:
-        await kyutai_streaming.disconnect()
 
 async def synthesize_speech(
     text: str, 
@@ -487,7 +371,7 @@ async def synthesize_speech(
     cfg: float = 0.5
 ) -> bytes:
     """
-    Enhanced version with Kyutai support
+    TTS synthesis with Kokoro and Chatterbox support
     """
     print(f"🗣️ [TTS Service] Synthesizing with engine: {engine}, voice: {voice}")
     
@@ -496,9 +380,7 @@ async def synthesize_speech(
         logger.warning("🗣️ [TTS Service] Text became empty after cleaning")
         return b""
     
-    if engine.lower() == 'kyutai':
-        return await _synthesize_with_kyutai_streaming(cleaned_text, audio_prompt_path)
-    elif engine.lower() == 'chatterbox':
+    if engine.lower() == 'chatterbox':
         return await _synthesize_with_chatterbox(cleaned_text, audio_prompt_path, exaggeration, cfg)
     else:  # Default to kokoro
         return await _synthesize_with_kokoro(cleaned_text, voice)
@@ -1788,32 +1670,34 @@ async def lifespan(app: FastAPI):
     app.state.gpu_count = gpu_count
     # NEW CODE END
 
-    logger.info(f"Lifespan: Running on Port {port}, Default GPU {default_gpu}")
+    logger.info(f"Lifespan: Running on Port {port}, Default GPU {default_gpu}, GPU Mode: {gpu_usage_mode}")
+
+    # --- CRITICAL FIX: Set CUDA_VISIBLE_DEVICES at startup ---
+    if gpu_usage_mode == "split_services":
+        # In split mode, isolate this server instance to its assigned GPU
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(default_gpu)
+        logging.info(f"✅ [Split Mode] Set CUDA_VISIBLE_DEVICES to {default_gpu}")
+    elif "CUDA_VISIBLE_DEVICES" in os.environ:
+        # In unified mode, ensure the environment variable is UNSET
+        # so that llama.cpp can see all available GPUs.
+        del os.environ["CUDA_VISIBLE_DEVICES"]
+        logging.info(f"✅ [Unified Mode] Unset CUDA_VISIBLE_DEVICES to enable multi-GPU visibility.")
+    # --- END CRITICAL FIX ---
 
     # Initialize ModelManager and store in app state
-    # Ensure ModelManager() doesn't raise exceptions during init
     try:
         app.state.model_manager = ModelManager(gpu_usage_mode=gpu_usage_mode)
         app.state.default_gpu = default_gpu
         app.state.port = port
         logger.info(f"Server starting on port {port} with default GPU {default_gpu}")
+        
+        # Initialize Devstral service with model manager
+        devstral_service.model_manager = app.state.model_manager
+        logger.info("✅ Devstral service initialized")
+        
     except Exception as init_err:
         logger.error(f"FATAL: Failed to initialize ModelManager: {init_err}", exc_info=True)
-        # Optionally re-raise or handle differently to prevent app start
         raise init_err
-
-    # Auto-load logic (only if env vars were set - likely not needed now)
-    if model_path_env and model_name_env:
-        logger.info(f"Attempting auto-load: '{model_name_env}' from {model_path_env} on GPU {default_gpu}")
-        try:
-            await app.state.model_manager.load_model(
-                model_name_env, gpu_id=default_gpu, model_path=model_path_env
-            )
-            logger.info(f"Auto-load successful: '{model_name_env}' on GPU {default_gpu}.")
-        except Exception as e:
-            logger.error(f"Error auto-loading model '{model_name_env}' on GPU {default_gpu}: {e}", exc_info=True)
-    else:
-        logger.info("Skipping auto-load: MODEL_PATH or MODEL_NAME env vars not set.")
 
     # Initialize SD Manager (add this after your ModelManager initialization)
     try:
@@ -1822,14 +1706,46 @@ async def lifespan(app: FastAPI):
     except Exception as sd_err:
         logger.error(f"Failed to initialize SD Manager: {sd_err}")
         app.state.sd_manager = None
-    try:
-        # Pass the model_manager instance to the service
-        app.state.forensic_service = ForensicLinguisticsService(model_manager=app.state.model_manager)
-        logger.info("✅ Forensic Linguistics Service initialized successfully.")
-    except Exception as forensic_err:
-        logger.error(f"❌ Failed to initialize Forensic Linguistics Service: {forensic_err}", exc_info=True)
-        app.state.forensic_service = None        
+      
+    # === TTS SERVICE INTEGRATION ===
+    # TTS now runs as a separate service on port 8002 to avoid resource conflicts
+    # The main backend focuses on model inference, while TTS runs independently
     
+    if port == 8000:  # Main backend
+        try:
+            logger.info("🔗 Checking TTS service availability...")
+            import httpx
+            import asyncio
+            
+            # Wait a moment for TTS service to start
+            await asyncio.sleep(2)
+            
+            # Check if TTS service is running
+            async with httpx.AsyncClient() as client:
+                try:
+                    response = await client.get("http://localhost:8002/health", timeout=5.0)
+                    if response.status_code == 200:
+                        tts_status = response.json()
+                        logger.info(f"✅ TTS service is running: {tts_status}")
+                    else:
+                        logger.warning(f"⚠️ TTS service responded with status {response.status_code}")
+                except Exception as e:
+                    logger.warning(f"⚠️ TTS service not yet available: {e}")
+                    logger.info("📌 TTS service will start independently on port 8002")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not check TTS service: {e}")
+    
+    logger.info(f"📌 Main backend on port {port} - TTS runs separately on port 8002")
+    
+    # Initialize TTS client for forwarding requests to TTS service
+    try:
+        app.state.tts_client = TTSClient(base_url="http://localhost:8002")
+        logger.info("✅ TTS client initialized for forwarding to TTS service")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to initialize TTS client: {e}")
+        app.state.tts_client = None
+   
     # Initialize RAG system
     try:
         rag_available = rag_utils.initialize_rag_system()
@@ -1838,6 +1754,19 @@ async def lifespan(app: FastAPI):
     except Exception as rag_error:
         logger.error(f"Error initializing RAG system: {rag_error}", exc_info=True)
         app.state.rag_available = False
+    
+    # Initialize Forensic Linguistics Service
+    try:
+        logger.info("Initializing Forensic Linguistics Service...")
+        app.state.forensic_service = ForensicLinguisticsService(
+            model_manager=app.state.model_manager,
+            cache_dir="./forensic_cache"
+        )
+        logger.info("✅ Forensic Linguistics Service initialized (no embedding model loaded - use Settings to load manually)")
+    except Exception as forensic_error:
+        logger.error(f"Error initializing Forensic Linguistics Service: {forensic_error}", exc_info=True)
+        app.state.forensic_service = None
+        
         # Initialize active user profile
     try:
         from . import user_utils
@@ -1865,7 +1794,251 @@ async def lifespan(app: FastAPI):
     logger.info("Server shutdown complete.")
 
 app.router.lifespan_context = lifespan # Register the lifespan context with the app
+@router.post("/stt/load-engine")
+async def load_stt_engine_endpoint(data: dict = Body(...)):
+    """Manually load an STT engine on a specific GPU."""
+    try:
+        engine = data.get("engine", "whisper")
+        gpu_id = data.get("gpu_id", 0) # Default to GPU 0 (3090) for peripheral STT service
+        
+        from . import stt_service
+        # The STT service already has the device initialized
+        # No need to re-detect device
 
+        if engine == "whisper":
+            stt_service.load_whisper_model()
+        elif engine == "parakeet":
+            stt_service.load_parakeet_model()
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown STT engine: {engine}")
+
+        return {"status": "success", "message": f"{engine} loaded on GPU {gpu_id}"}
+    except Exception as e:
+        logger.error(f"Error loading STT engine: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tts/load-engine")
+async def load_tts_engine_endpoint(data: dict = Body(...)):
+    """Forward TTS engine loading request to TTS service on port 8002."""
+    try:
+        engine = data.get("engine", "kokoro")
+        gpu_id = data.get("gpu_id", 0) # Default to GPU 0 (3090) for peripheral TTS service
+        
+        # Forward request to TTS service
+        if hasattr(request.app.state, 'tts_client') and request.app.state.tts_client:
+            response = await request.app.state.tts_client.load_engine(engine=engine, gpu_id=gpu_id)
+            return response
+        else:
+            raise HTTPException(status_code=503, detail="TTS service not available")
+
+    except Exception as e:
+        logger.error(f"Error loading TTS engine: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# DEVSTRAL 2 CODE EDITOR ENDPOINTS
+# ============================================================================
+
+@router.post("/devstral/chat")
+async def devstral_chat_endpoint(
+    request: Request,
+    data: dict = Body(...),
+    model_manager: ModelManager = Depends(get_model_manager)
+):
+    """
+    Main chat endpoint for Devstral Small 2 with tool calling support.
+    This is the primary endpoint for the code editor.
+    
+    Supports two modes:
+    1. External API mode (koboldcpp, ollama) - set DEVSTRAL_EXTERNAL=true
+    2. Direct model mode - requires a model loaded via model_manager
+    """
+    from .devstral_service import EXTERNAL_LLM_ENABLED, EXTERNAL_LLM_URL
+    
+    try:
+        messages = data.get("messages", [])
+        working_dir = data.get("working_dir", devstral_service.base_dir)
+        temperature = data.get("temperature", 0.15)
+        max_tokens = data.get("max_tokens", 4096)
+        image_base64 = data.get("image_base64")  # Optional vision input
+        auto_execute = data.get("auto_execute", True)  # Auto-execute tool calls
+        
+        if not messages:
+            raise HTTPException(status_code=400, detail="messages is required")
+        
+        model_instance = None
+        model_name = None
+        
+        # Check if using external API (koboldcpp, ollama, etc.)
+        if EXTERNAL_LLM_ENABLED:
+            logger.info(f"🌐 Using external LLM API: {EXTERNAL_LLM_URL}")
+            model_name = "external-api"
+        else:
+            # Find the loaded Devstral model
+            for key, model_info in model_manager.loaded_models.items():
+                name, gpu_id = key
+                if devstral_service.is_devstral_model(name):
+                    model_instance = model_manager.get_model(name, gpu_id)
+                    model_name = name
+                    logger.info(f"🔧 Using Devstral model: {name} on GPU {gpu_id}")
+                    break
+            
+            # If no Devstral model, use any available model
+            if not model_instance and model_manager.loaded_models:
+                key = next(iter(model_manager.loaded_models.keys()))
+                name, gpu_id = key
+                model_instance = model_manager.get_model(name, gpu_id)
+                model_name = name
+                logger.info(f"🔧 Using fallback model: {name} on GPU {gpu_id}")
+            
+            if not model_instance:
+                raise HTTPException(status_code=400, detail="No model loaded. Enable external API or load a model first.")
+        
+        # Add system prompt if not present
+        if not messages or messages[0].get('role') != 'system':
+            messages.insert(0, {
+                'role': 'system',
+                'content': devstral_service.get_system_prompt(working_dir)
+            })
+        
+        # Get response from model with tools
+        response = await devstral_service.chat_with_tools(
+            messages=messages,
+            model_instance=model_instance,
+            working_dir=working_dir,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            image_base64=image_base64
+        )
+        
+        # If auto_execute is enabled and we have tool calls, execute them
+        if auto_execute and response.get('choices'):
+            choice = response['choices'][0]
+            message = choice.get('message', {})
+            tool_calls = message.get('tool_calls', [])
+            
+            if tool_calls:
+                tool_results = []
+                for tool_call in tool_calls:
+                    func = tool_call.get('function', {})
+                    tool_name = func.get('name')
+                    try:
+                        arguments = json.loads(func.get('arguments', '{}'))
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    
+                    logger.info(f"🔧 Auto-executing tool: {tool_name}")
+                    success, result = await devstral_service.execute_tool(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        base_dir=working_dir
+                    )
+                    
+                    tool_results.append({
+                        'tool_call_id': tool_call.get('id'),
+                        'name': tool_name,
+                        'success': success,
+                        'result': result
+                    })
+                
+                # Add tool results to response
+                response['tool_results'] = tool_results
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Devstral chat error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/devstral/execute-tool")
+async def devstral_execute_tool_endpoint(data: dict = Body(...)):
+    """Execute a specific tool call manually."""
+    try:
+        tool_name = data.get("tool_name")
+        arguments = data.get("arguments", {})
+        working_dir = data.get("working_dir", devstral_service.base_dir)
+        
+        if not tool_name:
+            raise HTTPException(status_code=400, detail="tool_name is required")
+        
+        logger.info(f"🔧 Executing tool: {tool_name} with args: {arguments}")
+        
+        success, result = await devstral_service.execute_tool(
+            tool_name=tool_name,
+            arguments=arguments,
+            base_dir=working_dir
+        )
+        
+        return {
+            "success": success,
+            "result": result,
+            "tool_name": tool_name
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Tool execution error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/devstral/tools")
+async def get_devstral_tools():
+    """Get the list of available tools for Devstral."""
+    return {
+        "tools": devstral_service.get_tools_definition(),
+        "version": "2.0",
+        "model": "Devstral Small 2 24B"
+    }
+
+
+@router.get("/devstral/status")
+async def get_devstral_status(model_manager: ModelManager = Depends(get_model_manager)):
+    """Get Devstral model status and capabilities."""
+    from .devstral_service import EXTERNAL_LLM_ENABLED, EXTERNAL_LLM_URL
+    
+    try:
+        devstral_loaded = False
+        devstral_model = None
+        devstral_version = None
+        using_external = EXTERNAL_LLM_ENABLED
+        
+        if using_external:
+            # Check if external API is reachable
+            import httpx
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(f"{EXTERNAL_LLM_URL.rstrip('/chat/completions')}/models")
+                    devstral_loaded = response.status_code == 200
+                    devstral_model = "external-api"
+                    devstral_version = "2"  # Assume Devstral 2 for external
+            except:
+                devstral_loaded = False
+        else:
+            for key, model_info in model_manager.loaded_models.items():
+                name, gpu_id = key
+                if devstral_service.is_devstral_model(name):
+                    devstral_loaded = True
+                    devstral_model = name
+                    devstral_version = "2" if devstral_service.is_devstral_2(name) else "1"
+                    break
+        
+        return {
+            "devstral_loaded": devstral_loaded,
+            "model_name": devstral_model,
+            "version": devstral_version,
+            "external_api": using_external,
+            "external_url": EXTERNAL_LLM_URL if using_external else None,
+            "capabilities": {
+                "tool_calling": True,
+                "vision": devstral_version == "2",
+                "context_length": 256000 if devstral_version == "2" else 32768,
+            },
+            "working_directory": devstral_service.base_dir
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting Devstral status: {e}")
+        return {"error": str(e)}
 @router.post("/forensic/initialize-gme")
 async def initialize_gme_endpoint(
     request: Request,
@@ -1950,20 +2123,99 @@ async def load_model_for_purpose_endpoint(
         if not model_name:
             raise HTTPException(status_code=400, detail="model_name is required")
         
-        logger.info(f"Loading {model_name} for purpose '{purpose}' on GPU {gpu_id}")
+        # Log which backend instance received this request
+        backend_gpu_id = request.app.state.default_gpu
+        logger.info(f"📡 Backend instance (GPU {backend_gpu_id}) received load request for GPU {gpu_id}")
         
+        # When CUDA_VISIBLE_DEVICES is set, backend only sees one GPU as device 0
+        # So we need to accept the request if it matches the backend's physical GPU
+        # But we'll normalize to device 0 for actual loading
+        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cuda_visible_devices:
+            # Backend is restricted to one GPU - validate it matches
+            if gpu_id != backend_gpu_id:
+                error_msg = (
+                    f"GPU routing error: Requested GPU {gpu_id} but this backend instance "
+                    f"(port {request.app.state.port}) is configured for GPU {backend_gpu_id}. "
+                    f"Request should be routed to {'PRIMARY_API_URL (port 8000)' if gpu_id == 0 else 'SECONDARY_API_URL (port 8001)'}."
+                )
+                logger.error(error_msg)
+                raise HTTPException(status_code=400, detail=error_msg)
+            # Normalize to device 0 for actual loading since CUDA_VISIBLE_DEVICES restricts visibility
+            actual_device_id = 0
+            logger.info(f"✅ Request validated. Will load on device {actual_device_id} (maps to physical GPU {gpu_id})")
+        else:
+            # Backend can see all GPUs - use requested GPU directly
+            actual_device_id = gpu_id
+            logger.info(f"✅ Backend can see all GPUs. Will load on GPU {gpu_id}")
+        
+        # Check VRAM availability before loading
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # Use actual_device_id (0 when restricted, or gpu_id when not)
+                vram_check_gpu = actual_device_id
+                logger.info(f"📊 Checking VRAM on device {vram_check_gpu} (physical GPU {gpu_id})")
+                
+                # Get available GPU memory
+                mem_free, mem_total = torch.cuda.mem_get_info(vram_check_gpu)
+                mem_free_gb = mem_free / (1024**3)
+                mem_total_gb = mem_total / (1024**3)
+                mem_used_gb = (mem_total - mem_free) / (1024**3)
+                
+                logger.info(f"📊 Physical GPU {gpu_id} (device {vram_check_gpu}) VRAM: {mem_free_gb:.2f}GB free / {mem_total_gb:.2f}GB total ({(mem_used_gb/mem_total_gb)*100:.1f}% used)")
+                
+                # Warn if VRAM is nearly full (less than 2GB free)
+                if mem_free_gb < 2.0:
+                    warning_msg = (
+                        f"⚠️ Warning: GPU {gpu_id} has only {mem_free_gb:.2f}GB free VRAM. "
+                        f"Model loading may fail or fall back to system RAM. "
+                        f"Consider unloading other models first."
+                    )
+                    logger.warning(warning_msg)
+                    # Don't block, but log the warning
+                    
+                # Error if VRAM is critically low (less than 500MB free)
+                if mem_free_gb < 0.5:
+                    error_msg = (
+                        f"❌ Insufficient VRAM: GPU {gpu_id} has only {mem_free_gb:.2f}GB free VRAM. "
+                        f"Cannot load model. Please unload other models first."
+                    )
+                    logger.error(error_msg)
+                    raise HTTPException(status_code=507, detail=error_msg)
+        except ImportError:
+            logger.warning("PyTorch not available - cannot check VRAM")
+        except RuntimeError as e:
+            # GPU not accessible (e.g., CUDA_VISIBLE_DEVICES restriction)
+            error_msg = f"GPU {gpu_id} is not accessible from this backend instance: {str(e)}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=400, detail=error_msg)
+        except Exception as e:
+            logger.warning(f"Could not check VRAM: {e}")
+        
+        logger.info(f"🚀 Loading {model_name} for purpose '{purpose}' on physical GPU {gpu_id} (device {actual_device_id})")
+        
+        # Pass the original gpu_id - load_model_for_purpose will handle device normalization
         await model_manager.load_model_for_purpose(
             purpose=purpose,
             model_name=model_name, 
-            gpu_id=gpu_id,
+            gpu_id=gpu_id,  # Pass original physical GPU ID
             context_length=context_length
         )
+        
+        # Override the tracking to use the physical GPU ID (for routing)
+        # The load_model_for_purpose might have set it to device 0, but we want to track the physical GPU
+        if hasattr(model_manager, 'model_purposes') and model_manager.model_purposes.get(purpose):
+            model_manager.model_purposes[purpose]['gpu_id'] = gpu_id
+            logger.info(f"✅ Tracked {model_name} as {purpose} on physical GPU {gpu_id} (loaded on device {actual_device_id})")
         
         return {
             "status": "success",
             "message": f"Model {model_name} loaded as {purpose} on GPU {gpu_id}"
         }
         
+    except HTTPException:
+        raise
     except ValueError as e:
         logger.error(f"Invalid purpose for model loading: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -2059,6 +2311,192 @@ async def set_active_embedding_model_endpoint(
     except Exception as e:
         logger.error(f"Error setting active embedding model: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/forensic/unload-models")
+async def unload_forensic_models_endpoint(
+    forensic_service: ForensicLinguisticsService = Depends(get_forensic_service)
+):
+    """Unload roberta and star models from memory to free VRAM"""
+    try:
+        success = await forensic_service.unload_forensic_models()
+        
+        if success:
+            status = forensic_service.get_embedding_status()
+            return {
+                "status": "success",
+                "message": "Forensic models (roberta/star) unloaded successfully",
+                "embedding_status": status
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to unload forensic models")
+    except Exception as e:
+        logger.error(f"❌ [Forensic] Error unloading models: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tts/shutdown")
+async def shutdown_tts_service():
+    """Shutdown TTS service running on port 8002"""
+    try:
+        import socket
+        import platform
+        
+        port = 8002
+        logger.info(f"🛑 Attempting to shutdown TTS service on port {port}...")
+        
+        # Check if port is in use
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(('localhost', port))
+        sock.close()
+        
+        if result != 0:
+            return {
+                "status": "info",
+                "message": f"TTS service on port {port} is not running"
+            }
+        
+        # Find and kill process using port 8002
+        system = platform.system()
+        if system == "Windows":
+            # Windows: use netstat to find PID, then taskkill
+            try:
+                # Find PID using netstat (Windows format)
+                netstat_cmd = ["netstat", "-ano"]
+                result = subprocess.run(netstat_cmd, capture_output=True, text=True, shell=True)
+                lines = result.stdout.split('\n')
+                
+                pid = None
+                for line in lines:
+                    if f":{port}" in line and "LISTENING" in line.upper():
+                        # Parse Windows netstat output format
+                        parts = line.strip().split()
+                        # PID is the last column in Windows netstat -ano output
+                        if len(parts) >= 5:
+                            pid = parts[-1]
+                            # Validate PID is numeric
+                            try:
+                                int(pid)
+                                break
+                            except ValueError:
+                                pid = None
+                
+                if pid:
+                    # Kill the process
+                    kill_cmd = ["taskkill", "/F", "/PID", pid]
+                    subprocess.run(kill_cmd, capture_output=True)
+                    logger.info(f"✅ TTS service process (PID: {pid}) terminated")
+                    return {
+                        "status": "success",
+                        "message": f"TTS service on port {port} has been shut down (PID: {pid})"
+                    }
+                else:
+                    return {
+                        "status": "warning",
+                        "message": f"Port {port} is in use but PID could not be determined"
+                    }
+            except Exception as e:
+                logger.error(f"Error shutting down TTS service: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to shutdown TTS service: {str(e)}")
+        else:
+            # Linux/Mac: use lsof or fuser
+            try:
+                lsof_cmd = ["lsof", "-ti", f":{port}"]
+                result = subprocess.run(lsof_cmd, capture_output=True, text=True)
+                pid = result.stdout.strip()
+                
+                if pid:
+                    subprocess.run(["kill", "-9", pid], capture_output=True)
+                    logger.info(f"✅ TTS service process (PID: {pid}) terminated")
+                    return {
+                        "status": "success",
+                        "message": f"TTS service on port {port} has been shut down (PID: {pid})"
+                    }
+                else:
+                    return {
+                        "status": "warning",
+                        "message": f"Port {port} is in use but PID could not be determined"
+                    }
+            except Exception as e:
+                logger.error(f"Error shutting down TTS service: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to shutdown TTS service: {str(e)}")
+                
+    except Exception as e:
+        logger.error(f"❌ Error shutting down TTS service: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/tts/restart")
+async def restart_tts_service(request: Request):
+    """Restart TTS service on port 8002"""
+    try:
+        import platform
+        from pathlib import Path
+        
+        port = 8002
+        logger.info(f"🔄 Attempting to restart TTS service on port {port}...")
+        
+        # First, shutdown existing service
+        try:
+            await shutdown_tts_service()
+            await asyncio.sleep(2)  # Wait for process to fully terminate
+        except:
+            pass  # Ignore errors during shutdown
+        
+        # Get project root (assuming main.py is in backend/app/)
+        project_root = Path(__file__).parent.parent.parent
+        
+        # Start TTS service
+        tts_script = project_root / "launch_tts.py"
+        
+        if not tts_script.exists():
+            raise HTTPException(status_code=500, detail="TTS launch script not found")
+        
+        system = platform.system()
+        
+        # Launch TTS service in background
+        if system == "Windows":
+            # Use subprocess.Popen to start in background
+            cmd = [sys.executable, str(tts_script)]
+            process = subprocess.Popen(
+                cmd,
+                cwd=str(project_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        else:
+            # Linux/Mac
+            cmd = [sys.executable, str(tts_script)]
+            process = subprocess.Popen(
+                cmd,
+                cwd=str(project_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        
+        # Wait a moment for service to start
+        await asyncio.sleep(3)
+        
+        # Check if service is running
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        result = sock.connect_ex(('localhost', port))
+        sock.close()
+        
+        if result == 0:
+            logger.info(f"✅ TTS service restarted successfully on port {port}")
+            return {
+                "status": "success",
+                "message": f"TTS service restarted on port {port} (PID: {process.pid})"
+            }
+        else:
+            return {
+                "status": "warning",
+                "message": f"TTS service process started (PID: {process.pid}) but port {port} is not yet responding. It may still be starting up."
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error restarting TTS service: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 # MODIFIED existing endpoint to be smarter
 @router.get("/models/by-purpose")
 async def get_models_by_purpose_endpoint(
@@ -2103,6 +2541,36 @@ async def get_models_by_purpose_endpoint(
     except Exception as e:
         logger.error(f"Error getting models by purpose: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@router.post("/system/initialize-services")
+async def initialize_services_endpoint(
+    request: Request,
+    data: dict = Body(...),
+    model_manager: ModelManager = Depends(get_model_manager)
+):
+    try:
+        gpu_id = data.get("gpu_id", 1)
+        device_str = f"cuda:{gpu_id}"
+        logger.info(f"--- Manually initializing embedding services on GPU {gpu_id} ---")
+
+        # --- ADD THIS NEW SECTION ---
+        # 1. Initialize Memory Intelligence Model
+        if not hasattr(request.app.state, 'similarity_model_initialized') or not request.app.state.similarity_model_initialized:
+            logger.info("Initializing Memory Intelligence similarity model...")
+            from . import memory_intelligence
+            memory_intelligence.initialize_similarity_model(device=device_str)
+            request.app.state.similarity_model_initialized = True
+            logger.info("✅ Memory Intelligence similarity model initialized.")
+        else:
+            logger.info("Memory Intelligence similarity model is already initialized.")
+
+        return {"status": "success", "message": "Services initialized successfully."}
+    except Exception as e:
+        logger.error(f"Error initializing services: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Add this new endpoint anywhere in your main.py (before the app.include_router lines)
 @router.post("/system/shutdown")
 async def shutdown_system(
@@ -2212,39 +2680,108 @@ async def rag_status(request: Request):
             "message": f"Error checking RAG status: {str(e)}"
         }
 
-@router.post("/character/analyze-readiness")
-async def analyze_character_readiness_endpoint(
-    request: Request,
-    data: dict = Body(...),  # Expects {"messages": [...]}
-    model_manager: ModelManager = Depends(get_model_manager)
-):
-    """Analyze conversation messages for character auto-generation readiness."""
+# @router.post("/character/analyze-readiness")
+# async def analyze_character_readiness_endpoint(
+#     request: Request,
+#     data: dict = Body(...),  # Expects {"messages": [...]}
+#     model_manager: ModelManager = Depends(get_model_manager)
+# ):
+#     """Analyze conversation messages for character auto-generation readiness."""
+#     try:
+#         messages = data.get("messages", [])
+#         lookback_count = data.get("lookback_count", 25)
+#         
+#         if not messages:
+#             return {
+#                 "status": "success", 
+#                 "readiness_score": 0, 
+#                 "detected_elements": [],
+#                 "message": "No messages to analyze"
+#             }
+#         
+#         logger.info(f"🎯 Analyzing character readiness for {len(messages)} messages")
+#         
+#         # Analyze character readiness using embeddings
+#         analysis_result = character_intelligence.analyze_character_readiness(
+#             messages=messages,
+#             lookback_count=lookback_count
+#         )
+#         
+#         return analysis_result
+#         
+#     except Exception as e:
+#         logger.error(f"❌ Error in character readiness analysis: {e}", exc_info=True)
+#         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tts/save-voice-preference")
+async def save_voice_preference(request: dict):
+    """Save voice preference to settings.json for pre-caching"""
     try:
-        messages = data.get("messages", [])
-        lookback_count = data.get("lookback_count", 25)
+        print(f"🔧 [Voice Preference] Received request: {request}")
+
+        settings_dir = Path.home() / ".LiangLocal"
+        settings_dir.mkdir(exist_ok=True)
+        settings_path = settings_dir / "settings.json"
+        print(f"🔧 [Voice Preference] Settings path: {settings_path.absolute()}")
+        print(f"🔧 [Voice Preference] Path exists: {settings_path.exists()}")
         
-        if not messages:
-            return {
-                "status": "success", 
-                "readiness_score": 0, 
-                "detected_elements": [],
-                "message": "No messages to analyze"
-            }
+        # Load existing settings
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+            print(f"🔧 [Voice Preference] Loaded existing settings with keys: {settings.keys()}")
+        else:
+            settings = {}
+            print("🔧 [Voice Preference] No existing settings.json, creating new")
         
-        logger.info(f"🎯 Analyzing character readiness for {len(messages)} messages")
+        # Initialize voice_cache list if not exists
+        if 'voice_cache' not in settings:
+            settings['voice_cache'] = []
+            print("🔧 [Voice Preference] Initialized voice_cache list")
         
-        # Analyze character readiness using embeddings
-        analysis_result = character_intelligence.analyze_character_readiness(
-            messages=messages,
-            lookback_count=lookback_count
-        )
+        voice_entry = {
+            'voice_id': request.get('voice_id'),  # Use .get() for safety
+            'engine': request.get('engine', 'chatterbox')
+        }
+        print(f"🔧 [Voice Preference] Voice entry to add: {voice_entry}")
         
-        return analysis_result
+        # Check if already exists
+        existing_voices = [v.get('voice_id') for v in settings['voice_cache']]
+        print(f"🔧 [Voice Preference] Existing voices: {existing_voices}")
+        
+        # Add or update
+        if voice_entry['voice_id'] not in existing_voices:
+            settings['voice_cache'].append(voice_entry)
+            print(f"🔧 [Voice Preference] Added new voice")
+        else:
+            # Update existing entry
+            for i, v in enumerate(settings['voice_cache']):
+                if v.get('voice_id') == voice_entry['voice_id']:
+                    settings['voice_cache'][i] = voice_entry
+                    print(f"🔧 [Voice Preference] Updated existing voice at index {i}")
+                    break
+        
+        # Keep only last 5 voices
+        settings['voice_cache'] = settings['voice_cache'][-5:]
+        print(f"🔧 [Voice Preference] Final voice_cache: {settings['voice_cache']}")
+        
+        # Save settings
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f, indent=2)
+        print(f"✅ [Voice Preference] Settings saved successfully to {settings_path.absolute()}")
+        
+        # Verify it was written
+        with open(settings_path, 'r') as f:
+            verify = json.load(f)
+        print(f"✅ [Voice Preference] Verification - voice_cache in file: {verify.get('voice_cache', [])}")
+        
+        return {"status": "success", "message": "Voice preference saved"}
         
     except Exception as e:
-        logger.error(f"❌ Error in character readiness analysis: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        print(f"❌ [Voice Preference] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
 # Add this new endpoint for testing web search
 @router.post("/web-search/test")
 async def test_web_search(data: dict = Body(...)):
@@ -2304,6 +2841,61 @@ async def generate_character_from_conversation_endpoint(
     except Exception as e:
         logger.error(f"❌ Error generating character from conversation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+async def warmup_chatterbox_voices():
+    """Warm up voices from settings.json"""
+    import json
+    from pathlib import Path
+    
+    try:
+        # Read settings.json
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        if not settings_path.exists():
+            logger.info("No settings.json found, skipping voice warmup")
+            return
+            
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+            
+        voice_cache = settings.get('voice_cache', [])
+        if not voice_cache:
+            logger.info("No voices in cache, skipping voice warmup")
+            return
+            
+        logger.info(f"🔥 Warming up {len(voice_cache)} cached voices...")
+        
+        from . import tts_service
+        voices_dir = Path(__file__).parent / "static" / "voice_references"
+        
+        for voice_entry in voice_cache:
+            if voice_entry.get('engine') == 'chatterbox':
+                voice_id = voice_entry.get('voice_id')
+                if voice_id:
+                    voice_path = voices_dir / voice_id
+                    if voice_path.exists():
+                        try:
+                            logger.info(f"🔥 Warming up voice: {voice_id}")
+                            # This will trigger conditional preparation and caching
+                            if hasattr(request.app.state, 'tts_client') and request.app.state.tts_client:
+                                await request.app.state.tts_client.synthesize_speech(
+                                    text="Warmup test",
+                                    engine="chatterbox",
+                                    audio_prompt_path=str(voice_path),
+                                    exaggeration=0.5,
+                                    cfg=0.3
+                                )
+                            else:
+                                logger.warning("TTS client not available for warmup")
+                            logger.info(f"✅ Warmed up voice: {voice_id}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to warm up voice {voice_id}: {e}")
+                    else:
+                        logger.warning(f"⚠️ Voice file not found: {voice_path}")
+        
+        logger.info("✅ Voice warmup complete")
+        
+    except Exception as e:
+        logger.error(f"Voice warmup failed: {e}", exc_info=True)
 
 @router.post("/character/refine-generated")
 async def refine_generated_character_endpoint(
@@ -2544,12 +3136,14 @@ async def list_local_sd_models(request: Request):
 
 @router.post("/sd-local/load-model")
 async def sd_local_load_model(data: dict, request: Request):
-    """Load a local SD model by its filename."""
+    """Load a local SD model by its filename on specified GPU"""
     sd_manager = getattr(request.app.state, 'sd_manager', None)
     if not sd_manager:
         raise HTTPException(status_code=500, detail="SD Manager not available")
 
     model_filename = data.get("model_filename")
+    gpu_id = data.get("gpu_id", 0)  # Default to GPU0
+    
     if not model_filename:
         raise HTTPException(status_code=400, detail="model_filename required")
 
@@ -2559,9 +3153,12 @@ async def sd_local_load_model(data: dict, request: Request):
 
     full_model_path = str(Path(sd_model_dir) / model_filename)
     
-    success = sd_manager.load_model(full_model_path)
+    success = sd_manager.load_model(full_model_path, gpu_id=gpu_id)
     if success:
-        return {"status": "success", "message": f"Model loaded: {full_model_path}"}
+        return {
+            "status": "success", 
+            "message": f"Model loaded: {full_model_path} on GPU {gpu_id}"
+        }
     else:
         raise HTTPException(status_code=500, detail=f"Failed to load model from path: {full_model_path}")
 # --- MODIFIED load_model_endpoint ---
@@ -2639,7 +3236,12 @@ async def tts_endpoint(request: Request):
     voice = data.get("voice", "af_heart")  # Default Kokoro voice
     engine = data.get("engine", "kokoro")  # Default to Kokoro
     audio_prompt_path = data.get("audio_prompt_path")  # For Chatterbox voice cloning
-    
+
+    # ADD THIS: For Chatterbox, use voice as the audio_prompt_path if not explicitly set
+    if engine == "chatterbox" and not audio_prompt_path and voice != "default":
+        audio_prompt_path = voice
+        logger.info(f"🔊 [TTS] Chatterbox mode: using voice '{voice}' as audio_prompt_path")
+
     # Chatterbox-specific parameters
     exaggeration = data.get("exaggeration", 0.5)
     cfg = data.get("cfg", 0.5)
@@ -2648,16 +3250,19 @@ async def tts_endpoint(request: Request):
         return JSONResponse(content={"detail": "No text provided"}, status_code=400)
 
     try:
-        # Pass all parameters to synthesize_speech
-        audio_buffer = await synthesize_speech(
-            text, 
+        # Call tts_service directly since it's integrated
+        from .tts_service import synthesize_speech
+        
+        audio_bytes = await synthesize_speech(
+            text=text,
             voice=voice,
             engine=engine,
             audio_prompt_path=audio_prompt_path,
             exaggeration=exaggeration,
             cfg=cfg
         )
-        return StreamingResponse(io.BytesIO(audio_buffer), media_type="audio/wav")
+        
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
     except Exception as e:
         print("🔥 TTS error:", str(e))
         return JSONResponse(content={"detail": f"TTS failed: {str(e)}"}, status_code=500)
@@ -2676,9 +3281,25 @@ async def upload_voice_reference(request: Request, file: UploadFile = File(...))
         if file_extension not in allowed_extensions:
             raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed: {allowed_extensions}")
         
-        # Generate unique filename
-        unique_filename = f"voice_ref_{uuid.uuid4()}{file_extension}"
+        # Create a clean filename based on original name
+        original_name = Path(file.filename).stem  # Remove extension
+        clean_name = "".join(c for c in original_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        clean_name = clean_name.replace(' ', '_')  # Replace spaces with underscores
+        
+        # Ensure filename is not empty
+        if not clean_name:
+            clean_name = "uploaded_voice"
+        
+        # Create the final filename with original extension
+        unique_filename = f"{clean_name}{file_extension}"
         save_path = voices_dir / unique_filename
+        
+        # Handle duplicates by adding a number suffix
+        counter = 1
+        while save_path.exists():
+            unique_filename = f"{clean_name}_{counter}{file_extension}"
+            save_path = voices_dir / unique_filename
+            counter += 1
         
         # Save the file
         with save_path.open("wb") as buffer:
@@ -2702,101 +3323,64 @@ async def upload_voice_reference(request: Request, file: UploadFile = File(...))
 async def list_available_voices():
     """List available voices for both engines."""
     try:
-        # Complete Kokoro voices list
-        kokoro_voices = [
-            # 🇺🇸 American English
-            {'id': 'af_heart', 'name': 'Am. English Female (Heart)', 'engine': 'kokoro'},
-            {'id': 'af_alloy', 'name': 'Am. English Female (Alloy)', 'engine': 'kokoro'},
-            {'id': 'af_aoede', 'name': 'Am. English Female (Aoede)', 'engine': 'kokoro'},
-            {'id': 'af_bella', 'name': 'Am. English Female (Bella)', 'engine': 'kokoro'},
-            {'id': 'af_jessica', 'name': 'Am. English Female (Jessica)', 'engine': 'kokoro'},
-            {'id': 'af_kore', 'name': 'Am. English Female (Kore)', 'engine': 'kokoro'},
-            {'id': 'af_nicole', 'name': 'Am. English Female (Nicole)', 'engine': 'kokoro'},
-            {'id': 'af_nova', 'name': 'Am. English Female (Nova)', 'engine': 'kokoro'},
-            {'id': 'af_river', 'name': 'Am. English Female (River)', 'engine': 'kokoro'},
-            {'id': 'af_sarah', 'name': 'Am. English Female (Sarah)', 'engine': 'kokoro'},
-            {'id': 'af_sky', 'name': 'Am. English Female (Sky)', 'engine': 'kokoro'},
-            
-            {'id': 'am_adam', 'name': 'Am. English Male (Adam)', 'engine': 'kokoro'},
-            {'id': 'am_echo', 'name': 'Am. English Male (Echo)', 'engine': 'kokoro'},
-            {'id': 'am_eric', 'name': 'Am. English Male (Eric)', 'engine': 'kokoro'},
-            {'id': 'am_fenrir', 'name': 'Am. English Male (Fenrir)', 'engine': 'kokoro'},
-            {'id': 'am_liam', 'name': 'Am. English Male (Liam)', 'engine': 'kokoro'},
-            {'id': 'am_michael', 'name': 'Am. English Male (Michael)', 'engine': 'kokoro'},
-            {'id': 'am_onyx', 'name': 'Am. English Male (Onyx)', 'engine': 'kokoro'},
-            {'id': 'am_puck', 'name': 'Am. English Male (Puck)', 'engine': 'kokoro'},
-            {'id': 'am_santa', 'name': 'Am. English Male (Santa)', 'engine': 'kokoro'},
-            
-            # 🇬🇧 British English
-            {'id': 'bf_alice', 'name': 'Br. English Female (Alice)', 'engine': 'kokoro'},
-            {'id': 'bf_emma', 'name': 'Br. English Female (Emma)', 'engine': 'kokoro'},
-            {'id': 'bf_isabella', 'name': 'Br. English Female (Isabella)', 'engine': 'kokoro'},
-            {'id': 'bf_lily', 'name': 'Br. English Female (Lily)', 'engine': 'kokoro'},
-            
-            {'id': 'bm_daniel', 'name': 'Br. English Male (Daniel)', 'engine': 'kokoro'},
-            {'id': 'bm_fable', 'name': 'Br. English Male (Fable)', 'engine': 'kokoro'},
-            {'id': 'bm_george', 'name': 'Br. English Male (George)', 'engine': 'kokoro'},
-            {'id': 'bm_lewis', 'name': 'Br. English Male (Lewis)', 'engine': 'kokoro'},
-            
-            # 🇯🇵 Japanese
-            {'id': 'jf_alpha', 'name': 'Japanese Female (Alpha)', 'engine': 'kokoro'},
-            {'id': 'jf_gongitsune', 'name': 'Japanese Female (Gongitsune)', 'engine': 'kokoro'},
-            {'id': 'jf_nezumi', 'name': 'Japanese Female (Nezumi)', 'engine': 'kokoro'},
-            {'id': 'jf_tebukuro', 'name': 'Japanese Female (Tebukuro)', 'engine': 'kokoro'},
-            
-            {'id': 'jm_kumo', 'name': 'Japanese Male (Kumo)', 'engine': 'kokoro'},
-            
-            # 🇨🇳 Mandarin Chinese
-            {'id': 'zf_xiaobei', 'name': 'Mandarin Female (Xiaobei)', 'engine': 'kokoro'},
-            {'id': 'zf_xiaoni', 'name': 'Mandarin Female (Xiaoni)', 'engine': 'kokoro'},
-            {'id': 'zf_xiaoxiao', 'name': 'Mandarin Female (Xiaoxiao)', 'engine': 'kokoro'},
-            {'id': 'zf_xiaoyi', 'name': 'Mandarin Female (Xiaoyi)', 'engine': 'kokoro'},
-            
-            {'id': 'zm_yunjian', 'name': 'Mandarin Male (Yunjian)', 'engine': 'kokoro'},
-            {'id': 'zm_yunxi', 'name': 'Mandarin Male (Yunxi)', 'engine': 'kokoro'},
-            {'id': 'zm_yunxia', 'name': 'Mandarin Male (Yunxia)', 'engine': 'kokoro'},
-            {'id': 'zm_yunyang', 'name': 'Mandarin Male (Yunyang)', 'engine': 'kokoro'},
-            
-            # 🇪🇸 Spanish
-            {'id': 'ef_dora', 'name': 'Spanish Female (Dora)', 'engine': 'kokoro'},
-            {'id': 'em_alex', 'name': 'Spanish Male (Alex)', 'engine': 'kokoro'},
-            {'id': 'em_santa', 'name': 'Spanish Male (Santa)', 'engine': 'kokoro'},
-            
-            # 🇫🇷 French
-            {'id': 'ff_siwis', 'name': 'French Female (Siwis)', 'engine': 'kokoro'},
-            
-            # 🇮🇳 Hindi
-            {'id': 'hf_alpha', 'name': 'Hindi Female (Alpha)', 'engine': 'kokoro'},
-            {'id': 'hf_beta', 'name': 'Hindi Female (Beta)', 'engine': 'kokoro'},
-            {'id': 'hm_omega', 'name': 'Hindi Male (Omega)', 'engine': 'kokoro'},
-            {'id': 'hm_psi', 'name': 'Hindi Male (Psi)', 'engine': 'kokoro'},
-            
-            # 🇮🇹 Italian
-            {'id': 'if_sara', 'name': 'Italian Female (Sara)', 'engine': 'kokoro'},
-            {'id': 'im_nicola', 'name': 'Italian Male (Nicola)', 'engine': 'kokoro'},
-            
-            # 🇧🇷 Brazilian Portuguese
-            {'id': 'pf_dora', 'name': 'Br. Portuguese Female (Dora)', 'engine': 'kokoro'},
-            {'id': 'pm_alex', 'name': 'Br. Portuguese Male (Alex)', 'engine': 'kokoro'},
-            {'id': 'pm_santa', 'name': 'Br. Portuguese Male (Santa)', 'engine': 'kokoro'},
-        ]
+        # Check which TTS engines are available
+        available_engines = []
+        
+        # Check Kokoro availability - use the already-imported module check from tts_service
+        try:
+            from .tts_service import KPipeline
+            kokoro_available = KPipeline is not None
+        except:
+            kokoro_available = False
+        
+        if kokoro_available:
+            available_engines.append("kokoro")
+        
+        # Chatterbox is always available (primary engine)
+        available_engines.append("chatterbox")
+        
+        # Kokoro voices (built-in voices)
+        kokoro_voices = []
+        if kokoro_available:
+            # Kokoro has built-in voices - list common ones
+            kokoro_voices = [
+                {'id': 'af_heart', 'name': 'Heart (Female)', 'engine': 'kokoro'},
+                {'id': 'af_bella', 'name': 'Bella (Female)', 'engine': 'kokoro'},
+                {'id': 'af_sarah', 'name': 'Sarah (Female)', 'engine': 'kokoro'},
+                {'id': 'af_nicole', 'name': 'Nicole (Female)', 'engine': 'kokoro'},
+                {'id': 'am_adam', 'name': 'Adam (Male)', 'engine': 'kokoro'},
+                {'id': 'am_michael', 'name': 'Michael (Male)', 'engine': 'kokoro'},
+                {'id': 'bf_emma', 'name': 'Emma (British Female)', 'engine': 'kokoro'},
+                {'id': 'bf_isabella', 'name': 'Isabella (British Female)', 'engine': 'kokoro'},
+                {'id': 'bm_george', 'name': 'George (British Male)', 'engine': 'kokoro'},
+                {'id': 'bm_lewis', 'name': 'Lewis (British Male)', 'engine': 'kokoro'},
+            ]
         
         # Chatterbox voice references (uploaded files)
         chatterbox_voices = []
         voices_dir = Path(__file__).parent / "static" / "voice_references"
         if voices_dir.exists():
-            for voice_file in voices_dir.glob("voice_ref_*"):
-                chatterbox_voices.append({
-                    'id': voice_file.name,
-                    'name': f"Custom Voice ({voice_file.stem.replace('voice_ref_', '')})",
-                    'engine': 'chatterbox',
-                    'file_path': str(voice_file)
-                })
+            for voice_file in voices_dir.glob("*"):
+                if voice_file.is_file() and voice_file.suffix.lower() in {'.wav', '.mp3', '.flac', '.m4a'}:
+                    # Handle both old UUID format and new readable format
+                    if voice_file.name.startswith('voice_ref_'):
+                        # Old UUID format - extract UUID part for display
+                        display_name = f"Custom Voice ({voice_file.stem.replace('voice_ref_', '')[:8]}...)"
+                    else:
+                        # New readable format - use the actual filename
+                        display_name = voice_file.stem.replace('_', ' ').title()
+                    
+                    chatterbox_voices.append({
+                        'id': voice_file.name,
+                        'name': display_name,
+                        'engine': 'chatterbox',
+                        'file_path': str(voice_file)
+                    })
         
         return {
             "kokoro_voices": kokoro_voices,
             "chatterbox_voices": chatterbox_voices,
-            "available_engines": ["kokoro", "chatterbox"]
+            "available_engines": available_engines
         }
     
     except Exception as e:
@@ -2804,29 +3388,58 @@ async def list_available_voices():
         return {
             "kokoro_voices": [],
             "chatterbox_voices": [],
-            "available_engines": ["kokoro"],
+            "available_engines": ["chatterbox"],
             "error": str(e)
         }
-# Define the system prompt directly in the backend
-SYSTEM_PROMPT = SYSTEM_PROMPT = """
-You are an advanced AI assistant designed to provide personalized, contextually-aware interactions. Your primary objectives are:
 
-1. **CONTEXTUAL ADAPTATION**: Carefully review any USER CONTEXT, RELEVANT USER INFORMATION, memory data, or profile details provided later in this conversation. Use this information to tailor your responses to the user's specific needs, preferences, communication style, and background.
 
-2. **CHARACTER PORTRAYAL** (when applicable): If character information is provided, portray that character authentically while maintaining awareness of user context. Write in internet RP style, italicize actions and narration, use markdown. Be proactive, creative, and drive plot/conversation forward with immersive storytelling.
 
-3. **ALIGNMENT PRINCIPLES**: 
-   - Reflect the user's cognitive and emotional patterns when beneficial
-   - Adapt your communication style to match user preferences 
-   - Build on previous context and established rapport
-   - Provide responses that genuinely serve the user's goals and well-being
-
-4. **RESPONSE QUALITY**: Maintain engaging, thoughtful responses that demonstrate understanding of both the immediate query and broader user context. Avoid repetition, emphasize relevant details, and respond dynamically to user input.
-
-When engaging in roleplay: Maintain realistic immersion, end with action/dialogue, allow explicit language if contextually appropriate, prioritize character consistency, and use descriptive narrative covering surroundings, actions, thoughts, appearances, emotions, and sensory details.
-
-Remember: Any user information provided is valuable context for creating more helpful, personalized interactions. Always integrate this context thoughtfully into your responses.
-"""
+async def prewarm_chatterbox_voices():
+    """Pre-warm voices from settings.json - called from main app with correct paths"""
+    try:
+        # Load settings
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        if not settings_path.exists():
+            logger.info("📝 No settings.json found, skipping voice pre-warming")
+            return
+            
+        with open(settings_path, 'r') as f:
+            settings = json.load(f)
+        
+        voice_cache = settings.get('voice_cache', [])
+        if not voice_cache:
+            logger.info("📝 No voices in cache, skipping voice pre-warming")
+            return
+            
+        logger.info(f"🔥 Pre-warming {len(voice_cache)} voices from settings...")
+        
+        # Voice references directory (relative to this file)
+        voices_dir = Path(__file__).parent / "static" / "voice_references"
+        logger.info(f"🔍 Looking for voices in: {voices_dir.absolute()}")
+        
+        for voice_entry in voice_cache:
+            if voice_entry.get('engine') == 'chatterbox':
+                voice_id = voice_entry.get('voice_id')
+                if voice_id:
+                    voice_path = voices_dir / voice_id
+                    if voice_path.exists():
+                        try:
+                            logger.info(f"🔥 Pre-warming voice: {voice_id}")
+                            # Call your TTS service to warm up this voice
+                            # Note: This is a background task, so we can't access request.app.state
+                            # We'll need to handle this differently or skip warmup in background tasks
+                            logger.info(f"⚠️ Skipping voice warmup in background task (no TTS client access)")
+                            logger.info(f"✅ Pre-warmed voice: {voice_id}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to pre-warm {voice_id}: {e}")
+                    else:
+                        logger.warning(f"⚠️ Voice file not found: {voice_path}")
+        
+        logger.info("✅ Voice pre-warming complete")
+        
+    except Exception as e:
+        logger.error(f"⚠️ Voice pre-warming failed: {e}", exc_info=True)
+# System prompt removed - relying on base model instructions and character personas
 END_MARKER = "<|DONE|>"
 # ─── module-level worker ───
 async def detect_and_store(
@@ -3180,9 +3793,9 @@ async def generate(
     # We use 'user_query_from_split' as it's the user's most recent conversational turn.
     input_for_memory_retrieval = user_query_from_split[:300]
 
-    # 5) Fetch memory context (ONLY for user chats, not for title generation)
+    # 5) Fetch memory context (ONLY for user chats, not for title generation or direct injection)
     memory_context_for_llm = "" # Initialize
-    if body.request_purpose not in ["title_generation", "model_judging", "model_testing"]:
+    if body.request_purpose not in ["title_generation", "model_judging", "model_testing"] and not body.directProfileInjection:
         if user_id:
             logger.info(f"🧠 Attempting to fetch memory context for user '{user_id}' using input: '{input_for_memory_retrieval}'")
             try:
@@ -3306,23 +3919,45 @@ async def generate(
             except Exception as e:
                 logger.error(f"❌ Conversation RAG error: {e}")
         
+    # 8.5) Add Author's Note if provided (custom session instructions)
+    if body.authorNote and body.authorNote.strip() and body.request_purpose not in ["title_generation", "model_testing", "model_judging"]:
+        author_note_text = body.authorNote.strip()
+        interaction_components.append(f"[AUTHOR'S NOTE - Writing style guidance for this response]\n{author_note_text}")
+        logger.info(f"📝 Added Author's Note to prompt: '{author_note_text[:50]}...'")
+
+    # 8.6) Add Anti-Repetition instructions if enabled
+    if body.anti_repetition_mode and body.request_purpose not in ["title_generation", "model_testing", "model_judging"]:
+        anti_rep_instruction = """[VARIETY GUIDANCE]
+Each response should feel fresh and unique. Avoid:
+- Reusing paragraph structures or openings from your previous messages
+- Repeating descriptive phrases you've already used in this conversation
+- Formulaic greeting or closing patterns
+Vary your sentence structure and word choices naturally."""
+        interaction_components.append(anti_rep_instruction)
+        logger.info("🔄 Added anti-repetition instructions to prompt")
+
     # Join all components of the interaction block with double newlines
     final_interaction_block = "\n\n".join(interaction_components)
 
     # 9) Assemble the full LLM prompt
-    #    SYSTEM_PROMPT is your global default (e.g., "You are GingerGPT...")
+    #    System prompt removed - relying on base model instructions and character personas
     #    character_persona_from_split contains the character-specific system instructions from the client.
     # Skip roleplay system prompt for model testing
     if body.request_purpose in ["model_testing", "model_judging"]:
         logger.info("🌀 Model testing/judging request: Skipping roleplay system prompt.")
         system_block_for_llm = "You are a language model designed for testing and evaluation purposes. Respond to the user's input without roleplay context."
     else:
-        system_block_for_llm = f"System:\n{SYSTEM_PROMPT.strip()}"
+        # Start with empty system block - base model instructions will provide default behavior
+        system_block_for_llm = ""
     if character_persona_from_split: # This is from step #3 split
         system_block_for_llm += f"\n\nCharacter Persona:\n{character_persona_from_split}"
     
     # Construct the final prompt for the LLM
-    llm_prompt = f"{system_block_for_llm.strip()}\n\n{final_interaction_block.strip()}\n\nAssistant:"
+    if system_block_for_llm.strip():
+        llm_prompt = f"{system_block_for_llm.strip()}\n\n{final_interaction_block.strip()}\n\nAssistant:"
+    else:
+        # No system prompt - just use interaction block
+        llm_prompt = f"{final_interaction_block.strip()}\n\nAssistant:"
     # 10) Log the final prompt sent to LLM
     logger.info(f"[generate] FULL LLM PROMPT ({len(llm_prompt)} chars) >>>\n{llm_prompt}\n<<<")
 
@@ -3361,7 +3996,7 @@ async def generate(
                 # Clean and return like non-streaming
                 clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
                 yield f"data: {json.dumps({'text': clean_llm_response})}\n\n"
-                yield "data: [DONE]\n\n"  # Signal end of stream to client 
+                yield f"data: {json.dumps({'done': True})}\n\n"  # Signal end of stream to client 
             else:
                 # Regular streaming for text-only requests
                 streamed_content_accumulator = []
@@ -3373,17 +4008,26 @@ async def generate(
                         stop_sequences=dcu.get_stop_sequences(body.stop), gpu_id=gpu_id, echo=body.echo,
                         request_purpose=body.request_purpose
                     ):
-                        streamed_content_accumulator.append(token)
-                        yield f"data: {json.dumps({'text': token})}\n\n"
+                        # Extract just the text content for memory processing
+                        try:
+                            if token.startswith("data: "):
+                                token_data = json.loads(token[6:])  # Remove "data: " prefix
+                                if "text" in token_data:
+                                    streamed_content_accumulator.append(token_data["text"])
+                        except (json.JSONDecodeError, KeyError):
+                            # If parsing fails, just append the raw token
+                            streamed_content_accumulator.append(token)
+                        
+                        yield token
                     
-                    yield "data: [DONE]\n\n"  # Signal end of stream to client
+                    yield f"data: {json.dumps({'done': True})}\n\n"
                 except Exception as stream_exc:
                     logger.error(f"❌ Error during LLM streaming: {stream_exc}", exc_info=True)
                     # Optionally, yield an error event to the client if your frontend handles it
                     # yield f"event: error\ndata: {json.dumps({'detail': str(stream_exc)})}\n\n"
                     # Ensure [DONE] is still sent or handle client-side appropriately
-                    yield f"data: {json.dumps({'text': f'[STREAM_ERROR: {str(stream_exc)}]'})}\n\n" # Send error in data
-                    yield "data: [DONE]\n\n"
+                    yield f"data: {json.dumps({'error': f'[STREAM_ERROR: {str(stream_exc)}]'})}\n\n" # Send error in data
+                    yield f"data: {json.dumps({'done': True})}\n\n"
 
             # ---- After stream is DONE ----
             full_llm_response_text = "".join(streamed_content_accumulator)
@@ -3391,7 +4035,9 @@ async def generate(
 
             clean_full_llm_response = full_llm_response_text.replace("<|DONE|>", "").strip() # Clean it once
 
-            if is_title_generation_request or body.request_purpose in ["model_testing", "model_judging"]:
+            if body.directProfileInjection:
+                logger.info(f"🌀 Direct profile injection enabled. Stream complete.")
+            elif is_title_generation_request or body.request_purpose in ["model_testing", "model_judging"]:
                 logger.info(f"🌀 {body.request_purpose} stream complete. Skipping memory detection and storage.")
             elif not current_user_id:
                 logger.warning(f"🧠 Stream complete. Skipping detect_and_store: No current_user_id available.")
@@ -3509,7 +4155,9 @@ async def generate(
         clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
         
         # 13) Schedule memory detection and storage (for non-streaming user chats)
-        if body.request_purpose in ["title_generation", "model_testing", "model_judging"]:
+        if body.directProfileInjection:
+            logger.info("🧠 Direct Profile Injection is ON. Skipping memory creation task (non-streaming).")
+        elif body.request_purpose in ["title_generation", "model_testing", "model_judging"]:
             logger.info("🌀 Title generation request (non-streaming). Skipping memory detection.")
         elif not user_id:
             logger.warning(f"🧠 Memory detection/storage skipped (non-streaming): No user_id available. (Purpose: {body.request_purpose or 'user_chat'})")
@@ -3535,6 +4183,93 @@ async def generate(
         # 14) Return final response to client
         return {"text": clean_llm_response}    
     
+@router.post("/models/performance-test")
+async def performance_test_endpoint(
+    request: Request,
+    data: dict = Body(...),
+    model_manager: ModelManager = Depends(get_model_manager)
+):
+    """
+    Test endpoint to benchmark model performance in different modes.
+    Expects: {"model_name": "...", "gpu_id": 0, "test_prompt": "...", "max_tokens": 100}
+    """
+    try:
+        model_name = data.get("model_name")
+        gpu_id = data.get("gpu_id", 0)
+        test_prompt = data.get("test_prompt", "Write a short story about a robot learning to paint.")
+        max_tokens = data.get("max_tokens", 100)
+        
+        if not model_name:
+            raise HTTPException(status_code=400, detail="model_name is required")
+        
+        logger.info(f"🚀 [Performance Test] Starting benchmark for {model_name} on GPU {gpu_id}")
+        
+        # Ensure model is loaded
+        try:
+            await model_manager.load_model(model_name, gpu_id=gpu_id)
+            logger.info(f"✅ [Performance Test] Model {model_name} loaded successfully")
+        except Exception as e:
+            logger.error(f"❌ [Performance Test] Failed to load model: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
+        
+        # Get model instance
+        model = model_manager.get_model(model_name, gpu_id)
+        
+        # Check if it's unified mode
+        is_unified_mode = isinstance(model, model_manager.RemoteModelWrapper)
+        mode_name = "unified_model" if is_unified_mode else "split_services"
+        
+        logger.info(f"🚀 [Performance Test] Testing {mode_name} mode")
+        
+        # Run performance test
+        start_time = time.time()
+        
+        try:
+            # Generate response
+            response = model(
+                prompt=test_prompt,
+                max_tokens=max_tokens,
+                temperature=0.7,
+                stream=False
+            )
+            
+            generation_time = time.time() - start_time
+            
+            # Extract text and calculate metrics
+            if response and "choices" in response and response["choices"]:
+                generated_text = response["choices"][0]["text"]
+                estimated_tokens = len(generated_text) // 4
+                tokens_per_second = estimated_tokens / generation_time if generation_time > 0 else 0
+                
+                logger.info(f"🚀 [Performance Test] {mode_name} mode results:")
+                logger.info(f"   Generation time: {generation_time:.2f}s")
+                logger.info(f"   Estimated tokens: {estimated_tokens}")
+                logger.info(f"   Speed: {tokens_per_second:.1f} tokens/second")
+                
+                return {
+                    "status": "success",
+                    "mode": mode_name,
+                    "model_name": model_name,
+                    "gpu_id": gpu_id,
+                    "performance_metrics": {
+                        "generation_time": generation_time,
+                        "estimated_tokens": estimated_tokens,
+                        "tokens_per_second": tokens_per_second,
+                        "test_prompt": test_prompt,
+                        "generated_text": generated_text
+                    }
+                }
+            else:
+                raise Exception("Invalid response format from model")
+                
+        except Exception as e:
+            logger.error(f"❌ [Performance Test] Generation failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"❌ [Performance Test] Endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/models/set-openai-api-mode")
 async def set_openai_api_mode(data: dict = Body(...)):
     """Save OpenAI API mode to settings"""
@@ -3557,6 +4292,32 @@ async def set_openai_api_mode(data: dict = Body(...)):
         
         return {"status": "success"}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/models/set-direct-profile-injection")
+async def set_direct_profile_injection(data: dict = Body(...)):
+    """Save direct profile injection setting to settings"""
+    try:
+        direct_profile_injection = data.get("directProfileInjection", False)
+        
+        settings_dir = Path.home() / ".LiangLocal"
+        settings_path = settings_dir / "settings.json"
+        os.makedirs(settings_dir, exist_ok=True)
+        
+        settings = {}
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+        
+        settings['directProfileInjection'] = direct_profile_injection
+        
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f)
+        
+        logger.info(f"✅ Direct Profile Injection setting saved: {direct_profile_injection}")
+        return {"status": "success", "directProfileInjection": direct_profile_injection}
+    except Exception as e:
+        logger.error(f"❌ Error saving direct profile injection setting: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/models/save-custom-endpoints")
@@ -3676,32 +4437,18 @@ async def set_adetailer_directory(request: Request, data: dict = Body(...)):
 # Update existing enhance endpoint
 @router.post("/sd-local/enhance-adetailer")
 async def enhance_image_with_adetailer(request: Request, data: dict = Body(...)):
-    """Enhance an existing image using ADetailer post-processing"""
+    """Enhance an existing image using ADetailer post-processing on a specific GPU."""
     sd_manager = getattr(request.app.state, 'sd_manager', None)
     if not sd_manager:
         raise HTTPException(status_code=500, detail="SD Manager not available")
 
-    if not sd_manager.is_loaded():
-        raise HTTPException(status_code=400, detail="No SD model loaded")
-
     try:
         # Extract parameters
         image_url = data.get("image_url")
-        original_prompt = data.get("original_prompt", "")
-        face_prompt = data.get("face_prompt", "")
-        strength = data.get("strength", 0.4)
-        confidence = data.get("confidence", 0.3)
-        model_name = data.get("model_name", "face_yolov8n.pt")  # NEW: model selection
-        
+        gpu_id = data.get("gpu_id", 0) # CRITICAL FIX: Get the GPU ID from the request
+
         if not image_url:
             raise HTTPException(status_code=400, detail="image_url is required")
-        
-        # Check if ADetailer is available
-        if not sd_manager.is_adetailer_available():
-            raise HTTPException(
-                status_code=503, 
-                detail="ADetailer not available. Install ultralytics: pip install ultralytics"
-            )
         
         # Convert URL to local file path
         if "/static/generated_images/" in image_url:
@@ -3713,16 +4460,17 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
         if not image_path.exists():
             raise HTTPException(status_code=404, detail="Image file not found")
         
-        logger.info(f"Enhancing image: {image_path} with ADetailer using model {model_name}")
+        logger.info(f"Enhancing image: {image_path} with ADetailer using model {data.get('model_name')} on GPU {gpu_id}")
         
         # Enhance the image
         enhanced_image_data = sd_manager.enhance_image_with_adetailer(
             image_path=str(image_path),
-            original_prompt=original_prompt,
-            face_prompt=face_prompt,
-            strength=strength,
-            confidence=confidence,
-            model_name=model_name  # NEW: pass model name
+            original_prompt=data.get("original_prompt", ""),
+            face_prompt=data.get("face_prompt", ""),
+            strength=data.get("strength", 0.4),
+            confidence=data.get("confidence", 0.3),
+            model_name=data.get("model_name", "face_yolov8n.pt"),
+            gpu_id=gpu_id # CRITICAL FIX: Pass the GPU ID to the manager
         )
         
         # Save enhanced image
@@ -3740,19 +4488,18 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
             "enhanced_image_url": enhanced_url,
             "original_image_url": image_url,
             "enhancement_applied": True,
-            "model_used": model_name,  # NEW: return which model was used
+            "model_used": data.get("model_name", "face_yolov8n.pt"),
             "parameters": {
-                "strength": strength,
-                "confidence": confidence,
-                "face_prompt": face_prompt,
-                "model_name": model_name
+                "strength": data.get("strength", 0.4),
+                "confidence": data.get("confidence", 0.3),
+                "face_prompt": data.get("face_prompt", ""),
+                "model_name": data.get("model_name", "face_yolov8n.pt")
             }
         }
         
     except Exception as e:
         logger.error(f"ADetailer enhancement error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Enhancement failed: {str(e)}")
-
 @router.get("/sd-local/adetailer-status")
 async def get_adetailer_status(request: Request):
     """Check if ADetailer functionality is available"""
@@ -3894,15 +4641,15 @@ async def sd_txt2img(body: dict):
     })
 @app.get("/sd-local/status")
 async def sd_local_status(request: Request):
-    """Check local SD status and loaded model"""
+    """Check local SD status and loaded models on all GPUs."""
     sd_manager = getattr(request.app.state, 'sd_manager', None)
     if not sd_manager:
-        return {"available": False, "error": "SD Manager not initialized"}
+        return {"available": False, "error": "SD Manager not initialized", "loaded_models": {}}
     
+    # Return a dictionary of loaded models keyed by GPU ID
     return {
         "available": True,
-        "model_loaded": sd_manager.is_loaded(),
-        "current_model": sd_manager.current_model_path
+        "loaded_models": sd_manager.current_model_paths 
     }
 
 @app.post("/sd-local/load-model")
@@ -3932,18 +4679,18 @@ async def sd_local_load_model(data: dict, request: Request):
 
 @app.post("/sd-local/txt2img")
 async def sd_local_txt2img(body: dict, request: Request):
-    """Generate image using local SD, save it as a file, and return the URL."""
+    """Generate image using local SD on a specific GPU."""
     sd_manager = getattr(request.app.state, 'sd_manager', None)
     if not sd_manager:
         raise HTTPException(status_code=500, detail="SD Manager not available")
-
-    if not sd_manager.is_loaded():
-        raise HTTPException(status_code=400, detail="No SD model loaded")
 
     try:
         prompt = body.get("prompt", "")
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt required")
+
+        # Get GPU ID from the request, default to 0
+        gpu_id = body.get("gpu_id", 0)
 
         # Check for seed and randomize if it's -1
         seed = body.get("seed", -1)
@@ -3954,12 +4701,13 @@ async def sd_local_txt2img(body: dict, request: Request):
         # This returns the raw image bytes
         image_data = sd_manager.generate_image(
             prompt=prompt,
+            gpu_id=gpu_id, # Pass the GPU ID to the manager
             negative_prompt=body.get("negative_prompt", ""),
             width=body.get("width", 512),
             height=body.get("height", 512),
             steps=body.get("steps", 20),
             cfg_scale=body.get("guidance_scale", 7.0),
-            seed=seed # Pass the new, potentially randomized seed
+            seed=seed
         )
 
         image_url = save_image_and_get_url(image_data)
@@ -3978,16 +4726,1027 @@ async def sd_local_txt2img(body: dict, request: Request):
     except Exception as e:
         logger.error(f"Local SD generation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/code_editor/read_file")
+async def read_file(request: FileOperationRequest):
+    """Read contents of a file"""
+    try:
+        safe_path = get_safe_path(CODE_EDITOR_BASE_DIR, request.filepath)
+        if not safe_path:
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        
+        if not os.path.exists(safe_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        if not os.path.isfile(safe_path):
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        
+        # Check file size (limit to 10MB for safety)
+        file_size = os.path.getsize(safe_path)
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            raise HTTPException(status_code=413, detail="File too large")
+        
+        with open(safe_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        return {
+            "success": True,
+            "filepath": request.filepath,
+            "content": content,
+            "size": file_size,
+            "modified": datetime.datetime.fromtimestamp(os.path.getmtime(safe_path)).isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading file {request.filepath}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+@app.post("/code_editor/write_file")
+async def write_file(request: FileOperationRequest):
+    """Write content to a file"""
+    try:
+        if request.content is None:
+            raise HTTPException(status_code=400, detail="Content is required")
+        
+        safe_path = get_safe_path(CODE_EDITOR_BASE_DIR, request.filepath)
+        if not safe_path:
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        
+        # Create directories if they don't exist
+        os.makedirs(os.path.dirname(safe_path), exist_ok=True)
+        
+        # Create backup if file exists
+        if os.path.exists(safe_path):
+            backup_path = f"{safe_path}.backup.{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            shutil.copy2(safe_path, backup_path)
+        
+        with open(safe_path, 'w', encoding='utf-8') as f:
+            f.write(request.content)
+        
+        return {
+            "success": True,
+            "filepath": request.filepath,
+            "size": len(request.content.encode('utf-8')),
+            "message": "File written successfully"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error writing file {request.filepath}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error writing file: {str(e)}")
+
+@app.post("/code_editor/list_directory")
+async def list_directory(request: DirectoryListRequest):
+    """List contents of a directory"""
+    try:
+        safe_path = get_safe_path(CODE_EDITOR_BASE_DIR, request.path)
+        if not safe_path:
+            raise HTTPException(status_code=400, detail="Invalid directory path")
+        
+        if not os.path.exists(safe_path):
+            raise HTTPException(status_code=404, detail="Directory not found")
+        
+        if not os.path.isdir(safe_path):
+            raise HTTPException(status_code=400, detail="Path is not a directory")
+        
+        items = []
+        for item_name in os.listdir(safe_path):
+            if not request.include_hidden and item_name.startswith('.'):
+                continue
+            
+            item_path = os.path.join(safe_path, item_name)
+            is_dir = os.path.isdir(item_path)
+            
+            try:
+                stat = os.stat(item_path)
+                items.append({
+                    "name": item_name,
+                    "type": "folder" if is_dir else "file",
+                    "size": stat.st_size if not is_dir else None,
+                    "modified": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "path": os.path.relpath(item_path, CODE_EDITOR_BASE_DIR)
+                })
+            except (OSError, PermissionError):
+                # Skip items we can't access
+                continue
+        
+        # Sort: directories first, then files, both alphabetically
+        items.sort(key=lambda x: (x["type"] == "file", x["name"].lower()))
+        
+        return {
+            "success": True,
+            "path": request.path,
+            "items": items
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing directory {request.path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error listing directory: {str(e)}")
+
+@app.post("/code_editor/search_files")
+async def search_files(request: SearchFilesRequest):
+    """Search for text within files (grep-like functionality)"""
+    try:
+        safe_path = get_safe_path(CODE_EDITOR_BASE_DIR, request.path)
+        if not safe_path:
+            raise HTTPException(status_code=400, detail="Invalid search path")
+        
+        if not os.path.exists(safe_path):
+            raise HTTPException(status_code=404, detail="Search path not found")
+        
+        results = []
+        count = 0
+        start_time = time.time()
+        max_search_time = 30  # 30 second timeout
+        
+        # Walk through directory tree
+        for root, dirs, files in os.walk(safe_path):
+            # Check timeout
+            if time.time() - start_time > max_search_time:
+                logger.warning(f"⚠️ Search timeout reached after {max_search_time}s")
+                break
+                
+            # Skip hidden directories unless requested
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            
+            # Skip certain directories that are usually not relevant for code search
+            dirs[:] = [d for d in dirs if d not in ['venv', '__pycache__', 'node_modules', '.git', 'wheels', 'upgrade']]
+            
+            for file in files:
+                # Check timeout
+                if time.time() - start_time > max_search_time:
+                    break
+                    
+                if not fnmatch.fnmatch(file, request.file_pattern):
+                    continue
+                
+                if file.startswith('.'):
+                    continue
+                
+                # Skip certain file types that are usually not relevant for code search
+                if file.endswith(('.pyc', '.pyo', '.pyd', '.so', '.dll', '.exe', '.bin', '.dat')):
+                    continue
+                
+                file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, CODE_EDITOR_BASE_DIR)
+                
+                try:
+                    # Skip binary files and large files
+                    if os.path.getsize(file_path) > 1024 * 1024:  # 1MB limit
+                        continue
+                    
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line_num, line in enumerate(f, 1):
+                            if request.query.lower() in line.lower():
+                                results.append({
+                                    "file": rel_path,
+                                    "line": line_num,
+                                    "content": line.strip(),
+                                    "match": request.query
+                                })
+                                count += 1
+                                
+                                if count >= request.max_results:
+                                    break
+                    
+                    if count >= request.max_results:
+                        break
+                        
+                except (UnicodeDecodeError, PermissionError, OSError):
+                    # Skip files we can't read
+                    continue
+            
+            if count >= request.max_results or time.time() - start_time > max_search_time:
+                break
+        
+        # Check if this was a file name search (common case)
+        if request.query.endswith('.py') or request.query.endswith('.js') or request.query.endswith('.jsx'):
+            # For file name searches, also try to find the file directly
+            try:
+                direct_file_path = os.path.join(safe_path, request.query)
+                if os.path.exists(direct_file_path) and os.path.isfile(direct_file_path):
+                    # Add the file itself to results if not already there
+                    file_already_found = any(r['file'] == request.query for r in results)
+                    if not file_already_found:
+                        results.insert(0, {
+                            "file": request.query,
+                            "line": 1,
+                            "content": f"File: {request.query}",
+                            "match": "file_found"
+                        })
+                        count += 1
+            except Exception as e:
+                logger.warning(f"⚠️ Error in direct file search: {e}")
+        
+        return {
+            "success": True,
+            "query": request.query,
+            "path": request.path,
+            "results": results,
+            "total_matches": count,
+            "truncated": count >= request.max_results or time.time() - start_time > max_search_time
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching files: {e}")
+        raise HTTPException(status_code=500, detail=f"Error searching files: {str(e)}")
+
+@app.post("/code_editor/run_command")
+async def run_command(request: RunCommandRequest):
+    """Run a shell command (use with caution!)"""
+    try:
+        # Basic command validation - you might want to make this more restrictive
+        dangerous_commands = ['rm -rf', 'del', 'format', 'mkfs', 'dd if=', ':(){']
+        if any(dangerous in request.command.lower() for dangerous in dangerous_commands):
+            raise HTTPException(status_code=403, detail="Command not allowed")
+        
+        working_dir = CODE_EDITOR_BASE_DIR
+        if request.working_dir:
+            safe_dir = get_safe_path(CODE_EDITOR_BASE_DIR, request.working_dir)
+            if safe_dir and os.path.isdir(safe_dir):
+                working_dir = safe_dir
+        
+        # Run command with timeout
+        result = subprocess.run(
+            request.command,
+            shell=True,
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=request.timeout
+        )
+        
+        return {
+            "success": result.returncode == 0,
+            "command": request.command,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "working_dir": working_dir
+        }
+    
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Command timed out")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error running command {request.command}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error running command: {str(e)}")
+
+@app.post("/code_editor/create_backup")
+async def create_backup(request: BackupRequest):
+    """Create a timestamped backup of a file"""
+    try:
+        safe_path = get_safe_path(CODE_EDITOR_BASE_DIR, request.filepath)
+        if not safe_path:
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        
+        if not os.path.exists(safe_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_path = f"{safe_path}.backup.{timestamp}"
+        
+        shutil.copy2(safe_path, backup_path)
+        
+        return {
+            "success": True,
+            "original_file": request.filepath,
+            "backup_file": os.path.relpath(backup_path, CODE_EDITOR_BASE_DIR),
+            "timestamp": timestamp
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating backup for {request.filepath}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creating backup: {str(e)}")
+
+@app.get("/code_editor/get_tree")
+async def get_file_tree(path: str = ".", max_depth: int = 5):
+    """Get a file tree structure for the explorer"""
+    try:
+        safe_path = get_safe_path(CODE_EDITOR_BASE_DIR, path)
+        if not safe_path:
+            raise HTTPException(status_code=400, detail="Invalid path")
+        
+        if not os.path.exists(safe_path):
+            raise HTTPException(status_code=404, detail="Path not found")
+        
+        def build_tree(dir_path: str, current_depth: int = 0) -> dict:
+            if current_depth >= max_depth:
+                return None
+            
+            try:
+                name = os.path.basename(dir_path) or "root"
+                relative_path = os.path.relpath(dir_path, CODE_EDITOR_BASE_DIR)
+                
+                if os.path.isfile(dir_path):
+                    return {
+                        "name": name,
+                        "type": "file",
+                        "path": relative_path
+                    }
+                
+                children = []
+                try:
+                    for item in sorted(os.listdir(dir_path)):
+                        if item.startswith('.'):
+                            continue
+                        
+                        item_path = os.path.join(dir_path, item)
+                        child = build_tree(item_path, current_depth + 1)
+                        if child:
+                            children.append(child)
+                except PermissionError:
+                    pass
+                
+                return {
+                    "name": name,
+                    "type": "folder",
+                    "path": relative_path,
+                    "children": children,
+                    "expanded": current_depth < 2  # Auto-expand first 2 levels
+                }
+            
+            except (OSError, PermissionError):
+                return None
+        
+        tree = build_tree(safe_path)
+        if not tree:
+            raise HTTPException(status_code=500, detail="Could not build file tree")
+        
+        return {
+            "success": True,
+            "tree": tree,
+            "base_path": CODE_EDITOR_BASE_DIR
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting file tree: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting file tree: {str(e)}")
+
+# Streaming helper functions
+async def stream_tool_calling_response(model_instance, messages, tools, tool_choice, temperature, max_tokens, seed):
+    """Stream tool calling response with true token-by-token streaming"""
+    try:
+        # Handle both async generators and regular generators
+        # Use original max_tokens for tool calling to ensure complete responses
+        generator = model_instance.create_chat_completion(
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            seed=seed
+        )
+        
+        # Check if it's an async generator or regular generator
+        if hasattr(generator, '__aiter__'):
+            # Async generator
+            async for chunk in generator:
+                if chunk:
+                    # Extract and stream individual tokens
+                    async for token in _stream_chunk_tokens_async(chunk):
+                        yield token
+        else:
+            # Regular generator - convert to async
+            accumulated_content = ""
+            for chunk in generator:
+                if chunk:
+                    # Extract and stream individual tokens
+                    async for token in _stream_chunk_tokens_async(chunk):
+                        yield token
+                    
+                    # Track accumulated content to detect incomplete tool calls
+                    if isinstance(chunk, dict) and 'choices' in chunk and chunk['choices']:
+                        choice = chunk['choices'][0]
+                        if 'delta' in choice and 'content' in choice['delta']:
+                            accumulated_content += choice['delta']['content']
+            
+            # Check if we have an incomplete tool call
+            if accumulated_content and not accumulated_content.strip().endswith('}'):
+                logger.warning(f"⚠️ [STREAM DEBUG] Incomplete tool call detected: {accumulated_content}")
+                # Could implement completion logic here if needed
+        
+        # Send done signal
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        
+    except Exception as e:
+        logger.error(f"❌ Streaming tool calling error: {e}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+async def stream_standard_response(model_instance, messages, temperature, max_tokens, seed):
+    """Stream standard chat completion response with true token-by-token streaming"""
+    try:
+        # Handle both async generators and regular generators
+        # Use original max_tokens for standard responses
+        generator = model_instance.create_chat_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            seed=seed
+        )
+        
+        # Check if it's an async generator or regular generator
+        if hasattr(generator, '__aiter__'):
+            # Async generator
+            async for chunk in generator:
+                if chunk:
+                    # Extract and stream individual tokens
+                    async for token in _stream_chunk_tokens_async(chunk):
+                        yield token
+        else:
+            # Regular generator - convert to async
+            for chunk in generator:
+                if chunk:
+                    # Extract and stream individual tokens
+                    async for token in _stream_chunk_tokens_async(chunk):
+                        yield token
+        
+        # Send done signal
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        
+    except Exception as e:
+        logger.error(f"❌ Streaming standard response error: {e}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+async def _stream_chunk_tokens_async(chunk):
+    """Extract individual tokens from a chunk and stream them one by one (async version)"""
+    try:
+        # DEBUG: Log the actual chunk structure
+
+        
+        # Handle different chunk formats
+        if isinstance(chunk, dict):
+            # OpenAI-style chunk format
+            if 'choices' in chunk and chunk['choices']:
+                choice = chunk['choices'][0]
+                if 'delta' in choice and 'content' in choice['delta']:
+                    content = choice['delta']['content']
+                    
+                    if content:
+                        # Stream each character as a separate token for true streaming
+                        for char in content:
+                            token_chunk = {
+                                'choices': [{
+                                    'delta': {'content': char},
+                                    'index': 0,
+                                    'finish_reason': None
+                                }]
+                            }
+                            yield f"data: {json.dumps(token_chunk)}\n\n"
+                        return
+                elif 'delta' in choice and 'tool_calls' in choice['delta']:
+                    # Handle tool call chunks
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    return
+            # If no content delta, stream the whole chunk
+            yield f"data: {json.dumps(chunk)}\n\n"
+        elif isinstance(chunk, str):
+            # String chunk - stream character by character
+            for char in chunk:
+                token_chunk = {
+                    'choices': [{
+                        'delta': {'content': char},
+                        'index': 0,
+                        'finish_reason': None
+                    }]
+                }
+                yield f"data: {json.dumps(token_chunk)}\n\n"
+        else:
+            # Unknown chunk format - stream as is
+            yield f"data: {json.dumps(chunk)}\n\n"
+            
+    except Exception as e:
+        logger.error(f"❌ Error streaming chunk tokens: {e}")
+        # Fallback: stream the original chunk
+        yield f"data: {json.dumps(chunk)}\n\n"
+
+# Add endpoint to set the working directory for code editor
+@app.post("/code_editor/set_base_dir")
+async def set_base_directory(path: str):
+    """Set the base directory for code editor operations"""
+    global CODE_EDITOR_BASE_DIR
+    
+    try:
+        abs_path = os.path.abspath(path)
+        if not os.path.exists(abs_path):
+            raise HTTPException(status_code=404, detail="Directory not found")
+        
+        if not os.path.isdir(abs_path):
+            raise HTTPException(status_code=400, detail="Path is not a directory")
+        
+        CODE_EDITOR_BASE_DIR = abs_path
+        
+        return {
+            "success": True,
+            "base_directory": CODE_EDITOR_BASE_DIR,
+            "message": "Base directory updated successfully"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting base directory: {e}")
+        raise HTTPException(status_code=500, detail=f"Error setting base directory: {str(e)}")
+    
+@app.post("/v1/chat/completions/tools")
+async def chat_completions_with_tools(
+    request: Request,
+    model_manager: ModelManager = Depends(get_model_manager)
+):
+    """DEBUG: Find the None/empty content issue"""
+    try:
+        body = await request.json()
+        
+        messages = body.get('messages', [])
+        tools = body.get('tools', [])
+        tool_choice = body.get('tool_choice', 'auto')
+        model = body.get('model', 'current')
+        temperature = body.get('temperature', 0.7)
+        max_tokens = body.get('max_tokens', 2048)
+        stream = body.get('stream', False)
+        seed = body.get('seed')  # ADD THIS LINE
+        
+        # Generate random seed if not provided
+        if seed is None:
+            import random
+            seed = random.randint(0, 2147483647)
+            logger.info(f"🎲 [DEBUG] Generated random seed: {seed}")
+        else:
+            logger.info(f"🎲 [DEBUG] Using provided seed: {seed}")
+
+        # DEBUG: Check messages for None/empty content
+        logger.info(f"🔍 [DEBUG] Checking {len(messages)} messages:")
+        for i, msg in enumerate(messages):
+            content = msg.get('content')
+            role = msg.get('role')
+            logger.info(f"  Message {i}: role='{role}', content_type={type(content)}, content_length={len(str(content)) if content else 0}")
+            if content is None or content == "":
+                logger.warning(f"  ⚠️  Message {i} has empty/None content!")
+            if not isinstance(content, str):
+                logger.warning(f"  ⚠️  Message {i} content is not a string: {repr(content)}")
+        
+        # Find a suitable model to use
+        model_instance = None
+        model_name = None
+        gpu_id = None
+        is_devstral = False
+        
+        # Strategy 1: Try to get a model assigned to 'test_model' purpose
+        purposes = model_manager.get_models_by_purpose()
+        if purposes.get('test_model') and purposes['test_model']['is_loaded']:
+            model_info = purposes['test_model']
+            model_name = model_info['name']
+            gpu_id = model_info['gpu_id']
+            model_instance = model_manager.get_model(model_name, gpu_id)
+            is_devstral = DevstralHandler.is_devstral_model(model_name)
+            logger.info(f"🎯 Using test_model: {model_name} on GPU {gpu_id}")
+        
+        # Strategy 2: Try to get any loaded model
+        elif model_manager.loaded_models:
+            # Get the first available loaded model
+            model_key = next(iter(model_manager.loaded_models.keys()))
+            model_name, gpu_id = model_key
+            model_instance = model_manager.get_model(model_name, gpu_id)
+            is_devstral = DevstralHandler.is_devstral_model(model_name)
+            logger.info(f"🎯 Using first available model: {model_name} on GPU {gpu_id}")
+        
+        # No models loaded
+        else:
+            loaded_info = model_manager.get_loaded_models()
+            raise HTTPException(
+                status_code=400, 
+                detail=f"No models are currently loaded. Available models: {loaded_info}"
+            )
+        
+        logger.info(f"📝 Chat request - Model: {model_name}, GPU: {gpu_id}, Devstral: {is_devstral}, Tools: {len(tools) if tools else 0}")
+        
+        if is_devstral and tools:
+            # Use Devstral with tool calling support
+            logger.info(f"🔧 Using Devstral tool calling with {len(tools)} tools")
+            
+            # Format tools for Devstral
+            formatted_tools = DevstralHandler.format_tools_for_devstral(tools)
+            
+            try:
+                # Clean messages before sending to model
+                cleaned_messages = []
+                for msg in messages:
+                    content = msg.get('content')
+                    if content is not None and content.strip() != "":
+                        cleaned_messages.append(msg)
+                    elif msg.get('tool_calls'):
+                        # Keep messages with tool calls - preserve original content and tool calls
+                        cleaned_messages.append(msg)
+                    else:
+                        logger.warning(f"🧹 Skipping message with empty content: {msg}")
+                
+                logger.info(f"🔍 [DEBUG] Cleaned messages count: {len(cleaned_messages)} (was {len(messages)})")
+                
+                # Handle streaming vs non-streaming for tool calling
+                if stream:
+                    logger.info(f"🔄 Streaming tool calling response")
+                    return StreamingResponse(
+                        stream_tool_calling_response(
+                            model_instance, cleaned_messages, formatted_tools, 
+                            tool_choice, temperature, max_tokens, seed
+                        ),
+                        media_type="text/plain"
+                    )
+                else:
+                    # Non-streaming tool calling
+                    response = model_instance.create_chat_completion(
+                        messages=cleaned_messages,
+                        tools=formatted_tools,
+                        tool_choice=tool_choice,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=False,
+                        seed=seed
+                    )
+                    
+                    # Parse response for text-based tool calls
+                    if isinstance(response, dict) and 'choices' in response and response['choices']:
+                        choice = response['choices'][0]
+                        message = choice.get('message', {})
+                        content = message.get('content', '')
+                        
+                        # Check for structured tool calls first
+                        if message.get('tool_calls'):
+                            logger.info(f"🔧 Found structured tool calls: {len(message['tool_calls'])}")
+                            return response
+                        
+                        # Parse text-based tool calls
+                        logger.info(f"🔍 [DEBUG] Attempting to parse tool calls from content: {repr(content)}")
+                        parsed_tool_calls, remaining_content = DevstralToolCallParser.extract_tool_calls_from_content(content)
+                        
+                        if parsed_tool_calls:
+                            logger.info(f"🔧 Parsed {len(parsed_tool_calls)} tool calls from content")
+                            logger.info(f"🔧 Tool calls: {[tc['function']['name'] for tc in parsed_tool_calls]}")
+                            
+                            # Modify the response to include structured tool calls
+                            message['tool_calls'] = parsed_tool_calls
+                            # For tool call messages, preserve the original content if it exists
+                            # This ensures the tool call information is maintained
+                            if content and content.strip():
+                                message['content'] = content
+                            else:
+                                # If no content, use a placeholder that indicates this was a tool call
+                                message['content'] = f"[Tool call: {', '.join([tc['function']['name'] for tc in parsed_tool_calls])}]"
+                            
+                            return response
+                        else:
+                            logger.warning(f"⚠️ No tool calls found in content: {content[:100]}...")
+                            logger.info(f"🔍 [DEBUG] Content type: {type(content)}, length: {len(content) if content else 0}")
+                            logger.info(f"🔍 [DEBUG] Full content: {repr(content)}")
+                    
+                    return response
+                
+            except Exception as tool_error:
+                logger.error(f"❌ Devstral tool calling failed: {tool_error}")
+                # Fallback to manual injection if needed
+                logger.info("🔄 Falling back to manual tool injection")
+        
+        # Fallback: Manual tool injection or standard chat
+        if tools and not is_devstral:
+            logger.info(f"🔧 Using manual tool injection for non-Devstral model")
+            
+            # Your existing manual tool injection code
+            tool_descriptions = []
+            for tool in tools:
+                func = tool.get('function', {})
+                tool_descriptions.append(f"- {func.get('name')}: {func.get('description')}")
+            
+            tools_text = f"\n\nAvailable tools:\n" + "\n".join(tool_descriptions)
+            
+            # Find system message or create one
+            system_message = None
+            for msg in messages:
+                if msg.get('role') == 'system':
+                    system_message = msg
+                    break
+            
+            if system_message:
+                system_message['content'] += tools_text
+            else:
+                messages.insert(0, {
+                    'role': 'system',
+                    'content': f"You are a helpful coding assistant with access to tools.{tools_text}"
+                })
+        
+        # Clean messages for standard completion too
+        cleaned_messages = []
+        for msg in messages:
+            content = msg.get('content')
+            if content is not None and content.strip() != "":
+                cleaned_messages.append(msg)
+            elif msg.get('tool_calls'):
+                # Keep messages with tool calls - preserve original content and tool calls
+                cleaned_messages.append(msg)
+            else:
+                logger.warning(f"🧹 Skipping message with empty content in standard completion: {msg}")
+        
+        if not cleaned_messages:
+            raise HTTPException(status_code=400, detail="No valid messages after cleaning")
+        
+        logger.info(f"🔍 [DEBUG] Standard completion with {len(cleaned_messages)} cleaned messages")
+        
+        # Handle streaming vs non-streaming for standard completion
+        if stream:
+            logger.info(f"🔄 Streaming standard chat completion")
+            return StreamingResponse(
+                stream_standard_response(
+                    model_instance, cleaned_messages, temperature, max_tokens, seed
+                ),
+                media_type="text/plain"
+            )
+        else:
+            # Standard chat completion (non-streaming)
+            logger.info(f"💬 Standard chat completion (non-streaming)")
+            response = model_instance.create_chat_completion(
+                messages=cleaned_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+                seed=seed
+            )
+            
+            # DEBUG: Check response structure
+            logger.info(f"🔍 [DEBUG] Response type: {type(response)}")
+            if response is None:
+                logger.error(f"❌ [DEBUG] Response is None!")
+                raise HTTPException(status_code=500, detail="Model returned None response")
+            
+            if isinstance(response, dict):
+                logger.info(f"🔍 [DEBUG] Response keys: {response.keys()}")
+                choices = response.get('choices')
+                logger.info(f"🔍 [DEBUG] Choices: {choices} (type: {type(choices)})")
+                if choices is None or len(choices) == 0:
+                    logger.error(f"❌ [DEBUG] No choices in response!")
+                    raise HTTPException(status_code=500, detail="Model returned no choices")
+            
+            return response
+        
+    except Exception as e:
+        logger.error(f"❌ [DEBUG] Error in chat completions: {e}")
+        import traceback
+        logger.error(f"❌ [DEBUG] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/models/current-status")
+async def get_current_model_status(model_manager: ModelManager = Depends(get_model_manager)):
+    """Get current model status for debugging"""
+    try:
+        purposes = model_manager.get_models_by_purpose()
+        loaded_models = model_manager.get_loaded_models()
+        
+        # Find which model would be used for chat
+        active_model = None
+        if purposes.get('test_model') and purposes['test_model']['is_loaded']:
+            active_model = {
+                "source": "test_model_purpose",
+                "name": purposes['test_model']['name'],
+                "gpu_id": purposes['test_model']['gpu_id'],
+                "is_devstral": DevstralHandler.is_devstral_model(purposes['test_model']['name'])
+            }
+        elif model_manager.loaded_models:
+            model_key = next(iter(model_manager.loaded_models.keys()))
+            model_name, gpu_id = model_key
+            active_model = {
+                "source": "first_available",
+                "name": model_name,
+                "gpu_id": gpu_id,
+                "is_devstral": DevstralHandler.is_devstral_model(model_name)
+            }
+        
+        return {
+            "active_model": active_model,
+            "purposes": purposes,
+            "loaded_models": loaded_models
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting model status: {e}")
+        return {"error": str(e)}
+
+async def load_devstral_with_tools(model_path: str):
+    """Load Devstral model with tool calling support"""
+    try:
+        # When loading with llama.cpp, use these flags:
+        # --jinja --chat-template-file path/to/mistral-tool-template.jinja
+        
+        # This would integrate with your existing model loading system
+        # You'd need to modify your model loading to include tool calling flags
+        
+        command = [
+            "llama-server",  # or whatever binary you use
+            "--model", model_path,
+            "--jinja",  # Enable jinja templating
+            "--host", "0.0.0.0",
+            "--port", "8001",  # or whatever port
+            "--ctx-size", "32768",
+            "--n-gpu-layers", "99",  # Adjust for your GPU
+            # Add tool calling specific flags here
+        ]
+        
+        # Start the server process
+        # You'd integrate this with your existing model management
+        
+        logger.info(f"Loading Devstral with tool calling: {' '.join(command)}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error loading Devstral with tools: {e}")
+        return False    
+
+@app.get("/models/devstral-info")
+async def get_devstral_info(model_manager: ModelManager = Depends(get_model_manager)):
+    """Get information about loaded Devstral model"""
+    try:
+        if not model_manager.primary_model:
+            return {"error": "No model loaded"}
+        
+        model_instance = model_manager.primary_model
+        is_devstral = getattr(model_instance, '_is_devstral', False)
+        
+        if not is_devstral:
+            return {"is_devstral": False}
+        
+        # Try to get model metadata
+        model_info = {
+            "is_devstral": True,
+            "tool_calling_supported": True,
+            "chat_format": getattr(model_instance, 'chat_format', 'unknown'),
+            "model_path": getattr(model_instance, 'model_path', 'unknown')
+        }
+        
+        return model_info
+        
+    except Exception as e:
+        logger.error(f"Error getting Devstral info: {e}")
+        return {"error": str(e)}
+
+@app.post("/code_editor/execute_tool")
+async def execute_tool_call(tool_name: str, arguments: dict):
+    """Execute a tool call and return the result"""
+    try:
+        if tool_name == "read_file":
+            result = await read_file(FileOperationRequest(**arguments))
+            return {"success": True, "result": result}
+            
+        elif tool_name == "write_file":
+            result = await write_file(FileOperationRequest(**arguments))
+            return {"success": True, "result": result}
+            
+        elif tool_name == "search_files":
+            result = await search_files(SearchFilesRequest(**arguments))
+            return {"success": True, "result": result}
+            
+        elif tool_name == "list_directory":
+            result = await list_directory(DirectoryListRequest(**arguments))
+            return {"success": True, "result": result}
+            
+        elif tool_name == "run_command":
+            result = await run_command(RunCommandRequest(**arguments))
+            return {"success": True, "result": result}
+            
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown tool: {tool_name}")
+            
+    except Exception as e:
+        logger.error(f"Error executing tool {tool_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Tool execution error: {str(e)}")
+
+@router.post("/models/update-tensor-split")
+async def update_tensor_split(data: dict = Body(...)):
+    """Update tensor split settings for unified model mode"""
+    try:
+        tensor_split = data.get("tensor_split")
+        
+        if not tensor_split:
+            raise HTTPException(status_code=400, detail="tensor_split is required")
+        
+        if not isinstance(tensor_split, list) or len(tensor_split) != 2:
+            raise HTTPException(status_code=400, detail="tensor_split must be a list of 2 values")
+        
+        # Normalize values to sum to 1.0
+        total = sum(tensor_split)
+        if total <= 0:
+            raise HTTPException(status_code=400, detail="tensor_split values must be positive")
+        
+        normalized_split = [val / total for val in tensor_split]
+        
+        # Load existing settings
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+        
+        # Update tensor split
+        settings["tensor_split"] = normalized_split
+        
+        # Save back to file
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f, indent=2)
+        
+        logger.info(f"✅ Updated tensor_split to {normalized_split}")
+        
+        return {
+            "status": "success",
+            "message": "Tensor split updated successfully. Reload model for changes to take effect.",
+            "tensor_split": normalized_split
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error updating tensor split: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/models/get-tensor-split")
+async def get_tensor_split():
+    """Get current tensor split settings"""
+    try:
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+                tensor_split = settings.get("tensor_split")
+                
+                if tensor_split:
+                    return {
+                        "status": "success",
+                        "tensor_split": tensor_split
+                    }
+        
+        # Return default if not found
+        # Default: CUDA0 (5090 32GB) gets 57%, CUDA1 (3090 24GB) gets 43%
+        return {
+            "status": "success",
+            "tensor_split": [0.57, 0.43],
+            "is_default": True
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting tensor split: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/models/get-settings")
+async def get_settings():
+    """Get all settings from settings.json"""
+    try:
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+                return {
+                    "status": "success",
+                    "settings": settings
+                }
+        
+        # Return empty settings if file doesn't exist
+        return {
+            "status": "success",
+            "settings": {}
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # These endpoints are now handled in document_routes.py
 
-# mount the “generate” router
+# mount the "generate" router
 app.include_router(router)
 
-# mount your memory endpoints under the “/memory” prefix
+# mount your memory endpoints under the "/memory" prefix
 app.include_router(memory_router, prefix="/memory")
 app.include_router(memory_router, prefix="/memory", tags=["memory"])
 app.include_router(document_router)
 # Add OpenAI compatibility layer
 app.include_router(openai_router)
-app.include_router(tts_service.router)
+# TTS service router removed - TTS now runs separately on port 8002
 logger.info("🔗 OpenAI-compatible API endpoints available at /v1/chat/completions and /v1/models")
+

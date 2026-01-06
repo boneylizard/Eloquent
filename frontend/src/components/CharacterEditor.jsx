@@ -66,6 +66,17 @@ const CharacterEditor = () => {
     }
   }, [activeCharacter]);
 
+  // Effect to sync with characters list changes (for updates from duplicates, etc.)
+  useEffect(() => {
+    if (activeCharacter && activeCharacter.id) {
+      const updatedCharacter = characters.find(c => c.id === activeCharacter.id);
+      if (updatedCharacter && JSON.stringify(updatedCharacter) !== JSON.stringify(activeCharacter)) {
+        console.log('Character updated in library, refreshing editor view');
+        setActiveCharacter(updatedCharacter);
+      }
+    }
+  }, [characters, activeCharacter, setActiveCharacter]);
+
   // Handle importing character cards
 const handleImportCard = useCallback(async (event) => {
   const file = event.target.files[0];
@@ -301,14 +312,18 @@ const handleSubmit = () => {
   };
   
   try {
-    saveCharacter(characterToSave);
+    // Save the character and get the saved character with its final ID
+    const savedCharacter = saveCharacter(characterToSave);
     
-    // After saving, set as active character and switch to edit mode
-    setActiveCharacter(characterToSave);
+    // Update our local state with the complete character data (including ID)
+    setCharacter(savedCharacter);
+    
+    // Set as active character and switch to edit mode
+    setActiveCharacter(savedCharacter);
     setIsCreatingNew(false);
     
-    console.log("Character saved via context:", characterToSave.name);
-    alert("Character saved!"); 
+    console.log("Character saved via context:", savedCharacter.name, "with ID:", savedCharacter.id);
+    alert("Character saved successfully!"); 
   } catch (error) { 
     console.error("Failed to save character via context:", error); 
     alert("Failed to save character."); 

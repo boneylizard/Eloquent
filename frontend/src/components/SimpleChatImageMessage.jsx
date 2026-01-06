@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { useApp } from '../contexts/AppContext';
 
 const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) => {
-  const { primaryModel, MEMORY_API_URL, setMessages, generateUniqueId, userProfile } = useApp();
+  const { primaryModel, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile } = useApp();
   
   // Existing state
   const [isImageLoaded, setIsImageLoaded] = useState(false);
@@ -16,7 +16,8 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showImageQuery, setShowImageQuery] = useState(false);
   const [imageQuery, setImageQuery] = useState('');
-  
+  // Add this state near your other useState declarations
+const [selectedGpuId, setSelectedGpuId] = useState(0);
   // Manual enhancement state
   const [isEnhancing, setIsEnhancing] = useState(false);
 
@@ -37,7 +38,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
 
     // Use saved settings from localStorage (same as auto-enhance)
     const savedSettings = localStorage.getItem('adetailer-settings');
-    const savedModel = localStorage.getItem('adetailer-selected-model') || 'face_yolov8n.pt';
+    const savedModel = localStorage.getItem('adetailer-selected-model') || 'face_yolov8n_v2.pt';
     const settings = savedSettings ? JSON.parse(savedSettings) : {
       strength: 0.4,
       confidence: 0.3,
@@ -47,7 +48,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
     setIsEnhancing(true);
 
     try {
-      const response = await fetch(`${MEMORY_API_URL}/sd-local/enhance-adetailer`, {
+      const response = await fetch(`${PRIMARY_API_URL}/sd-local/enhance-adetailer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -56,7 +57,8 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
           face_prompt: settings.facePrompt,
           strength: settings.strength,
           confidence: settings.confidence,
-          model_name: savedModel
+          model_name: savedModel,
+          gpu_id: message.gpuId || 0 // Use the GPU ID from the message or default to 0
         })
       });
 
@@ -102,7 +104,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
     } finally {
       setIsEnhancing(false);
     }
-  }, [imageUrl, isEnhancing, MEMORY_API_URL, setMessages, message, generateUniqueId]);
+  }, [imageUrl, isEnhancing, MEMORY_API_URL, PRIMARY_API_URL, setMessages, message, generateUniqueId]);
 
   // Reset to last enhancement level
   const handleResetToLast = useCallback(() => {

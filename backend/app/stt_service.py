@@ -16,21 +16,21 @@ whisper_processor = None
 whisper_model = None
 parakeet_model = None
 
-# --- Target appropriate GPU ---
 def get_device():
-    """Get the appropriate device based on available GPUs"""
+    """Determines the correct Torch device for the current process."""
     try:
         import torch
-        from main import SINGLE_GPU_MODE  # Import the flag from main
-        
         if torch.cuda.is_available():
-            # Use GPU 0 if in single GPU mode, otherwise GPU 1
-            if SINGLE_GPU_MODE:
-                return "cuda:0"
-            else:
-                return "cuda:1"
-        return "cpu"
-    except (ImportError, ModuleNotFoundError):
+            # Since launch.py isolates the process to a single GPU,
+            # that GPU will always be seen as 'cuda:0' by this process.
+            device = "cuda:0"
+            logger.info(f"✅ STT service will use the visible GPU: {device}")
+            return device
+        else:
+            logger.warning("⚠️ CUDA not available. Falling back to CPU for STT.")
+            return "cpu"
+    except Exception as e:
+        logger.error(f"❌ Error determining device, falling back to CPU: {e}")
         return "cpu"
 
 DEVICE = get_device()

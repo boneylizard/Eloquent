@@ -19,6 +19,7 @@ import SimpleModelSelector from './components/SimpleModelSelector';
 import CharacterManager from './components/CharacterManager';
 import ModelTester from './components/ModelTester';
 import ForensicLinguistics from './components/ForensicLinguistics';
+import CodeEditorOverlay from './components/CodeEditorOverlay';
 
 
 // Inner component to access theme context easily
@@ -62,6 +63,8 @@ function AppContent() {
         return <MemoryPage />;
       case 'modeltester':
         return <ModelTester />;
+      case 'codeeditor':
+        return <CodeEditorOverlay isOpen={true} onClose={() => setActiveTab('chat')} />;
       default:
         return <Chat layoutMode={layoutMode}/>;
     }

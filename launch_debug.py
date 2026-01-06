@@ -1,4 +1,4 @@
-# launch.py - Fixed version
+# launch_debug.py - Debug version that keeps windows open on crash
 
 import os
 import sys
@@ -8,16 +8,15 @@ import socket
 import time
 import webbrowser
 import threading
+import subprocess
 
 def get_project_root():
     """Gets the absolute path to the project's root directory (where launch.py is)."""
     return os.path.dirname(os.path.abspath(__file__))
 
-
 def get_gpu_count():
     """Dynamically detect available NVIDIA GPUs."""
     try:
-        import subprocess
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=10
@@ -46,7 +45,6 @@ def get_gpu_count():
     print("No NVIDIA GPUs detected.")
     return 0
 
-
 def launch_browser():
     """Launch browser after delay - runs in separate thread to avoid blocking startup"""
     try:
@@ -56,40 +54,36 @@ def launch_browser():
     except Exception:
         pass  # Fail silently - don't break the app if browser launch fails
 
-
-# MOVED TO MODULE LEVEL - Windows can't pickle local functions
 def run_model_service(root_path):
     """Run the model service with proper GPU isolation."""
-    gpu_count = get_gpu_count()
-    if gpu_count >= 2:
-        # If multiple GPUs, use the last GPU for main LLM inference
-        model_gpu_id = str(gpu_count - 1)
-        os.environ["CUDA_VISIBLE_DEVICES"] = model_gpu_id
-        os.environ["GPU_ID"] = model_gpu_id
-        print(f"🔒 Model service will use GPU {model_gpu_id} for main LLM inference")
-    elif gpu_count == 1:
-        # Single GPU - use it for everything
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        os.environ["GPU_ID"] = "0"
-        print("🔒 Model service will use GPU 0")
-    else:
-        # No GPU - run on CPU
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        os.environ["GPU_ID"] = "-1"
-        print("🔒 Model service will run on CPU")
-    
-    if root_path not in sys.path:
-        sys.path.insert(0, root_path)
-    
-    # Now run the actual service using subprocess without creating new console
-    import subprocess
-    service_script = os.path.join(root_path, "backend", "app", "model_service.py")
-    subprocess.run([sys.executable, service_script], cwd=root_path)
-
+    try:
+        gpu_count = get_gpu_count()
+        if gpu_count >= 2:
+            model_gpu_id = str(gpu_count - 1)
+            os.environ["CUDA_VISIBLE_DEVICES"] = model_gpu_id
+            os.environ["GPU_ID"] = model_gpu_id
+            print(f"Model service will use GPU {model_gpu_id} for main LLM inference")
+        elif gpu_count == 1:
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+            os.environ["GPU_ID"] = "0"
+            print("Model service will use GPU 0")
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            os.environ["GPU_ID"] = "-1"
+            print("Model service will run on CPU")
+        
+        if root_path not in sys.path:
+            sys.path.insert(0, root_path)
+        
+        # Now run the actual service
+        service_script = os.path.join(root_path, "backend", "app", "model_service.py")
+        subprocess.run([sys.executable, service_script])
+    except Exception as e:
+        print(f"ERROR: Model service crashed: {e}")
+        input("Press Enter to close this window...")
 
 def start_model_service(root_path):
     """Start the model service as a separate process."""
-    # Check if already running
     try:
         test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         test_socket.connect(('localhost', 5555))
@@ -100,104 +94,115 @@ def start_model_service(root_path):
         pass
     
     print("Starting model service on port 5555...")
-    # Pass root_path as argument since it's at module level now
     service_process = Process(target=run_model_service, args=(root_path,))
     service_process.start()
     
-    # Give it time to start (increased for better reliability)
     time.sleep(5)
     
-    # Verify it started
     try:
         test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        test_socket.settimeout(10)  # Add timeout to prevent hanging
+        test_socket.settimeout(10)
         test_socket.connect(('localhost', 5555))
         test_socket.close()
-        print("✅ Model service started successfully")
+        print("SUCCESS: Model service started successfully")
         return service_process
     except Exception as e:
-        print(f"❌ ERROR: Model service failed to start: {e}")
-        print("🔄 Attempting to terminate and restart...")
+        print(f"ERROR: Model service failed to start: {e}")
         try:
             service_process.terminate()
             service_process.wait(timeout=5)
         except:
-            service_process.kill()  # Force kill if terminate doesn't work
+            service_process.kill()
         return None
 
-
-def start_backend(host, port, gpu_id, root_path):
-    """Start backend with proper GPU assignment using subprocess with virtual environment"""
+def start_backend_debug(host, port, gpu_id, root_path):
+    """Start backend with debug mode that keeps window open on crash"""
     try:
-        import subprocess
-        
         gpu_label = f"GPU {gpu_id}" if gpu_id >= 0 else "CPU"
         print(f"--- Starting Server Process for {gpu_label} on Port {port} ---")
-        print(f"--- Using Python executable: {sys.executable} ---")
         
-        # Build the command to run the backend
-        cmd = [
-            sys.executable, "-m", "uvicorn", 
-            "backend.app.main:app",
-            "--host", host,
-            "--port", str(port),
-            "--log-level", "info",
-            "--ws-ping-interval", "300"
-        ]
+        # Create a batch file that will keep the window open
+        batch_content = f'''@echo off
+echo Starting backend on port {port} with GPU {gpu_id}...
+cd /d "{root_path}"
+set CUDA_VISIBLE_DEVICES={gpu_id}
+set GPU_ID={gpu_id}
+set PORT={port}
+set PYTHONPATH={root_path}
+python -m uvicorn backend.app.main:app --host {host} --port {port} --log-level info --ws-ping-interval 300
+if errorlevel 1 (
+    echo.
+    echo ERROR: Backend crashed with error code %errorlevel%
+    echo.
+    pause
+) else (
+    echo.
+    echo SUCCESS: Backend stopped normally
+    echo.
+    pause
+)
+'''
         
-        # Set up environment variables for the subprocess
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-        env["GPU_ID"] = str(gpu_id)
-        env["PORT"] = str(port)
-        env["PYTHONPATH"] = root_path
+        batch_file = os.path.join(root_path, f"start_backend_{port}.bat")
+        with open(batch_file, 'w') as f:
+            f.write(batch_content)
         
-        print(f"--- Environment 'CUDA_VISIBLE_DEVICES' set to '{gpu_id}' ---")
-        print(f"--- Command: {' '.join(cmd)} ---")
-        
-        # Launch the backend process (no new console - runs in same window)
+        # Launch the batch file in a new console
         process = subprocess.Popen(
-            cmd,
-            env=env,
+            ["cmd", "/c", "start", "cmd", "/k", batch_file],
             cwd=root_path
         )
         
-        print(f"✅ Backend process started (PID: {process.pid})")
+        print(f"SUCCESS: Backend process started (PID: {process.pid})")
         return process
         
     except Exception as e:
-        print(f"FATAL ERROR: Failed to start backend server on GPU {gpu_id}, port {port}.", file=sys.stderr)
-        print(e, file=sys.stderr)
+        print(f"FATAL ERROR: Failed to start backend server on GPU {gpu_id}, port {port}.")
+        print(e)
         return None
 
-def start_tts_service(root_path):
-    """Start the TTS service in a new command window"""
+def start_tts_service_debug(root_path):
+    """Start the TTS service in debug mode that keeps window open on crash"""
     try:
-        import subprocess
+        # Create a batch file for TTS service
+        batch_content = f'''@echo off
+echo Starting TTS Service on port 8002...
+cd /d "{root_path}"
+set TTS_PORT=8002
+set TTS_HOST=0.0.0.0
+set CUDA_VISIBLE_DEVICES=1
+set CUDA_DEVICE=0
+python launch_tts.py
+if errorlevel 1 (
+    echo.
+    echo ERROR: TTS Service crashed with error code %errorlevel%
+    echo.
+    pause
+) else (
+    echo.
+    echo SUCCESS: TTS Service stopped normally
+    echo.
+    pause
+)
+'''
         
-        # Build the command to run TTS service
-        tts_script = os.path.join(root_path, "launch_tts.py")
-        cmd = [sys.executable, tts_script]
+        batch_file = os.path.join(root_path, "start_tts.bat")
+        with open(batch_file, 'w') as f:
+            f.write(batch_content)
         
-        print("--- Starting TTS Service on Port 8002 ---")
-        print(f"--- Command: {' '.join(cmd)} ---")
-        
-        # Launch TTS service (no new console - runs in same window)
+        # Launch the batch file in a new console
         tts_process = subprocess.Popen(
-            cmd,
+            ["cmd", "/c", "start", "cmd", "/k", batch_file],
             cwd=root_path
         )
         
-        print(f"✅ TTS service launched (PID: {tts_process.pid})")
+        print(f"SUCCESS: TTS service launched in new window (PID: {tts_process.pid})")
         return tts_process
         
     except Exception as e:
-        print(f"FATAL ERROR: Failed to start TTS service on port 8002.", file=sys.stderr)
-        print(e, file=sys.stderr)
-        sys.exit(1)
-
-
-
+        print(f"FATAL ERROR: Failed to start TTS service on port 8002.")
+        print(e)
+        return None
 
 def main():
     project_root = get_project_root()
@@ -217,54 +222,53 @@ def main():
     
     if gpu_count == 0:
         print("No NVIDIA GPUs detected. Starting backend on CPU and TTS service.")
-        main_backend = start_backend(host="0.0.0.0", port=8000, gpu_id=-1, root_path=project_root)
+        main_backend = start_backend_debug(host="0.0.0.0", port=8000, gpu_id=-1, root_path=project_root)
         if main_backend:
             processes.append(main_backend)
-            print("✅ Main backend started on port 8000 (CPU)")
+            print("SUCCESS: Main backend started on port 8000 (CPU)")
     elif gpu_count == 1:
         print(f"Found {gpu_count} NVIDIA GPU. Starting backend and TTS service on GPU 0.")
-        main_backend = start_backend(host="0.0.0.0", port=8000, gpu_id=0, root_path=project_root)
+        main_backend = start_backend_debug(host="0.0.0.0", port=8000, gpu_id=0, root_path=project_root)
         if main_backend:
             processes.append(main_backend)
-            print("✅ Main backend started on port 8000 using GPU 0")
+            print("SUCCESS: Main backend started on port 8000 using GPU 0")
     else:
         print(f"Found {gpu_count} NVIDIA GPUs. Starting main backend, secondary backend, and TTS service.")
         
         # Start main backend on port 8000 using GPU 0
-        main_backend = start_backend("0.0.0.0", 8000, 0, project_root)
+        main_backend = start_backend_debug("0.0.0.0", 8000, 0, project_root)
         if main_backend:
             processes.append(main_backend)
-            print("✅ Main backend started on port 8000 using GPU 0")
+            print("SUCCESS: Main backend started on port 8000 using GPU 0")
         
-        # Start secondary backend on port 8001 using GPU 1 (if available)
-        secondary_backend = start_backend("0.0.0.0", 8001, 1, project_root)
+        # Start secondary backend on port 8001 using GPU 1
+        secondary_backend = start_backend_debug("0.0.0.0", 8001, 1, project_root)
         if secondary_backend:
             processes.append(secondary_backend)
-            print("✅ Secondary backend started on port 8001 using GPU 1")
+            print("SUCCESS: Secondary backend started on port 8001 using GPU 1")
     
     # ALWAYS start TTS service on port 8002 (regardless of GPU count)
-    tts_service = start_tts_service(project_root)
+    tts_service = start_tts_service_debug(project_root)
     if tts_service:
         processes.append(tts_service)
-        print("✅ TTS service launched on port 8002")
+        print("SUCCESS: TTS service launched on port 8002")
     
     # Wait for all processes
     if processes:
         try:
             for p in processes:
-                if hasattr(p, 'join'):  # multiprocessing.Process
+                if hasattr(p, 'join'):
                     p.join()
-                elif hasattr(p, 'wait'):  # subprocess.Popen
+                elif hasattr(p, 'wait'):
                     p.wait()
         except KeyboardInterrupt:
-            print("\n🛑 Shutting down services...")
+            print("\nShutting down services...")
             for p in processes:
                 try:
                     if hasattr(p, 'terminate'):
                         p.terminate()
                 except:
                     pass
-
 
 if __name__ == "__main__":
     freeze_support()

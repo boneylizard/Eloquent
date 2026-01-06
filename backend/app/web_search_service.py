@@ -3,14 +3,62 @@ import asyncio
 import logging
 import re
 import time
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Callable
 from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# TOOL DEFINITION - For models that support function/tool calling
+# ============================================================================
+
+WEB_SEARCH_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for current information. Use this when you need up-to-date information, facts you're unsure about, recent events, or to verify claims. The search will return relevant web pages with their content.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "search_queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "One or more optimized search queries. Break complex questions into multiple targeted searches. Use specific keywords, not full sentences. Example: for 'What's the weather like in Paris and what should I pack?', use ['Paris weather forecast', 'Paris travel packing list']",
+                    "minItems": 1,
+                    "maxItems": 3
+                },
+                "search_intent": {
+                    "type": "string",
+                    "description": "Brief description of what information you're looking for and why",
+                }
+            },
+            "required": ["search_queries", "search_intent"]
+        }
+    }
+}
+
+# Simpler single-query version for basic tool calling
+WEB_SEARCH_TOOL_SIMPLE = {
+    "type": "function", 
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for current information. Use when you need up-to-date facts, recent events, or to verify claims.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "An optimized search query. Use specific keywords, not full sentences. Example: instead of 'What is the current president of France?', use 'France president 2024'"
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
 
 @dataclass
 class SearchResult:
@@ -19,6 +67,27 @@ class SearchResult:
     snippet: str
     content: Optional[str] = None  # Full scraped content
     scraped_successfully: bool = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+@dataclass  
+class SmartSearchResult:
+    """Result from smart search including query optimization info."""
+    original_prompt: str
+    optimized_queries: List[str]
+    search_intent: str
+    results: List[SearchResult]
+    formatted_context: str
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "original_prompt": self.original_prompt,
+            "optimized_queries": self.optimized_queries,
+            "search_intent": self.search_intent,
+            "results": [r.to_dict() for r in self.results],
+            "formatted_context": self.formatted_context
+        }
     
 class WebSearchService:
     def __init__(self):
@@ -33,6 +102,96 @@ class WebSearchService:
             'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com',
             'pinterest.com', 'tiktok.com', 'snapchat.com'
         }
+        
+        # LLM function for query optimization (set via set_llm_function)
+        self._llm_function: Optional[Callable] = None
+        
+        # Prompt for query optimization
+        self.QUERY_OPTIMIZATION_PROMPT = """You are a search query optimizer. Given a user's question or request, generate optimized search queries that will find the most relevant information.
+
+RULES:
+1. Convert natural language questions into keyword-focused search queries
+2. Remove filler words, keep essential terms
+3. Add context terms that help narrow results (e.g., year, location, specific domain)
+4. For complex questions, break into 1-3 separate targeted queries
+5. Use quotation marks for exact phrases when needed
+6. Include alternative phrasings if the topic could be searched differently
+
+USER INPUT: {user_prompt}
+
+Respond in this exact JSON format only, no other text:
+{{"queries": ["query1", "query2"], "intent": "brief description of what user wants to find"}}"""
+
+    def set_llm_function(self, llm_func: Callable):
+        """Set the LLM function used for query optimization.
+        
+        The function should accept (prompt: str) and return the generated text.
+        Can be sync or async.
+        """
+        self._llm_function = llm_func
+        logger.info("🔍 LLM function set for smart query optimization")
+    
+    async def optimize_query(self, user_prompt: str) -> tuple[List[str], str]:
+        """Use LLM to convert user prompt into optimized search queries.
+        
+        Returns: (list of optimized queries, search intent description)
+        """
+        if not self._llm_function:
+            # Fallback: basic query cleaning if no LLM available
+            logger.warning("⚠️ No LLM function set, using basic query optimization")
+            return self._basic_query_optimization(user_prompt)
+        
+        try:
+            prompt = self.QUERY_OPTIMIZATION_PROMPT.format(user_prompt=user_prompt)
+            
+            # Call LLM (handle both sync and async)
+            if asyncio.iscoroutinefunction(self._llm_function):
+                response = await self._llm_function(prompt)
+            else:
+                response = self._llm_function(prompt)
+            
+            # Parse JSON response
+            # Try to extract JSON from response (handle markdown code blocks)
+            json_match = re.search(r'\{[^{}]*"queries"[^{}]*\}', response, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                queries = parsed.get("queries", [user_prompt])
+                intent = parsed.get("intent", "general search")
+                
+                # Validate queries
+                if not queries or not isinstance(queries, list):
+                    queries = [user_prompt]
+                
+                # Limit to 3 queries max
+                queries = queries[:3]
+                
+                logger.info(f"🧠 Optimized '{user_prompt[:50]}...' → {queries}")
+                return queries, intent
+            else:
+                logger.warning(f"⚠️ Could not parse LLM response, using original query")
+                return [user_prompt], "general search"
+                
+        except Exception as e:
+            logger.error(f"❌ Query optimization error: {e}")
+            return self._basic_query_optimization(user_prompt)
+    
+    def _basic_query_optimization(self, user_prompt: str) -> tuple[List[str], str]:
+        """Basic query optimization without LLM - removes common filler words."""
+        # Remove common question starters
+        cleaned = user_prompt.lower()
+        removals = [
+            r'^(can you |could you |please |i want to know |tell me |what is |what are |how do |how does |how can |why is |why are |where is |where are |when is |when did )',
+            r'\?$',
+            r'^(search for |look up |find |google )',
+        ]
+        for pattern in removals:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        cleaned = cleaned.strip()
+        if not cleaned:
+            cleaned = user_prompt
+            
+        return [cleaned], "general search"
     
     async def search_duckduckgo(self, query: str, max_results: int = 5) -> List[SearchResult]:
         """Search DuckDuckGo and return results."""
@@ -250,6 +409,71 @@ class WebSearchService:
             context_parts.append("")  # Empty line between results
         
         return '\n'.join(context_parts)
+    
+    def format_smart_search_context(
+        self, 
+        original_prompt: str, 
+        optimized_queries: List[str], 
+        intent: str, 
+        results: List[SearchResult]
+    ) -> str:
+        """Format smart search results with query optimization info."""
+        if not results:
+            return f"WEB SEARCH for '{original_prompt}':\nNo relevant results found."
+        
+        context_parts = [
+            f"WEB SEARCH RESULTS",
+            f"Original query: {original_prompt}",
+            f"Search intent: {intent}",
+            f"Optimized searches: {', '.join(optimized_queries)}",
+            f"---"
+        ]
+        
+        for i, result in enumerate(results, 1):
+            context_parts.append(f"\n[{i}] {result.title}")
+            context_parts.append(f"URL: {result.url}")
+            
+            if result.scraped_successfully and result.content:
+                content_preview = result.content[:800] + "..." if len(result.content) > 800 else result.content
+                context_parts.append(f"Content: {content_preview}")
+            elif result.snippet:
+                context_parts.append(f"Snippet: {result.snippet}")
+            
+            context_parts.append("")
+        
+        return '\n'.join(context_parts)
+    
+    def format_tool_response(
+        self, 
+        queries: List[str], 
+        intent: str, 
+        results: List[SearchResult]
+    ) -> str:
+        """Format search results for tool call response."""
+        if not results:
+            return f"No results found for: {', '.join(queries)}"
+        
+        context_parts = [
+            f"Search completed for: {', '.join(queries)}",
+            f"Intent: {intent}",
+            f"Found {len(results)} relevant results:",
+            ""
+        ]
+        
+        for i, result in enumerate(results, 1):
+            context_parts.append(f"[{i}] {result.title}")
+            context_parts.append(f"Source: {result.url}")
+            
+            if result.scraped_successfully and result.content:
+                # For tool responses, include more content
+                content_preview = result.content[:1200] + "..." if len(result.content) > 1200 else result.content
+                context_parts.append(f"{content_preview}")
+            elif result.snippet:
+                context_parts.append(f"{result.snippet}")
+            
+            context_parts.append("")
+        
+        return '\n'.join(context_parts)
 
 # Global service instance
 web_search_service = WebSearchService()
@@ -277,3 +501,162 @@ async def perform_web_search(query: str, max_results: int = 5) -> str:
     except Exception as e:
         logger.error(f"❌ Web search error: {e}")
         return f"WEB SEARCH RESULTS for '{query}':\nSearch failed due to technical error: {str(e)}"
+
+
+async def perform_smart_web_search(
+    user_prompt: str, 
+    max_results: int = 5,
+    use_optimization: bool = True
+) -> SmartSearchResult:
+    """
+    Smart web search that optimizes the user's query before searching.
+    
+    Args:
+        user_prompt: The user's natural language question/request
+        max_results: Maximum results per query
+        use_optimization: Whether to use LLM query optimization
+        
+    Returns:
+        SmartSearchResult with optimized queries and search results
+    """
+    try:
+        logger.info(f"🧠 Starting smart web search for: '{user_prompt[:100]}...'")
+        
+        # Step 1: Optimize the query using LLM
+        if use_optimization:
+            optimized_queries, search_intent = await web_search_service.optimize_query(user_prompt)
+        else:
+            optimized_queries = [user_prompt]
+            search_intent = "direct search"
+        
+        logger.info(f"🔍 Optimized queries: {optimized_queries}")
+        
+        # Step 2: Search for each optimized query
+        all_results: List[SearchResult] = []
+        seen_urls = set()
+        
+        for query in optimized_queries:
+            results = await web_search_service.search_duckduckgo(query, max_results)
+            
+            # Deduplicate by URL
+            for result in results:
+                if result.url not in seen_urls:
+                    seen_urls.add(result.url)
+                    all_results.append(result)
+        
+        if not all_results:
+            return SmartSearchResult(
+                original_prompt=user_prompt,
+                optimized_queries=optimized_queries,
+                search_intent=search_intent,
+                results=[],
+                formatted_context=f"WEB SEARCH for '{user_prompt}':\nNo results found."
+            )
+        
+        # Step 3: Scrape content from top results
+        # Limit scraping to avoid timeout
+        results_to_scrape = all_results[:max_results]
+        results_with_content = await web_search_service.scrape_content(results_to_scrape)
+        
+        # Step 4: Format context
+        formatted_context = web_search_service.format_smart_search_context(
+            user_prompt, optimized_queries, search_intent, results_with_content
+        )
+        
+        logger.info(f"🧠 Smart search completed: {len(results_with_content)} results from {len(optimized_queries)} queries")
+        
+        return SmartSearchResult(
+            original_prompt=user_prompt,
+            optimized_queries=optimized_queries,
+            search_intent=search_intent,
+            results=results_with_content,
+            formatted_context=formatted_context
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Smart web search error: {e}")
+        return SmartSearchResult(
+            original_prompt=user_prompt,
+            optimized_queries=[user_prompt],
+            search_intent="error",
+            results=[],
+            formatted_context=f"WEB SEARCH for '{user_prompt}':\nSearch failed: {str(e)}"
+        )
+
+
+async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: int = 5) -> str:
+    """
+    Handle a web_search tool call from a model.
+    
+    Accepts arguments in either format:
+    - {"query": "single query"} (simple format)
+    - {"search_queries": ["q1", "q2"], "search_intent": "..."} (advanced format)
+    
+    Returns formatted search results as a string.
+    """
+    try:
+        # Handle both tool definition formats
+        if "search_queries" in arguments:
+            queries = arguments["search_queries"]
+            intent = arguments.get("search_intent", "general search")
+            if isinstance(queries, str):
+                queries = [queries]
+        elif "query" in arguments:
+            queries = [arguments["query"]]
+            intent = "direct search"
+        else:
+            return "Error: No search query provided in tool call arguments"
+        
+        logger.info(f"🔧 Handling web_search tool call: {queries}")
+        
+        # Search for each query
+        all_results: List[SearchResult] = []
+        seen_urls = set()
+        
+        for query in queries[:3]:  # Limit to 3 queries
+            results = await web_search_service.search_duckduckgo(query, max_results)
+            for result in results:
+                if result.url not in seen_urls:
+                    seen_urls.add(result.url)
+                    all_results.append(result)
+        
+        if not all_results:
+            return f"Web search found no results for: {queries}"
+        
+        # Scrape top results
+        results_to_scrape = all_results[:max_results]
+        results_with_content = await web_search_service.scrape_content(results_to_scrape)
+        
+        # Format for tool response
+        formatted = web_search_service.format_tool_response(queries, intent, results_with_content)
+        
+        return formatted
+        
+    except Exception as e:
+        logger.error(f"❌ Web search tool call error: {e}")
+        return f"Web search failed: {str(e)}"
+
+
+def get_web_search_tool_definition(simple: bool = False) -> Dict[str, Any]:
+    """Get the tool definition for web search.
+    
+    Args:
+        simple: If True, returns the simpler single-query version
+        
+    Returns:
+        Tool definition dict compatible with OpenAI/Anthropic tool calling format
+    """
+    return WEB_SEARCH_TOOL_SIMPLE if simple else WEB_SEARCH_TOOL_DEFINITION
+
+
+def set_web_search_llm(llm_function: Callable):
+    """Configure the LLM function for smart query optimization.
+    
+    Example:
+        async def my_llm(prompt):
+            response = await my_model.generate(prompt)
+            return response.text
+            
+        set_web_search_llm(my_llm)
+    """
+    web_search_service.set_llm_function(llm_function)
