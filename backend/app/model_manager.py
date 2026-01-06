@@ -431,21 +431,25 @@ class ModelManager:
         return gpu_info
 
     def _load_tensor_split_settings(self) -> Optional[list]:
-        """Load tensor split settings from settings.json"""
+        """Load tensor split settings from settings.json - supports any number of GPUs"""
         try:
             settings_path = Path.home() / ".LiangLocal" / "settings.json"
             if settings_path.exists():
                 with open(settings_path, 'r') as f:
                     settings = json.load(f)
                     tensor_split = settings.get('tensor_split')
-                    if tensor_split and isinstance(tensor_split, list) and len(tensor_split) == 2:
-                        # Validate that values sum to approximately 1.0
-                        total = sum(tensor_split)
-                        if abs(total - 1.0) < 0.01:
-                            logging.info(f"✅ Loaded tensor_split from settings: {tensor_split}")
-                            return tensor_split
+                    if tensor_split and isinstance(tensor_split, list):
+                        # Support any number of GPUs (2, 3, 4, etc.)
+                        if len(tensor_split) >= 2:
+                            # Validate that values sum to approximately 1.0
+                            total = sum(tensor_split)
+                            if abs(total - 1.0) < 0.01:
+                                logging.info(f"✅ Loaded tensor_split from settings: {tensor_split} ({len(tensor_split)} GPUs)")
+                                return tensor_split
+                            else:
+                                logging.warning(f"⚠️ Invalid tensor_split in settings (sum={total}), using default")
                         else:
-                            logging.warning(f"⚠️ Invalid tensor_split in settings (sum={total}), using default")
+                            logging.warning(f"⚠️ tensor_split must have at least 2 values, got {len(tensor_split)}")
         except Exception as e:
             logging.error(f"❌ Error loading tensor_split settings: {e}")
         return None
@@ -491,13 +495,14 @@ class ModelManager:
             tensor_split = self._load_tensor_split_settings()
             
             if tensor_split is None:
-                # Default: Equal split across GPUs (user can customize in settings)
-                if effective_gpu_count == 2:
-                    tensor_split = [0.5, 0.5]  # Equal split by default
-                else:
-                    # Fallback for other GPU counts
-                    tensor_split = [1.0 / effective_gpu_count] * effective_gpu_count
-                logging.info(f"⭐ Using default tensor_split: {tensor_split}")
+                # Default: Equal split across all available GPUs
+                # Supports 2, 3, 4, or more GPUs
+                tensor_split = [1.0 / effective_gpu_count] * effective_gpu_count
+                logging.info(f"⭐ Using default equal tensor_split across {effective_gpu_count} GPUs: {tensor_split}")
+            elif len(tensor_split) != effective_gpu_count:
+                # If user provided tensor_split but GPU count changed, warn and use equal split
+                logging.warning(f"⚠️ tensor_split length ({len(tensor_split)}) doesn't match GPU count ({effective_gpu_count}). Using equal split.")
+                tensor_split = [1.0 / effective_gpu_count] * effective_gpu_count
             
             params["tensor_split"] = tensor_split
             
@@ -521,10 +526,10 @@ class ModelManager:
             
             # KV cache will be distributed based on tensor_split ratios
             logging.info(f"⭐ [Unified Mode] KV cache will be distributed according to tensor_split: {tensor_split}")
-            if len(tensor_split) == 2 and tensor_split[0] > tensor_split[1]:
-                logging.info(f"✅ [Unified Mode] GPU 0 ({tensor_split[0]*100:.0f}%) will handle majority of KV cache")
-            elif len(tensor_split) == 2 and tensor_split[1] > tensor_split[0]:
-                logging.info(f"✅ [Unified Mode] GPU 1 ({tensor_split[1]*100:.0f}%) will handle majority of KV cache")
+            # Find GPU with largest allocation
+            max_gpu_idx = tensor_split.index(max(tensor_split))
+            max_allocation = tensor_split[max_gpu_idx] * 100
+            logging.info(f"✅ [Unified Mode] GPU {max_gpu_idx} ({max_allocation:.0f}%) has the largest allocation")
             
             # CRITICAL: Remove 'main_gpu' when using tensor_split for multi-GPU
             if 'main_gpu' in params:

@@ -2810,12 +2810,14 @@ async def generate_character_from_conversation_endpoint(
     data: dict = Body(...),  # Expects {"messages": [...], "analysis": {...}}
     model_manager: ModelManager = Depends(get_model_manager)
 ):
-    """Generate a character JSON from conversation using LLM on memory GPU."""
+    """Generate a character JSON from conversation using LLM (local or API)."""
     try:
         messages = data.get("messages", [])
         analysis = data.get("analysis", {})
         model_name = data.get("model_name")  # Get from frontend if provided
         gpu_id = data.get("gpu_id")  # Optional override
+        use_api = data.get("use_api", False)  # Whether to use external API
+        api_endpoint = data.get("api_endpoint")  # API endpoint info
         
         # Determine GPU. Default to 0 (primary chat GPU) for character creation.
         if gpu_id is None:
@@ -2824,7 +2826,7 @@ async def generate_character_from_conversation_endpoint(
         if not messages:
             raise HTTPException(status_code=400, detail="No messages provided")
         
-        logger.info(f"🎨 Generating character from conversation using GPU {gpu_id}")
+        logger.info(f"🎨 Generating character from conversation (use_api={use_api})")
         
         # Generate character JSON using LLM
         generation_result = await character_intelligence.generate_character_json(
@@ -2833,7 +2835,9 @@ async def generate_character_from_conversation_endpoint(
             character_analysis=analysis,
             model_name=model_name,
             gpu_id=gpu_id,
-            single_gpu_mode=getattr(request.app.state, 'single_gpu_mode', False)
+            single_gpu_mode=getattr(request.app.state, 'single_gpu_mode', False),
+            use_api=use_api,
+            api_endpoint=api_endpoint
         )
         
         return generation_result
@@ -5635,15 +5639,15 @@ async def execute_tool_call(tool_name: str, arguments: dict):
 
 @router.post("/models/update-tensor-split")
 async def update_tensor_split(data: dict = Body(...)):
-    """Update tensor split settings for unified model mode"""
+    """Update tensor split settings for unified model mode - supports 2+ GPUs"""
     try:
         tensor_split = data.get("tensor_split")
         
         if not tensor_split:
             raise HTTPException(status_code=400, detail="tensor_split is required")
         
-        if not isinstance(tensor_split, list) or len(tensor_split) != 2:
-            raise HTTPException(status_code=400, detail="tensor_split must be a list of 2 values")
+        if not isinstance(tensor_split, list) or len(tensor_split) < 2:
+            raise HTTPException(status_code=400, detail="tensor_split must be a list of at least 2 values")
         
         # Normalize values to sum to 1.0
         total = sum(tensor_split)
