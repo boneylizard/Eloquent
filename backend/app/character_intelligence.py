@@ -198,13 +198,15 @@ async def generate_character_json(
     character_analysis: Dict[str, Any],
     model_name: str = None,
     gpu_id: int = None,
-    single_gpu_mode: bool = False
+    single_gpu_mode: bool = False,
+    use_api: bool = False,
+    api_endpoint: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """
     Use an LLM to generate character JSON based on conversation analysis.
-    Uses your existing inference module directly.
+    Supports both local models and external APIs.
     """
-    logger.info(f"🎨 Generating character JSON using inference module")
+    logger.info(f"🎨 Generating character JSON (use_api={use_api})")
     
     try:
         # Prepare conversation context
@@ -221,20 +223,24 @@ async def generate_character_json(
             character_analysis
         )
         
-        # Generate character JSON using your existing inference module
-        from . import inference
-        response = await inference.generate_text(
-            model_manager=model_manager,
-            model_name=model_name,
-            prompt=generation_prompt,
-            max_tokens=2048,
-            temperature=0.3,
-            top_p=0.9,
-            top_k=40,
-            repetition_penalty=1.1,
-            stop_sequences=["</character>", "---"],
-            gpu_id=gpu_id
-        )
+        if use_api and api_endpoint:
+            # Use external API (OpenAI-compatible)
+            response = await generate_with_api(generation_prompt, api_endpoint)
+        else:
+            # Generate character JSON using local inference module
+            from . import inference
+            response = await inference.generate_text(
+                model_manager=model_manager,
+                model_name=model_name,
+                prompt=generation_prompt,
+                max_tokens=2048,
+                temperature=0.3,
+                top_p=0.9,
+                top_k=40,
+                repetition_penalty=1.1,
+                stop_sequences=["</character>", "---"],
+                gpu_id=gpu_id
+            )
         
         # Extract and parse JSON from response
         character_json = extract_json_from_response(response)
@@ -248,6 +254,54 @@ async def generate_character_json(
     except Exception as e:
         logger.error(f"❌ Error generating character JSON: {e}", exc_info=True)
         return {"status": "error", "error": str(e)}
+
+
+async def generate_with_api(prompt: str, api_endpoint: Dict[str, Any]) -> str:
+    """Generate text using an external OpenAI-compatible API."""
+    import httpx
+    
+    url = api_endpoint.get("url", "").rstrip("/")
+    # Handle various URL formats
+    if url.endswith("/chat/completions"):
+        pass  # Already complete
+    elif url.endswith("/v1"):
+        url = f"{url}/chat/completions"
+    elif "/v1" in url and not url.endswith("/chat/completions"):
+        url = f"{url}/chat/completions"
+    else:
+        url = f"{url}/v1/chat/completions"
+    
+    api_key = api_endpoint.get("api_key", "")
+    model = api_endpoint.get("model", "")
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 2048,
+        "temperature": 0.3,
+        "top_p": 0.9
+    }
+    
+    logger.info(f"🌐 Calling API: {url} with model {model}")
+    
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+        
+        # Extract content from OpenAI-style response
+        if "choices" in result and len(result["choices"]) > 0:
+            return result["choices"][0]["message"]["content"]
+        else:
+            raise ValueError("Invalid API response format")
 
 def build_character_generation_prompt(conversation_context: str, analysis: Dict[str, Any]) -> str:
     """

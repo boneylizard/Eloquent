@@ -89,7 +89,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [availableVoices, setAvailableVoices] = useState(null);
   const [isUnloadingChatterbox, setIsUnloadingChatterbox] = useState(false);
   const [isReloadingChatterbox, setIsReloadingChatterbox] = useState(false);
-  const [currentTensorSplit, setCurrentTensorSplit] = useState([0.57, 0.43]);
+  const [currentTensorSplit, setCurrentTensorSplit] = useState([0.5, 0.5]);
+  const [gpuCount, setGpuCount] = useState(2);
   const [isUnloadingForensicModels, setIsUnloadingForensicModels] = useState(false);
   const [isShuttingDownTTS, setIsShuttingDownTTS] = useState(false);
   const [isRestartingTTS, setIsRestartingTTS] = useState(false);
@@ -121,8 +122,22 @@ useEffect(() => {
   fetchAvailableVoices();
 }, [fetchAvailableVoices]);
 
-  // Fetch current tensor split settings
+  // Fetch GPU count and tensor split settings
   useEffect(() => {
+    const fetchGpuInfo = async () => {
+      try {
+        const response = await fetch(`${PRIMARY_API_URL}/system/gpu_info`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.gpu_count) {
+            setGpuCount(data.gpu_count);
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching GPU info:", error);
+      }
+    };
+    
     const fetchTensorSplit = async () => {
       try {
         const response = await fetch(`${PRIMARY_API_URL}/models/get-tensor-split`);
@@ -141,6 +156,8 @@ useEffect(() => {
         console.error("Error fetching tensor split:", error);
       }
     };
+    
+    fetchGpuInfo();
     fetchTensorSplit();
   }, [PRIMARY_API_URL]);
 
@@ -520,10 +537,12 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                   <Separator />
                   <div className="space-y-4">
                     <div>
-                      <Label htmlFor="tensor-split-input" className="text-base font-medium">Tensor Split Ratio (CUDA0:CUDA1)</Label>
+                      <Label htmlFor="tensor-split-input" className="text-base font-medium">
+                        Tensor Split Ratio ({gpuCount > 2 ? `GPU0:GPU1:...:GPU${gpuCount-1}` : 'GPU0:GPU1'})
+                      </Label>
                       <p className="text-xs text-muted-foreground mt-1 mb-2">
-                        Control how model layers are distributed between GPUs in unified mode.
-                        Enter two comma-separated numbers (e.g., "2,1" for 67%/33% split favoring CUDA0).
+                        Control how model layers are distributed across {gpuCount} GPU(s) in unified mode.
+                        Enter {gpuCount} comma-separated numbers (e.g., {gpuCount === 2 ? '"1,1" for 50/50 split' : gpuCount === 4 ? '"1,1,1,1" for equal 25% each' : `"${Array(gpuCount).fill(1).join(',')}" for equal distribution`}).
                       </p>
                     </div>
                     
@@ -531,7 +550,7 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                       <Input
                         id="tensor-split-input"
                         type="text"
-                        placeholder="1,2 (GPU0:GPU1 ratio)"
+                        placeholder={gpuCount === 2 ? "1,1 (GPU0:GPU1 ratio)" : `${Array(gpuCount).fill(1).join(',')} (${Array.from({length: gpuCount}, (_, i) => `GPU${i}`).join(':')})`}
                         defaultValue={currentTensorSplit.join(',')}
                         key={currentTensorSplit.join(',')}
                         className="flex-1"
@@ -540,13 +559,13 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                             const value = e.target.value.trim();
                             const parts = value.split(',').map(s => parseFloat(s.trim()));
                             
-                            if (parts.length !== 2 || parts.some(isNaN) || parts.some(v => v <= 0)) {
-                              alert('Invalid format. Please enter two positive numbers separated by a comma (e.g., "1,2")');
+                            if (parts.length !== gpuCount || parts.some(isNaN) || parts.some(v => v <= 0)) {
+                              alert(`Invalid format. Please enter ${gpuCount} positive numbers separated by commas (e.g., "${Array(gpuCount).fill(1).join(',')}")`);
                               return;
                             }
                             
                             // Normalize the values to sum to 1.0
-                            const total = parts[0] + parts[1];
+                            const total = parts.reduce((a, b) => a + b, 0);
                             const normalized = parts.map(v => v / total);
                             
                             fetch(`${PRIMARY_API_URL}/models/update-tensor-split`, {
@@ -557,10 +576,10 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                             .then(response => response.json())
                             .then(data => {
                               if (data.status === 'success') {
-                                const percentage0 = (data.tensor_split[0] * 100).toFixed(1);
-                                const percentage1 = (data.tensor_split[1] * 100).toFixed(1);
-                                alert(`✅ Tensor split updated to ${percentage0}% / ${percentage1}%\n\nGPU0: ${percentage0}% | GPU1: ${percentage1}%\n\nReload your model for changes to take effect.`);
+                                const percentages = data.tensor_split.map((p, i) => `GPU${i}: ${(p * 100).toFixed(1)}%`).join(' | ');
+                                alert(`✅ Tensor split updated!\n\n${percentages}\n\nReload your model for changes to take effect.`);
                                 e.target.value = data.tensor_split.join(',');
+                                setCurrentTensorSplit(data.tensor_split);
                               } else {
                                 alert(`❌ Error: ${data.message || 'Failed to update tensor split'}`);
                               }
@@ -580,13 +599,13 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                           const value = input.value.trim();
                           const parts = value.split(',').map(s => parseFloat(s.trim()));
                           
-                          if (parts.length !== 2 || parts.some(isNaN) || parts.some(v => v <= 0)) {
-                            alert('Invalid format. Please enter two positive numbers separated by a comma (e.g., "1,2")');
+                          if (parts.length !== gpuCount || parts.some(isNaN) || parts.some(v => v <= 0)) {
+                            alert(`Invalid format. Please enter ${gpuCount} positive numbers separated by commas (e.g., "${Array(gpuCount).fill(1).join(',')}")`);
                             return;
                           }
                           
                           // Normalize the values to sum to 1.0
-                          const total = parts[0] + parts[1];
+                          const total = parts.reduce((a, b) => a + b, 0);
                           const normalized = parts.map(v => v / total);
                           
                           fetch(`${PRIMARY_API_URL}/models/update-tensor-split`, {
@@ -597,10 +616,10 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                           .then(response => response.json())
                           .then(data => {
                             if (data.status === 'success') {
-                              const percentage0 = (data.tensor_split[0] * 100).toFixed(1);
-                              const percentage1 = (data.tensor_split[1] * 100).toFixed(1);
-                              alert(`✅ Tensor split updated to ${percentage0}% / ${percentage1}%\n\nGPU0: ${percentage0}% | GPU1: ${percentage1}%\n\nReload your model for changes to take effect.`);
+                              const percentages = data.tensor_split.map((p, i) => `GPU${i}: ${(p * 100).toFixed(1)}%`).join(' | ');
+                              alert(`✅ Tensor split updated!\n\n${percentages}\n\nReload your model for changes to take effect.`);
                               input.value = data.tensor_split.join(',');
+                              setCurrentTensorSplit(data.tensor_split);
                             } else {
                               alert(`❌ Error: ${data.message || 'Failed to update tensor split'}`);
                             }
@@ -618,10 +637,25 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                     
                     <div className="bg-blue-50 dark:bg-blue-950/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        <strong>💡 Examples (CUDA0:CUDA1):</strong><br/>
-                        • <code>1,1</code> = 50/50 split (equal distribution)<br/>
-                        • <code>2,1</code> = 67/33 split (more on CUDA0)<br/>
-                        • <code>0.5,0.5</code> = 50/50 split (equal distribution, default)<br/>
+                        <strong>💡 Examples for {gpuCount} GPU(s):</strong><br/>
+                        {gpuCount === 2 ? (
+                          <>
+                            • <code>1,1</code> = 50/50 split (equal distribution)<br/>
+                            • <code>2,1</code> = 67/33 split (more on GPU0)<br/>
+                            • <code>0.5,0.5</code> = 50/50 split (equal distribution, default)<br/>
+                          </>
+                        ) : gpuCount === 4 ? (
+                          <>
+                            • <code>1,1,1,1</code> = 25/25/25/25 split (equal distribution)<br/>
+                            • <code>2,1,1,1</code> = 40/20/20/20 split (more on GPU0)<br/>
+                            • <code>1,1,2,2</code> = 16.7/16.7/33.3/33.3 split (more on GPU2/3)<br/>
+                          </>
+                        ) : (
+                          <>
+                            • <code>{Array(gpuCount).fill(1).join(',')}</code> = Equal distribution ({Math.round(100/gpuCount)}% each)<br/>
+                            • Adjust ratios based on your GPU VRAM sizes<br/>
+                          </>
+                        )}
                         <br/>
                         <strong>Note:</strong> Adjust the split based on your GPU VRAM sizes. KV cache will be distributed according to the tensor split ratio.
                       </p>

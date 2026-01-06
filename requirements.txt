@@ -147,8 +147,8 @@ mdurl
 mediapy
 misaki
 mistral_common
+chatterbox-tts
 more-itertools
-moshi
 mpmath
 msgpack
 msgspec

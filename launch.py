@@ -228,19 +228,27 @@ def main():
             processes.append(main_backend)
             print("✅ Main backend started on port 8000 using GPU 0")
     else:
-        print(f"Found {gpu_count} NVIDIA GPUs. Starting main backend, secondary backend, and TTS service.")
+        print(f"Found {gpu_count} NVIDIA GPUs. Starting services...")
         
-        # Start main backend on port 8000 using GPU 0
+        # Start main backend on port 8000 using GPU 0 (handles peripherals, TTS, etc.)
         main_backend = start_backend("0.0.0.0", 8000, 0, project_root)
         if main_backend:
             processes.append(main_backend)
             print("✅ Main backend started on port 8000 using GPU 0")
         
-        # Start secondary backend on port 8001 using GPU 1 (if available)
-        secondary_backend = start_backend("0.0.0.0", 8001, 1, project_root)
-        if secondary_backend:
-            processes.append(secondary_backend)
-            print("✅ Secondary backend started on port 8001 using GPU 1")
+        # For 2 GPUs: Start secondary backend for dual-model mode
+        # For 3+ GPUs: Use tensor splitting across all GPUs (no secondary backend needed)
+        if gpu_count == 2:
+            # Start secondary backend on port 8001 using GPU 1 (dual-model mode)
+            secondary_backend = start_backend("0.0.0.0", 8001, 1, project_root)
+            if secondary_backend:
+                processes.append(secondary_backend)
+                print("✅ Secondary backend started on port 8001 using GPU 1 (dual-model mode)")
+        else:
+            # 3+ GPUs: Use unified model mode with tensor splitting
+            # The model service will handle tensor splitting across all available GPUs
+            print(f"💡 {gpu_count} GPUs detected - using unified model mode with tensor splitting")
+            print(f"   Configure tensor_split in Settings to distribute load across GPUs 0-{gpu_count-1}")
     
     # ALWAYS start TTS service on port 8002 (regardless of GPU count)
     tts_service = start_tts_service(project_root)

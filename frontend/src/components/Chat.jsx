@@ -943,7 +943,7 @@ const handleSubmit = async (text) => {
 
 
 const handleGenerateCharacter = useCallback(async () => {
-  if (isGeneratingCharacter || characterReadiness.score < 10) {
+  if (isGeneratingCharacter) {
     return;
   }
 
@@ -951,13 +951,22 @@ const handleGenerateCharacter = useCallback(async () => {
     setIsGeneratingCharacter(true);
     console.log('🎨 Starting character generation...');
 
+    // Get API endpoint info if using external API
+    const apiEndpoint = primaryIsAPI && settings.customApiEndpoints?.find(e => e.enabled);
+    
     const response = await fetch(`${PRIMARY_API_URL}/character/generate-from-conversation`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: messages.slice(-30),
         analysis: characterReadiness,
-        model_name: primaryModel
+        model_name: primaryModel,
+        use_api: primaryIsAPI,
+        api_endpoint: apiEndpoint ? {
+          url: apiEndpoint.url,
+          api_key: apiEndpoint.apiKey,
+          model: primaryModel
+        } : null
       }),
     });
 
@@ -1248,37 +1257,13 @@ const handleSaveCharacter = useCallback(() => {
 // Helper function to get button state and styling
 
 const getCharacterButtonState = () => {
-  const score = characterReadiness.score;
-  
-  if (score < 10) {
-    return {
-      disabled: true,
-      variant: "outline",
-      className: "flex-shrink-0 h-10 w-10 opacity-50",
-      title: "Not enough character information detected"
-    };
-  } else if (score < 30) {
-    return {
-      disabled: false,
-      variant: "outline", 
-      className: "flex-shrink-0 h-10 w-10",
-      title: `Some character info detected (${score}%) - Click to generate`
-    };
-  } else if (score < 60) {
-    return {
-      disabled: false,
-      variant: "secondary",
-      className: "flex-shrink-0 h-10 w-10 bg-blue-500/20 border-blue-500",
-      title: `Good character info detected (${score}%) - Ready to generate!`
-    };
-  } else {
-    return {
-      disabled: false,
-      variant: "default",
-      className: "flex-shrink-0 h-10 w-10 bg-green-500 hover:bg-green-600 animate-pulse",
-      title: `Rich character info detected (${score}%) - Perfect for generation!`
-    };
-  }
+  // Always clickable - let the backend handle validation
+  return {
+    disabled: false,
+    variant: "outline",
+    className: "flex-shrink-0 h-10 w-10 hover:bg-purple-500/20 hover:border-purple-500",
+    title: "Generate character from conversation"
+  };
 };
  
 
@@ -2290,13 +2275,6 @@ const handleContinueGeneration = useCallback(async (messageId) => {
   </div>
 )}
 
-{/* Character readiness debug info (remove this in production) */}
-{characterReadiness.score > 0 && (
-  <div className="text-xs text-center bg-card/90 p-1 rounded max-w-[60px]">
-    <div className="font-medium">{characterReadiness.score.toFixed(0)}%</div>
-    <div className="text-[10px] text-muted-foreground">Ready</div>
-  </div>
-)}
 {sttEnabled && ttsEnabled && (
   <Button
     variant={isCallModeActive ? "destructive" : "outline"}
