@@ -10,7 +10,7 @@ import { Switch } from './ui/switch';
 import { Label } from './ui/label';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { Slider } from './ui/slider';
-import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshCw, AlertTriangle, Globe, X } from 'lucide-react';
+import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshCw, AlertTriangle, Globe, X, Power, RotateCw } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import CharacterEditor from './CharacterEditor';
@@ -41,6 +41,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     sdStatus,
     PRIMARY_API_URL,
     SECONDARY_API_URL,
+    TTS_API_URL,
     apiError,
     clearError,
     fetchAvailableSTTEngines,
@@ -51,11 +52,16 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   // Local editable copy of context settings
   const [localSettings, setLocalSettings] = useState({
     ...contextSettings,
+    directProfileInjection: contextSettings.directProfileInjection ?? false, // <-- ADD THIS LINE
     temperature: contextSettings.temperature ?? 0.7,
     max_tokens: contextSettings.max_tokens ?? -1,
     top_p: contextSettings.top_p ?? 0.9,
     top_k: contextSettings.top_k ?? 40,
     repetition_penalty: contextSettings.repetition_penalty ?? 1.1,
+    frequencyPenalty: contextSettings.frequencyPenalty ?? 0.0,
+    presencePenalty: contextSettings.presencePenalty ?? 0.0,
+    antiRepetitionMode: contextSettings.antiRepetitionMode ?? false,
+    detectRepeatedPhrases: contextSettings.detectRepeatedPhrases ?? false,
     streamResponses: contextSettings.streamResponses ?? true,
     ttsSpeed: contextSettings.ttsSpeed ?? 1.0,
     ttsPitch: contextSettings.ttsPitch ?? 0,
@@ -64,6 +70,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     ttsVoice: contextSettings.ttsVoice ?? 'af_heart', 
     ttsExaggeration: contextSettings.ttsExaggeration ?? 0.5,
     ttsCfg: contextSettings.ttsCfg ?? 0.5,
+    ttsSpeedMode: contextSettings.ttsSpeedMode ?? 'standard',
     sdModelDirectory: contextSettings.sdModelDirectory ?? '',
     sdSteps: contextSettings.sdSteps ?? 20,
     sdSampler: contextSettings.sdSampler ?? 'Euler a',
@@ -80,6 +87,12 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [isInstallingEngine, setIsInstallingEngine] = useState(false);
   const [isUploadingVoice, setIsUploadingVoice] = useState(false);
   const [availableVoices, setAvailableVoices] = useState(null);
+  const [isUnloadingChatterbox, setIsUnloadingChatterbox] = useState(false);
+  const [isReloadingChatterbox, setIsReloadingChatterbox] = useState(false);
+  const [currentTensorSplit, setCurrentTensorSplit] = useState([0.57, 0.43]);
+  const [isUnloadingForensicModels, setIsUnloadingForensicModels] = useState(false);
+  const [isShuttingDownTTS, setIsShuttingDownTTS] = useState(false);
+  const [isRestartingTTS, setIsRestartingTTS] = useState(false);
 
   // Memory intent input and detected result
   const [memoryIntentInput, setMemoryIntentInput] = useState('');
@@ -107,6 +120,29 @@ const fetchAvailableVoices = useCallback(async () => {
 useEffect(() => {
   fetchAvailableVoices();
 }, [fetchAvailableVoices]);
+
+  // Fetch current tensor split settings
+  useEffect(() => {
+    const fetchTensorSplit = async () => {
+      try {
+        const response = await fetch(`${PRIMARY_API_URL}/models/get-tensor-split`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.tensor_split) {
+            setCurrentTensorSplit(data.tensor_split);
+            // Update the input field if it exists
+            const input = document.getElementById('tensor-split-input');
+            if (input) {
+              input.value = data.tensor_split.join(',');
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching tensor split:", error);
+      }
+    };
+    fetchTensorSplit();
+  }, [PRIMARY_API_URL]);
 
   // Persist only detected
   useEffect(() => {
@@ -478,6 +514,263 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                 </p>
               </div>
 
+              {/* Tensor Split Settings (only visible in Unified Model mode) */}
+              {localSettings.gpuUsageMode === 'unified_model' && (
+                <>
+                  <Separator />
+                  <div className="space-y-4">
+                    <div>
+                      <Label htmlFor="tensor-split-input" className="text-base font-medium">Tensor Split Ratio (CUDA0:CUDA1)</Label>
+                      <p className="text-xs text-muted-foreground mt-1 mb-2">
+                        Control how model layers are distributed between GPUs in unified mode.
+                        Enter two comma-separated numbers (e.g., "2,1" for 67%/33% split favoring CUDA0).
+                      </p>
+                    </div>
+                    
+                    <div className="flex gap-3">
+                      <Input
+                        id="tensor-split-input"
+                        type="text"
+                        placeholder="1,2 (GPU0:GPU1 ratio)"
+                        defaultValue={currentTensorSplit.join(',')}
+                        key={currentTensorSplit.join(',')}
+                        className="flex-1"
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter') {
+                            const value = e.target.value.trim();
+                            const parts = value.split(',').map(s => parseFloat(s.trim()));
+                            
+                            if (parts.length !== 2 || parts.some(isNaN) || parts.some(v => v <= 0)) {
+                              alert('Invalid format. Please enter two positive numbers separated by a comma (e.g., "1,2")');
+                              return;
+                            }
+                            
+                            // Normalize the values to sum to 1.0
+                            const total = parts[0] + parts[1];
+                            const normalized = parts.map(v => v / total);
+                            
+                            fetch(`${PRIMARY_API_URL}/models/update-tensor-split`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ tensor_split: normalized })
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                              if (data.status === 'success') {
+                                const percentage0 = (data.tensor_split[0] * 100).toFixed(1);
+                                const percentage1 = (data.tensor_split[1] * 100).toFixed(1);
+                                alert(`✅ Tensor split updated to ${percentage0}% / ${percentage1}%\n\nGPU0: ${percentage0}% | GPU1: ${percentage1}%\n\nReload your model for changes to take effect.`);
+                                e.target.value = data.tensor_split.join(',');
+                              } else {
+                                alert(`❌ Error: ${data.message || 'Failed to update tensor split'}`);
+                              }
+                            })
+                            .catch(err => {
+                              console.error("Error updating tensor split:", err);
+                              alert("Failed to update tensor split.");
+                            });
+                          }
+                        }}
+                      />
+                      
+                      <Button
+                        variant="outline"
+                        onClick={(e) => {
+                          const input = document.getElementById('tensor-split-input');
+                          const value = input.value.trim();
+                          const parts = value.split(',').map(s => parseFloat(s.trim()));
+                          
+                          if (parts.length !== 2 || parts.some(isNaN) || parts.some(v => v <= 0)) {
+                            alert('Invalid format. Please enter two positive numbers separated by a comma (e.g., "1,2")');
+                            return;
+                          }
+                          
+                          // Normalize the values to sum to 1.0
+                          const total = parts[0] + parts[1];
+                          const normalized = parts.map(v => v / total);
+                          
+                          fetch(`${PRIMARY_API_URL}/models/update-tensor-split`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ tensor_split: normalized })
+                          })
+                          .then(response => response.json())
+                          .then(data => {
+                            if (data.status === 'success') {
+                              const percentage0 = (data.tensor_split[0] * 100).toFixed(1);
+                              const percentage1 = (data.tensor_split[1] * 100).toFixed(1);
+                              alert(`✅ Tensor split updated to ${percentage0}% / ${percentage1}%\n\nGPU0: ${percentage0}% | GPU1: ${percentage1}%\n\nReload your model for changes to take effect.`);
+                              input.value = data.tensor_split.join(',');
+                            } else {
+                              alert(`❌ Error: ${data.message || 'Failed to update tensor split'}`);
+                            }
+                          })
+                          .catch(err => {
+                            console.error("Error updating tensor split:", err);
+                            alert("Failed to update tensor split.");
+                          });
+                        }}
+                      >
+                        <Save className="mr-2 h-4 w-4" />
+                        Apply
+                      </Button>
+                    </div>
+                    
+                    <div className="bg-blue-50 dark:bg-blue-950/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800">
+                      <p className="text-xs text-blue-700 dark:text-blue-300">
+                        <strong>💡 Examples (CUDA0:CUDA1):</strong><br/>
+                        • <code>1,1</code> = 50/50 split (equal distribution)<br/>
+                        • <code>2,1</code> = 67/33 split (more on CUDA0)<br/>
+                        • <code>0.5,0.5</code> = 50/50 split (equal distribution, default)<br/>
+                        <br/>
+                        <strong>Note:</strong> Adjust the split based on your GPU VRAM sizes. KV cache will be distributed according to the tensor split ratio.
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Forensic Models Management */}
+              <Separator />
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-base font-medium">Forensic Models Management</Label>
+                  <p className="text-xs text-muted-foreground mt-1 mb-3">
+                    Unload RoBERTa/STAR models from memory to free up VRAM. These models are auto-loaded for forensic linguistics analysis.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    setIsUnloadingForensicModels(true);
+                    try {
+                      const response = await fetch(`${PRIMARY_API_URL}/forensic/unload-models`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                      });
+                      const result = await response.json();
+                      if (result.status === 'success') {
+                        alert(`✅ ${result.message}\n\nForensic models have been unloaded from VRAM.`);
+                      } else {
+                        alert(`❌ Error: ${result.message || 'Failed to unload forensic models'}`);
+                      }
+                    } catch (error) {
+                      console.error('Error unloading forensic models:', error);
+                      alert(`❌ Failed to unload forensic models: ${error.message}`);
+                    } finally {
+                      setIsUnloadingForensicModels(false);
+                    }
+                  }}
+                  disabled={isUnloadingForensicModels}
+                  className="w-full"
+                >
+                  {isUnloadingForensicModels ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Unloading...
+                    </>
+                  ) : (
+                    <>
+                      <Power className="mr-2 h-4 w-4" />
+                      Unload RoBERTa/STAR Models
+                    </>
+                  )}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  <strong>💡 Tip:</strong> Unload forensic models when you need more VRAM for other tasks. They will be auto-loaded again when needed.
+                </p>
+              </div>
+
+              {/* TTS Service Management */}
+              <Separator />
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-base font-medium">TTS Service Management (Port 8002)</Label>
+                  <p className="text-xs text-muted-foreground mt-1 mb-3">
+                    Shutdown or restart the TTS service running on port 8002.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      setIsShuttingDownTTS(true);
+                      try {
+                        const response = await fetch(`${PRIMARY_API_URL}/tts/shutdown`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' }
+                        });
+                        const result = await response.json();
+                        if (result.status === 'success' || result.status === 'info') {
+                          alert(`✅ ${result.message}`);
+                        } else {
+                          alert(`❌ Error: ${result.message || 'Failed to shutdown TTS service'}`);
+                        }
+                      } catch (error) {
+                        console.error('Error shutting down TTS service:', error);
+                        alert(`❌ Failed to shutdown TTS service: ${error.message}`);
+                      } finally {
+                        setIsShuttingDownTTS(false);
+                      }
+                    }}
+                    disabled={isShuttingDownTTS || isRestartingTTS}
+                    className="flex-1"
+                  >
+                    {isShuttingDownTTS ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Shutting down...
+                      </>
+                    ) : (
+                      <>
+                        <Power className="mr-2 h-4 w-4" />
+                        Shutdown TTS Service
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      setIsRestartingTTS(true);
+                      try {
+                        const response = await fetch(`${PRIMARY_API_URL}/tts/restart`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' }
+                        });
+                        const result = await response.json();
+                        if (result.status === 'success') {
+                          alert(`✅ ${result.message}\n\nThe TTS service is restarting and should be available shortly.`);
+                        } else {
+                          alert(`⚠️ ${result.message || 'TTS service restart initiated but may still be starting up'}`);
+                        }
+                      } catch (error) {
+                        console.error('Error restarting TTS service:', error);
+                        alert(`❌ Failed to restart TTS service: ${error.message}`);
+                      } finally {
+                        setIsRestartingTTS(false);
+                      }
+                    }}
+                    disabled={isShuttingDownTTS || isRestartingTTS}
+                    className="flex-1"
+                  >
+                    {isRestartingTTS ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Restarting...
+                      </>
+                    ) : (
+                      <>
+                        <RotateCw className="mr-2 h-4 w-4" />
+                        Restart TTS Service
+                      </>
+                    )}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  <strong>💡 Tip:</strong> Use these controls to manage the TTS service independently. Restart if you encounter issues with TTS.
+                </p>
+              </div>
+
             </CardContent>
           </Card>
         </TabsContent>
@@ -627,6 +920,81 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
               </div>
               <Separator />
 
+              {/* Anti-Repetition Mode */}
+              <div className="space-y-4 p-4 rounded-lg border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-950/20">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label htmlFor="anti-repetition" className="text-orange-700 dark:text-orange-300 font-medium">
+                      🔄 Anti-Repetition Mode
+                    </Label>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Reduces boilerplate paragraphs and repeated phrases across responses.
+                    </p>
+                  </div>
+                  <Switch
+                    id="anti-repetition"
+                    checked={localSettings.antiRepetitionMode}
+                    onCheckedChange={(checked) => handleChange('antiRepetitionMode', checked)}
+                  />
+                </div>
+
+                {localSettings.antiRepetitionMode && (
+                  <div className="space-y-4 pt-2">
+                    {/* Frequency Penalty */}
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        Frequency Penalty: {localSettings.frequencyPenalty.toFixed(2)}
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Penalizes tokens based on how often they appear in the response.
+                      </p>
+                      <Slider
+                        value={[localSettings.frequencyPenalty]}
+                        min={0}
+                        max={2}
+                        step={0.1}
+                        onValueChange={([v]) => handleChange('frequencyPenalty', v)}
+                      />
+                    </div>
+
+                    {/* Presence Penalty */}
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        Presence Penalty: {localSettings.presencePenalty.toFixed(2)}
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Penalizes tokens that have already appeared at all.
+                      </p>
+                      <Slider
+                        value={[localSettings.presencePenalty]}
+                        min={0}
+                        max={2}
+                        step={0.1}
+                        onValueChange={([v]) => handleChange('presencePenalty', v)}
+                      />
+                    </div>
+
+                    {/* Detect Repeated Phrases */}
+                    <div className="flex items-center justify-between pt-2 border-t border-orange-200 dark:border-orange-800">
+                      <div>
+                        <Label htmlFor="detect-phrases" className="text-sm">
+                          Detect & Remove Repeated Phrases
+                        </Label>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Post-processes responses to remove phrases repeated from previous messages.
+                        </p>
+                      </div>
+                      <Switch
+                        id="detect-phrases"
+                        checked={localSettings.detectRepeatedPhrases}
+                        onCheckedChange={(checked) => handleChange('detectRepeatedPhrases', checked)}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+              <Separator />
+
               {/* Max Tokens */}
               <div className="space-y-2">
                 <Label htmlFor="max_tokens">Max Tokens:</Label>
@@ -660,6 +1028,42 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
                   onCheckedChange={(value) => handleChange('streamResponses', value)}
                 />
               </div>
+              <Separator />
+              {/* Direct Profile Injection Toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="direct-profile-injection">Direct Profile Injection</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Bypass the GPU1 memory agent. Injects the full user profile directly into the prompt on GPU0 for faster, unfiltered context.
+                  </p>
+                  {/* Debug info */}
+                  <p className="text-xs text-blue-600 mt-1">
+                    Current value: {localSettings.directProfileInjection ? 'Enabled' : 'Disabled'}
+                  </p>
+                </div>
+                <Switch
+                  id="direct-profile-injection"
+                  checked={localSettings.directProfileInjection || false}
+                  onCheckedChange={(value) => {
+                    console.log('🔧 [Settings] Changing directProfileInjection to:', value);
+                    handleChange('directProfileInjection', value);
+                    
+                    // Immediately save to localStorage via updateSettings
+                    updateSettings({ directProfileInjection: value });
+                    
+                    // Also save to backend settings.json
+                    fetch(`${PRIMARY_API_URL}/models/set-direct-profile-injection`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ directProfileInjection: value })
+                    })
+                    .then(response => response.json())
+                    .then(data => console.log('✅ Direct Profile Injection saved:', data))
+                    .catch(err => console.error("❌ Error saving Direct Profile Injection setting:", err));
+                  }}
+                />
+              </div>
+
             <Separator />
 {/* OpenAI API Compatibility */}
 <div className="flex items-center justify-between">
@@ -761,7 +1165,7 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
         </Button>
       </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div>
           <Label className="text-xs">API URL</Label>
           <Input
@@ -770,6 +1174,18 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
             onChange={(e) => {
               const updated = [...localSettings.customApiEndpoints];
               updated[index] = { ...endpoint, url: e.target.value };
+              handleChange('customApiEndpoints', updated);
+            }}
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Model Name (optional)</Label>
+          <Input
+            placeholder="gpt-4, claude-3, etc."
+            value={endpoint.model || ''}
+            onChange={(e) => {
+              const updated = [...localSettings.customApiEndpoints];
+              updated[index] = { ...endpoint, model: e.target.value };
               handleChange('customApiEndpoints', updated);
             }}
           />
@@ -1193,6 +1609,20 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
           </div>
         </>
       )}
+      <Button 
+  variant="outline" 
+  size="sm"
+  onClick={() => loadSttEngine('whisper', 1)}
+>
+  Load Whisper on GPU1
+</Button>
+<Button 
+  variant="outline" 
+  size="sm"
+  onClick={() => loadTtsEngine('kokoro', 1)}
+>
+  Load Kokoro on GPU1
+</Button>
       <Separator />
 
       {/* Enable TTS */}
@@ -1211,42 +1641,41 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
 
 
 {/* TTS Engine Selection */}
-          {ttsEnabled && (
-            <>
-              <div className="space-y-2">
-                <Label htmlFor="tts-engine">Text-to-Speech Engine</Label>
-                <Select
-                  id="tts-engine"
-                  value={localSettings.ttsEngine || "kokoro"}
-                  onValueChange={value => {
-                    // Only allow kokoro for now
-                    if (value === 'kokoro') {
-                      handleChange('ttsEngine', value);
-                      updateSettings({ ttsEngine: value });
-                      handleChange('ttsVoice', 'af_heart');
-                      updateSettings({ ttsVoice: 'af_heart' });
-                    }
-                  }}
-                  disabled={!ttsEnabled}
-                >
-                  <SelectTrigger className={`w-48 ${!ttsEnabled ? "opacity-50" : ""}`}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="kokoro">Kokoro TTS</SelectItem>
-                    <SelectItem value="kyutai" disabled className="opacity-50 cursor-not-allowed">
-                      Kyutai TTS (coming one day maybe I dunno)
-                    </SelectItem>
-                    <SelectItem value="chatterbox" disabled className="opacity-50 cursor-not-allowed">
-                      Chatterbox TTS (coming one day maybe I dunno)
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Kokoro TTS is currently the only working engine. Other engines are kept for future implementation.
-                </p>
-              </div>
-              <Separator />
+{ttsEnabled && (
+  <>
+    <div className="space-y-2">
+      <Label htmlFor="tts-engine">Text-to-Speech Engine</Label>
+      <Select
+        id="tts-engine"
+        value={localSettings.ttsEngine || "kokoro"}
+        onValueChange={value => {
+          handleChange('ttsEngine', value);
+          updateSettings({ ttsEngine: value });
+          
+          // Set appropriate default voice for each engine
+          if (value === 'kokoro') {
+            handleChange('ttsVoice', 'af_heart');
+            updateSettings({ ttsVoice: 'af_heart' });
+          } else if (value === 'chatterbox') {
+            handleChange('ttsVoice', 'default');
+            updateSettings({ ttsVoice: 'default' });
+          }
+        }}
+        disabled={!ttsEnabled}
+      >
+        <SelectTrigger className={`w-48 ${!ttsEnabled ? "opacity-50" : ""}`}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="kokoro">Kokoro TTS</SelectItem>
+          <SelectItem value="chatterbox">Chatterbox TTS</SelectItem>
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        Kokoro TTS offers 60+ preset voices. Chatterbox TTS supports voice cloning and emotion control.
+      </p>
+    </div>
+    <Separator />
 
           {/* Voice Selection - Kokoro */}
           {(localSettings.ttsEngine || "kokoro") === "kokoro" && (
@@ -1349,143 +1778,315 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
             </>
           )}
 
-          {/* Voice Cloning - Chatterbox */}
-          {localSettings.ttsEngine === "chatterbox" && (
-            <>
-              <div className="space-y-4">
-                <div>
-                  <Label htmlFor="voice-upload">Upload Voice Reference</Label>
-                  <div className="mt-2 space-y-2">
-                    <Input
-                      id="voice-upload"
-                      type="file"
-                      accept=".wav,.mp3,.flac,.m4a"
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        
-                        try {
-                          setIsUploadingVoice(true);
-                          const formData = new FormData();
-                          formData.append('file', file);
-                          
-                          const response = await fetch(`${PRIMARY_API_URL}/tts/upload-voice`, {
-                            method: 'POST',
-                            body: formData,
-                          });
-                          
-                          if (!response.ok) {
-                            throw new Error(`Upload failed: ${response.status}`);
-                          }
-                          
-                          const result = await response.json();
-                          
-                          // Update the selected voice to the uploaded one
-                          handleChange('ttsVoice', result.voice_id);
-                          updateSettings({ ttsVoice: result.voice_id });
-                          
-                          // Refresh available voices
-                          await fetchAvailableVoices();
-                          
-                          alert(`Voice "${file.name}" uploaded successfully!`);
-                        } catch (error) {
-                          console.error('Voice upload error:', error);
-                          alert(`Failed to upload voice: ${error.message}`);
-                        } finally {
-                          setIsUploadingVoice(false);
-                        }
-                      }}
-                      disabled={!ttsEnabled || isUploadingVoice}
-                      className={!ttsEnabled ? "opacity-50" : ""}
-                    />
-                    {isUploadingVoice && (
-                      <div className="flex items-center text-blue-500 text-sm">
-                        <Loader2 className="animate-spin mr-2 h-4 w-4" />
-                        Uploading voice reference...
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Upload a clear audio sample (WAV, MP3, FLAC, M4A) to clone this voice.
-                  </p>
-                </div>
+{/* Voice Cloning - Chatterbox */}
+{(localSettings.ttsEngine === "chatterbox") && (
+  <>
+    <div className="space-y-4">
+      <div>
+        <Label htmlFor="voice-upload">Upload Voice Reference</Label>
+        <div className="mt-2 space-y-2">
+          <Input
+            id="voice-upload"
+            type="file"
+            accept=".wav,.mp3,.flac,.m4a"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              
+              try {
+                setIsUploadingVoice(true);
+                const formData = new FormData();
+                formData.append('file', file);
                 
-                {/* Chatterbox Voice Selection */}
-                <div className="space-y-2">
-                  <Label htmlFor="chatterbox-voice">Active Voice</Label>
-                  <Select
-                    id="chatterbox-voice"
-                    value={localSettings.ttsVoice || "default"}
-                    onValueChange={value => {
-                      handleChange('ttsVoice', value);
-                      updateSettings({ ttsVoice: value });
-                    }}
-                    disabled={!ttsEnabled}
-                  >
-                    <SelectTrigger className={`w-64 ${!ttsEnabled ? "opacity-50" : ""}`}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="default">Default Voice</SelectItem>
-                      {availableVoices?.chatterbox_voices?.map(voice => (
-                        <SelectItem key={voice.id} value={voice.id}>
-                          {voice.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                const response = await fetch(`${PRIMARY_API_URL}/tts/upload-voice`, {
+                  method: 'POST',
+                  body: formData,
+                });
+                
+                if (!response.ok) {
+                  throw new Error(`Upload failed: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                
+                // Update the selected voice to the uploaded one
+                handleChange('ttsVoice', result.voice_id);
+                updateSettings({ ttsVoice: result.voice_id });
+                
+                // Refresh available voices
+                await fetchAvailableVoices();
+                
+                // Save voice preference
+                await fetch(`${PRIMARY_API_URL}/tts/save-voice-preference`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    voice_id: result.voice_id,
+                    engine: 'chatterbox'
+                  })
+                });
 
-                {/* Chatterbox Controls */}
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="tts-exaggeration">
-                      Emotion Exaggeration: {(localSettings.ttsExaggeration || 0.5).toFixed(1)}
-                    </Label>
-                    <Slider
-                      id="tts-exaggeration"
-                      min={0.0}
-                      max={1.0}
-                      step={0.1}
-                      value={[localSettings.ttsExaggeration || 0.5]}
-                      onValueChange={([v]) => {
-                        handleChange('ttsExaggeration', v);
-                        updateSettings({ ttsExaggeration: v });
-                      }}
-                      disabled={!ttsEnabled}
-                      className={!ttsEnabled ? "opacity-50" : ""}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Control emotional intensity. Higher values = more dramatic speech.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="tts-cfg">
-                      Guidance Scale: {(localSettings.ttsCfg || 0.5).toFixed(1)}
-                    </Label>
-                    <Slider
-                      id="tts-cfg"
-                      min={0.1}
-                      max={1.0}
-                      step={0.1}
-                      value={[localSettings.ttsCfg || 0.5]}
-                      onValueChange={([v]) => {
-                        handleChange('ttsCfg', v);
-                        updateSettings({ ttsCfg: v });
-                      }}
-                      disabled={!ttsEnabled}
-                      className={!ttsEnabled ? "opacity-50" : ""}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Lower values = slower, more deliberate pacing. Higher = faster speech.
-                    </p>
-                  </div>
-                </div>
-              </div>
-              <Separator />
-            </>
+                alert(`Voice "${file.name}" uploaded successfully!`);
+              } catch (error) {
+                console.error('Voice upload error:', error);
+                alert(`Failed to upload voice: ${error.message}`);
+              } finally {
+                setIsUploadingVoice(false);
+              }
+            }}
+            disabled={!ttsEnabled || isUploadingVoice}
+            className={!ttsEnabled ? "opacity-50" : ""}
+          />
+          {isUploadingVoice && (
+            <div className="flex items-center text-blue-500 text-sm">
+              <Loader2 className="animate-spin mr-2 h-4 w-4" />
+              Uploading voice reference...
+            </div>
           )}
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          Upload a clear audio sample (WAV, MP3, FLAC, M4A) to clone this voice.
+        </p>
+      </div>
+      
+      {/* Chatterbox Voice Selection */}
+      <div className="space-y-2">
+        <Label htmlFor="chatterbox-voice">Active Voice</Label>
+<Select
+  id="chatterbox-voice"
+  value={localSettings.ttsVoice || "default"}
+onValueChange={value => {
+    console.log('🔧 [Frontend] Changing voice to:', value);
+    handleChange('ttsVoice', value);
+    updateSettings({ ttsVoice: value });
+    
+    // Save to backend for pre-caching
+    console.log('🔧 [Frontend] Sending voice preference to backend...');
+    fetch(`${PRIMARY_API_URL}/tts/save-voice-preference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        voice_id: value,
+        engine: 'chatterbox'
+      })
+    })
+    .then(response => {
+      console.log('🔧 [Frontend] Response status:', response.status);
+      return response.json();
+    })
+    .then(data => {
+      console.log('🔧 [Frontend] Response data:', data);
+      if (data.status === 'success') {
+        console.log('✅ [Frontend] Voice preference saved for pre-caching');
+      } else {
+        console.error('❌ [Frontend] Failed to save:', data.message);
+      }
+    })
+    .catch(err => {
+      console.error("❌ [Frontend] Error saving voice preference:", err);
+    });
+}}
+          disabled={!ttsEnabled}
+        >
+          <SelectTrigger className={`w-64 ${!ttsEnabled ? "opacity-50" : ""}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">Default Voice</SelectItem>
+            {availableVoices?.chatterbox_voices?.map(voice => (
+              <SelectItem key={voice.id} value={voice.id}>
+                {voice.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Chatterbox Controls */}
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="tts-exaggeration">
+            Emotion Exaggeration: {(localSettings.ttsExaggeration || 0.5).toFixed(1)}
+          </Label>
+          <Slider
+            id="tts-exaggeration"
+            min={0.0}
+            max={1.0}
+            step={0.1}
+            value={[localSettings.ttsExaggeration || 0.5]}
+            onValueChange={([v]) => {
+              handleChange('ttsExaggeration', v);
+              updateSettings({ ttsExaggeration: v });
+            }}
+            disabled={!ttsEnabled}
+            className={!ttsEnabled ? "opacity-50" : ""}
+          />
+          <p className="text-xs text-muted-foreground">
+            Control emotional intensity. Higher values = more dramatic speech.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="tts-cfg">
+            Guidance Scale: {(localSettings.ttsCfg || 0.5).toFixed(1)}
+          </Label>
+          <Slider
+            id="tts-cfg"
+            min={0.1}
+            max={1.0}
+            step={0.1}
+            value={[localSettings.ttsCfg || 0.5]}
+            onValueChange={([v]) => {
+              handleChange('ttsCfg', v);
+              updateSettings({ ttsCfg: v });
+            }}
+            disabled={!ttsEnabled}
+            className={!ttsEnabled ? "opacity-50" : ""}
+          />
+          <p className="text-xs text-muted-foreground">
+            Lower values = slower, more deliberate pacing. Higher = faster speech.
+          </p>
+        </div>
+
+        {/* TTS Speed Mode */}
+        <div className="space-y-2">
+          <Label htmlFor="tts-speed-mode">Generation Speed Mode</Label>
+          <Select
+            value={localSettings.ttsSpeedMode || "standard"}
+            onValueChange={(value) => {
+              handleChange('ttsSpeedMode', value);
+              updateSettings({ ttsSpeedMode: value });
+              
+              // Save to backend settings
+              fetch(`${PRIMARY_API_URL}/tts/save-speed-mode`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tts_speed_mode: value })
+              }).catch(err => console.error("Error saving speed mode:", err));
+            }}
+            disabled={!ttsEnabled}
+          >
+            <SelectTrigger className={`w-64 ${!ttsEnabled ? "opacity-50" : ""}`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="standard">🎯 Standard (Optimized)</SelectItem>
+              <SelectItem value="quality">⚖️ Quality (Default)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Standard: Optimized speed settings. Quality: Best quality with default parameters.
+          </p>
+        </div>
+      </div>
+
+      {/* Chatterbox VRAM Management */}
+      <Separator />
+      <div className="space-y-4">
+        <div>
+          <Label className="text-base font-medium">VRAM Management</Label>
+          <p className="text-xs text-muted-foreground mt-1">
+            Free up ~5GB of VRAM on GPU0 when Chatterbox is not in use
+          </p>
+        </div>
+        
+        <div className="flex gap-3">
+          <Button
+            variant="outline"
+            onClick={async () => {
+              try {
+                setIsUnloadingChatterbox(true);
+                const response = await fetch(`${TTS_API_URL}/tts/unload-chatterbox`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                  alert(`✅ ${result.message}\n\nVRAM freed: ${result.vram_freed}`);
+                } else {
+                  alert(`❌ Error: ${result.message || 'Failed to unload Chatterbox'}`);
+                }
+              } catch (error) {
+                console.error('Error unloading Chatterbox:', error);
+                alert(`❌ Failed to unload Chatterbox: ${error.message}`);
+              } finally {
+                setIsUnloadingChatterbox(false);
+              }
+            }}
+            disabled={isUnloadingChatterbox || isReloadingChatterbox}
+            className="flex-1"
+          >
+            {isUnloadingChatterbox ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Unloading...
+              </>
+            ) : (
+              <>
+                <Power className="mr-2 h-4 w-4" />
+                Unload Chatterbox
+              </>
+            )}
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={async () => {
+              try {
+                setIsReloadingChatterbox(true);
+                const response = await fetch(`${TTS_API_URL}/tts/reload-chatterbox`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                  if (result.already_loaded) {
+                    alert(`ℹ️ ${result.message}`);
+                  } else {
+                    alert(`✅ ${result.message}\n\nChatterbox is now ready for streaming TTS.`);
+                  }
+                } else {
+                  alert(`❌ Error: ${result.message || 'Failed to reload Chatterbox'}`);
+                }
+              } catch (error) {
+                console.error('Error reloading Chatterbox:', error);
+                alert(`❌ Failed to reload Chatterbox: ${error.message}`);
+              } finally {
+                setIsReloadingChatterbox(false);
+              }
+            }}
+            disabled={isReloadingChatterbox || isUnloadingChatterbox}
+            className="flex-1"
+          >
+            {isReloadingChatterbox ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Reloading...
+              </>
+            ) : (
+              <>
+                <RotateCw className="mr-2 h-4 w-4" />
+                Reload Chatterbox
+              </>
+            )}
+          </Button>
+        </div>
+        
+        <div className="bg-blue-50 dark:bg-blue-950/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800">
+          <p className="text-xs text-blue-700 dark:text-blue-300">
+            <strong>💡 Tip:</strong> Unload Chatterbox when using other GPU-intensive tasks. 
+            Reload it before starting streaming TTS to ensure it's warmed up and ready for smooth playback.
+          </p>
+        </div>
+      </div>
+    </div>
+    <Separator />
+  </>
+)}
 
           {/* Auto-Play TTS */}
           <div className="flex items-center justify-between">
@@ -1531,53 +2132,7 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
             </p>
           </div>
           <Separator />
-{/* Voice Selection - Kyutai */}
-{localSettings.ttsEngine === "kyutai" && (
-  <>
-    <div className="space-y-2">
-      <Label htmlFor="tts-voice">Kyutai Voice</Label>
-      <Select
-        id="tts-voice"
-        value={localSettings.ttsVoice || "default"}
-        onValueChange={value => {
-          handleChange('ttsVoice', value);
-          updateSettings({ ttsVoice: value });
-        }}
-        disabled={!ttsEnabled}
-      >
-        <SelectTrigger className={`w-64 ${!ttsEnabled ? "opacity-50" : ""}`}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent className="max-h-64 overflow-y-auto">
-          <SelectItem value="default">Default Voice</SelectItem>
-          
-          {/* EARS Dataset - High Quality Emotions */}
-          <SelectItem value="ears/p003/emo_desire_freeform.wav">EARS Female Desire (p003)</SelectItem>
-          <SelectItem value="ears/p003/emo_neutral_freeform.wav">EARS Female Neutral (p003)</SelectItem>
-          <SelectItem value="ears/p003/emo_contentment_freeform.wav">EARS Female Happy (p003)</SelectItem>
-          <SelectItem value="ears/p003/emo_anger_freeform.wav">EARS Female Angry (p003)</SelectItem>
-          <SelectItem value="ears/p003/emo_sadness_freeform.wav">EARS Female Sad (p003)</SelectItem>
-          
-          <SelectItem value="ears/p031/emo_desire_freeform.wav">EARS Male Desire (p031)</SelectItem>
-          <SelectItem value="ears/p031/emo_neutral_freeform.wav">EARS Male Neutral (p031)</SelectItem>
-          <SelectItem value="ears/p031/emo_anger_freeform.wav">EARS Male Angry (p031)</SelectItem>
-          
-          {/* Expresso Dataset - Clear Emotions */}
-          <SelectItem value="expresso/ex03-ex01_happy_001_channel1_334s.wav">Expresso Female Happy (ex03)</SelectItem>
-          <SelectItem value="expresso/ex03-ex01_desire_004_channel1_545s.wav">Expresso Female Desire (ex03)</SelectItem>
-          <SelectItem value="expresso/ex03-ex01_angry_001_channel1_201s.wav">Expresso Female Angry (ex03)</SelectItem>
-          <SelectItem value="expresso/ex03-ex01_calm_001_channel1_1143s.wav">Expresso Female Calm (ex03)</SelectItem>
-          <SelectItem value="expresso/ex03-ex01_sarcastic_001_channel1_435s.wav">Expresso Female Sarcastic (ex03)</SelectItem>
-          <SelectItem value="expresso/ex03-ex01_laughing_001_channel1_188s.wav">Expresso Female Laughing (ex03)</SelectItem>
-        </SelectContent>
-      </Select>
-      <p className="text-xs text-muted-foreground">
-        Choose from curated Kyutai voices. EARS voices offer high-quality emotions, Expresso provides clear expressions.
-      </p>
-    </div>
-    <Separator />
-  </>
-)}
+
           {/* Pitch (Kokoro only) */}
           {(localSettings.ttsEngine || "kokoro") === "kokoro" && (
             <>

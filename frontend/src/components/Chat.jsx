@@ -4,7 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -24,6 +24,10 @@ import FocusModeOverlay from './FocusModeOverlay';
 import CallModeOverlay from './CallModeOverlay';
 import CodeBlock from './CodeBlock';
 import ChatInputForm from './ChatInputForm';
+import CodeEditorOverlay from './CodeEditorOverlay';
+import ForensicLinguistics from './ForensicLinguistics';
+import StoryTracker from './StoryTracker';
+import ChoiceGenerator from './ChoiceGenerator';
 
 // CORRECT PLACEMENT: Component defined at the top level, accepting props.
 const WebSearchControl = ({ webSearchEnabled, setWebSearchEnabled, isGenerating, isRecording, isTranscribing }) => (
@@ -85,6 +89,8 @@ const Chat = ({ layoutMode }) => {
   const [editingBotMessageId, setEditingBotMessageId] = useState(null);
   const [editingBotMessageContent, setEditingBotMessageContent] = useState('');
   const [setIsStreamingStopped] = useState(false);
+  const [codeEditorEnabled, setCodeEditorEnabled] = useState(false);
+  const [showForensicLinguistics, setShowForensicLinguistics] = useState(false);
   const [characterReadiness, setCharacterReadiness] = useState({
   score: 0,
   detected_elements: [],
@@ -115,9 +121,138 @@ const [characterImageSettings, setCharacterImageSettings] = useState({
 });
 const [availableModels, setAvailableModels] = useState([]);
 const [autoAnalyzeImages, setAutoAnalyzeImages] = useState(false);
+// Author's Note state - persist to localStorage
+const [authorNoteEnabled, setAuthorNoteEnabled] = useState(false);
+const [authorNote, setAuthorNote] = useState(() => {
+  return localStorage.getItem('eloquent-author-note') || '';
+});
+const [showAuthorNote, setShowAuthorNote] = useState(false);
+
+// Story Tracker and Choice Generator state
+const [showStoryTracker, setShowStoryTracker] = useState(false);
+const [showChoiceGenerator, setShowChoiceGenerator] = useState(false);
+const [isAnalyzingStory, setIsAnalyzingStory] = useState(false);
+
   const autoEnhanceEnabled = localStorage.getItem('adetailer-auto-enhance') === 'true';
   const adetailerSettings = JSON.parse(localStorage.getItem('adetailer-settings') || '{}');
   const selectedAdetailerModel = localStorage.getItem('adetailer-selected-model') || 'face_yolov8n.pt';
+
+// Author's Note helper functions
+const countTokens = (text) => {
+  // Simple token estimation: roughly 4 characters per token
+  return Math.ceil(text.length / 4);
+};
+
+const handleAuthorNoteChange = (value) => {
+  const tokenCount = countTokens(value);
+  if (tokenCount <= 150) {
+    setAuthorNote(value);
+    localStorage.setItem('eloquent-author-note', value);
+  }
+};
+
+const clearAuthorNote = () => {
+  setAuthorNote('');
+  localStorage.removeItem('eloquent-author-note');
+};
+
+const getAuthorNoteTokenCount = () => countTokens(authorNote);
+
+// Story Tracker auto-detect handler
+const handleAnalyzeStory = async () => {
+  if (messages.length === 0) return;
+  
+  setIsAnalyzingStory(true);
+  try {
+    const recentMessages = messages.slice(-15);
+    const context = recentMessages
+      .map(m => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`)
+      .join('\n');
+
+    const prompt = `Analyze this roleplay/story conversation and extract story elements. Return a JSON object with arrays for: characters (names of people/beings mentioned), inventory (items the protagonist has or found), locations (places mentioned), plotPoints (key events that happened).
+
+CONVERSATION:
+${context}
+
+Respond ONLY with a JSON object, no other text:
+{"characters": [], "inventory": [], "locations": [], "plotPoints": []}`;
+
+    const response = await fetch(`${PRIMARY_API_URL}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        max_tokens: 500,
+        temperature: 0.3,
+        stop: ['\n\n']
+      })
+    });
+
+    if (response.ok) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.token) {
+                fullText += parsed.token;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      // Parse and merge with existing tracker data
+      const jsonMatch = fullText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const detected = JSON.parse(jsonMatch[0]);
+        const existing = JSON.parse(localStorage.getItem('eloquent-story-tracker') || '{}');
+        
+        const mergeUnique = (arr1 = [], arr2 = []) => {
+          const existingValues = new Set(arr1.map(i => i.value?.toLowerCase()));
+          const newItems = arr2
+            .filter(val => val && !existingValues.has(val.toLowerCase()))
+            .map(val => ({ id: Date.now() + Math.random(), value: val, notes: '' }));
+          return [...arr1, ...newItems];
+        };
+
+        const merged = {
+          characters: mergeUnique(existing.characters, detected.characters),
+          inventory: mergeUnique(existing.inventory, detected.inventory),
+          locations: mergeUnique(existing.locations, detected.locations),
+          plotPoints: mergeUnique(existing.plotPoints, detected.plotPoints),
+          customFields: existing.customFields || []
+        };
+
+        localStorage.setItem('eloquent-story-tracker', JSON.stringify(merged));
+        // Force re-render of tracker if open
+        setShowStoryTracker(false);
+        setTimeout(() => setShowStoryTracker(true), 50);
+      }
+    }
+  } catch (err) {
+    console.error('Story analysis error:', err);
+  } finally {
+    setIsAnalyzingStory(false);
+  }
+};
+
+// Choice selection handler
+const handleChoiceSelect = (choice) => {
+  setInputValue(choice);
+};
 
 // Mic click handler
 const handleMicClick = () => {
@@ -289,6 +424,7 @@ const handleRegenerateFromEditedPrompt = useCallback(async (userMessageId) => {
       rag_docs: selectedDocuments,
       gpu_id: 0,
       userProfile: { id: userProfile?.id ?? 'anonymous' },
+      authorNote: authorNote.trim() || undefined,
       memoryEnabled: true,
       stream: true
     };
@@ -367,6 +503,7 @@ const handleRegenerateFromEditedPrompt = useCallback(async (userMessageId) => {
   settings,
   primaryModel,
   userProfile,
+  authorNote,
   PRIMARY_API_URL
 ]);
 
@@ -787,55 +924,23 @@ useEffect(() => {
     console.error('❌ Error saving variants:', err);
   }
 }, [activeConversation, messageVariants, currentVariantIndex]);
-// Modify the handleSubmit function to include web search
+// Modify the handleSubmit function to include web search and author's note
 const handleSubmit = async (text) => {
   if (text && !isGenerating) {
     const shouldUseDual = dualModeEnabled && primaryModel && secondaryModel;
     if (shouldUseDual) {
       await sendDualMessage(text, webSearchEnabled);
     } else {
-      await sendMessage(text, webSearchEnabled);
+      // Pass author's note directly to sendMessage (3rd parameter)
+      const noteToSend = authorNote.trim() || null;
+      if (noteToSend) {
+        console.log("📝 [Author's Note] Sending with message:", noteToSend.substring(0, 50) + "...");
+      }
+      await sendMessage(text, webSearchEnabled, noteToSend);
     }
   }
 };
-// Add this new component for the web search control (place it before the main return statement)
 
-useEffect(() => {
-  // Only check readiness when we have messages and aren't generating
-  if (messages.length === 0 || isGenerating || isAnalyzingCharacter) {
-    return;
-  }
-
-  const checkCharacterReadiness = async () => {
-    try {
-      setIsAnalyzingCharacter(true);
-      
-      const response = await fetch(`${PRIMARY_API_URL}/character/analyze-readiness`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: messages.slice(-25), // Last 25 messages
-          lookback_count: 25
-        }),
-      });
-
-      if (response.ok) {
-        const analysis = await response.json();
-        setCharacterReadiness(analysis);
-        console.log(`🎯 Character readiness: ${analysis.readiness_score}%`, analysis);
-      }
-    } catch (error) {
-      console.error('Error checking character readiness:', error);
-    } finally {
-      setIsAnalyzingCharacter(false);
-    }
-  };
-  // Debounced check - only run 2 seconds after messages stop changing
-  const timeoutId = setTimeout(checkCharacterReadiness, 2000);
-  return () => clearTimeout(timeoutId);
-}, [messages, isGenerating, PRIMARY_API_URL]);
-
-// Add this function to handle character generation
 
 const handleGenerateCharacter = useCallback(async () => {
   if (isGeneratingCharacter || characterReadiness.score < 10) {
@@ -1281,6 +1386,7 @@ const handleGenerateVariant = useCallback(async (messageId) => {
       rag_docs: selectedDocuments,
       gpu_id: 0,
       userProfile: { id: userProfile?.id ?? 'anonymous' },
+      authorNote: authorNote.trim() || undefined,
       memoryEnabled: true, // CHANGED FROM FALSE
       stream: true
     };
@@ -1359,6 +1465,7 @@ const handleGenerateVariant = useCallback(async (messageId) => {
   primaryModel,
   activeCharacter,
   userProfile?.id,
+  authorNote,
   PRIMARY_API_URL,
   formatPrompt,
   buildSystemPrompt,
@@ -1616,7 +1723,7 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     if (memoryContext) {
       systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
     }
-
+    
     // Add the current response to context and ask to continue
     const contextWithResponse = [
       ...recent,
@@ -1646,6 +1753,7 @@ const handleContinueGeneration = useCallback(async (messageId) => {
       rag_docs: selectedDocuments,
       gpu_id: 0,
       userProfile: { id: userProfile?.id ?? 'anonymous' },
+      authorNote: authorNote.trim() || undefined,
       memoryEnabled: true,
       stream: true
     };
@@ -1738,6 +1846,7 @@ const handleContinueGeneration = useCallback(async (messageId) => {
   settings,
   primaryModel,
   userProfile,
+  authorNote,
   PRIMARY_API_URL
 ]);
   // Avatar rendering function
@@ -2126,6 +2235,60 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     </Button>
   );
 })()}
+{/* Author's Note Button */}
+<Button
+  variant={showAuthorNote ? "secondary" : "outline"}
+  size="icon"
+  onClick={() => setShowAuthorNote(!showAuthorNote)}
+  title="Toggle Author's Note"
+  className="flex-shrink-0 h-10 w-10"
+>
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14,2 14,8 20,8"/>
+    <line x1="16" y1="13" x2="8" y2="13"/>
+    <line x1="16" y1="17" x2="8" y2="17"/>
+    <polyline points="10,9 9,9 8,9"/>
+  </svg>
+</Button>
+
+{/* Story Tracker Button */}
+<Button
+  variant={showStoryTracker ? "secondary" : "outline"}
+  size="icon"
+  onClick={() => setShowStoryTracker(!showStoryTracker)}
+  title="Story Tracker - Track characters, inventory, locations"
+  className="flex-shrink-0 h-10 w-10"
+>
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/>
+    <line x1="4" y1="22" x2="4" y2="15"/>
+  </svg>
+</Button>
+
+{/* Choice Generator Button */}
+<Button
+  variant={showChoiceGenerator ? "secondary" : "outline"}
+  size="icon"
+  onClick={() => setShowChoiceGenerator(!showChoiceGenerator)}
+  title="Generate action choices"
+  className="flex-shrink-0 h-10 w-10"
+>
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="2" width="8" height="8" rx="1"/>
+    <rect x="14" y="2" width="8" height="8" rx="1"/>
+    <rect x="2" y="14" width="8" height="8" rx="1"/>
+    <rect x="14" y="14" width="8" height="8" rx="1"/>
+  </svg>
+</Button>
+
+{/* Author's Note indicator */}
+{authorNote && (
+  <div className="text-xs text-center bg-orange-100 dark:bg-orange-900/30 p-1 rounded max-w-[60px] border border-orange-300">
+    <div className="font-medium text-orange-700 dark:text-orange-300">Note</div>
+    <div className="text-[10px] text-orange-600 dark:text-orange-400">{getAuthorNoteTokenCount()}/150</div>
+  </div>
+)}
 
 {/* Character readiness debug info (remove this in production) */}
 {characterReadiness.score > 0 && (
@@ -2432,6 +2595,68 @@ const handleContinueGeneration = useCallback(async (messageId) => {
           </div>
         </ScrollArea>
       </div>
+{/* Author's Note Panel */}
+{showAuthorNote && (
+  <div className="border-t border-border bg-orange-50 dark:bg-orange-950/20">
+    <div className="max-w-4xl mx-auto px-4 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-600">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14,2 14,8 20,8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10,9 9,9 8,9"/>
+          </svg>
+          <Label className="font-medium text-orange-700 dark:text-orange-300">Author's Note</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs ${getAuthorNoteTokenCount() > 140 ? 'text-red-500' : 'text-orange-600 dark:text-orange-400'}`}>
+            {getAuthorNoteTokenCount()}/150 tokens
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowAuthorNote(false)}
+            className="h-6 w-6 p-0"
+          >
+            <X size={14} />
+          </Button>
+        </div>
+      </div>
+      <Textarea
+        value={authorNote}
+        onChange={(e) => handleAuthorNoteChange(e.target.value)}
+        placeholder="Add custom instructions for this session (e.g., 'Focus on emotional responses' or 'Use a more casual tone')"
+        className="w-full resize-none bg-background border-orange-200 dark:border-orange-800 text-sm"
+        rows={3}
+      />
+      <div className="mt-2 flex items-center justify-between">
+        <div className="text-xs text-orange-600 dark:text-orange-400">
+          {authorNote ? (
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+              Active - included with every message ({getAuthorNoteTokenCount()}/150 tokens)
+            </span>
+          ) : (
+            "This note will be included with all messages"
+          )}
+        </div>
+        {authorNote && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={clearAuthorNote}
+            className="h-6 text-xs text-red-500 hover:text-red-600 hover:bg-red-50"
+          >
+            Clear Note
+          </Button>
+        )}
+      </div>
+    </div>
+  </div>
+)}
+
 {/* Add this right before your existing <form className="border-t border-border p-4..."> */}
 <div className="border-t border-border bg-muted/5">
 <div className="max-w-4xl mx-auto px-4 py-2 flex items-center justify-between">
@@ -2951,7 +3176,13 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     stopTTS={stopTTS}
   />
 )}
-
+{/* Code Editor Overlay */}
+{codeEditorEnabled && (
+  <CodeEditorOverlay
+    isOpen={codeEditorEnabled}
+    onClose={() => setCodeEditorEnabled(false)}
+  />
+)}
 {/* Call Mode Overlay - CONDITIONALLY MOUNTED */}
 {isCallModeActive && (
   <CallModeOverlay
@@ -2965,6 +3196,32 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     PRIMARY_API_URL={PRIMARY_API_URL}
   />
 )}
+{/* Forensic Linguistics Overlay */}
+{showForensicLinguistics && (
+  <ForensicLinguistics
+    isOpen={showForensicLinguistics}
+    onClose={() => setShowForensicLinguistics(false)}
+  />
+)}
+
+{/* Story Tracker Panel */}
+<StoryTracker
+  isOpen={showStoryTracker}
+  onClose={() => setShowStoryTracker(false)}
+  messages={messages}
+  onAnalyze={handleAnalyzeStory}
+  isAnalyzing={isAnalyzingStory}
+/>
+
+{/* Choice Generator Panel */}
+<ChoiceGenerator
+  isOpen={showChoiceGenerator}
+  onClose={() => setShowChoiceGenerator(false)}
+  messages={messages}
+  onSelectChoice={handleChoiceSelect}
+  apiUrl={PRIMARY_API_URL}
+  isGenerating={isGenerating}
+/>
 
     </div>
   );

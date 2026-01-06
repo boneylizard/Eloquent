@@ -38,81 +38,82 @@ if similarity_model:
     except Exception as e:
         logger.error(f"❌ Failed to compute concept embeddings: {e}")
 
-def analyze_character_readiness(messages: List[Dict[str, Any]], lookback_count: int = 25) -> Dict[str, Any]:
-    """
-    Analyze recent conversation messages for character information.
-    
-    Args:
-        messages: List of message objects with 'content' and 'role'
-        lookback_count: How many recent messages to analyze
-        
-    Returns:
-        Dict with readiness score, detected elements, and character suggestions
-    """
-    if not similarity_model or concept_embeddings is None:
-        logger.error("❌ Similarity model not available for character analysis")
-        return {"status": "error", "error": "Embedding model not available"}
-    
-    if not messages:
-        return {"status": "success", "readiness_score": 0, "detected_elements": []}
-    
-    try:
-        # Get recent messages, excluding system messages
-        recent_messages = []
-        for msg in reversed(messages[-lookback_count:]):
-            if msg.get('role') not in ['system'] and msg.get('content'):
-                recent_messages.append(msg['content'])
-        
-        if not recent_messages:
-            return {"status": "success", "readiness_score": 0, "detected_elements": []}
-        
-        # Combine messages into analysis text
-        conversation_text = " ".join(recent_messages)
-        logger.info(f"🔍 Analyzing {len(recent_messages)} messages ({len(conversation_text)} chars)")
-        
-        # Split into chunks for better analysis
-        chunks = split_into_chunks(conversation_text, max_length=500)
-        
-        detected_elements = []
-        concept_scores = [0.0] * len(CHARACTER_CONCEPTS)
-        
-        # Analyze each chunk against character concepts
-        for chunk in chunks:
-            chunk_embedding = similarity_model.encode(chunk, convert_to_tensor=True)
-            similarities = util.pytorch_cos_sim(chunk_embedding, concept_embeddings)[0]
-            
-            for i, (concept, score) in enumerate(zip(CHARACTER_CONCEPTS, similarities)):
-                concept_scores[i] = max(concept_scores[i], score.item())
-                
-                # If similarity is high enough, record this as detected
-                if score.item() > 0.3:  # Threshold for detection
-                    detected_elements.append({
-                        "concept": concept.split()[1],  # Get the main concept word
-                        "score": score.item(),
-                        "text_sample": chunk[:100] + "..." if len(chunk) > 100 else chunk
-                    })
-        
-        # Calculate overall readiness score
-        readiness_score = calculate_readiness_score(concept_scores, detected_elements)
-        
-        # Detect potential character name(s)
-        suggested_names = extract_potential_character_names(conversation_text)
-        
-        result = {
-            "status": "success",
-            "readiness_score": readiness_score,
-            "detected_elements": detected_elements,
-            "concept_scores": dict(zip(CHARACTER_CONCEPTS, concept_scores)),
-            "suggested_names": suggested_names,
-            "analysis_summary": generate_analysis_summary(concept_scores, detected_elements)
-        }
-        
-        logger.info(f"🎯 Character readiness: {readiness_score:.1f}% ({len(detected_elements)} elements)")
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ Error in character readiness analysis: {e}", exc_info=True)
-        return {"status": "error", "error": str(e)}
+# def analyze_character_readiness(messages: List[Dict[str, Any]], lookback_count: int = 25) -> Dict[str, Any]:
+#     """
+#     Analyze recent conversation messages for character information.
+#     
+#     Args:
+#         messages: List of message objects with 'content' and 'role'
+#         lookback_count: How many recent messages to analyze
+#         
+#     Returns:
+#         Dict with readiness score, detected elements, and character suggestions
+#     """
+#     if not similarity_model or concept_embeddings is None:
+#         logger.error("❌ Similarity model not available for character analysis")
+#         return {"status": "error", "error": "Embedding model not available"}
+#     
+#     if not messages:
+#         return {"status": "success", "readiness_score": 0, "detected_elements": []}
+#     
+#     try:
+#         # Get recent messages, excluding system messages
+#         recent_messages = []
+#         for msg in reversed(messages[-lookback_count:]):
+#             if msg.get('role') not in ['system'] and msg.get('content'):
+#                 recent_messages.append(msg['content'])
+#         
+#         if not recent_messages:
+#             return {"status": "success", "readiness_score": 0, "detected_elements": []}
+#         
+#         # Combine messages into analysis text
+#         conversation_text = " ".join(recent_messages)
+#         logger.info(f"🔍 Analyzing {len(recent_messages)} messages ({len(conversation_text)} chars)")
+#         
+#         # Split into chunks for better analysis
+#         chunks = split_into_chunks(conversation_text, max_length=500)
+#         
+#         detected_elements = []
+#         concept_scores = [0.0] * len(CHARACTER_CONCEPTS)
+#         
+#         # Analyze each chunk against character concepts
+#         for chunk in chunks:
+#             chunk_embedding = similarity_model.encode(chunk, convert_to_tensor=True)
+#             similarities = util.pytorch_cos_sim(chunk_embedding, concept_embeddings)[0]
+#             
+#             for i, (concept, score) in enumerate(zip(CHARACTER_CONCEPTS, similarities)):
+#                 concept_scores[i] = max(concept_scores[i], score.item())
+#                 
+#                 # If similarity is high enough, record this as detected
+#                 if score.item() > 0.3:  # Threshold for detection
+#                     detected_elements.append({
+#                         "concept": concept.split()[1],  # Get the main concept word
+#                         "score": score.item(),
+#                         "text_sample": chunk[:100] + "..." if len(chunk) > 100 else chunk
+#                     })
+#         
+#         # Calculate overall readiness score
+#         readiness_score = calculate_readiness_score(concept_scores, detected_elements)
+#         
+#         # Detect potential character name(s)
+#         suggested_names = extract_potential_character_names(conversation_text)
+#         
+#         result = {
+#             "status": "success",
+#             "readiness_score": readiness_score,
+#             "detected_elements": detected_elements,
+#             "concept_scores": dict(zip(CHARACTER_CONCEPTS, concept_scores)),
+#             "suggested_names": suggested_names,
+#             "analysis_summary": generate_analysis_summary(concept_scores, detected_elements)
+#         }
+#         
+#         logger.info(f"🎯 Character readiness: {readiness_score:.1f}% ({len(detected_elements)} elements)")
+#         return result
+#         
+#     except Exception as e:
+#         logger.error(f"❌ Error in character readiness analysis: {e}", exc_info=True)
+#         return {"status": "error", "error": str(e)}
+
 
 def split_into_chunks(text: str, max_length: int = 500) -> List[str]:
     """Split text into chunks for better embedding analysis."""

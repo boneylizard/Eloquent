@@ -670,7 +670,11 @@ export const synthesizeSpeech = async (text, options = {}) => {
       payload.audio_prompt_path = audio_prompt_path;
       console.log(`Using voice cloning with reference: ${audio_prompt_path}`);
     }
-
+    // Dia voice cloning
+    if (engine === 'dia' && options.dia_audio_prompt_path) {
+      payload.dia_audio_prompt_path = options.dia_audio_prompt_path;
+    }
+    
     const response = await fetch(`${getBackendUrl()}/tts`, {
       method: 'POST',
       headers: {
@@ -881,7 +885,10 @@ class TTSWebSocketClient {
     this.socket = null;
     this.audioQueue = [];
     this.isPlaying = false;
-    this.onAudioQueueUpdate = null; // Callback to notify context of new audio
+    this.onAudioQueueUpdate = null;
+    this.settingsSent = false;
+    this.pendingSettings = null;
+    this.isConnecting = false;
   }
 
   connect(onOpen, onClose, onError) {
@@ -891,18 +898,30 @@ class TTSWebSocketClient {
       return;
     }
 
-    // Connect to the new backend endpoint
-    this.socket = new WebSocket(`${getBackendUrl()}/tts-stream`);
+    // Connect to the TTS service on port 8002
+    this.socket = new WebSocket('ws://localhost:8002/tts-stream');
+
+    // Track connection state
+    this.isConnecting = true;
 
     this.socket.onopen = () => {
       console.log("✅ [WebSocket] Connection established.");
+      this.isConnecting = false;
+      
+      // Send any pending settings if we have them
+      if (this.pendingSettings) {
+        console.log("🔄 [WebSocket] Sending pending settings:", this.pendingSettings);
+        this.socket.send(JSON.stringify(this.pendingSettings));
+        this.settingsSent = true;
+        this.pendingSettings = null;
+      }
+      
       if (onOpen) onOpen();
     };
 
     this.socket.onmessage = async (event) => {
       // The backend will send audio as binary data (a Blob)
       if (event.data instanceof Blob) {
-        // Convert the Blob into an ArrayBuffer, which is easier to work with
         const arrayBuffer = await event.data.arrayBuffer();
         this.audioQueue.push(arrayBuffer);
         // Notify the AppContext that new audio is available
@@ -913,36 +932,71 @@ class TTSWebSocketClient {
     this.socket.onclose = (event) => {
       console.log("🛑 [WebSocket] Connection closed.", event.reason);
       this.socket = null;
+      this.settingsSent = false;
+      this.isConnecting = false;
       if (onClose) onClose();
     };
 
     this.socket.onerror = (error) => {
       console.error("❌ [WebSocket] Error:", error);
+      this.isConnecting = false;
       if (onError) onError(error);
     };
   }
 
-  // Send a chunk of text to the backend for synthesis
-  send(text) {
-    if (this.socket && this.socket.readyState === 1) { // 1 = OPEN
-      this.socket.send(text);
-    } else {
-      console.error("❌ [WebSocket] Cannot send text, socket is not open.");
+// Send a chunk of text to the backend for synthesis
+send(text) {
+  
+  const isSettings = typeof text === 'object' && (text.engine || text.voice);
+  
+  // For settings, just store them and send if connected
+  if (isSettings) {
+    console.log("🔧 [WebSocket] Received settings for new message:", text);
+    this.pendingSettings = text;
+    this.settingsSent = false;
+    
+    if (this.socket && this.socket.readyState === 1) {
+      console.log("📤 [WebSocket] Sending settings immediately (already connected)");
+      this.socket.send(JSON.stringify(text));
+      this.settingsSent = true;
+      this.pendingSettings = null;
     }
+    return;
   }
+  
+  // For text - since we keep connection open, this should always work
+  if (!this.socket || this.socket.readyState !== 1) {
+    console.error("❌ [WebSocket] Not connected! This shouldn't happen with always-open connection");
+    return;
+  }
+  
+  if (!this.settingsSent && this.pendingSettings) {
+    // Send pending settings first if we have them
+    this.socket.send(JSON.stringify(this.pendingSettings));
+    this.settingsSent = true;
+    this.pendingSettings = null;
+  }
+  
+  // Send the text
+  this.socket.send(JSON.stringify({ text }));
+}
 
-  // Signal to the backend that the text stream is finished
+  // Signal end of current message stream
   closeStream() {
     if (this.socket && this.socket.readyState === 1) {
-      // Send a special signal to the backend to process any remaining text
+      console.log("🏁 [WebSocket] Sending end signal for current message");
       this.socket.send("--END--");
+      this.settingsSent = false;  // Reset for next message
+      // Keep connection open for next message!
     }
   }
 
   // Disconnect the WebSocket entirely
   disconnect() {
     if (this.socket) {
+      console.log("👋 [WebSocket] Disconnecting WebSocket");
       this.socket.close();
+      this.settingsSent = false;
     }
   }
 
@@ -952,5 +1006,38 @@ class TTSWebSocketClient {
   }
 }
 
+export const uploadDiaVoiceReference = async (audioFile) => {
+  try {
+    const formData = new FormData();
+    formData.append('file', audioFile);
+
+    const response = await fetch(`${getBackendUrl()}/tts/upload-dia-voice`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Upload failed: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error uploading Dia voice:', error);
+    throw error;
+  }
+};
+
+export const getDiaVoices = async () => {
+  try {
+    const response = await fetch(`${getBackendUrl()}/tts/dia-voices`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Dia voices: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching Dia voices:', error);
+    throw error;
+  }
+};
 // Export a single instance of the client for the whole app to use
 export const ttsClient = new TTSWebSocketClient();

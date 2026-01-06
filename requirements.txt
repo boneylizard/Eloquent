@@ -128,6 +128,7 @@ librosa
 lightning
 lightning-utilities
 lilcom
+llama-cpp-python
 llvmlite
 lm-format-enforcer
 logging

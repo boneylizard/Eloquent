@@ -69,7 +69,7 @@ const DialogContent = React.forwardRef(({ className, children, onOpenChange, ...
     <div
       ref={ref}
       className={cn(
-        "fixed z-50 grid w-full max-w-lg scale-100 gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg md:w-full",
+        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 scale-100 gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg md:w-full",
         className
       )}
       onClick={handleBackdropClick}

@@ -22,7 +22,7 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 # Use llama-cpp-python embedding model
 from llama_cpp import Llama
 
-LLAMA_MODEL_PATH = "C:\\Users\\bpfit\\OneDrive\\Desktop\\LLM AI GGUFs\\your-model.gguf"  # Replace with actual GGUF path
+LLAMA_MODEL_PATH = os.environ.get("LLAMA_MODEL_PATH", "")  # Set via environment variable or settings
 embedding_model = None
 
 # Initialize embedding model

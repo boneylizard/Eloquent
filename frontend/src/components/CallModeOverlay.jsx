@@ -169,46 +169,46 @@ const CallModeOverlay = ({
           {/* NEW: Speaking Animation - Breathing Glow + Audio Ripples */}
           {isSpeaking && (
             <>
-              {/* Breathing Glow with randomized intensity - MORE SUBTLE */}
+              {/* Breathing Glow with randomized intensity - Enhanced visibility */}
               <div className="absolute inset-0 rounded-full">
                 <div 
-                  className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-400/10 to-cyan-400/10 animate-pulse scale-110" 
-                  style={{ opacity: speechIntensity * 0.5 }}
+                  className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-400/25 to-cyan-400/25 animate-pulse scale-110" 
+                  style={{ opacity: speechIntensity * 0.8 }}
                 />
                 <div 
-                  className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-300/5 to-white/5 animate-ping scale-115" 
-                  style={{ opacity: speechIntensity * 0.4 }}
+                  className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-300/15 to-white/15 animate-ping scale-115" 
+                  style={{ opacity: speechIntensity * 0.7 }}
                 />
               </div>
               
-              {/* Audio Ripples with randomized delays - MORE SUBTLE */}
+              {/* Audio Ripples with randomized delays - Enhanced visibility */}
               <div className="absolute inset-0 rounded-full flex items-center justify-center">
                 <div 
-                  className="absolute w-full h-full rounded-full border border-blue-400/15 animate-ping" 
+                  className="absolute w-full h-full rounded-full border-2 border-blue-400/35 animate-ping" 
                   style={{ 
                     animationDelay: `${rippleDelays[0]}s`,
-                    opacity: speechIntensity * 0.4
+                    opacity: speechIntensity * 0.7
                   }} 
                 />
                 <div 
-                  className="absolute w-[110%] h-[110%] rounded-full border border-blue-300/10 animate-ping" 
+                  className="absolute w-[110%] h-[110%] rounded-full border-2 border-blue-300/30 animate-ping" 
                   style={{ 
                     animationDelay: `${rippleDelays[1]}s`,
-                    opacity: speechIntensity * 0.35
+                    opacity: speechIntensity * 0.65
                   }} 
                 />
                 <div 
-                  className="absolute w-[120%] h-[120%] rounded-full border border-cyan-400/8 animate-ping" 
+                  className="absolute w-[120%] h-[120%] rounded-full border-2 border-cyan-400/25 animate-ping" 
                   style={{ 
                     animationDelay: `${rippleDelays[2]}s`,
-                    opacity: speechIntensity * 0.3
+                    opacity: speechIntensity * 0.6
                   }} 
                 />
                 <div 
-                  className="absolute w-[130%] h-[130%] rounded-full border border-blue-200/5 animate-ping" 
+                  className="absolute w-[130%] h-[130%] rounded-full border-2 border-blue-200/20 animate-ping" 
                   style={{ 
                     animationDelay: `${rippleDelays[3]}s`,
-                    opacity: speechIntensity * 0.25
+                    opacity: speechIntensity * 0.55
                   }} 
                 />
               </div>
@@ -218,14 +218,14 @@ const CallModeOverlay = ({
           {/* OLD: Keep the original subtle animation for backwards compatibility, but only when not speaking */}
           {!isSpeaking && (
             <div className="absolute inset-0 rounded-full">
-              <div className={`absolute inset-0 rounded-full border-2 border-blue-400/30 
+              <div className={`absolute inset-0 rounded-full border-2 border-blue-400/45 
                                ${isPulsing ? 'animate-ping' : ''} scale-125`}></div>
               {isPulsing && (
-                <div className="absolute inset-0 rounded-full bg-blue-400/10 
+                <div className="absolute inset-0 rounded-full bg-blue-400/20 
                                animate-pulse scale-110"></div>
               )}
               {isPulsing && (
-                <div className="absolute inset-0 rounded-full border border-blue-300/50 
+                <div className="absolute inset-0 rounded-full border-2 border-blue-300/60 
                                animate-ping scale-105"></div>
               )}
             </div>

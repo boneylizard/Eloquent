@@ -229,10 +229,10 @@ const handleLoadModel = async () => {
       <h3 className="text-lg font-medium mb-3">Model Selection</h3>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        {/* GPU 0 (Primary) Status */}
+        {/* GPU 0 Status */}
         <div className="rounded-md bg-muted p-3">
           <div className="flex items-center justify-between mb-1">
-            <h4 className="font-medium">Primary GPU (0)</h4>
+            <h4 className="font-medium">GPU 0</h4>
             {primaryIsAPI && <Badge variant="secondary" className="text-xs"><Globe className="w-3 h-3 mr-1" />API</Badge>}
           </div>
           <div className="flex items-center gap-2">
@@ -243,10 +243,10 @@ const handleLoadModel = async () => {
           </div>
         </div>
 
-        {/* GPU 1 (Secondary) Status */}
+        {/* GPU 1 Status */}
         <div className="rounded-md bg-muted p-3">
           <div className="flex items-center justify-between mb-1">
-            <h4 className="font-medium">Secondary GPU (1)</h4>
+            <h4 className="font-medium">GPU 1</h4>
             {secondaryIsAPI && <Badge variant="secondary" className="text-xs"><Globe className="w-3 h-3 mr-1" />API</Badge>}
           </div>
           <div className="flex items-center gap-2">
@@ -310,8 +310,8 @@ const handleLoadModel = async () => {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="0">GPU 0</SelectItem>
-                <SelectItem value="1">GPU 1</SelectItem>
+                            <SelectItem value="0">GPU 0</SelectItem>
+            <SelectItem value="1">GPU 1</SelectItem>
               </SelectContent>
             </Select>
           </div>

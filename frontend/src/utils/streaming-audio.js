@@ -23,7 +23,7 @@ class StreamingAudioPlayer {
     }
   }
 
-  async connectStreaming(serverUrl = 'ws://localhost:8000/ws/stream-tts') {
+  async connectStreaming(serverUrl = 'ws://localhost:8002/tts-stream') {
     if (this.websocket) {
       this.websocket.close();
     }
@@ -292,7 +292,9 @@ class EnhancedWebSocketChat {
   async connect() {
     await this.audioPlayer.initialize();
     
-    this.websocket = new WebSocket('ws://localhost:8000/ws/chat-stream');
+    // NOTE: Chat stream endpoint moved to TTS service - this needs to be updated
+    // this.websocket = new WebSocket('ws://localhost:8002/tts-stream');
+    console.warn('⚠️ Chat stream endpoint not yet implemented in TTS service');
     
     this.websocket.onopen = () => {
       console.log('🔊 Connected to enhanced chat stream');

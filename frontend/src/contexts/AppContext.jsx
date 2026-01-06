@@ -7,6 +7,7 @@ import { useMemory } from '../contexts/MemoryContext';
 import { transcribeAudio, synthesizeSpeech } from '../utils/apiCall';
 import { generateReplyOpenAI, processOpenAIStream, generateReplyOpenAINonStreaming, convertToOpenAIMessages } from '../utils/openaiApi';
 import { ttsClient } from '../utils/apiCall';
+import { processAntiRepetition } from '../utils/antiRepetition';
 
 
 const AppContext = createContext(null);
@@ -81,9 +82,55 @@ async function generateAndShowImage(promptText) {
 // Helper function to generate truly unique IDs
 const generateUniqueId = () => `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
+// Helper function to get story tracker context for injection into prompts
+const getStoryTrackerContext = () => {
+  try {
+    const saved = localStorage.getItem('eloquent-story-tracker');
+    if (!saved) return '';
+    
+    const tracker = JSON.parse(saved);
+    const sections = [];
+    
+    if (tracker.characters?.length > 0) {
+      const chars = tracker.characters.map(c => c.notes ? `${c.value} (${c.notes})` : c.value).join(', ');
+      sections.push(`Characters: ${chars}`);
+    }
+    
+    if (tracker.inventory?.length > 0) {
+      const items = tracker.inventory.map(i => i.notes ? `${i.value} (${i.notes})` : i.value).join(', ');
+      sections.push(`Inventory: ${items}`);
+    }
+    
+    if (tracker.locations?.length > 0) {
+      const locs = tracker.locations.map(l => l.notes ? `${l.value} (${l.notes})` : l.value).join(', ');
+      sections.push(`Locations: ${locs}`);
+    }
+    
+    if (tracker.plotPoints?.length > 0) {
+      const plots = tracker.plotPoints.map(p => `• ${p.notes ? `${p.value}: ${p.notes}` : p.value}`).join('\n');
+      sections.push(`Key Events:\n${plots}`);
+    }
+    
+    if (tracker.customFields?.length > 0) {
+      const custom = tracker.customFields.map(c => c.notes ? `${c.value}: ${c.notes}` : c.value).join(', ');
+      sections.push(`Additional: ${custom}`);
+    }
+    
+    if (sections.length === 0) return '';
+    
+    return `\n\n[STORY STATE - Use this to maintain consistency]\n${sections.join('\n')}`;
+  } catch (e) {
+    console.error('Error reading story tracker:', e);
+    return '';
+  }
+};
+
 // Helper function to build system prompt from character data
 const buildSystemPrompt = (character) => {
   if (!character) return null;
+  
+  // Get story tracker context
+  const storyContext = getStoryTrackerContext();
 
   return `You are ${character.name}, ${character.description}.
 
@@ -101,7 +148,7 @@ ${character.example_dialogue && character.example_dialogue.length > 0
     ? `EXAMPLE DIALOGUE:
 ${character.example_dialogue.map(msg =>
       `${msg.role === 'character' ? character.name : 'User'}: ${msg.content}`
-    ).join('\n')}` : ''}`;
+    ).join('\n')}` : ''}${storyContext}`;
 };
 
 
@@ -287,6 +334,40 @@ const drawAvatar = (canvas, imageUrl, name) => {
       return false;
     }
   }, [conversations, activeConversation, setActiveConversation]);
+
+  const deleteAllConversations = useCallback(() => {
+    try {
+      // Clear all conversations
+      setConversations([]);
+      setActiveConversation(null);
+      setMessages([]);
+      
+      // Clear from localStorage
+      try {
+        localStorage.removeItem('Eloquent-conversations');
+        localStorage.removeItem('Eloquent-conversations-index');
+        localStorage.removeItem('Eloquent-active-conversation');
+        
+        // Also clear any individual conversation message storage
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith('Eloquent-conversation-')) {
+            keysToRemove.push(key);
+          }
+        }
+        keysToRemove.forEach(key => localStorage.removeItem(key));
+      } catch (storageError) {
+        console.error("Storage error during delete all:", storageError);
+      }
+      
+      return true;
+    } catch (e) {
+      console.error("Error in deleteAllConversations:", e);
+      return false;
+    }
+  }, [setConversations, setActiveConversation, setMessages]);
+
   const renameConversation = (id, newName) => {
     setConversations(prevConversations =>
       prevConversations.map(conv =>
@@ -302,6 +383,7 @@ const drawAvatar = (canvas, imageUrl, name) => {
   };
 
   const [settings, setSettings] = useState({
+    directProfileInjection: false, // <-- ADD THIS
     temperature: 0.7,
     max_tokens: -1,
     top_p: 0.9,
@@ -335,12 +417,35 @@ const drawAvatar = (canvas, imageUrl, name) => {
 // If single GPU mode, everything goes to port 8000. Otherwise, secondary/memory go to 8001
   const SECONDARY_API_URL = isSingleGpuMode ? "http://localhost:8000" : "http://localhost:8001";
   const MEMORY_API_URL = isSingleGpuMode ? "http://localhost:8000" : "http://localhost:8001";
+  const TTS_API_URL = "http://localhost:8002"; // TTS service runs on port 8002
   const BACKEND = import.meta.env.VITE_API_URL || (isSingleGpuMode ? "http://127.0.0.1:8000" : "http://127.0.0.1:8001");
   const VITE_API_URL = isSingleGpuMode ? "http://127.0.0.1:8000" : "http://127.0.0.1:8001";
 
 
 
 
+// Keep TTS WebSocket always connected when TTS autoplay is enabled
+useEffect(() => {
+  if (settings.ttsAutoPlay) {
+    console.log("🔌 [TTS] Keeping WebSocket connected for instant TTS");
+    if (!ttsClient.socket || ttsClient.socket.readyState !== 1) {
+      ttsClient.connect(
+        () => console.log("✅ [TTS] WebSocket connected and ready"),
+        () => {
+          console.log("🔌 [TTS] WebSocket disconnected, reconnecting...");
+          // Auto-reconnect if it disconnects
+          if (settings.ttsAutoPlay) {
+            setTimeout(() => ttsClient.connect(), 1000);
+          }
+        },
+        (err) => console.error("❌ [TTS] WebSocket error:", err)
+      );
+    }
+  } else {
+    // Disconnect if TTS autoplay is off
+    ttsClient.disconnect();
+  }
+}, [settings.ttsAutoPlay]);
 
   useEffect(() => {
     const loadSavedConversations = () => {
@@ -395,13 +500,32 @@ const handleStopGeneration = useCallback(() => {
 const startStreamingTTS = useCallback((messageId) => {
     window.streamingAudioPlaying = false; 
     ttsClient.audioQueue = [];   
-  if (!settings.ttsAutoPlay || !settings.ttsEnabled) return;
+  
+  console.log(`🔍 [TTS Check] ttsAutoPlay: ${settings.ttsAutoPlay}, ttsEnabled: ${settings.ttsEnabled}`);
+  if (!settings.ttsAutoPlay || !settings.ttsEnabled) {
+    console.log("❌ [TTS] Autoplay or TTS disabled, not starting streaming TTS");
+    return;
+  }
 
   // TIMING: Record when we start the TTS process
   isFirstTextChunk.current = true;
   console.log(`⏱️ [TTS Timing] Initializing TTS for message ${messageId}`);
   streamingTtsMessageIdRef.current = messageId;
   setIsAutoplaying(true);
+  
+  // CRITICAL: Send TTS settings FIRST before any text
+  console.log("🔧 [TTS] Sending settings for new streaming session");
+  const streamingTtsSettings = {
+    engine: settings.ttsEngine || 'kokoro',
+    voice: settings.ttsVoice || 'af_heart',
+    exaggeration: settings.ttsExaggeration || 0.5,
+    cfg: settings.ttsCfg || 0.5,
+    audio_prompt_path: (settings.ttsEngine === 'chatterbox' && settings.ttsVoice !== 'default') 
+      ? settings.ttsVoice 
+      : null
+  };
+  
+  ttsClient.send(streamingTtsSettings);
   
   // RESET the callback for each new message
   ttsClient.onAudioQueueUpdate = async () => {
@@ -413,12 +537,12 @@ const startStreamingTTS = useCallback((messageId) => {
       window.streamingAudioPlaying = true;
       
       // TIMING: Record when speech actually starts and calculate latency
-speechStartTime.current = performance.now();
-const ttsLatency = speechStartTime.current - textGenerationStartTime.current;
-const fullCycleLatency = speechStartTime.current - promptSubmissionStartTime.current;
+      speechStartTime.current = performance.now();
+      const ttsLatency = speechStartTime.current - textGenerationStartTime.current;
+      const fullCycleLatency = speechStartTime.current - promptSubmissionStartTime.current;
 
-console.log(`🚀 [TTS Timing] Speech started! TTS latency: ${ttsLatency.toFixed(0)}ms`);
-console.log(`🚀 [Full Cycle] Complete latency (prompt → speech): ${fullCycleLatency.toFixed(0)}ms`);
+      console.log(`🚀 [TTS Timing] Speech started! TTS latency: ${ttsLatency.toFixed(0)}ms`);
+      console.log(`🚀 [Full Cycle] Complete latency (prompt → speech): ${fullCycleLatency.toFixed(0)}ms`);
       
       setIsPlayingAudio(messageId);
 
@@ -448,15 +572,8 @@ console.log(`🚀 [Full Cycle] Complete latency (prompt → speech): ${fullCycle
     }
   };
   
-  // Connect if needed
-  if (!ttsClient.socket || ttsClient.socket.readyState !== 1) {
-    ttsClient.connect(
-      () => console.log("✅ [TTS Stream] WebSocket connected."),
-      () => console.log("🛑 [TTS Stream] WebSocket disconnected."),
-      (error) => console.error("❌ [TTS Stream] WebSocket error:", error)
-    );
-  }
-}, [settings.ttsAutoPlay, settings.ttsEnabled, settings.ttsSpeed, ttsClient, setAudioQueue, setIsAutoplaying]);
+  // Settings are now sent in startStreamingTTS - no need to send here
+}, [settings, ttsClient, setAudioQueue, setIsAutoplaying]);
 const playNextChunk = async () => {
     if (ttsClient.audioQueue.length === 0 || isChunkPlaying) return;
     
@@ -500,13 +617,7 @@ const addStreamingText = useCallback((newTextChunk) => {
 const endStreamingTTS = useCallback(() => {
     if (streamingTtsMessageIdRef.current) {
         console.log(`⏹️ [TTS Stream] Ending for message ${streamingTtsMessageIdRef.current}`);
-        
-        // This is correct. It tells the backend the stream of text is over.
-        ttsClient.closeStream(); 
-        
-        // REMOVE OR COMMENT OUT THIS LINE:
-        // ttsClient.disconnect(); 
-        
+        ttsClient.closeStream();
         streamingTtsMessageIdRef.current = null;
     }
 }, [ttsClient]);
@@ -566,63 +677,54 @@ const fetchAvailableSTTEngines = useCallback(async () => {
 
 // 2. Generate image via POST /sd/txt2img
 // Replace the entire function with this updated version:
-const generateImage = useCallback(async (prompt, opts) => {
-  console.log("Starting image generation with prompt:", prompt);
+const generateImage = useCallback(async (prompt, opts, gpuId = 0) => {
+  console.log(`Starting image generation for GPU ${gpuId} with prompt:`, prompt);
   console.log("Image generation options:", opts);
 
-  // Define imageEngine at the top so it's available for all logic
+  // Use settings from the context
   const imageEngine = settings.imageEngine || 'auto1111';
 
-  // Nest the mapSampler function here so it has access to imageEngine
-const mapSamplerForBackend = (samplerNameFromFrontend) => {
-  if (imageEngine === 'EloDiffusion') {
-    // For EloDiffusion (stable-diffusion-cpp), the frontend already sends
-    // the sampler names in the correct snake_case format (e.g., 'euler_a', 'dpmpp2m').
-    // So, we just return it directly.
-    return samplerNameFromFrontend;
-  }
+  // Determine the correct API URL based on the target GPU
+  const targetApiUrl = (imageEngine === 'EloDiffusion' && gpuId === 1) ? MEMORY_API_URL : PRIMARY_API_URL;
+  const endpoint = imageEngine === 'EloDiffusion'
+    ? `${targetApiUrl}/sd-local/txt2img`
+    : `${PRIMARY_API_URL}/sd/txt2img`;
 
-  // This part is for Automatic1111 (External API).
-  // A1111 generally expects human-readable names (e.g., "Euler a", "DPM++ 2M Karras").
-  // If SimpleChatImageButton.jsx sends snake_case names, we need a mapping here.
-  const automatic1111SamplerMapping = {
-    'euler_a': 'Euler a',
-    'euler': 'Euler',
-    'dpmpp2m': 'DPM++ 2M Karras', // Common A1111 name
-    'dpmpp2s_a': 'DPM++ 2S a Karras',
-    'heun': 'Heun',
-    'dpm2': 'DPM2',
-    'ddim_trailing': 'DDIM',
-    // Add more mappings here if other samplers from SimpleChatImageButton.jsx
-    // have different human-readable names in A1111.
-    // If a sampler is not found here, it defaults to sending the snake_case name directly.
+  const mapSamplerForBackend = (samplerNameFromFrontend) => {
+    if (imageEngine === 'EloDiffusion') {
+      return samplerNameFromFrontend;
+    }
+    const automatic1111SamplerMapping = {
+      'euler_a': 'Euler a',
+      'euler': 'Euler',
+      'dpmpp2m': 'DPM++ 2M Karras',
+      'dpmpp2s_a': 'DPM++ 2S a Karras',
+      'heun': 'Heun',
+      'dpm2': 'DPM2',
+      'ddim_trailing': 'DDIM',
+    };
+    return automatic1111SamplerMapping[samplerNameFromFrontend] || samplerNameFromFrontend;
   };
-  // Attempt to map, or fall back to sending the original name if no specific A1111 map exists.
-  return automatic1111SamplerMapping[samplerNameFromFrontend] || samplerNameFromFrontend;
-};
 
   setIsImageGenerating(true);
   clearError();
   try {
     const payload = {
       prompt,
+      gpu_id: gpuId, // Pass the correct GPU ID
       negative_prompt: opts.negative_prompt || "",
       width: opts.width || 512,
       height: opts.height || 512,
       steps: opts.steps || 20,
       guidance_scale: opts.guidance_scale || 7.0,
-      sampler: mapSamplerForBackend(opts.sampler || "euler_a"), // Default to 'euler_a' for EloDiffusion if opts.sampler is not set
+      sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
       seed: opts.seed || -1,
       ...(imageEngine !== 'EloDiffusion' && {
         model: opts.model,
         cfg_scale: opts.guidance_scale || 7.0,
-        sampler_name: mapSamplerForBackend(opts.sampler || "Euler a") // Default for A1111 if opts.sampler is not set
+        sampler_name: mapSamplerForBackend(opts.sampler || "Euler a")
       })
     };
-
-    const endpoint = imageEngine === 'EloDiffusion'
-      ? `${MEMORY_API_URL}/sd-local/txt2img`
-      : `${MEMORY_API_URL}/sd/txt2img`;
 
     console.log("Sending to SD API:", payload);
     console.log("Using image engine:", imageEngine);
@@ -651,8 +753,9 @@ const mapSamplerForBackend = (samplerNameFromFrontend) => {
   } finally {
     setIsImageGenerating(false);
   }
-  // Add settings.imageEngine to the dependency array
-}, [clearError, setApiError, MEMORY_API_URL, settings.imageEngine]);
+  // Use the full settings object as a dependency
+}, [clearError, setApiError, PRIMARY_API_URL, MEMORY_API_URL, settings, setIsImageGenerating, setApiError]);
+
 
 
 
@@ -879,25 +982,30 @@ try {
   // 1. Synthesize Speech -> Blob URL
   console.log(`🗣️ [TTS] Calling synthesizeSpeech API for message ${messageId}...`);
   
-  // NEW: Build options object for both engines
+  // Build options object for TTS engines
 const ttsOptions = {
-  voice: settings.ttsVoice || (settings.ttsEngine === 'kyutai' ? 'default' : 'af_heart'),
+  voice: settings.ttsVoice || 'af_heart',
   engine: settings.ttsEngine || 'kokoro'
 };
 
-  // NEW: Add Chatterbox-specific parameters if using Chatterbox
-  if (settings.ttsEngine === 'chatterbox') {
-    ttsOptions.exaggeration = settings.ttsExaggeration || 0.5;
-    ttsOptions.cfg = settings.ttsCfg || 0.5;
-    
-    // If using a custom voice, add the file path
-    if (settings.ttsVoice && settings.ttsVoice !== 'default' && settings.ttsVoice.startsWith('voice_ref_')) {
-      ttsOptions.audio_prompt_path = `/static/voice_references/${settings.ttsVoice}`;
-    }
+// Add Chatterbox-specific parameters if using Chatterbox
+if (settings.ttsEngine === 'chatterbox') {
+  ttsOptions.exaggeration = settings.ttsExaggeration || 0.5;
+  ttsOptions.cfg = settings.ttsCfg || 0.5;
+  
+  console.log(`🔊 [TTS] Chatterbox params - exaggeration: ${ttsOptions.exaggeration}, cfg: ${ttsOptions.cfg}`);
+  
+  // If using a custom voice, add the file path
+  if (settings.ttsVoice && settings.ttsVoice !== 'default' && !settings.ttsVoice.startsWith('voice_ref_')) {
+    // For now, we'll use default voice. Later we can implement voice upload
+    console.log(`🔊 [TTS] Using Chatterbox default voice`);
   }
+}
 
-  // UPDATED: Pass options object instead of just voice
-  audioUrl = await synthesizeSpeech(text, ttsOptions);
+console.log(`🔊 [TTS] Using engine: ${ttsOptions.engine} with options:`, ttsOptions);
+
+// Pass options object to synthesizeSpeech
+audioUrl = await synthesizeSpeech(text, ttsOptions);
   
   // UNCHANGED: Everything after this stays exactly the same
   if (!audioUrl) throw new Error("SynthesizeSpeech returned an invalid URL.");
@@ -1109,7 +1217,39 @@ const loadModel = useCallback(
   },
   [fetchLoadedModels, PRIMARY_API_URL, SECONDARY_API_URL, settings.contextLength]
 );
+const loadSttEngine = useCallback(async (engine = 'whisper', gpuId = 1) => {
+  try {
+    const response = await fetch(`${SECONDARY_API_URL}/stt/load-engine`, { // <-- CORRECTED
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine, gpu_id: gpuId }),
+    });
+    if (!response.ok) throw new Error('Failed to load STT engine');
+    const data = await response.json();
+    console.log('STT Engine loaded:', data.message);
+    alert('STT Engine loaded successfully on GPU ' + gpuId);
+  } catch (error) {
+    console.error('Error loading STT engine:', error);
+    alert('Failed to load STT engine.');
+  }
+}, [SECONDARY_API_URL]);
 
+const loadTtsEngine = useCallback(async (engine = 'kokoro', gpuId = 1) => {
+  try {
+    const response = await fetch(`${SECONDARY_API_URL}/tts/load-engine`, { // <-- CORRECTED
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine, gpu_id: gpuId }),
+    });
+    if (!response.ok) throw new Error('Failed to load TTS engine');
+    const data = await response.json();
+    console.log('TTS Engine loaded:', data.message);
+    alert('TTS Engine loaded successfully on GPU ' + gpuId);
+  } catch (error) {
+    console.error('Error loading TTS engine:', error);
+    alert('Failed to load TTS engine.');
+  }
+}, [SECONDARY_API_URL]); // <-- CORRECTED
 const unloadModel = useCallback(
   async (name) => {
     try {
@@ -1187,19 +1327,50 @@ const loadCharacters = useCallback(async () => {
 }, [activeConversation, conversations]);
 
 const saveCharacter = useCallback((data) => {
+  let savedCharacter = data;
+  
   setCharacters(prev => {
     const list = prev.slice();
+    
     if (!data.id) {
-      data.id = `char_${Date.now()}`;
-      data.created_at = new Date().toISOString().split('T')[0];
-      list.push(data);
+      // Create new character
+      savedCharacter = {
+        ...data,
+        id: `char_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+        created_at: new Date().toISOString().split('T')[0]
+      };
+      list.push(savedCharacter);
+      console.log('Creating new character:', savedCharacter.name, 'with ID:', savedCharacter.id);
     } else {
+      // Update existing character
       const idx = list.findIndex(c => c.id === data.id);
-      if (idx > -1) list[idx] = data;
+      if (idx > -1) {
+        savedCharacter = { ...data };
+        list[idx] = savedCharacter;
+        console.log('Updating existing character:', savedCharacter.name, 'with ID:', savedCharacter.id);
+      } else {
+        // ID provided but character not found, treat as new
+        savedCharacter = {
+          ...data,
+          id: `char_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          created_at: new Date().toISOString().split('T')[0]
+        };
+        list.push(savedCharacter);
+        console.log('Character not found, creating new:', savedCharacter.name, 'with ID:', savedCharacter.id);
+      }
     }
-    localStorage.setItem('llm-characters', JSON.stringify(list));
+    
+    try {
+      localStorage.setItem('llm-characters', JSON.stringify(list));
+      console.log('Characters saved to localStorage:', list.length, 'total characters');
+    } catch (error) {
+      console.error('Failed to save characters to localStorage:', error);
+    }
+    
     return list;
   });
+  
+  return savedCharacter; // Return the character with its final ID
 }, []);
 
 const deleteCharacter = useCallback((id) => {
@@ -1213,8 +1384,21 @@ const deleteCharacter = useCallback((id) => {
 
 const duplicateCharacter = useCallback((id) => {
   const orig = characters.find(c => c.id === id);
-  if (!orig) return;
-  saveCharacter({ ...orig, id: `char_${Date.now()}`, name: `${orig.name} (Copy)` });
+  if (!orig) {
+    console.error('Original character not found for duplication:', id);
+    return;
+  }
+  
+  // Create a deep copy and clear the ID so saveCharacter will assign a new one
+  const duplicatedData = { 
+    ...orig, 
+    id: null, // Clear ID so saveCharacter will create a new one
+    name: `${orig.name} (Copy)`,
+    created_at: new Date().toISOString().split('T')[0] // Update creation date
+  };
+  
+  console.log('Duplicating character:', orig.name, '→', duplicatedData.name);
+  saveCharacter(duplicatedData);
 }, [characters, saveCharacter]);
 
 const applyCharacter = useCallback((id) => {
@@ -1280,6 +1464,7 @@ const sendDualMessage = useCallback(async (text, webSearchEnabled = false) => {
           messages: buildHistory('primary','secondary', primaryCharacter, secondaryModel), 
           gpu_id: 0, 
           userProfile,
+          authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
           use_web_search: webSearchEnabled // NEW: Add to primary
         }) 
       }).then(r => r.json()),
@@ -1291,6 +1476,7 @@ const sendDualMessage = useCallback(async (text, webSearchEnabled = false) => {
           messages: buildHistory('secondary','primary', secondaryCharacter, primaryModel), 
           gpu_id: 1, 
           userProfile,
+          authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
           use_web_search: false // Usually only primary should do web search in dual mode
         }) 
       }).then(r => r.json())
@@ -1307,7 +1493,7 @@ const sendDualMessage = useCallback(async (text, webSearchEnabled = false) => {
   } finally {
     setIsGenerating(false);
   }
-}, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, observeConversationWithAgent]);
+}, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent]);
 // In AppContext.jsx, replace the entire generateReply function
 // In AppContext.jsx, replace the entire generateReply function
 // In AppContext.jsx, replace the entire generateReply function
@@ -1324,11 +1510,10 @@ const generateReply = useCallback(async (text, recentMessages) => {
             const loreBlock = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
             memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreBlock;
         }
-        let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : 'You are a helpful assistant...';
+        let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
         if (memoryContext) {
             systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
         }
-
         const sanitizedMessages = recentMessages
             .filter(msg => (msg.role === 'user' || msg.role === 'bot') && typeof msg.content === 'string' && msg.content.trim() !== '')
             .map(msg => ({
@@ -1373,7 +1558,7 @@ const generateReply = useCallback(async (text, recentMessages) => {
             const loreContext = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
             memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreContext;
         }
-        let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : 'You are a helpful assistant...';
+        let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
         if (memoryContext) {
             systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
         }
@@ -1389,6 +1574,7 @@ const generateReply = useCallback(async (text, recentMessages) => {
             rag_docs: settings.selectedDocuments || [],
             gpu_id: 0,
             userProfile: { id: userProfile?.id ?? 'anonymous' },
+            authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
             memoryEnabled: true
         };
         if (settings.streamResponses) {
@@ -1471,11 +1657,10 @@ const generateReplyWithOpenAI = useCallback(async (text, recentMessages) => {
         memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreContext;
     }
 
-    let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : 'You are a helpful assistant.';
+    let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
     if (memoryContext) {
         systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
     }
-
     const finalMessages = convertToOpenAIMessages(recentMessages, systemMsg);
 
     if (settings.streamResponses) {
@@ -1510,7 +1695,7 @@ const generateReplyWithOpenAI = useCallback(async (text, recentMessages) => {
     buildSystemPrompt, generateReplyOpenAI, processOpenAIStream, 
     PRIMARY_API_URL, SECONDARY_API_URL
 ]);
-const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
+const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNote = null) => {
   if (!activeConversation || !primaryModel) return;
   promptSubmissionStartTime.current = performance.now();
   console.log(`⏱️ [Full Cycle] User submitted prompt: "${text.substring(0, 30)}..."`);
@@ -1558,27 +1743,84 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
           );
     }
 
-    // 3) Build memory + lore context
-    const agentMem = await fetchMemoriesFromAgent(text);
-    const lore     = await fetchTriggeredLore(text, activeCharacter);
-    let memoryContext = '';
-
-    if (agentMem.length) {
-      memoryContext = agentMem.map((m,i) => `[${i+1}] ${m.content}`).join('\n');
-    }
-    if (lore.length) {
-      const loreBlock = lore
-        .map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l)))
-        .join('\n');
-      memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreBlock;
-    }
-
+     // 3) Build System Prompt with layered context
     let systemMsg = activeCharacter
       ? buildSystemPrompt(activeCharacter)
-      : 'You are a helpful assistant...';
-    if (memoryContext) {
-      systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
+      : ('You are a helpful assistant.' + getStoryTrackerContext()); // Fallback if no character is active
+
+    let contextToAdd = '';
+
+    // Step 3a: Determine the primary context (EITHER Full Profile Injection OR Memory Agent)
+    if (settings.directProfileInjection) {
+        console.log("🧠 [Direct Injection] Mode ON. Fetching full memory profile from backend.");
+        console.log("🧠 [Direct Injection] Debug - userProfile:", userProfile);
+        console.log("🧠 [Direct Injection] Debug - userProfile?.id:", userProfile?.id);
+        console.log("🧠 [Direct Injection] Debug - memoryContext?.activeProfileId:", memoryContext?.activeProfileId);
+        
+        // FETCH a fresh, complete copy of the user's memories from the backend JSON file.
+        const userId = userProfile?.id || memoryContext?.activeProfileId;
+        if (userId) {
+            try {
+                console.log(`🧠 [Direct Injection] Fetching memories for user ID: ${userId}`);
+                console.log(`🧠 [Direct Injection] Using API URL: ${MEMORY_API_URL}/memory/get_all?user_id=${userId}`);
+                
+                const res = await fetch(`${MEMORY_API_URL}/memory/get_all?user_id=${userId}`);
+                console.log(`🧠 [Direct Injection] Response status: ${res.status}`);
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    console.log(`🧠 [Direct Injection] Response data:`, data);
+                    
+                    if (data.memories && data.memories.length > 0) {
+                        // Format the fetched memories exactly like the Memory Browser
+                        const profileString = data.memories.map(mem => {
+                            const category = mem.category?.replace('_', ' ') || 'memory';
+                            const importance = mem.importance?.toFixed(1) || 'N/A';
+                            return `• ${mem.content} (Category: ${category}, Importance: ${importance})`;
+                        }).join('\n');
+                        
+                        contextToAdd += `\n\nUSER MEMORY PROFILE:\n${profileString}`;
+                        console.log(`🧠 [Direct Injection] ✅ Successfully injected ${data.memories.length} memories from backend.`);
+                        console.log(`🧠 [Direct Injection] Context to add:`, contextToAdd);
+                    } else {
+                        console.log("🧠 [Direct Injection] No memories found in response data.");
+                    }
+                } else {
+                    const errorText = await res.text();
+                    console.error("🧠 [Direct Injection] Failed to fetch memory profile from backend:", res.status, errorText);
+                }
+            } catch (error) {
+                console.error("🧠 [Direct Injection] Error during memory profile fetch:", error);
+            }
+        } else {
+             console.log("🧠 [Direct Injection] Skipped: No active user ID to fetch profile for.");
+             console.log("🧠 [Direct Injection] userProfile:", userProfile);
+             console.log("🧠 [Direct Injection] memoryContext:", memoryContext);
+        }
+    } else {
+        // Fallback to the original memory agent logic if direct injection is off
+        console.log("🤖 [Memory Agent] Mode ON. Fetching relevant memories.");
+        const agentMem = await fetchMemoriesFromAgent(text);
+        if (agentMem.length) {
+            contextToAdd += `\n\nUSER CONTEXT:\n` + agentMem.map((m,i) => `[${i+1}] ${m.content}`).join('\n');
+        }
     }
+
+    // Step 3b: ALWAYS add character lore if a character is active
+    if (activeCharacter) {
+        const lore = await fetchTriggeredLore(text, activeCharacter);
+        if (lore.length) {
+          const loreBlock = lore
+            .map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l)))
+            .join('\n');
+          contextToAdd += `\n\nWORLD KNOWLEDGE:\n${loreBlock}`;
+        }
+    }
+
+    // Step 3c: Combine the base system message with all the context we built
+    systemMsg += contextToAdd;
+    
+
 
     // 4) Prepare payload
     const {
@@ -1586,25 +1828,46 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
       top_p,
       top_k,
       repetition_penalty,
+      frequencyPenalty = 0,
+      presencePenalty = 0,
+      antiRepetitionMode = false,
       use_rag,
       selectedDocuments = [],
       streamResponses
     } = settings;
 
+    // Use passed authorNote parameter, fallback to settings
+    const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || null;
+    
+    // IMPORTANT: Add author's note to system message so it works for BOTH local and API models
+    if (effectiveAuthorNote) {
+      systemMsg += `\n\n[AUTHOR'S NOTE - Writing style guidance for this response]\n${effectiveAuthorNote}`;
+      console.log("📝 [Author's Note] Added to system prompt:", effectiveAuthorNote.substring(0, 50) + "...");
+    }
+    
     const payload = {
+      directProfileInjection: settings.directProfileInjection, // <-- ADD THIS
       prompt: formatPrompt(postUserHistory.slice(-5), primaryModel, systemMsg),
       model_name: primaryModel,
       temperature,
       top_p,
       top_k,
       repetition_penalty,
+      frequency_penalty: frequencyPenalty,
+      presence_penalty: presencePenalty,
+      anti_repetition_mode: antiRepetitionMode,
       use_rag,
       rag_docs: selectedDocuments,
       use_web_search: webSearchEnabled,
       gpu_id: 0,
       userProfile: { id: userProfile?.id ?? 'anonymous' },
+      authorNote: effectiveAuthorNote || undefined,
       memoryEnabled: true
     };
+    
+    if (effectiveAuthorNote) {
+      console.log("📝 [Author's Note] Sending with prompt:", effectiveAuthorNote.substring(0, 50) + "...");
+    }
     
     // 5) Streaming vs. Non-Streaming Logic
     if (streamResponses) {
@@ -1625,7 +1888,9 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
         console.log('🔍 [DEBUG] settings.ttsAutoPlay:', settings.ttsAutoPlay);
         console.log('🔍 [DEBUG] ttsEnabled:', ttsEnabled);
         console.log('🔍 [DEBUG] settings.ttsEnabled:', settings.ttsEnabled);
+        console.log('🔍 [DEBUG] CALLING startStreamingTTS NOW');
         startStreamingTTS(botId);
+        console.log('🔍 [DEBUG] startStreamingTTS CALL COMPLETED');
 
         if (primaryIsAPI && primaryModel) {
             // --- API MODEL PATH ---
@@ -1646,7 +1911,7 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
                     response,
                     (token) => { // onToken
                         accumulated += token;
-                        const partial = cleanModelOutput(accumulated);
+                        const partial = cleanModelOutput(accumulated).replace('data: [DONE]', '');
                         
                         const newTextChunk = partial.slice(lastSentContent.length);
                         addStreamingText(newTextChunk);
@@ -1655,7 +1920,24 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
                         setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: partial } : m));
                     },
                     (finalText) => { // onComplete
-                        const cleanedText = cleanModelOutput(finalText);
+                        let cleanedText = cleanModelOutput(finalText);
+                        
+                        // Apply anti-repetition post-processing if enabled
+                        if (settings.detectRepeatedPhrases && settings.antiRepetitionMode) {
+                          const previousBotMessages = messages
+                            .filter(m => m.role === 'bot' || m.role === 'assistant')
+                            .map(m => m.content)
+                            .slice(-5);
+                          
+                          if (previousBotMessages.length > 0) {
+                            const result = processAntiRepetition(cleanedText, previousBotMessages);
+                            if (result.removedPhrases.length > 0) {
+                              console.log('🔄 [Anti-Repetition] Removed phrases:', result.removedPhrases);
+                              cleanedText = result.cleanedResponse;
+                            }
+                          }
+                        }
+                        
                         setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: cleanedText, isStreaming: false } : m));
                         observeConversationWithAgent(text, cleanedText);
                         endStreamingTTS();
@@ -1679,6 +1961,62 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
             const controller = new AbortController();
             setAbortController(controller);
             
+            // This flag will be used to track if the LLM stream is finished.
+            let llmStreamComplete = false;
+            
+            // This function will check if it's safe to close the TTS stream.
+            const checkAndEndTts = () => {
+                // Only end the TTS stream if the LLM has finished AND the audio queue is empty.
+                if (llmStreamComplete && ttsClient.audioQueue.length === 0) {
+                    console.log("✅ [TTS] Conditions met: LLM stream is done and audio queue is empty. Ending TTS stream.");
+                    endStreamingTTS();
+                } else {
+                    console.log(`⏳ [TTS] Waiting to end stream. LLM complete: ${llmStreamComplete}, Audio queue size: ${ttsClient.audioQueue.length}`);
+                }
+            };
+
+            // We need to update the onAudioQueueUpdate callback to call our new checker.
+            ttsClient.onAudioQueueUpdate = async () => {
+                console.log(`🎵 [Audio Queue] Queue updated, length: ${ttsClient.audioQueue.length}`);
+                setAudioQueue([...ttsClient.audioQueue]);
+
+                if (ttsClient.audioQueue.length > 0 && !window.streamingAudioPlaying) {
+                    window.streamingAudioPlaying = true;
+                    speechStartTime.current = performance.now();
+                    const ttsLatency = speechStartTime.current - textGenerationStartTime.current;
+                    const fullCycleLatency = speechStartTime.current - promptSubmissionStartTime.current;
+
+                    console.log(`🚀 [TTS Timing] Speech started! TTS latency: ${ttsLatency.toFixed(0)}ms`);
+                    console.log(`🚀 [Full Cycle] Complete latency (prompt → speech): ${fullCycleLatency.toFixed(0)}ms`);
+                    setIsPlayingAudio(botId);
+                    
+                    while (ttsClient.audioQueue.length > 0) {
+                        const arrayBuffer = ttsClient.audioQueue.shift();
+                        const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
+                        const audioUrl = URL.createObjectURL(blob);
+                        const audio = new Audio(audioUrl);
+                        audio.playbackRate = settings.ttsSpeed || 1.0;
+                        
+                        await new Promise(resolve => {
+                            audio.onended = () => {
+                                URL.revokeObjectURL(audioUrl);
+                                resolve();
+                            };
+                            audio.play().catch(e => {
+                                console.error("Audio playback error:", e);
+                                resolve(); // Resolve even on error to not block the queue
+                            });
+                        });
+                    }
+                    
+                    window.streamingAudioPlaying = false;
+                    setIsPlayingAudio(null);
+                    
+                    // After the queue is finished playing, check if we can end the TTS stream.
+                    checkAndEndTts();
+                }
+            };
+
             try {
                 const streamRes = await fetch(`${PRIMARY_API_URL}/generate`, {
                     method: 'POST',
@@ -1695,54 +2033,72 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
                 let lastSentContent = '';
 
                 while (true) {
-                    const { done: readerDone, value } = await reader.read();
-                    if (readerDone) {
-                        const finalText = cleanModelOutput(accumulated);
-                        setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: finalText, isStreaming: false } : m));
-                        await observeConversationWithAgent(text, finalText);
-                        endStreamingTTS();
-                        break;
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        break; // Exit the loop when the fetch stream is done.
                     }
 
                     const chunk = decoder.decode(value, { stream: true });
                     for (const line of chunk.split('\n\n')) {
                         if (!line.startsWith('data: ')) continue;
                         const data = line.slice(6);
+                        
+                        // The "[DONE]" signal from the LLM is now just a signal to update our flag.
                         if (data === '[DONE]') {
-                          const finalText = cleanModelOutput(accumulated);
-                          setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: finalText, isStreaming: false } : m));
-                          await observeConversationWithAgent(text, finalText);
-
-                          // FIXED: Wait for final audio before ending TTS
-                          console.log('🎵 [TTS] LLM stream ended, waiting 1s for final audio...');
-                          setTimeout(() => {
-                            console.log('🎵 [TTS] Timeout reached, ending TTS stream');
-                            endStreamingTTS();
-                          }, 1000);
-
-                          return;
-                        }
-                        try {
-                            const parsed = JSON.parse(data);
-                            if (parsed.text) {
-                                accumulated += parsed.text;
-                                const partial = cleanModelOutput(accumulated);
-
-                                const newTextChunk = partial.slice(lastSentContent.length);
-                                addStreamingText(newTextChunk);
-                                lastSentContent = partial;
-
-                                setMessages(prev =>
-                                    prev.map(m =>
-                                        m.id === botId
-                                            ? { ...m, content: partial }
-                                            : m
-                                    )
-                                );
+                            llmStreamComplete = true;
+                            let finalText = cleanModelOutput(accumulated);
+                            
+                            // Apply anti-repetition post-processing if enabled
+                            if (settings.detectRepeatedPhrases && settings.antiRepetitionMode) {
+                              const previousBotMessages = messages
+                                .filter(m => m.role === 'bot' || m.role === 'assistant')
+                                .map(m => m.content)
+                                .slice(-5);
+                              
+                              if (previousBotMessages.length > 0) {
+                                const result = processAntiRepetition(finalText, previousBotMessages);
+                                if (result.removedPhrases.length > 0) {
+                                  console.log('🔄 [Anti-Repetition] Removed phrases:', result.removedPhrases);
+                                  finalText = result.cleanedResponse;
+                                }
+                              }
                             }
-                        } catch (e) {
-                           // Ignore parsing errors for non-JSON chunks
+                            
+                            setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: finalText, isStreaming: false } : m));
+                            await observeConversationWithAgent(text, finalText);
+                            
+                            // Check if we can end the stream now.
+                            checkAndEndTts();
+                            continue; // Continue to the next line in the chunk.
                         }
+                        
+                        try {
+                          const parsed = JSON.parse(data);
+                          let token = '';
+
+                          // This block now handles multiple possible data structures
+                          if (parsed.text) {
+                              token = parsed.text; // Handles { "text": "..." }
+                          } else if (parsed.choices && parsed.choices[0]?.delta?.content) {
+                              token = parsed.choices[0].delta.content; // Handles OpenAI style
+                          } else if (parsed.choices && parsed.choices[0]?.text) {
+                              token = parsed.choices[0].text; // Handles older Llama.cpp style
+                          }
+
+                          if (token && token !== '[DONE]') {
+                              accumulated += token;
+                              const partial = cleanModelOutput(accumulated);
+                              const newTextChunk = partial.slice(lastSentContent.length);
+                              
+                              addStreamingText(newTextChunk);
+                              lastSentContent = partial;
+
+                              setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: partial } : m));
+                          }
+                      } catch (e) {
+                          // This catch block will now only handle true JSON parsing errors
+                          console.error("Stream parsing error:", e, "Data:", data);
+                      }
                     }
                 }
             } catch (error) {
@@ -1753,7 +2109,9 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false) => {
                     console.error("Local stream error:", error);
                     setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: `[Stream Error: ${error.message}]`, isStreaming: false } : m));
                 }
-                endStreamingTTS();
+                // If an error occurs, ensure we mark the stream as complete to allow cleanup.
+                llmStreamComplete = true;
+                checkAndEndTts();
             } finally {
                 setAbortController(null);
             }
@@ -2078,16 +2436,7 @@ cleanedText = await generateReplyOpenAINonStreaming({
   }, [PRIMARY_API_URL]);
 
 // REPLACE WITH this approach (one-time only on startup)
-useEffect(() => {
-  // Initial fetch on page load - only once
-  fetchModels();
-  fetchLoadedModels();
-  fetchDocuments();
-  loadCharacters();
-  fetchAvailableSTTEngines();
-  
-  // No interval, no dependencies - runs exactly once on component mount
-}, []);
+
 
 // Then add a new, separate useEffect that runs just once at startup:
 
@@ -2217,12 +2566,42 @@ useEffect(() => {
   
   syncGpuMode();
 }, []);
-  
+
+useEffect(() => {
+  // Load backend settings on startup
+  const loadBackendSettings = async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/models/get-settings`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'success' && data.settings) {
+          // Update settings with backend values (backend is source of truth)
+          updateSettings(data.settings);
+          console.log("✅ Loaded settings from backend:", data.settings);
+        }
+      }
+    } catch (error) {
+      console.warn("Could not load backend settings:", error);
+    }
+  };
+
+  // Initial fetch on page load - only once
+  console.log("✅ Restored: Fetching model lists on startup...");
+  loadBackendSettings();
+  fetchModels();
+  fetchLoadedModels();
+  fetchDocuments();
+  loadCharacters();
+
+}, []);
+
 const contextValue = useMemo(() => ({
     messages,
     setMessages,
     taskProgress,
     setTaskProgress,
+    loadTtsEngine,
+    loadSttEngine,
     availableModels,
     setAvailableModels,
     loadedModels,
@@ -2231,6 +2610,7 @@ const contextValue = useMemo(() => ({
     loadModel,
     unloadModel,
     setIsGenerating,
+    fetchModels, 
     conversations,
     activeConversation,
     isGenerating,
@@ -2243,6 +2623,7 @@ const contextValue = useMemo(() => ({
     isSingleGpuMode,
     setActiveConversation: setActiveConversationWithMessages,
     deleteConversation,
+    deleteAllConversations,
     renameConversation,
     createNewConversation,
     getActiveConversationData,
@@ -2366,9 +2747,10 @@ const contextValue = useMemo(() => ({
     startAgentConversation,
     agentConversationActive,
     PRIMARY_API_URL,
+    TTS_API_URL,
     clearError: () => setApiError(null)
 }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL
 ]);
 
 return (

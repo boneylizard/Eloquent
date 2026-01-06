@@ -4,7 +4,7 @@ import { Button } from './ui/button';
 import { Upload, FileText, X, Search, RotateCcw } from 'lucide-react';
 
 
-const ForensicLinguistics = () => {
+const ForensicLinguistics = ({ isOpen = true, onClose }) => {
     const getScoreInterpretation = (score) => {
     if (score >= 0.8) return "Very high similarity - likely same author";
     if (score >= 0.6) return "High similarity - probably same author";
@@ -13,6 +13,9 @@ const ForensicLinguistics = () => {
     return "Very low similarity - likely different author";
   };
   const { BACKEND, clearError, apiError, setTaskProgress, taskProgress } = useApp();
+
+  // Don't render if explicitly closed (for overlay mode)
+  if (isOpen === false) return null;
 
 const [embeddingModels, setEmbeddingModels] = useState({
   models: {
@@ -565,16 +568,18 @@ if (data.task_id) {
     const total = savedResults.length;
     const avgScores = {
       overall_similarity: 0,
-      lexical_similarity: 0,
-      syntactic_similarity: 0,
-      semantic_similarity: 0,
-      stylistic_similarity: 0,
+      function_words: 0,
+      syntactic_patterns: 0,
+      character_patterns: 0,
+      lexical_complexity: 0,
+      punctuation_style: 0,
+      semantic_score: 0,
       confidence: 0,
     };
 
     savedResults.forEach(result => {
       for (const key in avgScores) {
-        avgScores[key] += result.similarity_scores[key] / total;
+        avgScores[key] += (result.similarity_scores[key] || 0) / total;
       }
     });
     
@@ -586,7 +591,7 @@ if (data.task_id) {
       similarity_scores: avgScores,
       models_averaged: savedResults.map(r => r.modelUsed),
     });
-    setSuccess(`Averaged ${total} results.`);
+    setSuccess(`Averaged ${total} results (showing semantic differences between embedding models).`);
   }, [savedResults]);
 
 useEffect(() => {
@@ -649,28 +654,43 @@ const ResultDisplay = ({ result, title, onSave, isAveraged = false }) => {
         <p className="text-sm text-muted-foreground mt-2">{result.interpretation}</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        {/* Score Breakdown */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* Score Breakdown - OPTION 2: High Semantic Weight */}
+        <div className="p-3 bg-indigo-500/10 rounded-lg border border-indigo-500/20">
+          <div className="font-semibold text-indigo-300">🎯 Semantic (Embedding)</div>
+          <div className="text-2xl font-bold text-indigo-400">{formatScore(scores.semantic_score || 0)}</div>
+          <div className="text-xs text-indigo-300">HIGHEST - Compare models (30%)</div>
+        </div>
         <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/20">
-          <div className="font-semibold text-blue-300">Lexical Similarity</div>
-          <div className="text-2xl font-bold text-blue-400">{formatScore(scores.lexical_similarity)}</div>
-          <div className="text-xs text-blue-300">Word choice & vocabulary</div>
+          <div className="font-semibold text-blue-300">Function Words</div>
+          <div className="text-2xl font-bold text-blue-400">{formatScore(scores.function_words)}</div>
+          <div className="text-xs text-blue-300">Unconscious patterns (25%)</div>
         </div>
         <div className="p-3 bg-green-500/10 rounded-lg border border-green-500/20">
-          <div className="font-semibold text-green-300">Syntactic Similarity</div>
-          <div className="text-2xl font-bold text-green-400">{formatScore(scores.syntactic_similarity)}</div>
-          <div className="text-xs text-green-300">Sentence structure</div>
+          <div className="font-semibold text-green-300">Syntactic Patterns</div>
+          <div className="text-2xl font-bold text-green-400">{formatScore(scores.syntactic_patterns)}</div>
+          <div className="text-xs text-green-300">Structure (20%)</div>
         </div>
         <div className="p-3 bg-purple-500/10 rounded-lg border border-purple-500/20">
-          <div className="font-semibold text-purple-300">Semantic Similarity</div>
-          <div className="text-2xl font-bold text-purple-400">{formatScore(scores.semantic_similarity)}</div>
-          <div className="text-xs text-purple-300">Meaning & context</div>
+          <div className="font-semibold text-purple-300">Character Patterns</div>
+          <div className="text-2xl font-bold text-purple-400">{formatScore(scores.character_patterns)}</div>
+          <div className="text-xs text-purple-300">Writing habits (15%)</div>
         </div>
         <div className="p-3 bg-orange-500/10 rounded-lg border border-orange-500/20">
-          <div className="font-semibold text-orange-300">Stylistic Similarity</div>
-          <div className="text-2xl font-bold text-orange-400">{formatScore(scores.stylistic_similarity)}</div>
-          <div className="text-xs text-orange-300">Writing style</div>
+          <div className="font-semibold text-orange-300">Lexical Complexity</div>
+          <div className="text-2xl font-bold text-orange-400">{formatScore(scores.lexical_complexity)}</div>
+          <div className="text-xs text-orange-300">Vocabulary (5%)</div>
         </div>
+        <div className="p-3 bg-cyan-500/10 rounded-lg border border-cyan-500/20">
+          <div className="font-semibold text-cyan-300">Punctuation Style</div>
+          <div className="text-2xl font-bold text-cyan-400">{formatScore(scores.punctuation_style)}</div>
+          <div className="text-xs text-cyan-300">Formatting (5%)</div>
+        </div>
+        {scores.topic_warning && (
+          <div className="col-span-2 lg:col-span-3 p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
+            <div className="font-semibold text-yellow-300 text-sm">⚠️ {scores.topic_warning}</div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -898,30 +918,50 @@ if (!scores) {
           <p className="text-sm text-muted-foreground mt-2">{analysisResult.interpretation}</p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="p-3 bg-indigo-500/10 rounded-lg border border-indigo-500/20">
+            <div className="font-semibold text-indigo-300">🎯 Semantic (Embedding)</div>
+            <div className="text-2xl font-bold text-indigo-400">{formatScore(scores.semantic_score || 0)}</div>
+            <div className="text-xs text-indigo-300">HIGHEST WEIGHT - Compare models (30%)</div>
+          </div>
+          
           <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/20">
-            <div className="font-semibold text-blue-300">Lexical Similarity</div>
-            <div className="text-2xl font-bold text-blue-400">{formatScore(scores.lexical_similarity)}</div>
-            <div className="text-xs text-blue-300">Word choice & vocabulary</div>
+            <div className="font-semibold text-blue-300">Function Words</div>
+            <div className="text-2xl font-bold text-blue-400">{formatScore(scores.function_words)}</div>
+            <div className="text-xs text-blue-300">Unconscious patterns (25%)</div>
           </div>
           
           <div className="p-3 bg-green-500/10 rounded-lg border border-green-500/20">
-            <div className="font-semibold text-green-300">Syntactic Similarity</div>
-            <div className="text-2xl font-bold text-green-400">{formatScore(scores.syntactic_similarity)}</div>
-            <div className="text-xs text-green-300">Sentence structure</div>
+            <div className="font-semibold text-green-300">Syntactic Patterns</div>
+            <div className="text-2xl font-bold text-green-400">{formatScore(scores.syntactic_patterns)}</div>
+            <div className="text-xs text-green-300">Sentence structure (20%)</div>
           </div>
           
           <div className="p-3 bg-purple-500/10 rounded-lg border border-purple-500/20">
-            <div className="font-semibold text-purple-300">Semantic Similarity</div>
-            <div className="text-2xl font-bold text-purple-400">{formatScore(scores.semantic_similarity)}</div>
-            <div className="text-xs text-purple-300">Meaning & context</div>
+            <div className="font-semibold text-purple-300">Character Patterns</div>
+            <div className="text-2xl font-bold text-purple-400">{formatScore(scores.character_patterns)}</div>
+            <div className="text-xs text-purple-300">Writing habits (15%)</div>
           </div>
           
           <div className="p-3 bg-orange-500/10 rounded-lg border border-orange-500/20">
-            <div className="font-semibold text-orange-300">Stylistic Similarity</div>
-            <div className="text-2xl font-bold text-orange-400">{formatScore(scores.stylistic_similarity)}</div>
-            <div className="text-xs text-orange-300">Writing style</div>
+            <div className="font-semibold text-orange-300">Lexical Complexity</div>
+            <div className="text-2xl font-bold text-orange-400">{formatScore(scores.lexical_complexity)}</div>
+            <div className="text-xs text-orange-300">Vocabulary (5%)</div>
           </div>
+          
+          <div className="p-3 bg-cyan-500/10 rounded-lg border border-cyan-500/20">
+            <div className="font-semibold text-cyan-300">Punctuation Style</div>
+            <div className="text-2xl font-bold text-cyan-400">{formatScore(scores.punctuation_style)}</div>
+            <div className="text-xs text-cyan-300">Formatting (5%)</div>
+          </div>
+          
+          {scores.topic_warning && (
+            <div className="col-span-2 lg:col-span-3 p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
+              <div className="font-semibold text-yellow-300">⚠️ Topic Mismatch</div>
+              <div className="text-sm text-yellow-200 mt-1">{scores.topic_warning}</div>
+              <div className="text-xs text-yellow-300 mt-1">Note: Low topic similarity is normal for cross-domain analysis</div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -958,36 +998,68 @@ if (!scores) {
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="text-center p-3 bg-indigo-500/10 rounded border border-indigo-500/20">
+            <div className="font-semibold text-indigo-300 text-sm">🎯 Semantic</div>
+            <div className="text-lg font-bold text-indigo-400">{formatScore(scores.semantic_score || 0)}</div>
+            <div className="text-xs text-indigo-300">30%</div>
+          </div>
           <div className="text-center p-3 bg-blue-500/10 rounded border border-blue-500/20">
-            <div className="font-semibold text-blue-300">Lexical</div>
-            <div className="text-lg font-bold text-blue-400">{formatScore(scores.lexical_similarity)}</div>
+            <div className="font-semibold text-blue-300 text-sm">Function Words</div>
+            <div className="text-lg font-bold text-blue-400">{formatScore(scores.function_words)}</div>
+            <div className="text-xs text-blue-300">25%</div>
           </div>
           <div className="text-center p-3 bg-green-500/10 rounded border border-green-500/20">
-            <div className="font-semibold text-green-300">Syntactic</div>
-            <div className="text-lg font-bold text-green-400">{formatScore(scores.syntactic_similarity)}</div>
+            <div className="font-semibold text-green-300 text-sm">Syntactic</div>
+            <div className="text-lg font-bold text-green-400">{formatScore(scores.syntactic_patterns)}</div>
+            <div className="text-xs text-green-300">20%</div>
           </div>
           <div className="text-center p-3 bg-purple-500/10 rounded border border-purple-500/20">
-            <div className="font-semibold text-purple-300">Semantic</div>
-            <div className="text-lg font-bold text-purple-400">{formatScore(scores.semantic_similarity)}</div>
+            <div className="font-semibold text-purple-300 text-sm">Char Patterns</div>
+            <div className="text-lg font-bold text-purple-400">{formatScore(scores.character_patterns)}</div>
+            <div className="text-xs text-purple-300">15%</div>
           </div>
           <div className="text-center p-3 bg-orange-500/10 rounded border border-orange-500/20">
-            <div className="font-semibold text-orange-300">Stylistic</div>
-            <div className="text-lg font-bold text-orange-400">{formatScore(scores.stylistic_similarity)}</div>
+            <div className="font-semibold text-orange-300 text-sm">Lexical</div>
+            <div className="text-lg font-bold text-orange-400">{formatScore(scores.lexical_complexity)}</div>
+            <div className="text-xs text-orange-300">5%</div>
+          </div>
+          <div className="text-center p-3 bg-cyan-500/10 rounded border border-cyan-500/20">
+            <div className="font-semibold text-cyan-300 text-sm">Punctuation</div>
+            <div className="text-lg font-bold text-cyan-400">{formatScore(scores.punctuation_style)}</div>
+            <div className="text-xs text-cyan-300">5%</div>
           </div>
         </div>
+        
+        {scores.topic_warning && (
+          <div className="mt-4 p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
+            <div className="font-semibold text-yellow-300">⚠️ {scores.topic_warning}</div>
+          </div>
+        )}
       </div>
     );
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto bg-background text-foreground">
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold mb-2 text-foreground">Forensic Linguistics Analysis</h1>
-        <p className="text-muted-foreground">
-          AI-powered stylometric analysis for authorship attribution and text verification
-        </p>
-      </div>
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center">
+      <div className="bg-background w-full h-full overflow-y-auto">
+        <div className="p-6 max-w-6xl mx-auto text-foreground">
+          <div className="mb-6 flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold mb-2 text-foreground">Forensic Linguistics Analysis</h1>
+              <p className="text-muted-foreground">
+                AI-powered stylometric analysis for authorship attribution and text verification
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              className="flex-shrink-0"
+            >
+              <X className="h-6 w-6" />
+            </Button>
+          </div>
 
       {/* Error Display */}
       {(error || apiError) && (
@@ -1718,11 +1790,26 @@ if (!scores) {
                     <div className="text-xs text-muted-foreground">Specialized for authorship attribution</div>
                   </div>
                   <button
-                    onClick={() => handleSetActiveModel('star')}
-                    disabled={embeddingModels.active_model === 'STAR' || !embeddingModels.models?.star?.enabled}
-                    className="bg-primary hover:bg-primary/90 disabled:bg-muted disabled:opacity-50 text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+                    onClick={() => initializeEmbeddingModel('star', 0)}
+                    disabled={initializingGME || embeddingModels.models?.star?.enabled}
+                    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
                   >
-                    {embeddingModels.active_model === 'STAR' ? 'Active' : 'Set Active'}
+                    {embeddingModels.models?.star?.enabled ? 'Ready' : initializingGME ? 'Loading...' : 'Initialize'}
+                  </button>
+                </div>
+
+                {/* RoBERTa */}
+                <div className="flex items-center justify-between p-2 bg-card rounded border border-border">
+                  <div>
+                    <div className="font-medium text-sm text-foreground">RoBERTa (768D)</div>
+                    <div className="text-xs text-muted-foreground">Semantic analysis and NLP tasks</div>
+                  </div>
+                  <button
+                    onClick={() => initializeEmbeddingModel('roberta', 0)}
+                    disabled={initializingGME || embeddingModels.models?.roberta?.enabled}
+                    className="bg-primary hover:bg-primary/90 disabled:bg-muted text-primary-foreground py-1 px-3 rounded text-sm font-medium transition-colors"
+                  >
+                    {embeddingModels.models?.roberta?.enabled ? 'Ready' : initializingGME ? 'Loading...' : 'Initialize'}
                   </button>
                 </div>
               </div>
@@ -1800,6 +1887,8 @@ if (!scores) {
           </div>
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
   

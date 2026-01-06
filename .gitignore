@@ -1,7 +1,8 @@
 # Ignore virtual environments
 venv/
 .env/
-.env.*  # Optional if you use dotenv
+.env.*
+*.env
 
 # Ignore old Git config folders
 .git/
@@ -29,6 +30,60 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 
-# Optional: VSCode or JetBrains IDE config
+# IDE config
 .vscode/
 .idea/
+*.code-workspace
+
+# Logs and temporary files
+*.log
+logs/
+configs/logs/
+*.tmp
+*.bak
+
+# User data and settings (generated at runtime)
+backend/app/static/voice_references/
+backend/app/static/generated_images/
+backend/app/static/tts_audio/
+backend/app/static/document_store/
+
+# Sensitive/personal configuration
+litellm.yaml
+settings.json
+
+# Model files (too large for git)
+*.gguf
+*.bin
+*.safetensors
+models/
+
+# Cache directories
+.cache/
+*.cache
+
+# Test outputs
+test_output/
+*.test.wav
+*.test.mp3
+
+# Backup/original folders (if any)
+eloquent-original/
+
+# NOTE: We intentionally KEEP wheels/ in the repo for easier Windows installation
+# (llama-cpp-python and other packages that are hard to compile)
+
+# Temp/cache directories
+temp_audio/
+forensic_cache/
+vram_snapshots.json
+
+# User data
+backend/app/user_memories/
+backend/static/
+
+# Test files
+backend/app/test_*.py
+
+# Abandoned experiments
+backend/app/musetalk_service.py

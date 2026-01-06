@@ -23,10 +23,17 @@ export function convertToOpenAIMessages(messages, systemPrompt = null) {
         content: msg.content
       });
     } else if (msg.role === 'bot' || msg.role === 'assistant') {
-      openaiMessages.push({
+      const assistantMessage = {
         role: "assistant",
-        content: msg.content
-      });
+        content: msg.content || ""  // Ensure content is never null
+      };
+      
+      // Preserve tool calls if they exist
+      if (msg.tool_calls) {
+        assistantMessage.tool_calls = msg.tool_calls;
+      }
+      
+      openaiMessages.push(assistantMessage);
     }
     // Skip system messages as they're handled separately
   }
@@ -128,6 +135,15 @@ export async function processOpenAIStream(response, onToken, onComplete, onError
           
           try {
             const parsed = JSON.parse(data);
+            
+            // Check for error response from backend
+            if (parsed.error) {
+              const errorMsg = parsed.error.message || 'Unknown API error';
+              console.error('[OpenAI Stream] API Error:', parsed.error);
+              onError(new Error(errorMsg));
+              return accumulatedText;
+            }
+            
             const content = parsed.choices?.[0]?.delta?.content;
             
             if (content) {

@@ -31,8 +31,8 @@ logger = logging.getLogger("document_routes")
 # Router setup
 document_router = APIRouter(tags=["document"])
 
-# Constants - change these to use the static directory
-DOCUMENT_STORE_DIR = Path("C:/Users/bpfit/LiangLocal/backend/app/static/documents")
+# Constants - use relative path based on this file's location
+DOCUMENT_STORE_DIR = Path(__file__).parent / "static" / "documents"
 DOCUMENT_META_FILE = DOCUMENT_STORE_DIR / "document_meta.json"
 
 # Make sure the directory exists

@@ -22,24 +22,35 @@ import time
 logger = logging.getLogger("memory_intelligence") # Use getLogger to potentially get Uvicorn/FastAPI configured logger
 
 # Initialize the similarity model with fallback chain
-logger.info("🧠 [Startup] Loading similarity model (may download on first run)...")
-try:
-    similarity_model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
-    logger.info("✅ Successfully loaded SentenceTransformer 'all-mpnet-base-v2' (best quality)")
-except Exception as e:
-    logger.warning(f"Failed to load all-mpnet-base-v2: {e}")
-    try:
-        similarity_model = SentenceTransformer('sentence-transformers/all-MiniLM-L12-v2')
-        logger.info("✅ Successfully loaded SentenceTransformer 'all-MiniLM-L12-v2' (fallback)")
-    except Exception as e2:
-        logger.error(f"Failed to load fallback model all-MiniLM-L12-v2: {e2}")
-        try:
-            similarity_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-            logger.info("✅ Successfully loaded SentenceTransformer 'all-MiniLM-L6-v2' (last resort)")
-        except Exception as e3:
-            logger.error(f"❌ Failed to load any similarity model: {e3}")
-            raise RuntimeError("Could not load any sentence transformer model. Please check your internet connection and sentence-transformers installation.")
 
+similarity_model = None # Set to None on startup
+
+def initialize_similarity_model(device='cpu'):
+    """
+    Manually loads the SentenceTransformer model onto a specified device.
+    """
+    global similarity_model
+    if similarity_model is not None:
+        logger.info("✅ Similarity model already loaded.")
+        return
+
+    logger.info(f"🧠 Manually loading similarity model onto device: {device}...")
+    try:
+        similarity_model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2', device=device)
+        logger.info("✅ Successfully loaded SentenceTransformer 'all-mpnet-base-v2' (best quality)")
+    except Exception as e:
+        logger.warning(f"Failed to load all-mpnet-base-v2: {e}")
+        try:
+            similarity_model = SentenceTransformer('sentence-transformers/all-MiniLM-L12-v2', device=device)
+            logger.info("✅ Successfully loaded SentenceTransformer 'all-MiniLM-L12-v2' (fallback)")
+        except Exception as e2:
+            logger.error(f"Failed to load fallback model all-MiniLM-L12-v2: {e2}")
+            try:
+                similarity_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device=device)
+                logger.info("✅ Successfully loaded SentenceTransformer 'all-MiniLM-L6-v2' (last resort)")
+            except Exception as e3:
+                logger.error(f"❌ Failed to load any similarity model: {e3}")
+                raise RuntimeError("Could not load any sentence transformer model.")
 # --- Define the path to the memory store file ---
 try:
     _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -488,7 +499,7 @@ async def get_llm_refined_context(
     """Uses an LLM on the specified GPU to refine and select the most relevant context."""
     # Add this near the beginning of the function
     if gpu_id is None:
-        gpu_id = 0 if single_gpu_mode else 1
+        gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
     logger = logging.getLogger("memory_intelligence")  # Use the same logger as above
     logger.info(f"🧠 [Refine] Sending {len(candidate_memories)} candidates to LLM for final pruning")
     t0 = time.time()
@@ -610,7 +621,7 @@ REFINED CONTEXT FOR AI (Your output MUST be a bulleted list of 5-7 memory conten
 async def analyze_for_relevant_memories(model_manager, prompt, memories=None, gpu_id=None, single_gpu_mode=False, user_id: Optional[str] = None):
     """Find memories relevant to the current prompt"""
     if gpu_id is None:
-        gpu_id = 0 if single_gpu_mode else 1
+        gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
     try:
         logger.info(f"🧠 [Retrieval] Finding relevant memories for prompt: {prompt[:60]!r}")
         
@@ -706,7 +717,7 @@ async def analyze_for_relevant_memories(model_manager, prompt, memories=None, gp
 
 async def analyze_for_memory_creation(model_manager, user_message, ai_response, gpu_id=None, single_gpu_mode=False):
     if gpu_id is None:
-        gpu_id = 0 if single_gpu_mode else 1
+        gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
     """Analyze conversation and create memories with better error handling and opt-in logic"""
     try:
         logger.info(f"🧠 Analyzing conversation for memory creation")
@@ -927,7 +938,7 @@ def pattern_based_memory_creation(user_message, ai_response):
 
 async def model_based_memory_creation(model_manager, model_name, user_message, ai_response, gpu_id=None, single_gpu_mode=False):
     if gpu_id is None:
-        gpu_id = 0 if single_gpu_mode else 1
+        gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
     """Extract memories using a language model"""
     logger.info(f"Using model-based memory creation with model {model_name} on GPU {gpu_id}")
     
@@ -1029,12 +1040,12 @@ ANALYSIS:
 async def model_based_memory_creation_from_snippet(
     model_manager,
     conversation_snippet: str,
-    gpu_id: int = None, # Default to GPU 1 for memory tasks
+    gpu_id: int = None, # Default to GPU 0 for peripheral memory tasks
     model_name: Optional[str] = None, # Optionally specify model
     single_gpu_mode: bool = False, # For single GPU setups
 ):
     if gpu_id is None:
-        gpu_id = 0 if single_gpu_mode else 1
+        gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
     logger = logging.getLogger("memory_intelligence")  # Use the same logger as above
     """
     Extracts memories from a specific conversation snippet using a language model.
@@ -1626,7 +1637,7 @@ def format_memories_for_context(memories, max_memories=5, max_chars=1500):
 
 async def process_incoming_message(model_manager, message, history=None, gpu_id=None, single_gpu_mode=False):
     if gpu_id is None:
-        gpu_id = 0 if single_gpu_mode else 1
+        gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
     """
     Process an incoming user message for memory operations.
     This is a helper function for the memory_router to decide what to do with a message.
@@ -1667,7 +1678,7 @@ async def process_incoming_message(model_manager, message, history=None, gpu_id=
 
 async def process_completed_exchange(model_manager, user_message, ai_response, gpu_id=None, single_gpu_mode=False, user_name=None, prefer_multiple_memories=True, max_memory_length=500, recommended_memory_count=5, split_long_memories=True, conversation_history=None, userProfile=None, systemTime=None, requestType=None):
     if gpu_id is None:
-        gpu_id = 0 if single_gpu_mode else 1
+        gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
     """
     Process a completed exchange between user and AI for memory creation.
     This is a helper function for memory_router to create memories after a response.

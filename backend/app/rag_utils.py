@@ -8,8 +8,8 @@ from typing import List, Dict, Any, Optional
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("rag_utils")
 
-# Constants
-DOCUMENT_STORE_DIR = Path("C:/Users/bpfit/LiangLocal/backend/app/static/documents")
+# Constants - use relative path based on this file's location
+DOCUMENT_STORE_DIR = Path(__file__).parent / "static" / "documents"
 DOCUMENT_META_FILE = DOCUMENT_STORE_DIR / "document_meta.json"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # Small but effective model
 CHUNK_SIZE = 300  # Token size for chunking documents

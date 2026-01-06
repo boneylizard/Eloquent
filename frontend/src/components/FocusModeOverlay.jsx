@@ -53,6 +53,12 @@ const FocusModeOverlay = ({
   stopTTS
 }) => {
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
+  const [userScrolledRecently, setUserScrolledRecently] = useState(false);
+  const lastScrollTimeRef = useRef(0);
+  const isNearBottomRef = useRef(true);
+
   useEffect(() => {
   const handleKeyDown = (event) => {
     if (event.key === 'Shift' && isPlayingAudio && stopTTS) {
@@ -88,10 +94,50 @@ const FocusModeOverlay = ({
     };
   }, [isActive, onExit]);
 
-  // Auto-scroll to bottom on new messages
+  // Track user scroll behavior
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [messages]);
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 50; // 50px threshold
+      
+      isNearBottomRef.current = isAtBottom;
+      
+      // If user scrolled up, pause auto-scroll temporarily
+      if (!isAtBottom) {
+        setUserScrolledRecently(true);
+        lastScrollTimeRef.current = Date.now();
+        
+        // Clear the flag after 3 seconds of no scrolling
+        setTimeout(() => {
+          if (Date.now() - lastScrollTimeRef.current >= 2900) {
+            setUserScrolledRecently(false);
+          }
+        }, 3000);
+      } else {
+        // User is at bottom, enable auto-scroll
+        setUserScrolledRecently(false);
+      }
+    };
+
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [isActive]);
+
+  // Smart auto-scroll: only scroll if user hasn't manually scrolled recently
+  useEffect(() => {
+    if (!autoScrollEnabled) return;
+    
+    // Only auto-scroll if:
+    // 1. Auto-scroll is enabled globally
+    // 2. User hasn't manually scrolled recently
+    // 3. User is near the bottom already
+    if (!userScrolledRecently && isNearBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, autoScrollEnabled, userScrolledRecently]);
 
   // STABLE LOGIC: Pre-calculate the last message ID for each character.
   // This message is the only one that will ever get an avatar.
@@ -119,8 +165,24 @@ const lastMessageAvatars = useMemo(() => {
       <button onClick={onExit} className="absolute top-6 right-6 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-all duration-200 z-10" title="Exit Focus Mode (ESC)">
         <X size={20} />
       </button>
+      
+      {/* Auto-scroll toggle button */}
+      <button 
+        onClick={() => setAutoScrollEnabled(!autoScrollEnabled)} 
+        className="absolute top-6 right-20 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-all duration-200 z-10" 
+        title={autoScrollEnabled ? "Disable Auto-scroll" : "Enable Auto-scroll"}
+      >
+        {autoScrollEnabled ? "📜" : "🔒"}
+      </button>
+      
+      {/* User scroll status indicator */}
+      {userScrolledRecently && (
+        <div className="absolute top-20 right-6 px-3 py-1 rounded-full bg-orange-500/20 text-orange-300 text-xs z-10 border border-orange-500/30">
+          Reading Mode - Auto-scroll paused
+        </div>
+      )}
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-6">
         <div className="max-w-6xl mx-auto w-full">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center text-gray-400">
