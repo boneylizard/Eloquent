@@ -314,7 +314,6 @@ unlzw3
 uritemplate
 urllib3
 uvicorn
-vllm
 wandb
 warc3-wet
 warc3-wet-clueweb09
