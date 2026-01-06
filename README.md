@@ -10,6 +10,16 @@ Eloquent is a feature-rich frontend for running large language models locally on
 
 ---
 
+## 🖼️ Screenshots
+
+### Main Chat Interface
+
+![Eloquent Chat Interface](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/chat%20new.png?raw=true)
+
+*The main chat window showcasing all features: character selection, story tracker, choice generator, TTS controls, and more.*
+
+---
+
 ## ✨ Features
 
 ### 🧠 Local LLM Inference
@@ -19,17 +29,33 @@ Eloquent is a feature-rich frontend for running large language models locally on
 - Streaming responses with real-time token generation
 
 ### 🎤 Text-to-Speech
+
+![TTS Settings](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/audio.jpg?raw=true)
+
+*Comprehensive TTS controls with voice cloning, speed adjustment, and multiple engine support.*
+
 - **Kokoro TTS** - Fast, high-quality neural TTS with multiple voices
 - **Chatterbox TTS** - Voice cloning from audio samples
 - Streaming TTS playback synchronized with LLM output
 - Adjustable speed, pitch, and voice settings
+- Real-time audio generation with low latency
 
 ### 🎭 Roleplay & Characters
+- **Auto Character Creator** - Generate complete character profiles from conversation context
 - Custom character creation with personality, backstory, and example dialogues
 - **Story Tracker** - Track characters, inventory, locations, and plot points
 - **Choice Generator** - Generate contextual action choices for interactive fiction
 - **Author's Note** - Inject writing style guidance into any conversation
 - Lore/world-building document support
+- Automatic character portrait generation with Stable Diffusion
+
+### 🎯 Focus Mode
+
+![Focus Mode](https://raw.githubusercontent.com/boneylizard/Eloquent/refs/heads/main/eloquent%20launch/focus%20mode%20new.png)
+
+*Distraction-free writing environment for immersive creative sessions.*
+
+Focus Mode provides a clean, minimal interface that removes all distractions, letting you focus entirely on your conversation. Perfect for long-form creative writing and deep roleplay sessions.
 
 ### 🔍 Forensic Linguistics
 - Analyze writing patterns and authorship
@@ -46,6 +72,7 @@ Eloquent is a feature-rich frontend for running large language models locally on
 - Stable Diffusion integration (Automatic1111 API)
 - In-chat image generation
 - ADetailer support for face enhancement
+- Character portrait generation
 
 ### 🔧 Additional Features
 - Web search integration (DuckDuckGo)
@@ -123,6 +150,7 @@ run_debug.bat
 1. Go to **Settings** → **Audio Settings**
 2. Choose between **Kokoro** or **Chatterbox** TTS engine
 3. For Chatterbox voice cloning, upload a voice reference audio file
+4. Adjust speed, pitch, and other voice parameters
 
 ### External API (Optional)
 Eloquent can connect to external OpenAI-compatible APIs:
@@ -160,19 +188,23 @@ Eloquent/
 
 ### For Roleplay
 - Create detailed character cards with personality traits and example dialogues
+- Use the **Auto Character Creator** to generate profiles from existing conversations
 - Use the **Story Tracker** to maintain consistency across long sessions
 - Enable **Anti-Repetition Mode** in settings to reduce formulaic responses
 - Use **Author's Note** to guide the AI's writing style for specific scenes
+- Enable **Focus Mode** for distraction-free immersive sessions
 
 ### For Creative Writing
 - Use the **Choice Generator** for branching narrative options
 - Enable web search for research-assisted writing
 - Upload reference documents for RAG-enhanced responses
+- Use **Focus Mode** to eliminate distractions during writing sessions
 
 ### For Voice
 - Kokoro is faster for general use
 - Chatterbox provides voice cloning - upload a 3+ second audio sample
 - Enable **Auto-Play TTS** for hands-free conversation
+- Adjust speed and pitch to match character personalities
 
 ---
 
@@ -202,4 +234,3 @@ Created by **Bernard Peter Fitzgerald** ([@boneylizard](https://github.com/boney
 ---
 
 *Eloquent - Your local AI companion for stories worth telling.*
-
