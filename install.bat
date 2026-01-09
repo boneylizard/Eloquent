@@ -36,11 +36,18 @@ echo Installing critical FastAPI / audio / vision packages...
 pip install --upgrade setuptools
 pip install pynvml httpx fastapi uvicorn soundfile librosa python-multipart opencv-python beautifulsoup4 kokoro websockets nemo-toolkit sentence-transformers faiss-cpu protobuf openai opentelemetry-proto onnxruntime googleapis-common-protos
 
-REM --- 6. Install all remaining requirements.txt packages ---
+REM --- 6. Pre-install numpy and chatterbox (pkuseg build fix) ---
+echo Installing numpy first (required for pkuseg build)...
+pip install numpy
+
+echo Installing chatterbox-faster with --no-build-isolation (fixes pkuseg build error)...
+pip install --no-build-isolation git+https://github.com/iMash-io/chatterbox-faster.git
+
+REM --- 7. Install all remaining requirements.txt packages ---
 echo Installing full requirements.txt...
 pip install -r requirements.txt
 
-REM --- 7. Node.js version check ---
+REM --- 8. Node.js version check ---
 echo Checking Node.js version...
 node -v > temp_node_version.txt 2>nul
 if errorlevel 1 (
@@ -64,7 +71,7 @@ if not "!NODE_VER!"=="v21.7.3" (
     pause >nul
 )
 
-REM --- 8. Install frontend dependencies ---
+REM --- 9. Install frontend dependencies ---
 if exist frontend (
     echo Installing frontend dependencies via npm...
     cd frontend
