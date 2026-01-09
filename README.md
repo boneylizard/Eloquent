@@ -13,8 +13,8 @@ Runs fully local. No subscriptions. No cloud dependency. APIs optional. Just you
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11–3.12-green.svg)
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20Server-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/pTcYDAUh)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
-![Lines of Code](https://img.shields.io/badge/lines%20of%20code-50%2C000%2B-orange.svg)
 
 ---
 
