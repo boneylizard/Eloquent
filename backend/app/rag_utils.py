@@ -12,8 +12,12 @@ logger = logging.getLogger("rag_utils")
 DOCUMENT_STORE_DIR = Path(__file__).parent / "static" / "documents"
 DOCUMENT_META_FILE = DOCUMENT_STORE_DIR / "document_meta.json"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # Small but effective model
-CHUNK_SIZE = 300  # Token size for chunking documents
-CHUNK_OVERLAP = 50  # Overlap between chunks
+
+# Chonkie chunking settings
+CHUNKING_STRATEGY = "semantic"  # Options: "semantic", "sentence", "token"
+MAX_CHUNK_SIZE = 128  # Target tokens per chunk (much smaller than before!)
+MIN_CHUNK_SIZE = 32   # Minimum tokens per chunk
+SIMILARITY_THRESHOLD = 0.6  # For semantic chunking - higher = more aggressive splitting
 
 # Make sure the directory exists
 DOCUMENT_STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -35,6 +39,15 @@ except ImportError:
     HAVE_FAISS = False
     logger.warning("RAG functionality limited: faiss-cpu not installed")
 
+# Try to import Chonkie for smart chunking
+try:
+    from chonkie import SemanticChunker, SentenceChunker, TokenChunker
+    HAVE_CHONKIE = True
+    logger.info("Chonkie chunking library available")
+except ImportError:
+    HAVE_CHONKIE = False
+    logger.warning("Chonkie not installed - using fallback chunking. Install with: pip install chonkie")
+
 class RAGProcessor:
     def __init__(self):
         self.embedding_model = None
@@ -42,8 +55,9 @@ class RAGProcessor:
         self.documents = []
         self.document_chunks = []
         self.chunk_to_doc_mapping = {}
+        self.chunker = None
         
-        # Initialize if dependencies are available
+        # Initialize embedding model
         if HAVE_SENTENCE_TRANSFORMERS:
             try:
                 self.embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
@@ -51,6 +65,46 @@ class RAGProcessor:
             except Exception as e:
                 logger.error(f"Failed to load embedding model: {e}")
                 self.embedding_model = None
+        
+        # Initialize Chonkie chunker
+        if HAVE_CHONKIE and self.embedding_model:
+            try:
+                self._init_chunker()
+            except Exception as e:
+                logger.error(f"Failed to initialize Chonkie chunker: {e}")
+                self.chunker = None
+    
+    def _init_chunker(self):
+        """Initialize the Chonkie chunker based on strategy."""
+        if not HAVE_CHONKIE:
+            return
+            
+        try:
+            if CHUNKING_STRATEGY == "semantic":
+                # Semantic chunking groups text by meaning
+                self.chunker = SemanticChunker(
+                    embedding_model=EMBEDDING_MODEL_NAME,
+                    chunk_size=MAX_CHUNK_SIZE,
+                    similarity_threshold=SIMILARITY_THRESHOLD,
+                )
+                logger.info(f"Initialized SemanticChunker (max {MAX_CHUNK_SIZE} tokens, threshold {SIMILARITY_THRESHOLD})")
+            elif CHUNKING_STRATEGY == "sentence":
+                # Sentence-based chunking keeps sentences together
+                self.chunker = SentenceChunker(
+                    chunk_size=MAX_CHUNK_SIZE,
+                    chunk_overlap=MIN_CHUNK_SIZE // 2,
+                )
+                logger.info(f"Initialized SentenceChunker (max {MAX_CHUNK_SIZE} tokens)")
+            else:
+                # Token-based chunking (fallback)
+                self.chunker = TokenChunker(
+                    chunk_size=MAX_CHUNK_SIZE,
+                    chunk_overlap=MIN_CHUNK_SIZE // 2,
+                )
+                logger.info(f"Initialized TokenChunker (max {MAX_CHUNK_SIZE} tokens)")
+        except Exception as e:
+            logger.error(f"Chunker initialization failed: {e}")
+            self.chunker = None
     
     def is_available(self) -> bool:
         """Check if RAG functionality is available."""
@@ -155,33 +209,62 @@ class RAGProcessor:
             return False
     
     def _chunk_text(self, text: str) -> List[str]:
-        """Split text into chunks suitable for embedding."""
-        if not text:
+        """Split text into semantically meaningful chunks using Chonkie."""
+        if not text or not text.strip():
             return []
         
-        # Simple character-based chunking
+        # Use Chonkie if available
+        if self.chunker:
+            try:
+                chonkie_chunks = self.chunker.chunk(text)
+                # Extract text from Chunk objects
+                chunks = [chunk.text for chunk in chonkie_chunks if chunk.text.strip()]
+                
+                if chunks:
+                    avg_len = sum(len(c.split()) for c in chunks) / len(chunks)
+                    logger.info(f"Chonkie created {len(chunks)} chunks (avg ~{avg_len:.0f} words each)")
+                    return chunks
+            except Exception as e:
+                logger.warning(f"Chonkie chunking failed, using fallback: {e}")
+        
+        # Fallback: sentence-based chunking without Chonkie
+        return self._fallback_chunk_text(text)
+    
+    def _fallback_chunk_text(self, text: str) -> List[str]:
+        """Fallback chunking when Chonkie is not available - sentence-based."""
+        import re
+        
+        # Split by sentence boundaries
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        
         chunks = []
-        words = text.split()
         current_chunk = []
-        current_size = 0
+        current_word_count = 0
+        target_words = 80  # ~100-150 words per chunk instead of 300+
         
-        for word in words:
-            word_size = len(word.split())  # Approximating token size
-            if current_size + word_size > CHUNK_SIZE:
-                # Start a new chunk if current is full
-                if current_chunk:
-                    chunks.append(" ".join(current_chunk))
-                # Handle overlap
-                overlap_start = max(0, len(current_chunk) - CHUNK_OVERLAP)
-                current_chunk = current_chunk[overlap_start:]
-                current_size = sum(len(w.split()) for w in current_chunk)
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            word_count = len(sentence.split())
             
-            current_chunk.append(word)
-            current_size += word_size
+            # If adding this sentence would exceed target, save current chunk
+            if current_word_count + word_count > target_words and current_chunk:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+                current_word_count = 0
+            
+            current_chunk.append(sentence)
+            current_word_count += word_count
         
-        # Add the last chunk if it exists
+        # Don't forget the last chunk
         if current_chunk:
             chunks.append(" ".join(current_chunk))
+        
+        if chunks:
+            avg_len = sum(len(c.split()) for c in chunks) / len(chunks)
+            logger.info(f"Fallback created {len(chunks)} chunks (avg ~{avg_len:.0f} words each)")
         
         return chunks
     
