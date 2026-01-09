@@ -13,9 +13,9 @@ def main():
     if str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
     
-    # Set environment variables
-    os.environ["TTS_PORT"] = "8002"
-    os.environ["TTS_HOST"] = "0.0.0.0"
+    # Read port from environment (set by launch.py) or use default
+    tts_port = int(os.environ.get("TTS_PORT", 8002))
+    tts_host = os.environ.get("TTS_HOST", "0.0.0.0")
     
     # GPU optimization: Set performance environment variables
     os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
@@ -28,15 +28,15 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     os.environ["CUDA_DEVICE"] = "0"
     
-    print("🚀 Starting TTS Service on port 8002...")
+    print(f"🚀 Starting TTS Service on port {tts_port}...")
     print(f"📁 Backend directory: {backend_dir}")
     
     try:
         # Run the TTS backend
         uvicorn.run(
             "tts_backend:app",
-            host="0.0.0.0",
-            port=8002,
+            host=tts_host,
+            port=tts_port,
             log_level="info",
             reload=False
         )

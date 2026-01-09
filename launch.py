@@ -17,13 +17,16 @@ def get_project_root():
 
 
 def is_port_available(port):
-    """Check if a port is available."""
+    """Check if a port is available by seeing if anything is listening on it."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('localhost', port))
-            return True
-    except OSError:
-        return False
+            s.settimeout(1)
+            result = s.connect_ex(('127.0.0.1', port))
+            # If connect succeeds (result == 0), something is listening = port NOT available
+            # If connect fails (result != 0), nothing is listening = port IS available
+            return result != 0
+    except Exception:
+        return True  # Assume available if check fails
 
 
 def find_available_port(start_port, max_attempts=20):
