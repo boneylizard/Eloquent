@@ -1623,6 +1623,7 @@ async def lifespan(app: FastAPI):
     # Ensure these env vars are correctly set by your launch mechanism
     default_gpu = int(os.environ.get("GPU_ID", 0))
     port = int(os.environ.get("PORT", 8000 if default_gpu == 0 else 8001))
+    tts_port = int(os.environ.get("TTS_PORT", 8002))  # TTS service port
     model_path_env = os.environ.get("MODEL_PATH", "")
     model_name_env = os.environ.get("MODEL_NAME", "")
     # NEW CODE START - Add right here
@@ -1723,7 +1724,7 @@ async def lifespan(app: FastAPI):
             # Check if TTS service is running
             async with httpx.AsyncClient() as client:
                 try:
-                    response = await client.get("http://localhost:8002/health", timeout=5.0)
+                    response = await client.get(f"http://localhost:{tts_port}/health", timeout=5.0)
                     if response.status_code == 200:
                         tts_status = response.json()
                         logger.info(f"✅ TTS service is running: {tts_status}")
@@ -1731,17 +1732,17 @@ async def lifespan(app: FastAPI):
                         logger.warning(f"⚠️ TTS service responded with status {response.status_code}")
                 except Exception as e:
                     logger.warning(f"⚠️ TTS service not yet available: {e}")
-                    logger.info("📌 TTS service will start independently on port 8002")
+                    logger.info(f"📌 TTS service will start independently on port {tts_port}")
             
         except Exception as e:
             logger.warning(f"⚠️ Could not check TTS service: {e}")
     
-    logger.info(f"📌 Main backend on port {port} - TTS runs separately on port 8002")
+    logger.info(f"📌 Main backend on port {port} - TTS runs separately on port {tts_port}")
     
     # Initialize TTS client for forwarding requests to TTS service
     try:
-        app.state.tts_client = TTSClient(base_url="http://localhost:8002")
-        logger.info("✅ TTS client initialized for forwarding to TTS service")
+        app.state.tts_client = TTSClient(base_url=f"http://localhost:{tts_port}")
+        logger.info(f"✅ TTS client initialized for forwarding to TTS service on port {tts_port}")
     except Exception as e:
         logger.warning(f"⚠️ Failed to initialize TTS client: {e}")
         app.state.tts_client = None
@@ -2340,7 +2341,7 @@ async def shutdown_tts_service():
         import socket
         import platform
         
-        port = 8002
+        port = int(os.environ.get("TTS_PORT", 8002))
         logger.info(f"🛑 Attempting to shutdown TTS service on port {port}...")
         
         # Check if port is in use
@@ -2426,12 +2427,12 @@ async def shutdown_tts_service():
 
 @router.post("/tts/restart")
 async def restart_tts_service(request: Request):
-    """Restart TTS service on port 8002"""
+    """Restart TTS service"""
     try:
         import platform
         from pathlib import Path
         
-        port = 8002
+        port = int(os.environ.get("TTS_PORT", 8002))
         logger.info(f"🔄 Attempting to restart TTS service on port {port}...")
         
         # First, shutdown existing service

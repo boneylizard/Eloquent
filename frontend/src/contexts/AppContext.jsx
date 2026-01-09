@@ -412,14 +412,31 @@ const drawAvatar = (canvas, imageUrl, name) => {
 
     // Backend detects single_gpu_mode, frontend stores as singleGpuMode
   const isSingleGpuMode = settings?.singleGpuMode === true;
-  // API URLs for primary and secondary models
-  const PRIMARY_API_URL = "http://localhost:8000";
-// If single GPU mode, everything goes to port 8000. Otherwise, secondary/memory go to 8001
-  const SECONDARY_API_URL = isSingleGpuMode ? "http://localhost:8000" : "http://localhost:8001";
-  const MEMORY_API_URL = isSingleGpuMode ? "http://localhost:8000" : "http://localhost:8001";
-  const TTS_API_URL = "http://localhost:8002"; // TTS service runs on port 8002
-  const BACKEND = import.meta.env.VITE_API_URL || (isSingleGpuMode ? "http://127.0.0.1:8000" : "http://127.0.0.1:8001");
-  const VITE_API_URL = isSingleGpuMode ? "http://127.0.0.1:8000" : "http://127.0.0.1:8001";
+  
+  // Port configuration - loaded from /ports.json (written by launch.py)
+  const [portConfig, setPortConfig] = useState({
+    backend: "http://localhost:8000",
+    secondary: "http://localhost:8001", 
+    tts: "http://localhost:8002"
+  });
+  
+  // Load port configuration on startup (also updates the api.js module cache)
+  useEffect(() => {
+    import('../config/api').then(({ loadPortConfig }) => {
+      loadPortConfig().then(config => {
+        console.log('📌 Loaded port config:', config);
+        setPortConfig(config);
+      });
+    });
+  }, []);
+  
+  // API URLs - use port config
+  const PRIMARY_API_URL = portConfig.backend;
+  const SECONDARY_API_URL = isSingleGpuMode ? portConfig.backend : portConfig.secondary;
+  const MEMORY_API_URL = isSingleGpuMode ? portConfig.backend : portConfig.secondary;
+  const TTS_API_URL = portConfig.tts;
+  const BACKEND = import.meta.env.VITE_API_URL || (isSingleGpuMode ? portConfig.backend : portConfig.secondary);
+  const VITE_API_URL = isSingleGpuMode ? portConfig.backend : portConfig.secondary;
 
 
 

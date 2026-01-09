@@ -1,5 +1,7 @@
 // CharacterCardUtils.js - Import/Export utilities for TavernAI/SillyTavern character cards
 
+import { getBackendUrl } from '../config/api';
+
 /**
  * Utility functions for importing and exporting character cards in various formats
  */
@@ -257,7 +259,8 @@ export function convertGingerToTavern(gingerCharacter, creatorName = 'Eloquent')
 }
 
 // Main import function
-export async function importCharacterCard(file, apiUrl = 'http://localhost:8000') {
+export async function importCharacterCard(file, apiUrl = null) {
+  apiUrl = apiUrl || getBackendUrl();
   try {
     let characterData;
     let avatarFile = null;
@@ -351,7 +354,8 @@ export function exportAsJSON(gingerCharacter, format = 'tavern') {
 
 // Simple PNG export (creates JSON and suggests using external tools)
 // Replace the exportAsPNGInstructions function in CharacterCardUtils.js with:
-export async function exportAsPNG(gingerCharacter, apiUrl = 'http://localhost:8000') {
+export async function exportAsPNG(gingerCharacter, apiUrl = null) {
+  apiUrl = apiUrl || getBackendUrl();
   try {
     const response = await fetch(`${apiUrl}/export_character_png`, {
       method: 'POST',

@@ -8,10 +8,66 @@ import socket
 import time
 import webbrowser
 import threading
+import json
+from pathlib import Path
 
 def get_project_root():
     """Gets the absolute path to the project's root directory (where launch.py is)."""
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def is_port_available(port):
+    """Check if a port is available."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('localhost', port))
+            return True
+    except OSError:
+        return False
+
+
+def find_available_port(start_port, max_attempts=20):
+    """Find the next available port starting from start_port."""
+    for offset in range(max_attempts):
+        port = start_port + offset
+        if is_port_available(port):
+            return port
+    return None
+
+
+def get_port_config():
+    """Auto-find available ports, starting from defaults."""
+    # Find available ports automatically
+    backend_port = find_available_port(8000)
+    if backend_port != 8000:
+        print(f"⚠️ Port 8000 in use, backend will use port {backend_port}")
+    
+    # Secondary starts after backend port
+    secondary_port = find_available_port(backend_port + 1)
+    if secondary_port != 8001:
+        print(f"⚠️ Port 8001 in use, secondary will use port {secondary_port}")
+    
+    # TTS starts after secondary
+    tts_port = find_available_port(secondary_port + 1)
+    if tts_port != 8002:
+        print(f"⚠️ Port 8002 in use, TTS will use port {tts_port}")
+    
+    return {
+        "backend_port": backend_port,
+        "secondary_port": secondary_port,
+        "tts_port": tts_port
+    }
+
+
+def write_ports_for_frontend(ports, project_root):
+    """Write the active ports to a file the frontend can read."""
+    ports_file = Path(project_root) / "frontend" / "public" / "ports.json"
+    try:
+        with open(ports_file, 'w') as f:
+            json.dump(ports, f, indent=2)
+        print(f"📝 Wrote port config to {ports_file}")
+    except Exception as e:
+        print(f"⚠️ Could not write ports.json: {e}")
 
 
 def get_gpu_count():
@@ -126,7 +182,7 @@ def start_model_service(root_path):
         return None
 
 
-def start_backend(host, port, gpu_id, root_path):
+def start_backend(host, port, gpu_id, root_path, tts_port=8002):
     """Start backend with proper GPU assignment using subprocess with virtual environment"""
     try:
         import subprocess
@@ -150,6 +206,7 @@ def start_backend(host, port, gpu_id, root_path):
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
         env["GPU_ID"] = str(gpu_id)
         env["PORT"] = str(port)
+        env["TTS_PORT"] = str(tts_port)  # Tell backend where TTS is
         env["PYTHONPATH"] = root_path
         
         print(f"--- Environment 'CUDA_VISIBLE_DEVICES' set to '{gpu_id}' ---")
@@ -170,29 +227,34 @@ def start_backend(host, port, gpu_id, root_path):
         print(e, file=sys.stderr)
         return None
 
-def start_tts_service(root_path):
+def start_tts_service(root_path, port=8002):
     """Start the TTS service in a new command window"""
     try:
         import subprocess
         
-        # Build the command to run TTS service
+        # Build the command to run TTS service with port
         tts_script = os.path.join(root_path, "launch_tts.py")
         cmd = [sys.executable, tts_script]
         
-        print("--- Starting TTS Service on Port 8002 ---")
+        # Set TTS port via environment variable
+        env = os.environ.copy()
+        env["TTS_PORT"] = str(port)
+        
+        print(f"--- Starting TTS Service on Port {port} ---")
         print(f"--- Command: {' '.join(cmd)} ---")
         
         # Launch TTS service (no new console - runs in same window)
         tts_process = subprocess.Popen(
             cmd,
-            cwd=root_path
+            cwd=root_path,
+            env=env
         )
         
         print(f"✅ TTS service launched (PID: {tts_process.pid})")
         return tts_process
         
     except Exception as e:
-        print(f"FATAL ERROR: Failed to start TTS service on port 8002.", file=sys.stderr)
+        print(f"FATAL ERROR: Failed to start TTS service on port {port}.", file=sys.stderr)
         print(e, file=sys.stderr)
         sys.exit(1)
 
@@ -201,6 +263,25 @@ def start_tts_service(root_path):
 
 def main():
     project_root = get_project_root()
+    
+    # Auto-find available ports
+    port_config = get_port_config()
+    backend_port = port_config["backend_port"]
+    secondary_port = port_config["secondary_port"]
+    tts_port = port_config["tts_port"]
+    
+    if backend_port is None:
+        print("❌ FATAL: Could not find any available ports for backend!")
+        sys.exit(1)
+    
+    print(f"📌 Using ports: backend={backend_port}, secondary={secondary_port}, tts={tts_port}")
+    
+    # Write ports to frontend config
+    write_ports_for_frontend({
+        "backend": f"http://localhost:{backend_port}",
+        "secondary": f"http://localhost:{secondary_port}",
+        "tts": f"http://localhost:{tts_port}"
+    }, project_root)
     
     # Start browser launch timer in background thread
     browser_thread = threading.Thread(target=launch_browser, daemon=True)
@@ -217,44 +298,41 @@ def main():
     
     if gpu_count == 0:
         print("No NVIDIA GPUs detected. Starting backend on CPU and TTS service.")
-        main_backend = start_backend(host="0.0.0.0", port=8000, gpu_id=-1, root_path=project_root)
+        main_backend = start_backend(host="0.0.0.0", port=backend_port, gpu_id=-1, root_path=project_root, tts_port=tts_port)
         if main_backend:
             processes.append(main_backend)
-            print("✅ Main backend started on port 8000 (CPU)")
+            print(f"✅ Main backend started on port {backend_port} (CPU)")
     elif gpu_count == 1:
         print(f"Found {gpu_count} NVIDIA GPU. Starting backend and TTS service on GPU 0.")
-        main_backend = start_backend(host="0.0.0.0", port=8000, gpu_id=0, root_path=project_root)
+        main_backend = start_backend(host="0.0.0.0", port=backend_port, gpu_id=0, root_path=project_root, tts_port=tts_port)
         if main_backend:
             processes.append(main_backend)
-            print("✅ Main backend started on port 8000 using GPU 0")
+            print(f"✅ Main backend started on port {backend_port} using GPU 0")
     else:
         print(f"Found {gpu_count} NVIDIA GPUs. Starting services...")
         
-        # Start main backend on port 8000 using GPU 0 (handles peripherals, TTS, etc.)
-        main_backend = start_backend("0.0.0.0", 8000, 0, project_root)
+        # Start main backend using configured port and GPU 0
+        main_backend = start_backend("0.0.0.0", backend_port, 0, project_root, tts_port=tts_port)
         if main_backend:
             processes.append(main_backend)
-            print("✅ Main backend started on port 8000 using GPU 0")
+            print(f"✅ Main backend started on port {backend_port} using GPU 0")
         
         # For 2 GPUs: Start secondary backend for dual-model mode
         # For 3+ GPUs: Use tensor splitting across all GPUs (no secondary backend needed)
         if gpu_count == 2:
-            # Start secondary backend on port 8001 using GPU 1 (dual-model mode)
-            secondary_backend = start_backend("0.0.0.0", 8001, 1, project_root)
+            secondary_backend = start_backend("0.0.0.0", secondary_port, 1, project_root, tts_port=tts_port)
             if secondary_backend:
                 processes.append(secondary_backend)
-                print("✅ Secondary backend started on port 8001 using GPU 1 (dual-model mode)")
+                print(f"✅ Secondary backend started on port {secondary_port} using GPU 1 (dual-model mode)")
         else:
-            # 3+ GPUs: Use unified model mode with tensor splitting
-            # The model service will handle tensor splitting across all available GPUs
             print(f"💡 {gpu_count} GPUs detected - using unified model mode with tensor splitting")
             print(f"   Configure tensor_split in Settings to distribute load across GPUs 0-{gpu_count-1}")
     
-    # ALWAYS start TTS service on port 8002 (regardless of GPU count)
-    tts_service = start_tts_service(project_root)
+    # ALWAYS start TTS service (regardless of GPU count)
+    tts_service = start_tts_service(project_root, tts_port)
     if tts_service:
         processes.append(tts_service)
-        print("✅ TTS service launched on port 8002")
+        print(f"✅ TTS service launched on port {tts_port}")
     
     # Wait for all processes
     if processes:

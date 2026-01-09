@@ -2,6 +2,7 @@
 // Full Settings UI: General, Generation, SD, RAG, Characters, Audio, Memory Intent, Memory Browser, Lore, About
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { getBackendUrl } from '../config/api';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
@@ -1149,7 +1150,7 @@ const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
         const newEndpoints = [...(localSettings.customApiEndpoints || []), {
           id: `endpoint-${Date.now()}`,
           name: 'New Endpoint',
-          url: 'http://localhost:8000',
+          url: getBackendUrl(),
           apiKey: '',
           enabled: true
         }];

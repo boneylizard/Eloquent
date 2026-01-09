@@ -1,6 +1,7 @@
 // ProfileEditor.jsx
 import React, { useState, useEffect } from 'react';
 import { useMemory } from '../contexts/MemoryContext';
+import { getBackendUrl } from '../config/api';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -97,7 +98,7 @@ const ProfileEditor = () => {
     setIsUploading(true);
     
     try {
-      const response = await fetch('http://localhost:8000/upload_avatar', {
+      const response = await fetch(`${getBackendUrl()}/upload_avatar`, {
         method: 'POST',
         body: formData
       });
