@@ -1,18 +1,10 @@
 // src/utils/memoryUtils.js - FINAL CORRECTED VERSION #2 (April 9, 2025)
 // Fixes duplicate sync AND ensures all needed functions are exported.
 
-// Memory API endpoint base URL
-function getBackendUrl() {
-  try {
-    const settings = JSON.parse(localStorage.getItem('LiangLocal-settings') || '{}');
-    const isSingleGpuMode = settings.singleGpuMode === true;
-    return isSingleGpuMode ? 'http://localhost:8000' : 'http://localhost:8001';
-  } catch (error) {
-    console.warn('Could not read GPU mode from settings, defaulting to dual GPU mode');
-    return 'http://localhost:8001';
-  }
-}
-const MEMORY_API_URL = getBackendUrl(); // Ensure this port is correct
+import { getMemoryUrl } from '../config/api';
+
+// Memory API endpoint base URL - now uses central config
+const MEMORY_API_URL = getMemoryUrl();
 
 // --- HELPER FUNCTIONS ---
 

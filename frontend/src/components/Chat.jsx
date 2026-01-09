@@ -28,6 +28,7 @@ import CodeEditorOverlay from './CodeEditorOverlay';
 import ForensicLinguistics from './ForensicLinguistics';
 import StoryTracker, { getStoryTrackerContext } from './StoryTracker';
 import ChoiceGenerator from './ChoiceGenerator';
+import { getBackendUrl } from '../config/api';
 
 // CORRECT PLACEMENT: Component defined at the top level, accepting props.
 const WebSearchControl = ({ webSearchEnabled, setWebSearchEnabled, isGenerating, isRecording, isTranscribing }) => (
@@ -1960,7 +1961,7 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     let displayUrl = null;
     if (avatarSource) {
       if (avatarSource.startsWith('/')) {
-        displayUrl = `${apiUrl || 'http://localhost:8000'}${avatarSource}`;
+        displayUrl = `${apiUrl || getBackendUrl()}${avatarSource}`;
       } else {
         displayUrl = avatarSource;
       }
@@ -1997,7 +1998,7 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     
     if (userAvatarSource) {
       userDisplayUrl = userAvatarSource.startsWith('/') 
-        ? `${PRIMARY_API_URL || 'http://localhost:8000'}${userAvatarSource}` 
+        ? `${PRIMARY_API_URL || getBackendUrl()}${userAvatarSource}` 
         : userAvatarSource;
     }
     

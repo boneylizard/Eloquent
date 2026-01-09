@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardHeader, CardContent, CardTitle, CardDescription } from '@/components/ui/card';
 import { Label } from '@/components/ui/label'; // <-- Ensure this line is present
 import { useApp } from '../contexts/AppContext';
+import { getBackendUrl } from '../config/api';
 import { Trash2, PlusCircle, Upload, Download, FileJson, Image } from 'lucide-react';
 import { CharacterCardIntegration } from '../utils/CharacterCardUtils';
 
@@ -271,7 +272,7 @@ const processKeywords = (index, value) => {
     
     try {
       console.log("🧠 Uploading avatar to backend...");
-      const uploadUrl = `${PRIMARY_API_URL || 'http://localhost:8000'}/upload_avatar`;
+      const uploadUrl = `${PRIMARY_API_URL || getBackendUrl()}/upload_avatar`;
       const response = await fetch(uploadUrl, { method: 'POST', body: formData });
       
       if (!response.ok) { 

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useApp } from '../contexts/AppContext';
+import { getBackendUrl } from '../config/api';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -30,7 +31,7 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
     setError('');
     
     try {
-      const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const baseUrl = import.meta.env.VITE_API_URL || getBackendUrl();
       const response = await fetch(`${baseUrl}/code_editor/set_base_dir?path=${encodeURIComponent(inputPath)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
@@ -176,7 +177,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const baseUrl = import.meta.env.VITE_API_URL || getBackendUrl();
 
   // ============================================================================
   // API HELPER

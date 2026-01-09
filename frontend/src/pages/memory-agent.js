@@ -1,13 +1,8 @@
 // memory-agent.js
+import { getMemoryUrl } from '../config/api';
+
 function getBackendUrl() {
-  try {
-    const settings = JSON.parse(localStorage.getItem('LiangLocal-settings') || '{}');
-    const isSingleGpuMode = settings.singleGpuMode === true;
-    return isSingleGpuMode ? 'http://localhost:8000' : 'http://localhost:8001';
-  } catch (error) {
-    console.warn('Could not read GPU mode from settings, defaulting to dual GPU mode');
-    return 'http://localhost:8001';
-  }
+  return getMemoryUrl();
 }
 // This function will be called before sending prompts to GPU0
 async function enhancePromptWithMemory(userPrompt) {

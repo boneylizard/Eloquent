@@ -8,13 +8,11 @@ echo.
 set "PROJECT_DIR=%~dp0"
 cd /d "%PROJECT_DIR%"
 
-REM --- 1. Clean up old processes on ports ---
-echo Killing any processes on ports 8000, 8001...
-FOR /F "tokens=5" %%P IN ('netstat -aon ^| findstr ":8000" ^| findstr "LISTENING"') DO (taskkill /PID %%P /F /T > nul)
-FOR /F "tokens=5" %%P IN ('netstat -aon ^| findstr ":8001" ^| findstr "LISTENING"') DO (taskkill /PID %%P /F /T > nul)
-echo Cleanup complete.
+REM --- 1. Port configuration ---
+REM Ports can be customized in ~/.LiangLocal/settings.json:
+REM   "backend_port": 8000, "secondary_port": 8001, "tts_port": 8002
+echo Ports are configurable via settings.json (default: 8000, 8001, 8002)
 echo.
-timeout /t 2 /nobreak > nul
 
 REM --- 2. Activate Python Virtual Environment ---
 echo Activating backend Python environment...

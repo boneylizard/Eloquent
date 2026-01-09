@@ -2,18 +2,8 @@
 // apiCall.js
 import { getTemplateForModel } from './chat_templates';
 import { retrieveRelevantMemories, formatMemoriesForPrompt } from './memoryUtils';
+import { getBackendUrl, getSecondaryUrl } from '../config/api';
 
-// Add this function near the top of apiCall.js
-function getBackendUrl() {
-  try {
-    const settings = JSON.parse(localStorage.getItem('Eloquent-settings') || '{}');
-    const isSingleGpuMode = settings.singleGpuMode === true;
-    return isSingleGpuMode ? 'http://localhost:8000' : 'http://localhost:8001';
-  } catch (error) {
-    console.warn('Could not read GPU mode from settings, defaulting to dual GPU mode');
-    return 'http://localhost:8001';
-  }
-}
 // Function to retrieve the currently active user profile object from localStorage
 function getUserProfile() {
   try {
@@ -171,7 +161,7 @@ export function callModelAPI(messages, modelName, options = {}, memoryContext = 
   const prompt   = formatPrompt(messages, modelName, memoryContext);
   const maxTokens = options.max_tokens ?? getContextLength();
 
-  return fetch("http://localhost:8000/generate", {
+  return fetch(`${getBackendUrl()}/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -236,7 +226,7 @@ export function streamModelAPI(messages, modelName, onChunk, onDone, onError, op
   
   const requestOptions = { ...defaultOptions, ...options };
   
-  fetch('http://localhost:8000/generate', {
+  fetch(`${getBackendUrl()}/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ 
@@ -343,7 +333,7 @@ export async function streamModelAPIWithMemory(messages, modelName, onChunk, onD
 
 // Helper function to perform the actual streaming API call
 function streamAPICall(prompt, modelName, options, onChunk, onDone, onError, hasMemories) {
-  fetch('http://localhost:8000/generate', {
+  fetch(`${getBackendUrl()}/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ 
@@ -810,7 +800,7 @@ export const generateChatTitle = async (message, modelName) => {
     console.log(`🔤 [TITLE] Using model for title generation: ${actualModelName}`);
     
     // Simple and direct API call
-    const apiUrl = "http://localhost:8000/generate";
+    const apiUrl = `${getBackendUrl()}/generate`;
     console.log("🔤 [TITLE] API URL:", apiUrl);
     const payload = {
       prompt: `Generate a short title (3-5 words) for a chat that starts with this message. Reply with ONLY the title, no quotes or explanations:\n\n${message}`,
