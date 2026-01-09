@@ -4866,6 +4866,564 @@ async def sd_local_status(request: Request):
         "loaded_models": sd_manager.current_model_paths 
     }
 
+# ============================================================================
+# ComfyUI API Integration - Complete Package
+# ============================================================================
+
+COMFYUI_BASE_URL = "http://127.0.0.1:8188"
+
+# Standard ComfyUI samplers and schedulers
+COMFY_SAMPLERS = [
+    "euler", "euler_ancestral", "heun", "heunpp2", "dpm_2", "dpm_2_ancestral",
+    "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_sde",
+    "dpmpp_sde_gpu", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu",
+    "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddpm", "lcm", "ddim", "uni_pc",
+    "uni_pc_bh2"
+]
+
+COMFY_SCHEDULERS = [
+    "normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform",
+    "beta"
+]
+
+def _build_comfy_txt2img_workflow(
+    prompt: str,
+    negative_prompt: str = "",
+    width: int = 512,
+    height: int = 512,
+    steps: int = 20,
+    cfg_scale: float = 7.0,
+    seed: int = -1,
+    sampler: str = "euler",
+    scheduler: str = "normal",
+    checkpoint: str = "",
+    batch_size: int = 1,
+    denoise: float = 1.0
+) -> dict:
+    """Build a ComfyUI txt2img workflow JSON."""
+    import random
+    if seed == -1:
+        seed = random.randint(0, 2**32 - 1)
+    
+    workflow = {
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg_scale,
+                "sampler_name": sampler,
+                "scheduler": scheduler,
+                "denoise": denoise,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0]
+            }
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {
+                "ckpt_name": checkpoint if checkpoint else "v1-5-pruned-emaonly.safetensors"
+            }
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "batch_size": batch_size
+            }
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": prompt,
+                "clip": ["4", 1]
+            }
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": negative_prompt,
+                "clip": ["4", 1]
+            }
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["4", 2]
+            }
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": "Eloquent_ComfyUI",
+                "images": ["8", 0]
+            }
+        }
+    }
+    return workflow
+
+def _build_comfy_img2img_workflow(
+    prompt: str,
+    negative_prompt: str = "",
+    image_base64: str = "",
+    width: int = 512,
+    height: int = 512,
+    steps: int = 20,
+    cfg_scale: float = 7.0,
+    seed: int = -1,
+    sampler: str = "euler",
+    scheduler: str = "normal",
+    checkpoint: str = "",
+    denoise: float = 0.75
+) -> dict:
+    """Build a ComfyUI img2img workflow JSON."""
+    import random
+    if seed == -1:
+        seed = random.randint(0, 2**32 - 1)
+    
+    workflow = {
+        "1": {
+            "class_type": "LoadImageBase64",
+            "inputs": {
+                "image": image_base64
+            }
+        },
+        "2": {
+            "class_type": "VAEEncode",
+            "inputs": {
+                "pixels": ["1", 0],
+                "vae": ["4", 2]
+            }
+        },
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg_scale,
+                "sampler_name": sampler,
+                "scheduler": scheduler,
+                "denoise": denoise,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["2", 0]
+            }
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {
+                "ckpt_name": checkpoint if checkpoint else "v1-5-pruned-emaonly.safetensors"
+            }
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": prompt,
+                "clip": ["4", 1]
+            }
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": negative_prompt,
+                "clip": ["4", 1]
+            }
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["4", 2]
+            }
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": "Eloquent_ComfyUI_i2i",
+                "images": ["8", 0]
+            }
+        }
+    }
+    return workflow
+
+def _build_comfy_upscale_workflow(
+    image_base64: str = "",
+    upscale_model: str = "RealESRGAN_x4plus.pth",
+    scale_factor: float = 2.0
+) -> dict:
+    """Build a ComfyUI upscale workflow JSON."""
+    workflow = {
+        "1": {
+            "class_type": "LoadImageBase64",
+            "inputs": {
+                "image": image_base64
+            }
+        },
+        "2": {
+            "class_type": "UpscaleModelLoader",
+            "inputs": {
+                "model_name": upscale_model
+            }
+        },
+        "3": {
+            "class_type": "ImageUpscaleWithModel",
+            "inputs": {
+                "upscale_model": ["2", 0],
+                "image": ["1", 0]
+            }
+        },
+        "4": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": "Eloquent_Upscaled",
+                "images": ["3", 0]
+            }
+        }
+    }
+    return workflow
+
+async def _comfy_queue_and_wait(workflow: dict, timeout_seconds: int = 300) -> dict:
+    """Queue a workflow and wait for completion. Returns output info."""
+    import asyncio
+    
+    async with httpx.AsyncClient() as client:
+        # Queue the prompt
+        queue_resp = await client.post(
+            f"{COMFYUI_BASE_URL}/prompt",
+            json={"prompt": workflow},
+            timeout=10.0
+        )
+        queue_resp.raise_for_status()
+        result = queue_resp.json()
+        prompt_id = result.get("prompt_id")
+        
+        if not prompt_id:
+            raise HTTPException(500, "ComfyUI did not return a prompt_id")
+        
+        # Check for immediate errors
+        if "error" in result:
+            raise HTTPException(500, f"ComfyUI workflow error: {result['error']}")
+        if "node_errors" in result and result["node_errors"]:
+            raise HTTPException(500, f"ComfyUI node errors: {result['node_errors']}")
+        
+        # Poll for completion
+        for _ in range(timeout_seconds):
+            await asyncio.sleep(1)
+            
+            # Check queue status
+            queue_resp = await client.get(f"{COMFYUI_BASE_URL}/queue", timeout=5.0)
+            if queue_resp.status_code == 200:
+                queue_data = queue_resp.json()
+                running = queue_data.get("queue_running", [])
+                pending = queue_data.get("queue_pending", [])
+                
+                # Check if our job is still in queue
+                our_job_running = any(job[1] == prompt_id for job in running)
+                our_job_pending = any(job[1] == prompt_id for job in pending)
+                
+                if not our_job_running and not our_job_pending:
+                    # Job finished, check history
+                    history_resp = await client.get(
+                        f"{COMFYUI_BASE_URL}/history/{prompt_id}",
+                        timeout=10.0
+                    )
+                    
+                    if history_resp.status_code == 200:
+                        history = history_resp.json()
+                        if prompt_id in history:
+                            job_data = history[prompt_id]
+                            
+                            # Check for execution errors
+                            if job_data.get("status", {}).get("status_str") == "error":
+                                error_msg = job_data.get("status", {}).get("messages", [])
+                                raise HTTPException(500, f"ComfyUI execution error: {error_msg}")
+                            
+                            return {
+                                "prompt_id": prompt_id,
+                                "outputs": job_data.get("outputs", {}),
+                                "status": job_data.get("status", {})
+                            }
+        
+        # Timeout - try to cancel the job
+        try:
+            await client.post(f"{COMFYUI_BASE_URL}/queue", json={"delete": [prompt_id]})
+        except:
+            pass
+        
+        raise HTTPException(504, "ComfyUI generation timed out")
+
+async def _comfy_fetch_images(outputs: dict) -> list:
+    """Fetch generated images from ComfyUI outputs and save locally."""
+    saved_urls = []
+    
+    async with httpx.AsyncClient() as client:
+        for node_id, node_output in outputs.items():
+            if "images" in node_output:
+                for img_info in node_output["images"]:
+                    img_resp = await client.get(
+                        f"{COMFYUI_BASE_URL}/view",
+                        params={
+                            "filename": img_info["filename"],
+                            "subfolder": img_info.get("subfolder", ""),
+                            "type": img_info.get("type", "output")
+                        },
+                        timeout=30.0
+                    )
+                    if img_resp.status_code == 200:
+                        image_url = save_image_and_get_url(img_resp.content)
+                        saved_urls.append(image_url)
+    
+    return saved_urls
+
+@app.get("/sd-comfy/status")
+async def sd_comfy_status():
+    """Check if ComfyUI is running and get full configuration options."""
+    try:
+        async with httpx.AsyncClient() as client:
+            # Check system stats
+            resp = await client.get(f"{COMFYUI_BASE_URL}/system_stats", timeout=5.0)
+            resp.raise_for_status()
+            system_stats = resp.json()
+            
+            # Get available checkpoints
+            checkpoints = []
+            try:
+                obj_resp = await client.get(f"{COMFYUI_BASE_URL}/object_info/CheckpointLoaderSimple", timeout=5.0)
+                if obj_resp.status_code == 200:
+                    obj_info = obj_resp.json()
+                    checkpoints = obj_info.get("CheckpointLoaderSimple", {}).get("input", {}).get("required", {}).get("ckpt_name", [[]])[0]
+            except:
+                pass
+            
+            # Get available VAEs
+            vaes = []
+            try:
+                vae_resp = await client.get(f"{COMFYUI_BASE_URL}/object_info/VAELoader", timeout=5.0)
+                if vae_resp.status_code == 200:
+                    vae_info = vae_resp.json()
+                    vaes = vae_info.get("VAELoader", {}).get("input", {}).get("required", {}).get("vae_name", [[]])[0]
+            except:
+                pass
+            
+            # Get available LoRAs
+            loras = []
+            try:
+                lora_resp = await client.get(f"{COMFYUI_BASE_URL}/object_info/LoraLoader", timeout=5.0)
+                if lora_resp.status_code == 200:
+                    lora_info = lora_resp.json()
+                    loras = lora_info.get("LoraLoader", {}).get("input", {}).get("required", {}).get("lora_name", [[]])[0]
+            except:
+                pass
+            
+            # Get available upscale models
+            upscalers = []
+            try:
+                up_resp = await client.get(f"{COMFYUI_BASE_URL}/object_info/UpscaleModelLoader", timeout=5.0)
+                if up_resp.status_code == 200:
+                    up_info = up_resp.json()
+                    upscalers = up_info.get("UpscaleModelLoader", {}).get("input", {}).get("required", {}).get("model_name", [[]])[0]
+            except:
+                pass
+            
+            return {
+                "comfyui": True,
+                "system": system_stats,
+                "checkpoints": checkpoints,
+                "vaes": vaes,
+                "loras": loras,
+                "upscalers": upscalers,
+                "samplers": COMFY_SAMPLERS,
+                "schedulers": COMFY_SCHEDULERS
+            }
+    except Exception as e:
+        return {
+            "comfyui": False,
+            "error": str(e),
+            "checkpoints": [],
+            "vaes": [],
+            "loras": [],
+            "upscalers": [],
+            "samplers": COMFY_SAMPLERS,
+            "schedulers": COMFY_SCHEDULERS
+        }
+
+@app.get("/sd-comfy/queue")
+async def sd_comfy_queue():
+    """Get current ComfyUI queue status."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{COMFYUI_BASE_URL}/queue", timeout=5.0)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        raise HTTPException(502, f"ComfyUI connection error: {e}")
+
+@app.post("/sd-comfy/interrupt")
+async def sd_comfy_interrupt():
+    """Interrupt current ComfyUI generation."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"{COMFYUI_BASE_URL}/interrupt", timeout=5.0)
+            return {"status": "interrupted"}
+    except Exception as e:
+        raise HTTPException(502, f"ComfyUI connection error: {e}")
+
+@app.post("/sd-comfy/clear-queue")
+async def sd_comfy_clear_queue():
+    """Clear all pending ComfyUI jobs."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{COMFYUI_BASE_URL}/queue",
+                json={"clear": True},
+                timeout=5.0
+            )
+            return {"status": "queue_cleared"}
+    except Exception as e:
+        raise HTTPException(502, f"ComfyUI connection error: {e}")
+
+@app.post("/sd-comfy/txt2img")
+async def sd_comfy_txt2img(body: dict):
+    """Generate image using ComfyUI txt2img."""
+    try:
+        workflow = _build_comfy_txt2img_workflow(
+            prompt=body.get("prompt", ""),
+            negative_prompt=body.get("negative_prompt", ""),
+            width=body.get("width", 512),
+            height=body.get("height", 512),
+            steps=body.get("steps", 20),
+            cfg_scale=body.get("cfg_scale", 7.0),
+            seed=body.get("seed", -1),
+            sampler=body.get("sampler", "euler"),
+            scheduler=body.get("scheduler", "normal"),
+            checkpoint=body.get("checkpoint", ""),
+            batch_size=body.get("batch_size", 1),
+            denoise=body.get("denoise", 1.0)
+        )
+        
+        result = await _comfy_queue_and_wait(workflow, timeout_seconds=body.get("timeout", 300))
+        saved_urls = await _comfy_fetch_images(result["outputs"])
+        
+        return JSONResponse({
+            "status": "success",
+            "image_urls": saved_urls,
+            "prompt_id": result["prompt_id"]
+        })
+        
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"ComfyUI connection error: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"ComfyUI error: {e}")
+
+@app.post("/sd-comfy/img2img")
+async def sd_comfy_img2img(body: dict):
+    """Generate image using ComfyUI img2img."""
+    image_base64 = body.get("image", "")
+    if not image_base64:
+        raise HTTPException(400, "image (base64) is required for img2img")
+    
+    # Strip data URI prefix if present
+    if image_base64.startswith("data:"):
+        image_base64 = image_base64.split(",", 1)[1]
+    
+    try:
+        workflow = _build_comfy_img2img_workflow(
+            prompt=body.get("prompt", ""),
+            negative_prompt=body.get("negative_prompt", ""),
+            image_base64=image_base64,
+            width=body.get("width", 512),
+            height=body.get("height", 512),
+            steps=body.get("steps", 20),
+            cfg_scale=body.get("cfg_scale", 7.0),
+            seed=body.get("seed", -1),
+            sampler=body.get("sampler", "euler"),
+            scheduler=body.get("scheduler", "normal"),
+            checkpoint=body.get("checkpoint", ""),
+            denoise=body.get("denoise", 0.75)
+        )
+        
+        result = await _comfy_queue_and_wait(workflow, timeout_seconds=body.get("timeout", 300))
+        saved_urls = await _comfy_fetch_images(result["outputs"])
+        
+        return JSONResponse({
+            "status": "success",
+            "image_urls": saved_urls,
+            "prompt_id": result["prompt_id"]
+        })
+        
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"ComfyUI connection error: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"ComfyUI error: {e}")
+
+@app.post("/sd-comfy/upscale")
+async def sd_comfy_upscale(body: dict):
+    """Upscale image using ComfyUI."""
+    image_base64 = body.get("image", "")
+    if not image_base64:
+        raise HTTPException(400, "image (base64) is required for upscaling")
+    
+    # Strip data URI prefix if present
+    if image_base64.startswith("data:"):
+        image_base64 = image_base64.split(",", 1)[1]
+    
+    try:
+        workflow = _build_comfy_upscale_workflow(
+            image_base64=image_base64,
+            upscale_model=body.get("upscale_model", "RealESRGAN_x4plus.pth"),
+            scale_factor=body.get("scale_factor", 2.0)
+        )
+        
+        result = await _comfy_queue_and_wait(workflow, timeout_seconds=body.get("timeout", 300))
+        saved_urls = await _comfy_fetch_images(result["outputs"])
+        
+        return JSONResponse({
+            "status": "success",
+            "image_urls": saved_urls,
+            "prompt_id": result["prompt_id"]
+        })
+        
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"ComfyUI connection error: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"ComfyUI error: {e}")
+
+@app.post("/sd-comfy/workflow")
+async def sd_comfy_custom_workflow(body: dict):
+    """Execute a custom ComfyUI workflow JSON."""
+    workflow = body.get("workflow")
+    if not workflow:
+        raise HTTPException(400, "workflow JSON is required")
+    
+    try:
+        result = await _comfy_queue_and_wait(workflow, timeout_seconds=body.get("timeout", 300))
+        saved_urls = await _comfy_fetch_images(result["outputs"])
+        
+        return JSONResponse({
+            "status": "success",
+            "image_urls": saved_urls,
+            "prompt_id": result["prompt_id"],
+            "outputs": result["outputs"]
+        })
+        
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"ComfyUI connection error: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"ComfyUI error: {e}")
+
 @app.post("/sd-local/load-model")
 async def sd_local_load_model(data: dict, request: Request):
     """Load a local SD model by its filename"""

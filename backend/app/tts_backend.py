@@ -57,135 +57,26 @@ tts_initialized = False
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize TTS models on startup"""
-    global chatterbox_model, tts_initialized
+    """Initialize TTS service - model loading is deferred to prevent CUDA conflicts"""
+    global tts_initialized
     
     try:
         logger.info("🚀 Starting TTS Backend Service...")
         
-        # GPU optimization: Set performance environment variables
-        os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Non-blocking CUDA operations
-        os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"  # Enable cuDNN v8
-        os.environ["CUDA_CACHE_DISABLE"] = "0"  # Enable CUDA cache
-        os.environ["CUDA_CACHE_PATH"] = "/tmp/cuda_cache"  # Set cache path
+        # Set environment variables for later CUDA optimization
+        # These don't initialize CUDA, just configure it for when it's used
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+        os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"
+        os.environ["CUDA_CACHE_DISABLE"] = "0"
+        os.environ["CUDA_CACHE_PATH"] = "/tmp/cuda_cache"
         
-        # GPU optimizations
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.set_device(0)  # Use first available GPU
-            current_device = torch.cuda.current_device()
-            logger.info(f"🔒 CUDA device set to: {current_device}")
-            
-            # Set memory fraction (use 90% of VRAM)
-            torch.cuda.set_per_process_memory_fraction(0.9)
-            
-            # Enable TensorFloat-32 for modern GPUs (Ampere+ architecture)
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            
-            # Set optimal memory allocation strategy
-            torch.cuda.memory.set_per_process_memory_fraction(0.9)
-            
-            # Log GPU capabilities and verify device
-            gpu_name = torch.cuda.get_device_name(0)
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            compute_capability = torch.cuda.get_device_capability(0)
-            
-            logger.info(f"🔒 TTS Service using GPU 0: {gpu_name}")
-            logger.info(f"🔒 GPU Memory: {gpu_memory:.1f} GB")
-            logger.info(f"🔒 Compute Capability: {compute_capability[0]}.{compute_capability[1]}")
-            logger.info(f"🔒 TensorFloat-32: {torch.backends.cuda.matmul.allow_tf32}")
-            logger.info(f"🔒 cuDNN v8: {torch.backends.cudnn.version()}")
-            logger.info(f"🔒 Current CUDA device: {torch.cuda.current_device()}")
-            logger.info(f"🔒 Device count: {torch.cuda.device_count()}")
-            
-            # CRITICAL: Test GPU computation
-            logger.info("🔒 Testing GPU computation...")
-            test_tensor = torch.randn(1000, 1000, device='cuda:0')
-            test_result = torch.mm(test_tensor, test_tensor)
-            logger.info(f"🔒 GPU test successful: {test_result.shape}")
-            
-        else:
-            logger.warning("⚠️ CUDA not available for TTS service!")
+        # CRITICAL: Do NOT initialize PyTorch CUDA here!
+        # This would conflict with stable-diffusion.cpp's ggml CUDA backend.
+        # CUDA will be initialized when Chatterbox is first loaded on TTS request.
         
-        # Load Chatterbox model
-        logger.info("🔥 Loading Chatterbox TTS model...")
-        chatterbox_model = load_chatterbox_model()
-        logger.info("✅ Chatterbox model loaded successfully")
-        
-        # Force warmup after model loading
-        logger.info("🔥 Forcing comprehensive warmup after model load...")
-        try:
-            import torch
-            with torch.inference_mode():
-                # Force T3 compilation with a test generation
-                test_text = "This is a warmup test for optimal performance."
-                if hasattr(chatterbox_model, 'generate'):
-                    logger.info("🔥 Warming up T3 compilation...")
-                    dummy_audio = chatterbox_model.generate(test_text, language_id="en")
-                    logger.info("✅ T3 warmup complete")
-                
-                # Force streaming compilation
-                logger.info("🔥 Warming up streaming pipeline...")
-                try:
-                    audio_chunks = []
-                    for audio_chunk, metrics in chatterbox_model.generate_stream(
-                        "Testing streaming synthesis for compilation.", 
-                        language_id="en",
-                        chunk_size=50
-                    ):
-                        audio_chunks.append(audio_chunk)
-                        break  # Just need first chunk to compile
-                    logger.info("✅ Streaming warmup complete")
-                except AttributeError:
-                    logger.warning("⚠️ Warmup failed: 'ChatterboxTTS' object has no attribute 'generate_stream'")
-                except Exception as e:
-                    logger.warning(f"⚠️ Streaming warmup failed: {e}")
-                
-                # Force voice cloning warmup if default voice exists
-                voices_dir = Path(__file__).parent / "static" / "voice_references"
-                default_voice_files = ["default.wav", "narrator.wav", "sample.wav"]
-                
-                for voice_file in default_voice_files:
-                    voice_path = voices_dir / voice_file
-                    if voice_path.exists():
-                        logger.info(f"🔥 Warming up voice cloning with {voice_file}...")
-                        try:
-                            clone_chunks = []
-                            for audio_chunk, metrics in chatterbox_model.generate_stream(
-                                "Voice cloning warm up test.",
-                                language_id="en",
-                                audio_prompt_path=str(voice_path),
-                                chunk_size=50
-                            ):
-                                clone_chunks.append(audio_chunk)
-                                break  # Just need first chunk
-                            logger.info(f"✅ Voice cloning warmup complete with {voice_file}")
-                        except AttributeError:
-                            logger.warning(f"⚠️ Voice cloning warmup failed: generate_stream not available")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Voice cloning warmup failed: {e}")
-                        break
-                
-                # Clear warmup artifacts
-                if 'dummy_audio' in locals():
-                    del dummy_audio
-                if 'audio_chunks' in locals():
-                    del audio_chunks
-                if 'clone_chunks' in locals():
-                    del clone_chunks
-                
-                # Force garbage collection and CUDA cache clearing
-                import gc
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-                logger.info("🎉 Complete warmup finished!")
-                
-        except Exception as e:
-            logger.warning(f"⚠️ Warmup failed: {e}")
-            logger.info("📌 Models loaded but warmup incomplete - will warm up on first use")
+        logger.info("📌 TTS Backend ready - CUDA/model loading deferred")
+        logger.info("📌 Chatterbox will load on first TTS request")
+        logger.info("📌 This prevents CUDA conflicts with Stable Diffusion (ggml)")
         
         tts_initialized = True
         logger.info("🎉 TTS Backend Service ready!")

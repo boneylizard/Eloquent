@@ -13,18 +13,24 @@ REM --- 2. Detect Python version ---
 for /f %%i in ('python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set PYVER=%%i
 echo Detected Python version: %PYVER%
 
-REM --- 3. Install precompiled LLaMA and SD wheels ---
+REM --- 3. Install precompiled LLaMA wheel (local) ---
 if "%PYVER%"=="3.11" (
-    echo Installing LLaMA + SD wheels for Python 3.11...
+    echo Installing LLaMA wheel for Python 3.11...
     pip install wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
-    pip install wheels\stable_diffusion_cpp_python-0.2.9-cp311-cp311-win_amd64.whl
 ) else if "%PYVER%"=="3.12" (
-    echo Installing LLaMA + SD wheels for Python 3.12...
+    echo Installing LLaMA wheel for Python 3.12...
     pip install wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
-    pip install wheels\stable_diffusion_cpp_python-0.2.9-cp312-cp312-win_amd64.whl
 ) else (
     echo ERROR: Unsupported Python version: %PYVER%
     exit /b 1
+)
+
+REM --- 3b. Install Stable Diffusion wheel from HuggingFace (too large for GitHub) ---
+echo Installing Stable Diffusion wheel from HuggingFace (355MB, this may take a moment)...
+if "%PYVER%"=="3.11" (
+    pip install https://huggingface.co/datasets/boneylizardwizard/stablediffusioncpppython311312/resolve/main/stable_diffusion_cpp_python-0.4.2-cp311-cp311-win_amd64.whl
+) else if "%PYVER%"=="3.12" (
+    pip install https://huggingface.co/datasets/boneylizardwizard/stablediffusioncpppython311312/resolve/main/stable_diffusion_cpp_python-0.4.2-cp312-cp312-win_amd64.whl
 )
 
 REM --- 4. Install PyTorch with CUDA 12.1 ---

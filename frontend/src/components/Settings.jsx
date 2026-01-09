@@ -2411,13 +2411,14 @@ onValueChange={value => {
               <SelectValue placeholder="Select image engine" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="EloDiffusion">Local SD (Built-in) ⭐</SelectItem>
               <SelectItem value="auto1111">AUTOMATIC1111 (External)</SelectItem>
-              <SelectItem value="EloDiffusion">Local SD (Built-in)</SelectItem>
+              <SelectItem value="comfyui">ComfyUI (External)</SelectItem>
               <SelectItem value="both">Show Both Options</SelectItem>
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Choose default image generation engine or show both options
+            Built-in uses stable-diffusion.cpp. External options require A1111/ComfyUI running separately.
           </p>
         </div>
       </div>
