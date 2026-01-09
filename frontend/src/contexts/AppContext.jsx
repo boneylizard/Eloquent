@@ -647,6 +647,8 @@ const checkSdStatus = useCallback(async () => {
   
   let automatic1111Status = false;
   let localSdStatus = false;
+  let comfyuiStatus = false;
+  let comfyuiData = null;
   
   // Check AUTOMATIC1111 if needed
   if (imageEngine === 'auto1111' || imageEngine === 'both') {
@@ -672,12 +674,27 @@ const checkSdStatus = useCallback(async () => {
     }
   }
   
+  // Check ComfyUI if needed
+  if (imageEngine === 'comfyui' || imageEngine === 'both') {
+    try {
+      const res = await fetch(`${PRIMARY_API_URL}/sd-comfy/status`, { method: "GET" });
+      if (res.ok) {
+        const data = await res.json();
+        comfyuiStatus = Boolean(data.comfyui);
+        comfyuiData = data; // Contains checkpoints, samplers, schedulers, etc.
+      }
+    } catch (err) {
+    }
+  }
+  
   setSdStatus({
     automatic1111: automatic1111Status,
     localSd: localSdStatus,
+    comfyui: comfyuiStatus,
+    comfyuiData: comfyuiData,
     models: [] // We'll populate this later if needed
   });
-}, [MEMORY_API_URL, settings.imageEngine]);
+}, [PRIMARY_API_URL, MEMORY_API_URL, settings.imageEngine]);
 
 const fetchAvailableSTTEngines = useCallback(async () => {
   try {
@@ -692,8 +709,7 @@ const fetchAvailableSTTEngines = useCallback(async () => {
   }
 }, [PRIMARY_API_URL]);
 
-// 2. Generate image via POST /sd/txt2img
-// Replace the entire function with this updated version:
+// 2. Generate image via POST - supports Local SD, A1111, and ComfyUI
 const generateImage = useCallback(async (prompt, opts, gpuId = 0) => {
   console.log(`Starting image generation for GPU ${gpuId} with prompt:`, prompt);
   console.log("Image generation options:", opts);
@@ -701,16 +717,43 @@ const generateImage = useCallback(async (prompt, opts, gpuId = 0) => {
   // Use settings from the context
   const imageEngine = settings.imageEngine || 'auto1111';
 
-  // Determine the correct API URL based on the target GPU
-  const targetApiUrl = (imageEngine === 'EloDiffusion' && gpuId === 1) ? MEMORY_API_URL : PRIMARY_API_URL;
-  const endpoint = imageEngine === 'EloDiffusion'
-    ? `${targetApiUrl}/sd-local/txt2img`
-    : `${PRIMARY_API_URL}/sd/txt2img`;
+  // Determine endpoint based on engine
+  let endpoint;
+  if (imageEngine === 'EloDiffusion') {
+    const targetApiUrl = gpuId === 1 ? MEMORY_API_URL : PRIMARY_API_URL;
+    endpoint = `${targetApiUrl}/sd-local/txt2img`;
+  } else if (imageEngine === 'comfyui') {
+    endpoint = `${PRIMARY_API_URL}/sd-comfy/txt2img`;
+  } else {
+    endpoint = `${PRIMARY_API_URL}/sd/txt2img`;
+  }
 
+  // Sampler mapping for different backends
   const mapSamplerForBackend = (samplerNameFromFrontend) => {
     if (imageEngine === 'EloDiffusion') {
       return samplerNameFromFrontend;
     }
+    if (imageEngine === 'comfyui') {
+      // ComfyUI uses lowercase sampler names
+      const comfySamplerMapping = {
+        'euler_a': 'euler_ancestral',
+        'Euler a': 'euler_ancestral',
+        'euler': 'euler',
+        'Euler': 'euler',
+        'dpmpp2m': 'dpmpp_2m',
+        'DPM++ 2M Karras': 'dpmpp_2m',
+        'dpmpp2s_a': 'dpmpp_2s_ancestral',
+        'DPM++ 2S a Karras': 'dpmpp_2s_ancestral',
+        'heun': 'heun',
+        'Heun': 'heun',
+        'dpm2': 'dpm_2',
+        'DPM2': 'dpm_2',
+        'ddim': 'ddim',
+        'DDIM': 'ddim',
+      };
+      return comfySamplerMapping[samplerNameFromFrontend] || samplerNameFromFrontend.toLowerCase();
+    }
+    // A1111 mapping
     const automatic1111SamplerMapping = {
       'euler_a': 'Euler a',
       'euler': 'Euler',
@@ -726,22 +769,55 @@ const generateImage = useCallback(async (prompt, opts, gpuId = 0) => {
   setIsImageGenerating(true);
   clearError();
   try {
-    const payload = {
-      prompt,
-      gpu_id: gpuId, // Pass the correct GPU ID
-      negative_prompt: opts.negative_prompt || "",
-      width: opts.width || 512,
-      height: opts.height || 512,
-      steps: opts.steps || 20,
-      guidance_scale: opts.guidance_scale || 7.0,
-      sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
-      seed: opts.seed || -1,
-      ...(imageEngine !== 'EloDiffusion' && {
+    let payload;
+    
+    if (imageEngine === 'comfyui') {
+      // ComfyUI payload format
+      payload = {
+        prompt,
+        negative_prompt: opts.negative_prompt || "",
+        width: opts.width || 512,
+        height: opts.height || 512,
+        steps: opts.steps || 20,
+        cfg_scale: opts.guidance_scale || 7.0,
+        sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
+        scheduler: opts.scheduler || "normal",
+        seed: opts.seed || -1,
+        checkpoint: opts.checkpoint || opts.model || "",
+        batch_size: opts.batch_size || 1,
+        denoise: opts.denoise || 1.0,
+        timeout: 300
+      };
+    } else if (imageEngine === 'EloDiffusion') {
+      // Local SD payload
+      payload = {
+        prompt,
+        gpu_id: gpuId,
+        negative_prompt: opts.negative_prompt || "",
+        width: opts.width || 512,
+        height: opts.height || 512,
+        steps: opts.steps || 20,
+        guidance_scale: opts.guidance_scale || 7.0,
+        sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
+        seed: opts.seed || -1,
+      };
+    } else {
+      // A1111 payload
+      payload = {
+        prompt,
+        gpu_id: gpuId,
+        negative_prompt: opts.negative_prompt || "",
+        width: opts.width || 512,
+        height: opts.height || 512,
+        steps: opts.steps || 20,
+        guidance_scale: opts.guidance_scale || 7.0,
+        sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
+        seed: opts.seed || -1,
         model: opts.model,
         cfg_scale: opts.guidance_scale || 7.0,
         sampler_name: mapSamplerForBackend(opts.sampler || "Euler a")
-      })
-    };
+      };
+    }
 
     console.log("Sending to SD API:", payload);
     console.log("Using image engine:", imageEngine);
@@ -770,8 +846,7 @@ const generateImage = useCallback(async (prompt, opts, gpuId = 0) => {
   } finally {
     setIsImageGenerating(false);
   }
-  // Use the full settings object as a dependency
-}, [clearError, setApiError, PRIMARY_API_URL, MEMORY_API_URL, settings, setIsImageGenerating, setApiError]);
+}, [clearError, setApiError, PRIMARY_API_URL, MEMORY_API_URL, settings, setIsImageGenerating]);
 
 
 

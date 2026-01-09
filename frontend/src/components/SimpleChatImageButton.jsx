@@ -37,6 +37,7 @@ const SimpleChatImageButton = () => {
     const [seed, setSeed] = useState(-1);
     const [selectedSampler, setSelectedSampler] = useState("dpmpp2m");
     const [selectedGpuId, setSelectedGpuId] = useState(0);
+    const [selectedScheduler, setSelectedScheduler] = useState("normal"); // ComfyUI scheduler
     // AUTOMATIC1111 state
     const [selectedModel, setSelectedModel] = useState('');
     const [availableModels, setAvailableModels] = useState([]);
@@ -282,9 +283,13 @@ const handleLoadLocalModel = useCallback(async (modelFilename) => {
 const imageEngine = settings?.imageEngine || 'auto1111';
 const isAvailable = imageEngine === 'EloDiffusion' 
     ? localSdStatus?.available 
+    : imageEngine === 'comfyui'
+    ? sdStatus?.comfyui
     : sdStatus?.automatic1111;
 const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion' 
     ? Boolean(localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId])
+    : imageEngine === 'comfyui'
+    ? sdStatus?.comfyui // ComfyUI doesn't require pre-loading
     : sdStatus?.automatic1111;
     useEffect(() => {
         if (sdStatus?.models?.length) {
@@ -303,16 +308,18 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
 
         clearError();
         try {
-            console.log("DEBUGGING SAMPLER - selectedSampler before generateImage:", selectedSampler); // <--- ADD THIS LINE HERE
+            console.log("DEBUGGING - sampler:", selectedSampler, "scheduler:", selectedScheduler, "model:", selectedModel);
             const responseData = await generateImage(prompt, {
                 negative_prompt: negativePrompt,
                 width,
                 height,
                 steps,
                 guidance_scale: guidanceScale,
-                sampler: selectedSampler,  // ✅ Correct parameter name
+                sampler: selectedSampler,
+                scheduler: selectedScheduler, // ComfyUI scheduler
                 seed: seed,
-                model: selectedModel
+                model: selectedModel,
+                checkpoint: selectedModel // ComfyUI uses 'checkpoint'
             }, selectedGpuId);
 
             if (responseData && Array.isArray(responseData.image_urls) && responseData.image_urls.length > 0) {
@@ -540,8 +547,8 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                 </div>
                             )}
                             
-                            {/* Existing model selection */}
-                            {sdStatus?.automatic1111 && availableModels.length > 0 && (
+                            {/* A1111 model selection */}
+                            {imageEngine === 'auto1111' && sdStatus?.automatic1111 && availableModels.length > 0 && (
                                 <div className="space-y-2">
                                     <Label htmlFor="sd-model" className="text-xs">Model</Label>
                                     <select 
@@ -556,6 +563,69 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                             return <option key={i} value={name} className="bg-background text-foreground">{name}</option>;
                                         })}
                                     </select>
+                                </div>
+                            )}
+                            
+                            {/* ComfyUI checkpoint selection */}
+                            {imageEngine === 'comfyui' && sdStatus?.comfyui && sdStatus?.comfyuiData?.checkpoints?.length > 0 && (
+                                <div className="space-y-2">
+                                    <Label htmlFor="comfy-checkpoint" className="text-xs">Checkpoint</Label>
+                                    <select 
+                                        id="comfy-checkpoint" 
+                                        value={selectedModel} 
+                                        onChange={e => setSelectedModel(e.target.value)} 
+                                        disabled={isImageGenerating} 
+                                        className="w-full rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                    >
+                                        <option value="">Use ComfyUI default</option>
+                                        {sdStatus.comfyuiData.checkpoints.map((ckpt, i) => (
+                                            <option key={i} value={ckpt} className="bg-background text-foreground">{ckpt}</option>
+                                        ))}
+                                    </select>
+                                    <p className="text-xs text-green-600 dark:text-green-400">
+                                        ✓ ComfyUI connected
+                                    </p>
+                                </div>
+                            )}
+                            
+                            {/* ComfyUI sampler & scheduler */}
+                            {imageEngine === 'comfyui' && sdStatus?.comfyui && (
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div className="space-y-1">
+                                        <Label htmlFor="comfy-sampler" className="text-xs">Sampler</Label>
+                                        <select 
+                                            id="comfy-sampler" 
+                                            value={selectedSampler} 
+                                            onChange={e => setSelectedSampler(e.target.value)} 
+                                            disabled={isImageGenerating} 
+                                            className="w-full rounded border border-input bg-background text-foreground px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                                        >
+                                            {(sdStatus.comfyuiData?.samplers || ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_sde']).map((s, i) => (
+                                                <option key={i} value={s} className="bg-background text-foreground">{s}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label htmlFor="comfy-scheduler" className="text-xs">Scheduler</Label>
+                                        <select 
+                                            id="comfy-scheduler" 
+                                            value={selectedScheduler} 
+                                            onChange={e => setSelectedScheduler(e.target.value)} 
+                                            disabled={isImageGenerating} 
+                                            className="w-full rounded border border-input bg-background text-foreground px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                                        >
+                                            {(sdStatus.comfyuiData?.schedulers || ['normal', 'karras', 'exponential', 'sgm_uniform']).map((s, i) => (
+                                                <option key={i} value={s} className="bg-background text-foreground">{s}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {/* ComfyUI not connected warning */}
+                            {imageEngine === 'comfyui' && !sdStatus?.comfyui && (
+                                <div className="p-2 rounded bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200 text-xs">
+                                    ⚠️ ComfyUI not detected. Make sure it's running on localhost:8188
                                 </div>
                             )}
                             

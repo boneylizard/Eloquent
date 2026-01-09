@@ -185,17 +185,56 @@ class SDManager:
                 h = (original_image.height // 8) * 8
                 logger.info(f"Inpainting full frame at {w}×{h}")
 
-                enhanced_result = model_instance.img_to_img( # Use the correct model_instance
-                    prompt=enhance_prompt,
-                    image=enhanced_image,
-                    mask_image=mask,
-                    strength=0.30,
-                    width=w,
-                    height=h,
-                    sample_steps=45,
-                    cfg_scale=8.5,
-                    sample_method="dpmpp2m"
-                )
+                # Clean up PyTorch CUDA state before ggml inpainting
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+                # Handle different API versions of stable-diffusion-cpp-python
+                # Latest versions use generate_image with image param for img2img
+                if hasattr(model_instance, 'generate_image'):
+                    enhanced_result = model_instance.generate_image(
+                        prompt=enhance_prompt,
+                        image=enhanced_image,
+                        strength=0.30,
+                        width=w,
+                        height=h,
+                        sample_steps=45,
+                        cfg_scale=8.5,
+                        sample_method="dpmpp2m"
+                    )
+                elif hasattr(model_instance, 'img2img'):
+                    enhanced_result = model_instance.img2img(
+                        prompt=enhance_prompt,
+                        image=enhanced_image,
+                        mask_image=mask,
+                        strength=0.30,
+                        width=w,
+                        height=h,
+                        sample_steps=45,
+                        cfg_scale=8.5,
+                        sample_method="dpmpp2m"
+                    )
+                elif hasattr(model_instance, 'img_to_img'):
+                    enhanced_result = model_instance.img_to_img(
+                        prompt=enhance_prompt,
+                        image=enhanced_image,
+                        mask_image=mask,
+                        strength=0.30,
+                        width=w,
+                        height=h,
+                        sample_steps=45,
+                        cfg_scale=8.5,
+                        sample_method="dpmpp2m"
+                    )
+                else:
+                    logger.error("StableDiffusion object has no generate_image or img2img method")
+                    enhanced_result = None
+                    
                 if enhanced_result and len(enhanced_result) > 0:
                     enhanced_image = enhanced_result[0]
                     logger.info(f"Successfully enhanced face {i+1}")
@@ -259,6 +298,17 @@ class SDManager:
         """Load a Stable Diffusion model on specified GPU"""
         try:
             logger.info(f"Loading SD model: {model_path} on GPU {gpu_id}")
+
+            # Clean up PyTorch CUDA state before ggml takes over
+            # This prevents CUDA context conflicts between PyTorch and ggml
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    logger.info("Cleaned up PyTorch CUDA state before SD load")
+            except Exception as e:
+                logger.warning(f"Could not clean PyTorch CUDA state: {e}")
 
             # Set CUDA device for this process
             import os
@@ -411,18 +461,56 @@ class SDManager:
 
         # Generate image using the appropriate parameters
         try:
+            # Clean up PyTorch CUDA state before ggml generation
+            # This prevents CUDA context conflicts between PyTorch (TTS) and ggml (SD)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass  # Silently continue if PyTorch cleanup fails
+            
             logger.info(f"Starting generation: {width}x{height}, {steps} steps, cfg={cfg_scale}, seed={seed}")
             
-            images_list = model_instance.txt_to_img(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=width,
-                height=height,
-                cfg_scale=cfg_scale,
-                sample_steps=steps,
-                sample_method=sample_method,
-                seed=seed
-            )
+            # Handle different API versions of stable-diffusion-cpp-python
+            # Latest versions use generate_image, older use txt2img or txt_to_img
+            if hasattr(model_instance, 'generate_image'):
+                images_list = model_instance.generate_image(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=width,
+                    height=height,
+                    cfg_scale=cfg_scale,
+                    sample_steps=steps,
+                    sample_method=sample_method,
+                    seed=seed
+                )
+            elif hasattr(model_instance, 'txt2img'):
+                images_list = model_instance.txt2img(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=width,
+                    height=height,
+                    cfg_scale=cfg_scale,
+                    sample_steps=steps,
+                    sample_method=sample_method,
+                    seed=seed
+                )
+            elif hasattr(model_instance, 'txt_to_img'):
+                images_list = model_instance.txt_to_img(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=width,
+                    height=height,
+                    cfg_scale=cfg_scale,
+                    sample_steps=steps,
+                    sample_method=sample_method,
+                    seed=seed
+                )
+            else:
+                methods = [m for m in dir(model_instance) if not m.startswith('_')]
+                raise RuntimeError(f"StableDiffusion object has no generate_image method. Available methods: {methods}")
             
             logger.info("Generation completed successfully")
         
