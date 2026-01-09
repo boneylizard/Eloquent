@@ -122,7 +122,7 @@ async def startup_event():
                 test_text = "This is a warmup test for optimal performance."
                 if hasattr(chatterbox_model, 'generate'):
                     logger.info("🔥 Warming up T3 compilation...")
-                    dummy_audio = chatterbox_model.generate(test_text)
+                    dummy_audio = chatterbox_model.generate(test_text, language_id="en")
                     logger.info("✅ T3 warmup complete")
                 
                 # Force streaming compilation
@@ -131,6 +131,7 @@ async def startup_event():
                     audio_chunks = []
                     for audio_chunk, metrics in chatterbox_model.generate_stream(
                         "Testing streaming synthesis for compilation.", 
+                        language_id="en",
                         chunk_size=50
                     ):
                         audio_chunks.append(audio_chunk)
@@ -153,6 +154,7 @@ async def startup_event():
                             clone_chunks = []
                             for audio_chunk, metrics in chatterbox_model.generate_stream(
                                 "Voice cloning warm up test.",
+                                language_id="en",
                                 audio_prompt_path=str(voice_path),
                                 chunk_size=50
                             ):
@@ -333,7 +335,7 @@ async def warmup_endpoint():
                 # Generate a short test audio
                 test_text = "This is a warmup test for optimal performance."
                 if hasattr(chatterbox_model, 'generate'):
-                    dummy_audio = chatterbox_model.generate(test_text)
+                    dummy_audio = chatterbox_model.generate(test_text, language_id="en")
                     logger.info("✅ Chatterbox warmup complete")
                 else:
                     logger.info("⚠️ Chatterbox model doesn't support generate method")
@@ -541,7 +543,7 @@ async def reload_chatterbox():
                 test_text = "This is a warmup test after reload for optimal performance."
                 if hasattr(chatterbox_model, 'generate'):
                     logger.info("🔥 Warming up T3 compilation...")
-                    dummy_audio = chatterbox_model.generate(test_text)
+                    dummy_audio = chatterbox_model.generate(test_text, language_id="en")
                     logger.info("✅ T3 warmup complete")
                     del dummy_audio
                 
