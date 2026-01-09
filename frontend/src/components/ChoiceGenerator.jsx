@@ -111,14 +111,20 @@ const ChoiceGenerator = ({
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
+    let sseBuffer = ''; // Buffer for incomplete SSE events
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       
       const chunk = decoder.decode(value, { stream: true });
+      sseBuffer += chunk;
       
-      for (const line of chunk.split('\n\n')) {
+      // Process complete SSE events (each ends with \n\n)
+      const events = sseBuffer.split('\n\n');
+      sseBuffer = events.pop() || '';
+      
+      for (const line of events) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') continue;
