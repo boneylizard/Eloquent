@@ -1,3 +1,6 @@
+# Install numpy first - required for building some packages
+numpy
+
 absl-py
 accelerate
 addict
@@ -148,7 +151,7 @@ mdurl
 mediapy
 misaki
 mistral_common
-chatterbox-tts
+# chatterbox-tts installed separately in install.bat with --no-build-isolation
 more-itertools
 mpmath
 msgpack
