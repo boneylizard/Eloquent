@@ -307,10 +307,12 @@ The installer handles everything:
 run.bat
 ```
 
-Opens:
+Default ports:
 - Backend API: `http://localhost:8000`
 - TTS Service: `http://localhost:8002`
 - Frontend: `http://localhost:5173`
+
+> **Port conflicts?** Eloquent auto-detects if ports are in use and switches to the next available port. The frontend discovers the actual ports automatically—no config needed.
 
 ### Troubleshooting
 
