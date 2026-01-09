@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Loader2, Send } from 'lucide-react';
+import { Loader2, Send, ArrowLeft } from 'lucide-react';
 import SimpleChatImageButton from './SimpleChatImageButton';
 import ChatImageUploadButton from './ChatImageUploadButton';
 
@@ -15,7 +15,9 @@ const ChatInputForm = ({
     primaryModel,
     webSearchEnabled,
     inputValue,
-    setInputValue
+    setInputValue,
+    onBack,
+    canGoBack
 }) => {
   const inputRef = useRef(null);
 
@@ -97,6 +99,19 @@ useEffect(() => {
           <ChatImageUploadButton />
         </div>
       </div>
+      {canGoBack && (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onBack}
+          disabled={isGenerating || isRecording || isTranscribing}
+          size="icon"
+          className="h-10 w-10"
+          title="Remove last message and response"
+        >
+          <ArrowLeft size={18}/>
+        </Button>
+      )}
       <Button
         type="submit"
         disabled={!inputValue.trim() || isDisabled}

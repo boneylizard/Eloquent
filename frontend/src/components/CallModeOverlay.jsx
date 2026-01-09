@@ -8,7 +8,11 @@ const CallModeOverlay = ({
   isPlayingAudio, 
   isRecording, 
   isTranscribing,
-  PRIMARY_API_URL 
+  PRIMARY_API_URL,
+  // New props for control panel features
+  onOpenStoryTracker,
+  onOpenChoiceGenerator,
+  messages
 }) => {
   const { startRecording, stopRecording, sendMessage, stopTTS, handleStopGeneration } = useApp();
   const [isPulsing, setIsPulsing] = useState(false);
@@ -16,6 +20,7 @@ const CallModeOverlay = ({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speechIntensity, setSpeechIntensity] = useState(0.5);
   const [rippleDelays, setRippleDelays] = useState([0, 0.2, 0.4, 0.6]);
+  const [showControlPanel, setShowControlPanel] = useState(false);
 
   // Sync pulsing animation with TTS playback
   useEffect(() => {
@@ -99,8 +104,12 @@ const CallModeOverlay = ({
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key === 'Escape' && isActive) {
-        onExit();
-      } else if (event.key === ' ' && isActive) {
+        if (showControlPanel) {
+          setShowControlPanel(false);
+        } else {
+          onExit();
+        }
+      } else if (event.key === ' ' && isActive && !showControlPanel) {
         // Prevent default space bar behavior (scrolling)
         event.preventDefault();
         // Don't trigger if already processing
@@ -114,6 +123,10 @@ const CallModeOverlay = ({
           stopTTS();
           handleStopGeneration();
         }
+      } else if (event.key === 'Tab' && isActive) {
+        // Toggle control panel
+        event.preventDefault();
+        setShowControlPanel(prev => !prev);
       }
     };
 
@@ -126,7 +139,7 @@ const CallModeOverlay = ({
       document.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = 'auto';
     };
-  }, [isActive, onExit, isProcessing, handleRecord, isSpeaking, stopTTS, handleStopGeneration]);
+  }, [isActive, onExit, isProcessing, handleRecord, isSpeaking, stopTTS, handleStopGeneration, showControlPanel]);
 
   if (!isActive) return null;
 
@@ -138,6 +151,152 @@ const CallModeOverlay = ({
 
   return (
     <div className="fixed inset-0 z-[9999] bg-black flex items-center justify-center">
+      {/* Control Panel Toggle Button */}
+      <button
+        onClick={() => setShowControlPanel(!showControlPanel)}
+        className={`absolute top-6 left-6 w-12 h-12 rounded-full flex items-center justify-center text-white transition-all duration-200 z-10
+                   hover:scale-110 active:scale-95 ${showControlPanel ? 'bg-blue-500/50' : 'bg-white/10 hover:bg-white/20'}`}
+        title="Control Panel (TAB)"
+      >
+        <svg 
+          xmlns="http://www.w3.org/2000/svg" 
+          width="24" 
+          height="24" 
+          viewBox="0 0 24 24" 
+          fill="none" 
+          stroke="currentColor" 
+          strokeWidth="2" 
+          strokeLinecap="round" 
+          strokeLinejoin="round"
+        >
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+
+      {/* Control Panel Slide-out */}
+      <div 
+        className={`absolute left-0 top-0 bottom-0 w-72 bg-gradient-to-r from-gray-900/95 to-gray-900/90 backdrop-blur-lg
+                    border-r border-white/10 transition-transform duration-300 ease-out z-20
+                    ${showControlPanel ? 'translate-x-0' : '-translate-x-full'}`}
+      >
+        <div className="p-6 pt-20 space-y-4">
+          <h3 className="text-white text-lg font-semibold mb-4 flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <line x1="3" y1="9" x2="21" y2="9"/>
+              <line x1="9" y1="21" x2="9" y2="9"/>
+            </svg>
+            Control Panel
+          </h3>
+          
+          {/* Story Tracker Button */}
+          <button
+            onClick={() => {
+              setShowControlPanel(false);
+              onOpenStoryTracker?.();
+            }}
+            disabled={!onOpenStoryTracker}
+            className="w-full p-4 rounded-xl bg-gradient-to-r from-indigo-500/20 to-purple-500/20 
+                       border border-indigo-500/30 hover:border-indigo-400/50 
+                       text-white text-left transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]
+                       disabled:opacity-50 disabled:cursor-not-allowed group"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-indigo-500/30 flex items-center justify-center group-hover:bg-indigo-500/40 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                </svg>
+              </div>
+              <div>
+                <div className="font-medium">Story Tracker</div>
+                <div className="text-xs text-white/60">Track characters, items & events</div>
+              </div>
+            </div>
+          </button>
+
+          {/* Choice Generator Button */}
+          <button
+            onClick={() => {
+              setShowControlPanel(false);
+              onOpenChoiceGenerator?.();
+            }}
+            disabled={!onOpenChoiceGenerator || !messages?.length}
+            className="w-full p-4 rounded-xl bg-gradient-to-r from-amber-500/20 to-orange-500/20 
+                       border border-amber-500/30 hover:border-amber-400/50 
+                       text-white text-left transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]
+                       disabled:opacity-50 disabled:cursor-not-allowed group"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-amber-500/30 flex items-center justify-center group-hover:bg-amber-500/40 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="2" width="20" height="20" rx="2"/>
+                  <circle cx="8" cy="8" r="1.5"/>
+                  <circle cx="16" cy="8" r="1.5"/>
+                  <circle cx="8" cy="16" r="1.5"/>
+                  <circle cx="16" cy="16" r="1.5"/>
+                  <circle cx="12" cy="12" r="1.5"/>
+                </svg>
+              </div>
+              <div>
+                <div className="font-medium">Choice Generator</div>
+                <div className="text-xs text-white/60">Generate action options</div>
+              </div>
+            </div>
+          </button>
+
+          {/* Stop Speaking Button */}
+          {(isSpeaking || window.streamingAudioPlaying) && (
+            <button
+              onClick={() => {
+                stopTTS();
+                handleStopGeneration();
+              }}
+              className="w-full p-4 rounded-xl bg-gradient-to-r from-red-500/20 to-pink-500/20 
+                         border border-red-500/30 hover:border-red-400/50 
+                         text-white text-left transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] group"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-red-500/30 flex items-center justify-center group-hover:bg-red-500/40 transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="6" y="4" width="4" height="16"/>
+                    <rect x="14" y="4" width="4" height="16"/>
+                  </svg>
+                </div>
+                <div>
+                  <div className="font-medium">Stop Speaking</div>
+                  <div className="text-xs text-white/60">Interrupt AI response</div>
+                </div>
+              </div>
+            </button>
+          )}
+
+          {/* Keyboard Shortcuts */}
+          <div className="mt-6 pt-4 border-t border-white/10">
+            <h4 className="text-white/60 text-xs font-medium mb-3">KEYBOARD SHORTCUTS</h4>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between text-white/70">
+                <span>Toggle Panel</span>
+                <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs">TAB</kbd>
+              </div>
+              <div className="flex justify-between text-white/70">
+                <span>Record</span>
+                <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs">SPACE</kbd>
+              </div>
+              <div className="flex justify-between text-white/70">
+                <span>Stop Speaking</span>
+                <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs">SHIFT</kbd>
+              </div>
+              <div className="flex justify-between text-white/70">
+                <span>Exit</span>
+                <kbd className="bg-white/10 px-2 py-0.5 rounded text-xs">ESC</kbd>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Exit Button */}
       <button
         onClick={onExit}
@@ -332,13 +491,13 @@ const CallModeOverlay = ({
             )}
           </button>
 
-          {/* Instructions - UNCHANGED */}
+          {/* Instructions - UPDATED */}
         <div className="text-center text-white/60 space-y-1">
           <p className="text-sm">
             {isRecording ? "Click to stop & send message" : "Click to start recording"}
           </p>
           <p className="text-xs">
-            Press <kbd className="bg-white/20 px-2 py-1 rounded text-xs">ESC</kbd> to exit Call Mode
+            Press <kbd className="bg-white/20 px-2 py-1 rounded text-xs">TAB</kbd> for controls • <kbd className="bg-white/20 px-2 py-1 rounded text-xs">ESC</kbd> to exit
           </p>
         </div>
       </div>

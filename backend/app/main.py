@@ -70,7 +70,7 @@ logger.setLevel(logging.INFO)
 from .sd_manager import SDManager
 import random
 from .web_search_service import perform_web_search
-from .openai_compat import router as openai_router
+from .openai_compat import router as openai_router, is_api_endpoint, get_configured_endpoint, forward_to_configured_endpoint_streaming, forward_to_configured_endpoint_non_streaming
 import pynvml
 from .devstral_service import devstral_service, DevstralService
 # Only set DEBUG-level loggers to WARNING to suppress their excessive output
@@ -4005,24 +4005,152 @@ Vary your sentence structure and word choices naturally."""
                 # Regular streaming for text-only requests
                 streamed_content_accumulator = []
                 try:
-                    async for token in inference.generate_text_streaming(
-                        model_manager=model_manager, model_name=body.model_name, prompt=prompt_text_for_llm,
-                        max_tokens=max_tokens, temperature=body.temperature, top_p=body.top_p,
-                        top_k=body.top_k, repetition_penalty=body.repetition_penalty,
-                        stop_sequences=dcu.get_stop_sequences(body.stop), gpu_id=gpu_id, echo=body.echo,
-                        request_purpose=body.request_purpose
-                    ):
-                        # Extract just the text content for memory processing
-                        try:
-                            if token.startswith("data: "):
-                                token_data = json.loads(token[6:])  # Remove "data: " prefix
-                                if "text" in token_data:
-                                    streamed_content_accumulator.append(token_data["text"])
-                        except (json.JSONDecodeError, KeyError):
-                            # If parsing fails, just append the raw token
-                            streamed_content_accumulator.append(token)
+                    # Check if this is an API endpoint - if so, route to OpenAI-compatible endpoint
+                    is_api = is_api_endpoint(body.model_name)
+                    logger.info(f"[generate] Model check: model_name='{body.model_name}', is_api_endpoint={is_api}")
+                    if is_api:
+                        logger.info(f"[generate] Detected API endpoint: {body.model_name}. Routing to OpenAI-compatible endpoint.")
                         
-                        yield token
+                        # Convert prompt to OpenAI messages format
+                        # Split the prompt into system and user messages
+                        messages = []
+                        if "Character Persona:" in prompt_text_for_llm:
+                            parts = prompt_text_for_llm.split("Character Persona:", 1)
+                            if parts[0].strip():
+                                messages.append({"role": "system", "content": parts[0].strip()})
+                            if len(parts) > 1:
+                                persona_and_user = parts[1]
+                                if "User Query:" in persona_and_user:
+                                    persona, user_query = persona_and_user.split("User Query:", 1)
+                                    if persona.strip():
+                                        messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
+                                    messages.append({"role": "user", "content": user_query.strip()})
+                                else:
+                                    # No user query marker, treat everything as user message
+                                    messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
+                        elif "User Query:" in prompt_text_for_llm:
+                            parts = prompt_text_for_llm.split("User Query:", 1)
+                            if parts[0].strip():
+                                messages.append({"role": "system", "content": parts[0].strip()})
+                            messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
+                        else:
+                            # Simple prompt - treat as user message
+                            clean_prompt = prompt_text_for_llm.replace("Assistant:", "").strip()
+                            messages.append({"role": "user", "content": clean_prompt})
+                        
+                        # Prepare request data for API endpoint
+                        request_data = {
+                            "model": body.model_name,
+                            "messages": messages,
+                            "temperature": body.temperature,
+                            "top_p": body.top_p,
+                            "max_tokens": max_tokens,
+                            "stream": True,
+                        }
+                        
+                        if body.top_k:
+                            request_data["top_k"] = body.top_k
+                        if body.repetition_penalty:
+                            request_data["repetition_penalty"] = body.repetition_penalty
+                        stop_seqs = dcu.get_stop_sequences(body.stop)
+                        if stop_seqs:
+                            request_data["stop"] = stop_seqs
+                        
+                        # Prepare endpoint config and URL
+                        endpoint_config = get_configured_endpoint(body.model_name)
+                        if not endpoint_config:
+                            error_msg = "No custom API endpoints configured. Please add one in Settings → LLM Settings → Custom API Endpoints"
+                            logger.error(f"[generate] {error_msg}")
+                            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                            yield f"data: {json.dumps({'done': True})}\n\n"
+                            return
+                        
+                        base_url = endpoint_config['url']
+                        if base_url.endswith('/v1'):
+                            url = f"{base_url}/chat/completions"
+                        else:
+                            url = f"{base_url}/v1/chat/completions"
+                        
+                        # Don't send internal endpoint ID as model name - use configured model or a default
+                        if request_data.get('model', '').startswith('endpoint-'):
+                            configured_model = endpoint_config.get('model', '').strip()
+                            if configured_model:
+                                request_data['model'] = configured_model
+                            else:
+                                request_data['model'] = 'gpt-3.5-turbo'
+                        
+                        logger.info(f"[generate] Forwarding {body.model_name} to {endpoint_config['name']} at {url}")
+                        
+                        # Stream from the API endpoint
+                        # The forward_to_configured_endpoint_streaming function yields raw bytes in SSE format
+                        # We need to buffer them, parse OpenAI format, and convert to frontend format
+                        buffer = b""
+                        async for chunk_bytes in forward_to_configured_endpoint_streaming(endpoint_config, url, request_data):
+                            # Accumulate bytes in buffer
+                            if isinstance(chunk_bytes, bytes):
+                                buffer += chunk_bytes
+                            else:
+                                buffer += chunk_bytes.encode('utf-8') if isinstance(chunk_bytes, str) else b""
+                            
+                            # Process complete SSE messages (separated by \n\n)
+                            while b'\n\n' in buffer:
+                                message, buffer = buffer.split(b'\n\n', 1)
+                                if not message.strip():
+                                    continue
+                                
+                                try:
+                                    message_str = message.decode('utf-8', errors='ignore')
+                                    # SSE format: "data: {...}\n" or just "data: {...}"
+                                    lines = message_str.split('\n')
+                                    for line in lines:
+                                        if line.startswith("data: "):
+                                            json_str = line[6:].strip()
+                                            if json_str == "[DONE]":
+                                                continue
+                                            
+                                            try:
+                                                chunk_data = json.loads(json_str)
+                                                
+                                                # Extract content from OpenAI format: {"choices": [{"delta": {"content": "..."}}]}
+                                                content = ""
+                                                if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                                                    delta = chunk_data["choices"][0].get("delta", {})
+                                                    content = delta.get("content", "")
+                                                
+                                                # Convert to frontend format: {"text": "..."}
+                                                if content:
+                                                    streamed_content_accumulator.append(content)
+                                                    # Yield in the format the frontend expects
+                                                    yield f"data: {json.dumps({'text': content})}\n\n"
+                                            except json.JSONDecodeError:
+                                                # If it's not JSON, might be an error message - forward as-is
+                                                if json_str:
+                                                    yield f"data: {json_str}\n\n"
+                                except Exception as e:
+                                    logger.debug(f"Error processing API chunk: {e}")
+                        
+                        # Yield done message after API streaming completes
+                        yield f"data: {json.dumps({'done': True})}\n\n"
+                    else:
+                        # Local model - use existing inference path
+                        async for token in inference.generate_text_streaming(
+                            model_manager=model_manager, model_name=body.model_name, prompt=prompt_text_for_llm,
+                            max_tokens=max_tokens, temperature=body.temperature, top_p=body.top_p,
+                            top_k=body.top_k, repetition_penalty=body.repetition_penalty,
+                            stop_sequences=dcu.get_stop_sequences(body.stop), gpu_id=gpu_id, echo=body.echo,
+                            request_purpose=body.request_purpose
+                        ):
+                            # Extract just the text content for memory processing
+                            try:
+                                if token.startswith("data: "):
+                                    token_data = json.loads(token[6:])  # Remove "data: " prefix
+                                    if "text" in token_data:
+                                        streamed_content_accumulator.append(token_data["text"])
+                            except (json.JSONDecodeError, KeyError):
+                                # If parsing fails, just append the raw token
+                                streamed_content_accumulator.append(token)
+                            
+                            yield token
                     
                     yield f"data: {json.dumps({'done': True})}\n\n"
                 except Exception as stream_exc:
@@ -4091,10 +4219,91 @@ Vary your sentence structure and word choices naturally."""
         try:
             logger.info("🔄 Non-streaming response requested. Dispatching to model...")
             
-            # Get the loaded model instance once for this request
-            model_instance = model_manager.get_model(body.model_name, gpu_id)
-            if not model_instance:
-                raise ValueError(f"Model {body.model_name} not loaded on GPU {gpu_id}")
+            # Check if this is an API endpoint - if so, route to OpenAI-compatible endpoint
+            is_api = is_api_endpoint(body.model_name)
+            logger.info(f"[generate] Model check (non-streaming): model_name='{body.model_name}', is_api_endpoint={is_api}")
+            if is_api:
+                logger.info(f"[generate] Detected API endpoint: {body.model_name}. Routing to OpenAI-compatible endpoint (non-streaming).")
+                
+                # Convert prompt to OpenAI messages format
+                messages = []
+                if "Character Persona:" in llm_prompt:
+                    parts = llm_prompt.split("Character Persona:", 1)
+                    if parts[0].strip():
+                        messages.append({"role": "system", "content": parts[0].strip()})
+                    if len(parts) > 1:
+                        persona_and_user = parts[1]
+                        if "User Query:" in persona_and_user:
+                            persona, user_query = persona_and_user.split("User Query:", 1)
+                            if persona.strip():
+                                messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
+                            messages.append({"role": "user", "content": user_query.strip()})
+                        else:
+                            messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
+                elif "User Query:" in llm_prompt:
+                    parts = llm_prompt.split("User Query:", 1)
+                    if parts[0].strip():
+                        messages.append({"role": "system", "content": parts[0].strip()})
+                    messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
+                else:
+                    clean_prompt = llm_prompt.replace("Assistant:", "").strip()
+                    messages.append({"role": "user", "content": clean_prompt})
+                
+                # Prepare request data for API endpoint
+                request_data = {
+                    "model": body.model_name,
+                    "messages": messages,
+                    "temperature": body.temperature,
+                    "top_p": body.top_p,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                }
+                
+                if body.top_k:
+                    request_data["top_k"] = body.top_k
+                if body.repetition_penalty:
+                    request_data["repetition_penalty"] = body.repetition_penalty
+                stop_seqs = dcu.get_stop_sequences(body.stop)
+                if stop_seqs:
+                    request_data["stop"] = stop_seqs
+                
+                # Prepare endpoint config and URL
+                endpoint_config = get_configured_endpoint(body.model_name)
+                if not endpoint_config:
+                    error_msg = "No custom API endpoints configured. Please add one in Settings → LLM Settings → Custom API Endpoints"
+                    logger.error(f"[generate] {error_msg}")
+                    raise HTTPException(status_code=400, detail=error_msg)
+                
+                base_url = endpoint_config['url']
+                if base_url.endswith('/v1'):
+                    url = f"{base_url}/chat/completions"
+                else:
+                    url = f"{base_url}/v1/chat/completions"
+                
+                # Don't send internal endpoint ID as model name - use configured model or a default
+                if request_data.get('model', '').startswith('endpoint-'):
+                    configured_model = endpoint_config.get('model', '').strip()
+                    if configured_model:
+                        request_data['model'] = configured_model
+                    else:
+                        request_data['model'] = 'gpt-3.5-turbo'
+                
+                logger.info(f"[generate] Forwarding {body.model_name} to {endpoint_config['name']} at {url}")
+                
+                # Call the API endpoint
+                result = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, request_data)
+                
+                # Extract text from OpenAI-compatible response
+                if result and "choices" in result and len(result["choices"]) > 0:
+                    llm_output_raw_text = result["choices"][0].get("message", {}).get("content", "")
+                else:
+                    llm_output_raw_text = "API endpoint returned no valid response."
+            else:
+                # Local model - use existing path
+                # Get the loaded model instance once for this request
+                model_instance = model_manager.get_model(body.model_name, gpu_id)
+                if not model_instance:
+                    raise ValueError(f"Model {body.model_name} not loaded on GPU {gpu_id}")
 
             # --- UNIFIED DISPATCH LOGIC ---
             # This logic block decides how to call the model based on whether an image is present.
