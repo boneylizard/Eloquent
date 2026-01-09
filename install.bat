@@ -16,11 +16,11 @@ echo Detected Python version: %PYVER%
 REM --- 3. Install precompiled LLaMA and SD wheels ---
 if "%PYVER%"=="3.11" (
     echo Installing LLaMA + SD wheels for Python 3.11...
-    pip install wheels\llama_cpp_python-0.3.9-cp311-cp311-win_amd64.whl
+    pip install wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
     pip install wheels\stable_diffusion_cpp_python-0.2.9-cp311-cp311-win_amd64.whl
 ) else if "%PYVER%"=="3.12" (
     echo Installing LLaMA + SD wheels for Python 3.12...
-    pip install wheels\llama_cpp_python-0.3.12-cp312-cp312-win_amd64.whl
+    pip install wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
     pip install wheels\stable_diffusion_cpp_python-0.2.9-cp312-cp312-win_amd64.whl
 ) else (
     echo ERROR: Unsupported Python version: %PYVER%
