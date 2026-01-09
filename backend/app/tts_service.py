@@ -435,10 +435,11 @@ async def _synthesize_with_chatterbox(
         # One-time voice warmup
         if audio_prompt_path and not CHATTERBOX_VOICE_WARMED_UP:
             with torch.inference_mode():
-                model.generate("warm up", audio_prompt_path=audio_prompt_path)
+                model.generate("warm up", language_id="en", audio_prompt_path=audio_prompt_path)
             CHATTERBOX_VOICE_WARMED_UP = True
         
         generation_kwargs = {
+            'language_id': 'en',  # Required for chatterbox-faster multilingual
             'exaggeration': exaggeration,
             'cfg_weight': cfg,
         }
@@ -1060,11 +1061,11 @@ def comprehensive_model_warmup():
         
         # 2. Basic model warm-up (default voice)
         with torch.inference_mode():
-            model.generate("Warming up the model for optimal performance.")
+            model.generate("Warming up the model for optimal performance.", language_id="en")
         
         # 3. Additional synthesis warm-up
         with torch.inference_mode():
-            model.generate("Testing additional synthesis for compilation.")
+            model.generate("Testing additional synthesis for compilation.", language_id="en")
         
         # 4. Voice cloning warm-up (if default voice file exists)
         voices_dir = Path(__file__).parent / "static" / "voice_references"
@@ -1078,6 +1079,7 @@ def comprehensive_model_warmup():
                         # This will cache the voice and warm up cloning pipeline
                         clone_wav = model.generate(
                             "Voice cloning warm up test.",
+                            language_id="en",
                             audio_prompt_path=str(voice_path)
                         )
                     
