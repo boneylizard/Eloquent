@@ -63,7 +63,14 @@ class ModelInfo(BaseModel):
 # === Helper Functions ===
 def is_api_endpoint(model_name: str) -> bool:
     """Check if the model name is an API endpoint"""
-    return model_name and model_name.startswith('endpoint-')
+    if not model_name:
+        return False
+    if not isinstance(model_name, str):
+        logger.warning(f"[is_api_endpoint] model_name is not a string: {type(model_name)} = {model_name}")
+        return False
+    result = model_name.startswith('endpoint-')
+    logger.debug(f"[is_api_endpoint] Checking '{model_name}': {result}")
+    return result
 
 def get_configured_endpoint(model_id: str = None):
     """Read custom API endpoints from settings.json and find the specified one."""

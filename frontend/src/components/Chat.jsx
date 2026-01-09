@@ -4,7 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -26,7 +26,7 @@ import CodeBlock from './CodeBlock';
 import ChatInputForm from './ChatInputForm';
 import CodeEditorOverlay from './CodeEditorOverlay';
 import ForensicLinguistics from './ForensicLinguistics';
-import StoryTracker from './StoryTracker';
+import StoryTracker, { getStoryTrackerContext } from './StoryTracker';
 import ChoiceGenerator from './ChoiceGenerator';
 
 // CORRECT PLACEMENT: Component defined at the top level, accepting props.
@@ -169,22 +169,50 @@ const handleAnalyzeStory = async () => {
       .map(m => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`)
       .join('\n');
 
-    const prompt = `Analyze this roleplay/story conversation and extract story elements. Return a JSON object with arrays for: characters (names of people/beings mentioned), inventory (items the protagonist has or found), locations (places mentioned), plotPoints (key events that happened).
+    const prompt = `You are a story state tracker for a roleplay conversation.
+Your job is to extract the *current state* from the conversation.
+
+Carefully read the conversation and decide:
+- characters: distinct named people/beings involved so far
+- inventory: items the protagonist currently has, found, or clearly owns
+- locations: important places that matter to the story
+- plotPoints: key events that have already happened
+
+You may think through the conversation internally, but your *final* output must be a single JSON object on the last line, with **no extra text before or after it**.
+Do NOT include backticks, code fences, or explanations around the JSON.
+
+The JSON must have exactly this shape:
+{
+  "characters": ["Name A", "Name B"],
+  "inventory": ["item A", "item B"],
+  "locations": ["place A", "place B"],
+  "plotPoints": ["event A", "event B"]
+}
+
+If you are unsure about a field, return an empty array for that field.
 
 CONVERSATION:
 ${context}
 
-Respond ONLY with a JSON object, no other text:
-{"characters": [], "inventory": [], "locations": [], "plotPoints": []}`;
+Now output ONLY the final JSON object on the last line, with no commentary:`;
+
+    if (!primaryModel) {
+      console.error('Story analysis error: No model loaded');
+      return;
+    }
 
     const response = await fetch(`${PRIMARY_API_URL}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt,
+        model_name: primaryModel, // Add required model_name field
         max_tokens: 500,
         temperature: 0.3,
-        stop: ['\n\n']
+        stop: ['\n\n'],
+        stream: true, // Enable streaming
+        gpu_id: 0,
+        request_purpose: 'story_analysis' // Add purpose for tracking
       })
     });
 
@@ -198,48 +226,71 @@ Respond ONLY with a JSON object, no other text:
         if (done) break;
         
         const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.token) {
-                fullText += parsed.token;
-              }
-            } catch (e) {}
+
+        // Process SSE format (messages separated by \n\n)
+        for (const line of chunk.split('\n\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            // Handle both text and token formats
+            if (parsed.text) {
+              fullText += parsed.text;
+            } else if (parsed.token) {
+              fullText += parsed.token;
+            }
+          } catch (e) {
+            // Ignore malformed chunks
           }
         }
       }
 
+      // Debug log to help inspect provider output if parsing fails
+      console.debug('[StoryTracker] Raw model output:', fullText);
+
       // Parse and merge with existing tracker data
-      const jsonMatch = fullText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const detected = JSON.parse(jsonMatch[0]);
-        const existing = JSON.parse(localStorage.getItem('eloquent-story-tracker') || '{}');
-        
-        const mergeUnique = (arr1 = [], arr2 = []) => {
-          const existingValues = new Set(arr1.map(i => i.value?.toLowerCase()));
-          const newItems = arr2
-            .filter(val => val && !existingValues.has(val.toLowerCase()))
-            .map(val => ({ id: Date.now() + Math.random(), value: val, notes: '' }));
-          return [...arr1, ...newItems];
-        };
+      // Extract the JSON object from the first '{' to the last '}'
+      const firstBrace = fullText.indexOf('{');
+      const lastBrace = fullText.lastIndexOf('}');
 
-        const merged = {
-          characters: mergeUnique(existing.characters, detected.characters),
-          inventory: mergeUnique(existing.inventory, detected.inventory),
-          locations: mergeUnique(existing.locations, detected.locations),
-          plotPoints: mergeUnique(existing.plotPoints, detected.plotPoints),
-          customFields: existing.customFields || []
-        };
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        const jsonStr = fullText.slice(firstBrace, lastBrace + 1);
+        let detected;
+        try {
+          detected = JSON.parse(jsonStr);
+        } catch (e) {
+          console.warn('[StoryTracker] Failed to parse JSON from model output:', e, jsonStr);
+          detected = null;
+        }
 
-        localStorage.setItem('eloquent-story-tracker', JSON.stringify(merged));
-        // Force re-render of tracker if open
-        setShowStoryTracker(false);
-        setTimeout(() => setShowStoryTracker(true), 50);
+        if (detected && typeof detected === 'object') {
+          const existing = JSON.parse(localStorage.getItem('eloquent-story-tracker') || '{}');
+          
+          const mergeUnique = (arr1 = [], arr2 = []) => {
+            const existingValues = new Set(arr1.map(i => i.value?.toLowerCase()));
+            const newItems = arr2
+              .filter(val => val && !existingValues.has(val.toLowerCase()))
+              .map(val => ({ id: Date.now() + Math.random(), value: val, notes: '' }));
+            return [...arr1, ...newItems];
+          };
+
+          const merged = {
+            characters: mergeUnique(existing.characters, detected.characters),
+            inventory: mergeUnique(existing.inventory, detected.inventory),
+            locations: mergeUnique(existing.locations, detected.locations),
+            plotPoints: mergeUnique(existing.plotPoints, detected.plotPoints),
+            customFields: existing.customFields || []
+          };
+
+          localStorage.setItem('eloquent-story-tracker', JSON.stringify(merged));
+          // Force re-render of tracker if open
+          setShowStoryTracker(false);
+          setTimeout(() => setShowStoryTracker(true), 50);
+        } else {
+          console.warn('[StoryTracker] No valid JSON object detected in model output.');
+        }
       }
     }
   } catch (err) {
@@ -249,22 +300,68 @@ Respond ONLY with a JSON object, no other text:
   }
 };
 
-// Choice selection handler
-const handleChoiceSelect = (choice) => {
-  setInputValue(choice);
+// Choice selection handler - sends the action to the AI for a response
+const handleChoiceSelect = async (choice, description = '') => {
+  if (!choice || isGenerating) return;
+  
+  // Format the action as a roleplay action message
+  // Using asterisks to denote action in typical RP format
+  const actionMessage = `*${choice}*`;
+  
+  // Send the action directly to get an AI response
+  await sendMessage(actionMessage);
 };
 
 // Mic click handler
 const handleMicClick = () => {
   if (audioError) setAudioError(null); // Clear error on interaction
 
-    if (isRecording) {
-      // Pass setInputValue as the callback to stopRecording
-      stopRecording(setInputValue);
-    } else {
-      startRecording();
+  if (isRecording) {
+    // Pass setInputValue as the callback to stopRecording
+    stopRecording(setInputValue);
+  } else {
+    startRecording();
+  }
+};
+
+// Handle "back" - remove last user message and bot response
+const handleBack = useCallback(() => {
+  if (messages.length === 0) return;
+  
+  // Find the last user message
+  let lastUserIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      lastUserIndex = i;
+      break;
     }
-  };
+  }
+  
+  if (lastUserIndex === -1) return; // No user message found
+  
+  // Remove from last user message to the end (includes bot response if any)
+  setMessages(prev => prev.slice(0, lastUserIndex));
+  
+  // Also clean up message variants for removed messages
+  setMessageVariants(prev => {
+    const newVariants = { ...prev };
+    messages.slice(lastUserIndex).forEach(msg => {
+      delete newVariants[msg.id];
+    });
+    return newVariants;
+  });
+  
+  // Stop any ongoing audio playback
+  if (audioPlaybackRef.current.source) {
+    audioPlaybackRef.current.source.stop();
+  }
+  if (audioPlaybackRef.current.context) {
+    audioPlaybackRef.current.context.close();
+    audioPlaybackRef.current = { context: null, source: null };
+  }
+  stopTTS();
+}, [messages, setMessages, setMessageVariants, stopTTS]);
+
 const handleSaveEditedMessage = useCallback(async (messageId, newContent) => {
   if (!newContent.trim()) return;
   
@@ -399,6 +496,12 @@ const handleRegenerateFromEditedPrompt = useCallback(async (userMessageId) => {
     
     if (memoryContext) {
       systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
+    }
+    
+    // Include story tracker context if available
+    const storyContext = getStoryTrackerContext();
+    if (storyContext) {
+      systemMsg += `\n\nSTORY STATE:\n${storyContext}`;
     }
     
     const prompt = formatPrompt(messages.slice(0, userMsgIndex + 1), primaryModel, systemMsg);
@@ -1348,6 +1451,12 @@ const handleGenerateVariant = useCallback(async (messageId) => {
       systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
     }
     
+    // Include story tracker context if available
+    const storyContext = getStoryTrackerContext();
+    if (storyContext) {
+      systemMsg += `\n\nSTORY STATE:\n${storyContext}`;
+    }
+    
     const prompt = formatPrompt(recent, primaryModel, systemMsg);
 
     // 5) streaming payload (same as before)
@@ -1707,6 +1816,12 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     
     if (memoryContext) {
       systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
+    }
+    
+    // Include story tracker context if available
+    const storyContext = getStoryTrackerContext();
+    if (storyContext) {
+      systemMsg += `\n\nSTORY STATE:\n${storyContext}`;
     }
     
     // Add the current response to context and ask to continue
@@ -2664,8 +2779,10 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     agentConversationActive={agentConversationActive}
     primaryModel={primaryModel}
     webSearchEnabled={webSearchEnabled}
-    inputValue={inputValue}          // ADD THIS
-    setInputValue={setInputValue}  // ADD THIS
+    inputValue={inputValue}
+    setInputValue={setInputValue}
+    onBack={handleBack}
+    canGoBack={messages.length > 0 && messages.some(m => m.role === 'user')}
 />
 </div>
 </div>
@@ -3172,6 +3289,9 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     onStartRecording={startRecording}
     onStopRecording={() => stopRecording(setInputValue)}
     PRIMARY_API_URL={PRIMARY_API_URL}
+    onOpenStoryTracker={() => setShowStoryTracker(true)}
+    onOpenChoiceGenerator={() => setShowChoiceGenerator(true)}
+    messages={messages}
   />
 )}
 {/* Forensic Linguistics Overlay */}
@@ -3189,6 +3309,8 @@ const handleContinueGeneration = useCallback(async (messageId) => {
   messages={messages}
   onAnalyze={handleAnalyzeStory}
   isAnalyzing={isAnalyzingStory}
+  onInjectContext={(context) => setInputValue(prev => prev + (prev ? '\n\n' : '') + context)}
+  activeCharacter={activeCharacter}
 />
 
 {/* Choice Generator Panel */}
@@ -3199,6 +3321,9 @@ const handleContinueGeneration = useCallback(async (messageId) => {
   onSelectChoice={handleChoiceSelect}
   apiUrl={PRIMARY_API_URL}
   isGenerating={isGenerating}
+  primaryModel={primaryModel}
+  activeCharacter={activeCharacter}
+  userProfile={userProfile}
 />
 
     </div>

@@ -190,6 +190,12 @@ async def generate_text(
     Generate text synchronously from a model.
     If skip_local_check is True, assumes model is loaded and directly tries to get it.
     """
+    # Safety check: Prevent loading API endpoints as local models
+    if model_name and model_name.startswith('endpoint-'):
+        error_msg = f"Model '{model_name}' is an API endpoint and cannot be loaded as a local model. This should have been routed to the OpenAI-compatible endpoint."
+        logger.error(f"[inference] {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
+    
     # --- AUTO-SIZE max_tokens from the loaded model's n_ctx ---
     if max_tokens < 0:
         model_key = (model_name, gpu_id)
@@ -352,6 +358,14 @@ async def generate_text_streaming(
     
     if stop_sequences is None:
         stop_sequences = []
+    
+    # Safety check: Prevent loading API endpoints as local models
+    if model_name and model_name.startswith('endpoint-'):
+        error_msg = f"Model '{model_name}' is an API endpoint and cannot be loaded as a local model. This should have been routed to the OpenAI-compatible endpoint."
+        logger.error(f"[inference] {error_msg}")
+        yield f"data: {json.dumps({'error': error_msg})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
         
     # Set up key variables for model loading
     target_gpu_id = gpu_id
@@ -391,6 +405,14 @@ async def generate_text_streaming(
             needs_loading = not is_loaded or not context_matches
 
             if needs_loading:
+                # Double-check: API endpoints should never reach this point
+                if model_name and model_name.startswith('endpoint-'):
+                    error_msg = f"CRITICAL: Attempted to load API endpoint '{model_name}' as local model. This should have been caught earlier."
+                    logger.error(f"[inference] {error_msg}")
+                    yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                
                 reason = "not loaded" if not is_loaded else f"context mismatch (current={current_context}, intended={intended_n_ctx})"
                 logger.info(f"[inference] Model {model_name} on GPU {target_gpu_id} {reason}, loading now for streaming.")
                 try:
