@@ -281,9 +281,17 @@ Built for Devstral Small 2 24B with full tool-calling support:
 ### Installation
 
 ```bash
-git clone https://github.com/boneylizard/Eloquent.git
+# Clone the repository
+git clone https://github.com/boneylizard/Eloquent
+
+# Move into the project directory
 cd Eloquent
+
+# Run the automated installer (Wait for this to finish!)
 install.bat
+
+# Launch the platform
+run.bat
 ```
 
 The installer handles everything:
