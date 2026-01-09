@@ -1510,6 +1510,7 @@ const generateReply = useCallback(async (text, recentMessages) => {
             const loreBlock = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
             memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreBlock;
         }
+        // Note: buildSystemPrompt already includes story tracker context
         let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
         if (memoryContext) {
             systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
@@ -1558,6 +1559,7 @@ const generateReply = useCallback(async (text, recentMessages) => {
             const loreContext = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
             memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreContext;
         }
+        // Note: buildSystemPrompt already includes story tracker context
         let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
         if (memoryContext) {
             systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
@@ -1657,6 +1659,7 @@ const generateReplyWithOpenAI = useCallback(async (text, recentMessages) => {
         memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreContext;
     }
 
+    // Note: buildSystemPrompt already includes story tracker context
     let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
     if (memoryContext) {
         systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
@@ -1744,9 +1747,10 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNot
     }
 
      // 3) Build System Prompt with layered context
+    // Note: buildSystemPrompt already includes story tracker context via getStoryTrackerContext()
     let systemMsg = activeCharacter
       ? buildSystemPrompt(activeCharacter)
-      : ('You are a helpful assistant.' + getStoryTrackerContext()); // Fallback if no character is active
+      : ('You are a helpful assistant.' + getStoryTrackerContext());
 
     let contextToAdd = '';
 

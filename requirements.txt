@@ -62,6 +62,7 @@ en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_
 espeakng-loader
 executing
 faiss-cpu
+chonkie
 fastapi
 fastapi-cli
 faster-whisper
