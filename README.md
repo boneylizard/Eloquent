@@ -79,45 +79,25 @@ Runs fully local. No subscriptions. No cloud dependency. APIs optional. Just you
 
 ## 🖼️ Screenshots
 
-<details>
-<summary><b>Main Chat Interface</b></summary>
-
+### Main Chat Interface
 ![Eloquent Chat Interface](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/chat%20new.png?raw=true)
-
 *Full-featured chat with Story Tracker, Choice Generator, Author's Note, streaming TTS, and complete model control.*
-</details>
 
-<details>
-<summary><b>Voice & Audio Control Center</b></summary>
-
+### Voice & Audio Control Center
 ![TTS Settings](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/audio.jpg?raw=true)
-
 *Kokoro neural TTS + Chatterbox voice cloning with real-time streaming playback.*
-</details>
 
-<details>
-<summary><b>Focus Mode</b></summary>
-
+### Focus Mode
 ![Focus Mode](https://raw.githubusercontent.com/boneylizard/Eloquent/refs/heads/main/eloquent%20launch/focus%20mode%20new.png)
-
 *Distraction-free interface for deep work sessions.*
-</details>
 
-<details>
-<summary><b>Character Library</b></summary>
-
+### Character Library
 ![Character Library](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/characters.jpg?raw=true)
-
 *Rich character profiles with AI-generated portraits via built-in Stable Diffusion.*
-</details>
 
-<details>
-<summary><b>Model ELO Tester</b></summary>
-
+### Model ELO Tester
 ![Model Elo Tester](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/elo%20tester.jpg?raw=true)
-
 *Professional-grade model evaluation with dual-judge reconciliation, parameter sweeps, and character-based analysis perspectives.*
-</details>
 
 ---
 
