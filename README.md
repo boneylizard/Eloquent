@@ -1,203 +1,280 @@
 # Eloquent
 
-**A highly-modular local-first AI platform with limitless versatility**
+**The most feature-complete local AI platform you've never heard of.**
 
-Eloquent is an extensible AI orchestration layer for your own hardware.  
-It gives you a unified way to run and combine **local GGUF models**, **external API models**, **TTS/STT services**,  
-**image generation**, **memory/RAG**, and **specialized analysis tools** behind a single interface and API.
+While everyone else is fighting over which chat UI has the best preset system, Eloquent shipped with **in-house Stable Diffusion**, **multi-GPU inference**, **voice cloning**, **a full model ELO testing framework**, **a tool-calling code editor**, and **forensic linguistics analysis** – all running locally on your hardware.
 
-Out of the box it ships with a full desktop console (React + FastAPI) and a set of "first-party modules":
-LLM chat, model testing and judging, multi-GPU unified models, memory agents, document RAG, forensic linguistics,
-voice pipelines, character tools, and more. But the architecture is deliberately open-ended –  
-you can bolt on your own agents, routes, and UI panels without fighting the core system.
+Runs fully local. No subscriptions. No cloud dependency. APIs optional. Just your GPUs doing work.
+
+### What makes it different?
+- **Single app**: LLM + Stable Diffusion + voice cloning + model evaluation + code tools
+- **Multi-GPU orchestration**: Unified tensor splitting or purpose-specific GPU slots
+- **More than chat**: Built-in evaluation framework, forensic linguistics, story state tracking
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11–3.12-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
+![Lines of Code](https://img.shields.io/badge/lines%20of%20code-50%2C000%2B-orange.svg)
+
+---
+
+## ⚡ Start Here
+
+| I want to... | Do this |
+|--------------|---------|
+| **Chat + voice** | `install.bat` → `run.bat` → load a GGUF → enable TTS |
+| **Generate images** | Drop `.safetensors` in a folder → Settings → Image Gen → set path |
+| **Test models** | Open Model Tester → import prompts or MT-Bench → run A/B |
+| **Use the code editor** | Load Devstral Small 2 24B (GGUF or API) → open Code Editor → point to a directory |
+| **Clone a voice** | Settings → Audio → Chatterbox → upload reference sample |
+
+---
+
+## 👥 Who Is This For?
+
+- **Power users with GPUs** who want an all-in-one local stack instead of 5 different tools
+- **Roleplayers & writers** who want story state, choices, portraits, and voice in one place
+- **Model evaluators** who want ELO testing and judge orchestration without setting up a research pipeline
+- **Privacy-first users** who don't want their conversations leaving their machine
+
+### Who it's *not* for (yet)
+
+- Laptop users without dedicated GPU
+- AMD GPU users (CUDA required)
+- Mac users
+- People who want a one-click mobile app experience
+
+---
+
+## 🎯 What's Inside
+
+### Chat & Roleplay
+- ✅ **Full-featured AI chat** – character library, character creator, personas, conversation management
+- ✅ **Story Tracker** – characters, locations, inventory injected directly into AI context
+- ✅ **Choice Generator** – contextual action options with full prompt expansion
+- ✅ **Memory & RAG** – long-term memory, document ingestion, web search
+
+### Inference
+- ✅ **Multi-GPU inference** – unified tensor splitting or split-services mode across 2, 3, 4+ GPUs
+- ✅ **OpenAI API compatible** – works with Chub.ai, local proxies, any compatible endpoint
+
+### Image Generation
+- ✅ **In-house Stable Diffusion** – drop in `.safetensors` files, supports SD 1.5, SDXL, and FLUX
+- ✅ **Custom ADetailer** – YOLO face detection → mask generation → inpainting enhancement
+
+### Voice
+- ✅ **Voice cloning TTS** – Kokoro neural TTS + Chatterbox voice cloning with streaming playback
+- ✅ **Call Mode** – full-screen voice conversation with speaking animations
+
+### Evaluation & Analysis
+- ✅ **Model ELO testing** – A/B comparisons, dual-judge reconciliation, parameter sweeps, 14 analysis perspectives
+- ✅ **Forensic linguistics** – authorship analysis with pluggable embedding models
+
+### Tools
+- ✅ **Tool-calling code editor** – Devstral Small 2 24B with file ops and shell execution
+
+**50,000+ lines of code. 99 source files. One hobby project.**
 
 ---
 
 ## 🖼️ Screenshots
 
-### Main Chat Interface
+<details>
+<summary><b>Main Chat Interface</b></summary>
 
 ![Eloquent Chat Interface](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/chat%20new.png?raw=true)
 
-*The primary console with chat, story tracker, choice generator, author's note, TTS controls, and all control panels.*
+*Full-featured chat with Story Tracker, Choice Generator, Author's Note, streaming TTS, and complete model control.*
+</details>
 
-### Audio / TTS Settings
+<details>
+<summary><b>Voice & Audio Control Center</b></summary>
 
 ![TTS Settings](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/audio.jpg?raw=true)
 
-*Comprehensive audio control center with Kokoro, Chatterbox voice cloning, and streaming playback configuration.*
+*Kokoro neural TTS + Chatterbox voice cloning with real-time streaming playback.*
+</details>
 
-### Focus Mode
+<details>
+<summary><b>Focus Mode</b></summary>
 
 ![Focus Mode](https://raw.githubusercontent.com/boneylizard/Eloquent/refs/heads/main/eloquent%20launch/focus%20mode%20new.png)
 
-*Distraction-free interface for deep sessions, built on top of the same underlying model stack.*
+*Distraction-free interface for deep work sessions.*
+</details>
 
-### Character Library
+<details>
+<summary><b>Character Library</b></summary>
 
 ![Character Library](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/characters.jpg?raw=true)
 
-*Rich character library with profiles, portraits, and management tools built on top of the platform.*
+*Rich character profiles with AI-generated portraits via built-in Stable Diffusion.*
+</details>
 
-### Model Elo Tester
+<details>
+<summary><b>Model ELO Tester</b></summary>
 
 ![Model Elo Tester](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/elo%20tester.jpg?raw=true)
 
-*Model versus model testing, ranking, and comparison UI running against the same backend orchestration.*
+*Professional-grade model evaluation with dual-judge reconciliation, parameter sweeps, and character-based analysis perspectives.*
+</details>
 
 ---
 
-## ✨ Core Capabilities
+## 🔥 Flagship Features
 
-### 🧠 LLM Orchestration & Multi-GPU
+### 🎨 In-House Stable Diffusion (No API, No External UI)
 
-- **Local GGUF via `llama-cpp-python`**
-  - Load models per-GPU or in unified multi-GPU mode
-  - Tensor splitting with configurable `tensor_split` for 2, 3, 4+ GPUs
-  - Dynamic GPU detection and allocation
-- **API + Local Hybrid**
-  - OpenAI-compatible API endpoints (Chub.ai, custom gateways, etc.) live alongside local models
-  - Use API for primary chat while running smaller local models for memory, tools, or evaluation
-  - Separate API model selector in the UI, independent of GPU-based local model selection
-- **Model Manager & Services**
-  - `ModelManager` and `ModelService` coordinate:
-    - Per-GPU model allocation
-    - Split-services vs unified-model modes
-    - Special "purpose slots" (judge models, forensic embeddings, automation interpreters, etc.)
-  - OpenAI-compatible router so other tools can talk to Eloquent like an OpenAI server
-- **Streaming & Real-time**
-  - Streaming responses with real-time token generation
-  - WebSocket support for live updates
+**A fully integrated local LLM + image generation stack. No external UI required.**
 
-### 🔊 Voice & Audio Stack
+- Drop in any `.safetensors` file – SD 1.5, SDXL, or FLUX
+- **Custom ADetailer implementation** – face detection → mask generation → inpainting enhancement
+- YOLO-based face detection with configurable confidence thresholds
+- Tuned mask parameters to prevent halos and harsh seams
+- Generate character portraits directly in chat
+- No Automatic1111, no ComfyUI, no external processes – it's all built-in
 
-- **Kokoro TTS**
-  - Fast, high-quality neural TTS for general dialogue and narration
-  - Multiple built-in voices
-- **Chatterbox TTS**
-  - Voice cloning from reference audio samples
-  - Chunked streaming pipeline tuned to avoid cache overflows and latency spikes
-  - Real-time audio generation with low latency
-- **Dedicated TTS Service**
-  - Separate FastAPI `tts_backend` service on its own port
-  - `TTSClient` used from main backend and frontend for streaming playback
-  - Auto-play TTS pipelines that synthesize and queue audio as LLM responses stream in
-- **Optional STT**
-  - `stt_service` for speech-to-text integration
+```
+Your GPU → stable-diffusion.cpp → SDManager → ADetailerProcessor → Enhanced Image
+```
 
-### 🧩 Memory, RAG & Web Intelligence
+### 🧠 Multi-GPU That Actually Works
 
-- **Memory System**
-  - Long-term memory extraction and retrieval
-  - User profile learning and context injection
-  - Memory routes for introspection and control
-  - Memory intelligence agents that process conversation context
-- **RAG (Retrieval-Augmented Generation)**
-  - Document ingestion, embeddings, and retrieval via `rag_utils` and `Document_routes`
-  - RAG status and controls exposed in the UI
-  - Document store management and querying
-- **Web Search Integration**
-  - DuckDuckGo-style web search via `web_search_service`
-  - Optional online grounding for answers
+Stop fighting with tensor parallelism configs that crash. Eloquent handles it.
 
-### 🔍 Forensic Linguistics & Analysis
+- **Unified Mode**: Shard one large model across 2, 3, 4+ GPUs with automatic tensor splitting
+- **Split Services Mode**: Different models on different GPUs for different tasks
+- **Purpose Slots**: Dedicated GPU allocation for test models, judge models, memory agents
+- Dynamic GPU detection and real-time VRAM monitoring
+- Works with both local GGUF models AND OpenAI-compatible APIs simultaneously
 
-- **ForensicLinguisticsService**
-  - Pluggable pool of embedding models (BGE-M3, GTE, RoBERTa, Jina, Nomic, and many others as configured)
-  - Build and cache corpora from documents or scraped text
-  - Stylistic similarity and authorship-style comparison
-  - Embedding-based similarity analysis
-- **Analysis Panels**
-  - Dedicated UI for running forensic jobs, watching progress, and inspecting results
-  - Compare writing samples for stylistic matches
+### 🎯 Model ELO Testing Framework
 
-### 🎨 Image & Visuals
+**A complete model evaluation system that rivals research lab tooling.**
 
-- **Built-in Stable Diffusion (stable_diffusion_cpp)**
-  - Ships with pre-built `stable_diffusion_cpp_python` wheels
-  - Runs fully local, no external API or web UI required
-  - Used for in-app character portrait generation and other image workflows
-  - Integrated directly into the backend via `sd_manager`
-- **Optional Automatic1111 Integration**
-  - Can connect to an existing Automatic1111 instance if you already use it
-  - Treated as a secondary/optional path; the primary flow is the in-process Stable Diffusion backend
-- **Image Management**
-  - Generated images stored and exposed in the UI
-  - Hooks available to extend or route images into your own pipelines
+- **Single Model Testing**: Score responses against prompt collections (MT-Bench, custom)
+- **A/B Comparison**: Head-to-head model battles with ELO rating updates
+- **Dual-Judge Mode**: Two different models evaluate, then reconcile disagreements
+- **Character-Aware Judging**: Judges can roleplay personas with custom evaluation criteria
+- **Parameter Sweeps**: Test the same model across temperature/top_p/top_k combinations
+- **14 Built-in Analysis Perspectives** including:
+  - 🤖 6-Year-Old Transformer Boy (asks naive questions that expose assumptions)
+  - 🥃 Al Swearengen from Deadwood (cuts through bullshit)
+  - 😤 Bill Burr (angry skepticism)
+  - 📢 Alex Jones (adversarial red-teaming)
+  - 👩‍🏫 Dolores Umbridge (bureaucratic authority)
+- Import/export full test results with all metadata
+- Persistent ELO ratings across sessions
 
-### 🎭 Character, Story & Interaction Modules
+### 🎭 Interactive Roleplay Tools
 
-These are *verticals built on the platform*, not the platform itself:
+**Story Tracker and Choice Generator that actually integrate with AI context.**
 
-- **Character Library**
-  - Rich character cards with personality, background, and sample dialogue
-  - Portraits generated via built-in Stable Diffusion
-  - Library UI for browsing, editing, and switching personas
-- **Auto Character Creator**
-  - Generate complete character JSON from conversation transcripts
-  - Works with both local models and external API models via unified backend route
-- **Story Tracker**
-  - Track characters, locations, items, flags, and plot state
-  - Tracker data wired into the system prompt so the model actually uses it
-- **Choice Generator**
-  - Context-aware action/choice generation for interactive scenarios
-  - Integrates with Story Tracker and chat context
-- **Author's Note**
-  - Inject writing style guidance into any conversation
-  - Persists across sessions and injects into system prompt for both local and API models
+#### Story Tracker
+- Track characters, locations, inventory, plot points
+- Pin important items, mark things as starred
+- Set current objectives
+- **Data automatically injected into system prompts** – the AI actually knows your story state
 
-### 🎯 Interaction UX & Tools
+#### Choice Generator
+- Generate contextual action choices based on conversation + character + story state
+- 6 behavior modes: Balanced, Dramatic, Subtle, Chaotic, Romantic, Action
+- Custom direction input ("Include a choice where I confess my feelings")
+- **Full prompt expansion**: Clicking a choice generates a complete first-person action, not just two words
+- Edit any choice, regenerate individual options, continue from partial text
 
-- **Main Chat Console**
-  - Streaming responses, TTS auto-play pipelines, flexible context controls
-  - Author's Note that injects instructions into system prompt for both local and API models
-  - Anti-repetition system to reduce boilerplate responses
-- **Focus Mode**
-  - Minimal UI built on top of the same backend stack
-  - Distraction-free environment for deep sessions
-- **Model Tester & Elo-Style Comparison**
-  - Load multiple models (local and/or API) and compare outputs side-by-side
-  - Model Elo testing UI for structured evaluations
-  - Judge models for automated quality assessment
-- **Forensic & RAG Panels**
-  - Dedicated surfaces for higher-level analysis and retrieval experiments
-- **Code Editor Overlay**
-  - In-app code view/editor layered over the main experience for power users
+### 🔊 Voice Pipeline
+
+**Real-time TTS that streams as the AI generates.**
+
+- **Kokoro TTS**: Fast neural synthesis with multiple voices
+- **Chatterbox TTS**: Voice cloning from reference samples
+- Chunked streaming pipeline tuned for low latency
+- Auto-play mode: Audio synthesizes and queues as tokens arrive
+- **Call Mode**: Full-screen voice conversation interface with speaking animations
+- Speech detection and push-to-talk support
+
+### 💻 Tool-Calling Code Editor
+
+**A local, tool-calling code editor in the Cursor/Windsurf spirit.**
+
+Built for Devstral Small 2 24B with full tool-calling support:
+
+| Tool | What It Does |
+|------|--------------|
+| `read_file` | Read file contents |
+| `write_file` | Create/modify files (auto-backup) |
+| `list_directory` | Browse folder structure |
+| `search_files` | Grep-like content search |
+| `run_command` | Execute shell commands |
+| `create_directory` | Make folders |
+| `delete_file` | Remove files |
+
+- Path sandboxing (can't escape working directory)
+- Vision support (screenshot → understanding)
+- Session persistence
+- Drag-and-drop files into context
+
+> **Security notes**: Tool calls are restricted to the selected working directory. `run_command` is optional and can be disabled. `write_file` creates `.bak` backups automatically. No network access unless you explicitly enable web search.
+
+### 🔬 Forensic Linguistics
+
+**Authorship analysis and stylistic comparison.**
+
+- Pluggable embedding models (BGE-M3, GTE, RoBERTa, Jina, Nomic, and more)
+- Build corpora from documents or scraped text
+- Compare writing samples for stylistic similarity
+- Detailed analysis UI with progress tracking
+
+### 🧩 Memory & RAG
+
+- Long-term memory extraction and retrieval
+- User profile learning
+- Document ingestion with embeddings
+- Web search integration (DuckDuckGo)
+- Memory context injection into prompts
 
 ---
 
-## 🏗️ Architecture Overview
+## 🏗️ Architecture
 
-At a high level:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Frontend (React)                         │
+│  Chat │ StoryTracker │ ChoiceGenerator │ ModelTester │ Settings │
+│  ForensicLinguistics │ CodeEditor │ ImageGen │ MemoryEditor     │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Backend (FastAPI) - 6000+ lines              │
+│                                                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
+│  │ModelManager │  │ SDManager   │  │ ForensicLinguistics     │ │
+│  │ Multi-GPU   │  │ +ADetailer  │  │ Service                 │ │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
+│                                                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
+│  │ TTS Service │  │ Memory      │  │ Devstral Service        │ │
+│  │ Kokoro/CB   │  │ Intelligence│  │ Code Editor Tools       │ │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
+│                                                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
+│  │ RAG Utils   │  │ Web Search  │  │ OpenAI Compat Layer     │ │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              ▼              ▼              ▼
+         ┌────────┐    ┌────────┐    ┌────────────┐
+         │ GPU 0  │    │ GPU 1  │    │ External   │
+         │ GGUF   │    │ GGUF   │    │ API        │
+         └────────┘    └────────┘    └────────────┘
+```
 
-- **Backend (`backend/app/`)**
-  - `main.py` – FastAPI app and API router
-  - `model_manager.py`, `model_service.py`, `model_subprocess.py` – LLM lifecycle, GPU orchestration, worker processes
-  - `openai_compat.py` – OpenAI-style endpoints for external tools
-  - `tts_backend.py`, `tts_service.py`, `tts_client.py` – TTS microservice and utilities
-  - `stt_service.py` – Speech-to-text integration
-  - `memory_intelligence.py`, `memory_agent.py`, `memory_routes.py` – Memory and RAG core
-  - `Document_routes.py`, `rag_utils.py` – Document ingestion and retrieval
-  - `forensic_linguistics_service.py` – Authorship and style analysis
-  - `character_intelligence.py` – Character JSON generation (local + API)
-  - `sd_manager.py` – Built-in Stable Diffusion integration
-  - `web_search_service.py` – External search module
-  - `inference.py` – Core LLM generation logic
-
-- **Frontend (`frontend/src/`)**
-  - `components/` – `Chat`, `StoryTracker`, `ChoiceGenerator`, `ForensicLinguistics`, `ImageGen`, `ModelSelector`, `ModelTester`, `Settings`, `Sidebar`, `Navbar`, `FocusModeOverlay`, `CharacterManager`, `CharacterEditor`, and many more
-  - `contexts/` – `AppContext` orchestrates global state: active model, API vs local, TTS, memory, tracker, etc.
-  - `utils/` – Utilities like anti-repetition processing and helpers shared across modules
-
-- **Launch & Environment**
-  - `install.bat` – One-click installer for Python env, wheels, backend, and frontend dependencies
-  - `run.bat` – One-click launcher for backend(s) + frontend
-  - `run_debug.bat` – Debug launcher with visible console windows
-  - `launch.py` – Python launcher that handles GPU detection and service orchestration
+**Backend**: 27 Python files, ~21,000 lines  
+**Frontend**: 72 JSX files, ~30,000 lines  
+**Total**: 99+ files, 50,000+ lines of code
 
 ---
 
@@ -206,175 +283,143 @@ At a high level:
 ### Prerequisites
 
 - **Windows 10/11** (64-bit)
-- **NVIDIA GPU** with CUDA support  
-  - VRAM requirements depend on your chosen models and GPU configuration
+- **NVIDIA GPU** with CUDA support
 - **Python 3.11 or 3.12**
-  - Must be compatible with the bundled `llama_cpp_python` and `stable_diffusion_cpp_python` wheels
-  - The provided `install.bat` currently targets 3.11/3.12 specifically
-- **Node.js v21.7.3** (strongly recommended)
-  - Other versions may work but are not officially supported
+- **Node.js v21.7.3** (recommended)
+
+### VRAM Expectations
+
+| Use Case | Recommended VRAM |
+|----------|------------------|
+| Small models (7B Q4) | 8GB |
+| Medium models (13B-20B) | 12GB |
+| Large models (70B+) | 24GB+ or multi-GPU |
+| Image generation (SD 1.5) | 4GB+ |
+| Image generation (SDXL/FLUX) | 8GB+ |
+| Running LLM + image gen together | 16GB+ or split across GPUs |
 
 ### Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/boneylizard/Eloquent.git
-   cd Eloquent
-   ```
+```bash
+git clone https://github.com/boneylizard/Eloquent.git
+cd Eloquent
+install.bat
+```
 
-2. **Run the installer**
+The installer handles everything:
+- Python virtual environment
+- PyTorch with CUDA 12.1
+- Pre-built wheels for `llama_cpp_python` and `stable_diffusion_cpp_python`
+- All Python dependencies
+- Frontend npm packages
 
-   Double-click **`install.bat`** in Explorer, or run it from a terminal:
+### Running
 
-   ```bash
-   install.bat
-   ```
+```bash
+run.bat
+```
 
-   This will:
+Opens:
+- Backend API: `http://localhost:8000`
+- TTS Service: `http://localhost:8002`
+- Frontend: `http://localhost:5173`
 
-   - Create a Python virtual environment (`venv`)
-   - Install PyTorch with CUDA 12.1
-   - Install pre-built wheels for `llama_cpp_python` and `stable_diffusion_cpp_python`
-   - Install backend Python dependencies from `requirements.txt`
-   - Install frontend dependencies via `npm install`
+### Troubleshooting
 
-3. **Download a GGUF model**
+| Problem | Solution |
+|---------|----------|
+| Missing dependencies after install | Run `install.bat` again, or activate venv and `pip install` the package named in the traceback |
+| CUDA errors on startup | Update NVIDIA drivers, ensure CUDA 12.x installed |
+| Port already in use | Check for other processes on 8000/8002/5173 |
+| Model fails to load | Check VRAM, try a smaller quantization |
+| Windows Defender blocks | Add project folder to exclusions |
+| TTS not working | Ensure `tts_backend` service started (check console) |
 
-   - Place your `.gguf` models in a directory of your choice
-   - You'll point Eloquent to this directory in **Settings → Model Settings** after the first run
-
-### Running Eloquent
-
-- **Normal mode**
-
-  Double-click **`run.bat`**, or from a terminal:
-
-  ```bash
-  run.bat
-  ```
-
-  This will start:
-
-  - Backend API server on `http://localhost:8000`
-  - Dedicated TTS service on `http://localhost:8002`
-  - Frontend dev server on `http://localhost:5173` (opens automatically in your browser)
-
-- **Debug mode**
-
-  For troubleshooting with visible console windows:
-
-  ```bash
-  run_debug.bat
-  ```
+> **Note**: If the backend crashes on startup with an import error, read the traceback – it usually tells you exactly which package is missing. Activate the venv (`venv\Scripts\activate`) and `pip install` it.
 
 ---
 
 ## ⚙️ Configuration
 
-### Model Setup
+### Models
+1. **Settings → Model Settings** → Set your GGUF directory
+2. **Model Selector** → Choose models per-GPU or enable unified multi-GPU mode
+3. **API Endpoints** → Add OpenAI-compatible endpoints (Chub.ai, local proxies, etc.)
 
-1. Open Eloquent in your browser
-2. Go to **Settings → Model Settings**
-3. Set your **model directory path** (where your GGUF files live)
-4. Use the **Model Selector** to:
-   - Choose local models for each GPU
-   - Choose an **API model** separately (or run API-only)
+### Image Generation
+1. **Settings → Image Generation** → Set your `.safetensors` directory
+2. **ADetailer Models** → Point to your YOLO `.pt` files for face enhancement
+3. Works with SD 1.5, SDXL, and FLUX models
 
-The model selector UI reflects:
-
-- **Per-GPU status** (which model is loaded where)
-- Whether a slot is running a **local** model or an **API** endpoint
-- Current GPU count and dynamic `tensor_split` configuration for unified models
-
-### Multi-GPU & Tensor Split
-
-- Eloquent supports:
-  - **Split-services mode**: Different models on different GPUs for different roles
-  - **Unified-model mode**: One large model sharded across 2, 3, 4+ GPUs
-- In **Settings → Advanced / Tensor Split**:
-  - View the current `tensor_split`
-  - Provide a comma-separated list of values (e.g. `1,1,1,1` for four GPUs)
-  - Values are normalized to sum to 1.0 and stored for future loads
-
-### TTS Setup
-
-1. Go to **Settings → Audio / TTS**
-2. Choose:
-   - **Kokoro** for fast, robust TTS
-   - **Chatterbox** for voice cloning
-3. For Chatterbox:
-   - Upload a reference voice sample
-   - Adjust speed and other parameters
-4. Enable **Auto-Play TTS** if you want streaming playback as responses arrive
-
-### External API Models
-
-Eloquent can talk to any OpenAI-compatible API:
-
-1. Go to **Settings → API Endpoints**
-2. Add your endpoint URL, API key, and preferred model name
-3. In the **Model Selector**, choose an API entry as the **API Model**
-4. You can:
-   - Use the API model for main chat
-   - Still load local models for memory, tools, or judging
-
-### Memory, RAG & Forensics
-
-- **Memory & RAG**
-  - Configure memory behavior and document ingestion in **Settings → Memory / RAG**
-  - Use the RAG panels to upload documents and inspect retrieval behavior
-- **Forensic Linguistics**
-  - Load embedding models and run analyses in the **Forensic Linguistics** panel
-  - Build corpora, compare samples, and run stylistic similarity jobs
+### Voice
+1. **Settings → Audio/TTS** → Choose Kokoro or Chatterbox
+2. For voice cloning: Upload a reference sample
+3. Enable Auto-Play for streaming synthesis
 
 ---
 
 ## 🧪 Example Workflows
 
-These are examples of what you *can* do with the platform using the built-in modules.
+### Multi-GPU Inference
+- Load a 70B model across 4 GPUs in unified mode
+- Run a smaller 7B model on a dedicated GPU for memory/tools
+- Compare both against an API model using ELO tester
 
-### Multi-Model Setup
+### Interactive Fiction
+- Select a character from the library
+- Enable Story Tracker to maintain world state
+- Use Choice Generator for contextual action options
+- Generate character portraits with built-in Stable Diffusion
+- Enable voice mode for spoken dialogue
 
-- Load a large GGUF model in unified mode across multiple GPUs
-- Load a second, smaller model on another GPU for:
-  - Memory extraction
-  - Judging / Elo testing
-  - Tool-like tasks (summaries, classifiers)
-- Attach an API model and compare it against your local stack using the Model Elo Tester
+### Model Evaluation
+- Import MT-Bench or custom prompt collections
+- Run A/B tests between models
+- Enable dual-judge mode with character perspectives
+- Export results for analysis
+- Track ELO ratings over time
 
-### Character-Driven Sessions
+### Local Cursor Alternative
+- Load Devstral Small 2 24B
+- Open the Code Editor overlay
+- Point it at your project directory
+- Ask it to read, modify, and create files
+- It executes tool calls directly on your filesystem
 
-- Use the **Character Library** to pick or build a persona
-- Enable **Story Tracker** so the system remembers characters, locations, and items
-- Use **Choice Generator** to propose contextual actions
-- Use **Author's Note** to steer style/behavior for this specific run without touching the global system prompt
-- Generate character portraits using the built-in Stable Diffusion integration
+---
 
-### Analysis & Research
+## 📊 By The Numbers
 
-- Ingest documents into RAG and use **RAG Status / Settings** to tune behavior
-- Use **Forensic Linguistics** to compare writing samples for stylistic similarity
-- Toggle **web search** when you want external grounding
+| Metric | Value |
+|--------|-------|
+| Total lines of code | 50,000+ |
+| Python backend files | 27 |
+| React frontend files | 72 |
+| Largest file (main.py) | 5,965 lines |
+| Built-in TTS engines | 2 (Kokoro + Chatterbox) |
+| Analysis perspectives | 14 |
+| Tool definitions (code editor) | 7 |
+| Supported SD architectures | 3 (SD 1.5, SDXL, FLUX) |
 
 ---
 
 ## 🤝 Contributing
 
-Contributions, issues, and feature suggestions are welcome.  
-If you build your own modules or verticals on top of Eloquent, feel free to share them.
+This started as a hobby project by one developer working a day job. Contributions welcome.
 
-This project is licensed under the **GNU Affero General Public License v3.0** – see the `LICENSE` file for details.
+Licensed under **GNU Affero General Public License v3.0**.
 
 ---
 
 ## 🙏 Acknowledgments
 
-Eloquent builds on many amazing open-source projects:
+Built on the shoulders of giants:
 
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) & [llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
-- [stable-diffusion.cpp](https://github.com/adieyal/sd-cpp) & [stable-diffusion-cpp-python](https://github.com/adieyal/sd-cpp-python)
+- [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) & [stable-diffusion-cpp-python](https://github.com/william-murray1204/stable-diffusion-cpp-python)
 - [Kokoro TTS](https://github.com/hexgrad/kokoro)
 - [Chatterbox TTS](https://github.com/resemble-ai/chatterbox)
+- [ultralytics YOLO](https://github.com/ultralytics/ultralytics) (for ADetailer)
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [React](https://react.dev/)
 
@@ -386,4 +431,5 @@ Created by **Bernard Peter Fitzgerald** ([@boneylizard](https://github.com/boney
 
 ---
 
-*Eloquent – a highly-modular local-first AI platform with limitless versatility.*
+*Eloquent – because your GPUs deserve better than another chat UI.*
+
