@@ -47,7 +47,11 @@ REM --- 7. Install all remaining requirements.txt packages ---
 echo Installing full requirements.txt...
 pip install -r requirements.txt
 
-REM --- 8. Node.js version check ---
+REM --- 8. Downgrade numpy to 1.x (PyTorch compatibility) ---
+echo Downgrading numpy to 1.x for PyTorch compatibility...
+pip install "numpy<2"
+
+REM --- 9. Node.js version check ---
 echo Checking Node.js version...
 node -v > temp_node_version.txt 2>nul
 if errorlevel 1 (
@@ -71,7 +75,7 @@ if not "!NODE_VER!"=="v21.7.3" (
     pause >nul
 )
 
-REM --- 9. Install frontend dependencies ---
+REM --- 10. Install frontend dependencies ---
 if exist frontend (
     echo Installing frontend dependencies via npm...
     cd frontend
