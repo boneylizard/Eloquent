@@ -221,15 +221,20 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullText = '';
+      let sseBuffer = ''; // Buffer for incomplete SSE events
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         
         const chunk = decoder.decode(value, { stream: true });
-
-        // Process SSE format (messages separated by \n\n)
-        for (const line of chunk.split('\n\n')) {
+        sseBuffer += chunk;
+        
+        // Process complete SSE events (each ends with \n\n)
+        const events = sseBuffer.split('\n\n');
+        sseBuffer = events.pop() || '';
+        
+        for (const line of events) {
           if (!line.startsWith('data: ')) continue;
           const data = line.slice(6);
           if (data === '[DONE]') continue;
@@ -544,12 +549,16 @@ const handleRegenerateFromEditedPrompt = useCallback(async (userMessageId) => {
     const decoder = new TextDecoder();
     let acc = '';
     let done = false;
+    let sseBuffer = ''; // Buffer for incomplete SSE events
 
     while (!done) {
       const { done: rDone, value } = await reader.read();
       if (rDone) break;
       const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split('\n\n')) {
+      sseBuffer += chunk;
+      const events = sseBuffer.split('\n\n');
+      sseBuffer = events.pop() || '';
+      for (const line of events) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
         if (data === '[DONE]') {
@@ -1502,13 +1511,17 @@ const handleGenerateVariant = useCallback(async (messageId) => {
     const decoder = new TextDecoder();
     let acc = '';
     let done = false;
+    let sseBuffer = ''; // Buffer for incomplete SSE events
 
     try {
       while (!done) {
         const { done: rDone, value } = await reader.read();
         if (rDone) break;
         const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split('\n\n')) {
+        sseBuffer += chunk;
+        const events = sseBuffer.split('\n\n');
+        sseBuffer = events.pop() || '';
+        for (const line of events) {
           if (!line.startsWith('data: ')) continue;
           const data = line.slice(6);
           if (data === '[DONE]') {
@@ -1875,13 +1888,17 @@ const handleContinueGeneration = useCallback(async (messageId) => {
     const decoder = new TextDecoder();
     let continuationText = '';
     let done = false;
+    let sseBuffer = ''; // Buffer for incomplete SSE events
 
     try {
       while (!done) {
         const { done: rDone, value } = await reader.read();
         if (rDone) break;
         const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split('\n\n')) {
+        sseBuffer += chunk;
+        const events = sseBuffer.split('\n\n');
+        sseBuffer = events.pop() || '';
+        for (const line of events) {
           if (!line.startsWith('data: ')) continue;
           const data = line.slice(6);
           if (data === '[DONE]') {

@@ -1681,11 +1681,15 @@ const generateReply = useCallback(async (text, recentMessages) => {
             const reader = streamRes.body.getReader();
             const decoder = new TextDecoder();
             let accumulatedText = '';
+            let sseBuffer = ''; // Buffer for incomplete SSE events
             while (true) {
                 const {done, value} = await reader.read();
                 if (done) break;
                 const chunk = decoder.decode(value, {stream: true});
-                for (const line of chunk.split('\n\n')) {
+                sseBuffer += chunk;
+                const events = sseBuffer.split('\n\n');
+                sseBuffer = events.pop() || '';
+                for (const line of events) {
                     if (line.startsWith('data: ')) {
                         const data = line.slice(6);
                         if (data === '[DONE]') return cleanModelOutput(accumulatedText);
@@ -1791,7 +1795,22 @@ const generateReplyWithOpenAI = useCallback(async (text, recentMessages) => {
     PRIMARY_API_URL, SECONDARY_API_URL
 ]);
 const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNote = null) => {
-  if (!activeConversation || !primaryModel) return;
+  // Can't send without a model
+  if (!primaryModel) {
+    console.warn("📩 [SEND] No model loaded, cannot send message");
+    return;
+  }
+  
+  // Auto-create a conversation if none exists
+  let currentConversation = activeConversation;
+  if (!currentConversation) {
+    console.log("📩 [SEND] No active conversation, creating one...");
+    const newConv = createNewConversation();
+    currentConversation = newConv.id;
+    // Give React a moment to update state
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  
   promptSubmissionStartTime.current = performance.now();
   console.log(`⏱️ [Full Cycle] User submitted prompt: "${text.substring(0, 30)}..."`);
   
@@ -1811,7 +1830,7 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNot
     // 2) (Optional) Title logic
     const userMsgs = postUserHistory.filter(m => m.role === 'user');
     const isFirst  = userMsgs.length === 1;
-    const conv     = conversations.find(c => c.id === activeConversation);
+    const conv     = conversations.find(c => c.id === currentConversation);
 
     if (isFirst && conv?.requiresTitle && !primaryIsAPI) {
       try {
@@ -1819,7 +1838,7 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNot
         if (title && title !== 'New Chat') {
           setConversations(cs =>
             cs.map(c =>
-              c.id === activeConversation
+              c.id === currentConversation
                 ? { ...c, name: title, requiresTitle: false }
                 : c
             )
@@ -1831,7 +1850,7 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNot
     } else if (isFirst && conv?.requiresTitle && primaryIsAPI) {
         setConversations(cs =>
             cs.map(c =>
-              c.id === activeConversation
+              c.id === currentConversation
                 ? { ...c, name: `${text.substring(0, 25)}...`, requiresTitle: false }
                 : c
             )
@@ -2127,6 +2146,7 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNot
                 const decoder = new TextDecoder();
                 let accumulated = '';
                 let lastSentContent = '';
+                let sseBuffer = ''; // Buffer for incomplete SSE events
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -2135,7 +2155,14 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNot
                     }
 
                     const chunk = decoder.decode(value, { stream: true });
-                    for (const line of chunk.split('\n\n')) {
+                    sseBuffer += chunk; // Add new data to buffer
+                    
+                    // Process complete SSE events (each ends with \n\n)
+                    const events = sseBuffer.split('\n\n');
+                    // Keep the last (potentially incomplete) event in the buffer
+                    sseBuffer = events.pop() || '';
+                    
+                    for (const line of events) {
                         if (!line.startsWith('data: ')) continue;
                         const data = line.slice(6);
                         
@@ -2251,7 +2278,8 @@ const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNot
   generateReply,
   primaryIsAPI,
   generateReplyOpenAI,
-  processOpenAIStream
+  processOpenAIStream,
+  createNewConversation
 ]);
 
 async function playTTSWithPitch({ audioUrl, speed = 1.0, semitones = 0 }) {

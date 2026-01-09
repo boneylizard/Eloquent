@@ -1,5 +1,5 @@
 {
-  "backend": "http://localhost:8001",
-  "secondary": "http://localhost:8003",
-  "tts": "http://localhost:8004"
+  "backend": "http://localhost:8000",
+  "secondary": "http://localhost:8001",
+  "tts": "http://localhost:8002"
 }
