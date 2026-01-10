@@ -39,7 +39,7 @@ const CharacterEditor = () => {
     duplicateCharacter,
     PRIMARY_API_URL,
   } = useApp();
-  
+
   const [isImporting, setIsImporting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const importFileRef = useRef(null);
@@ -56,8 +56,8 @@ const CharacterEditor = () => {
         ...activeCharacter,
         // Ensure arrays exist even if loaded data is missing them
         example_dialogue: ensureArray(activeCharacter.example_dialogue).length > 0
-            ? ensureArray(activeCharacter.example_dialogue)
-            : DEFAULT_CHARACTER.example_dialogue,
+          ? ensureArray(activeCharacter.example_dialogue)
+          : DEFAULT_CHARACTER.example_dialogue,
         loreEntries: ensureArray(activeCharacter.loreEntries),
         avatar: activeCharacter.avatar || null,
       });
@@ -79,38 +79,38 @@ const CharacterEditor = () => {
   }, [characters, activeCharacter, setActiveCharacter]);
 
   // Handle importing character cards
-const handleImportCard = useCallback(async (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
+  const handleImportCard = useCallback(async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
-  setIsImporting(true);
-  try {
-    const importedCharacter = await CharacterCardIntegration.importCharacterCard(file, PRIMARY_API_URL);
-    
-    // Don't save directly to library - just load into editor for user to review and save
-    const newCharacter = {
-      ...importedCharacter,
-      id: null, // Clear the ID so it's treated as new
-      created_at: new Date().toISOString().split('T')[0]
-    };
-    
-    // Clear active character and set editor to "create new" mode
-    setActiveCharacter(null);
-    setIsCreatingNew(true);
-    
-    // Load the imported data into the editor
-    setCharacter(newCharacter);
-    
-    alert(`Character imported successfully! Please review and click "Create Character" to save to your library.`);
-    
-  } catch (error) {
-    console.error('Import failed:', error);
-    alert(`Import failed: ${error.message}`);
-  } finally {
-    setIsImporting(false);
-    event.target.value = ''; // Reset file input
-  }
-}, [setActiveCharacter, setIsCreatingNew, setCharacter]);
+    setIsImporting(true);
+    try {
+      const importedCharacter = await CharacterCardIntegration.importCharacterCard(file, PRIMARY_API_URL);
+
+      // Don't save directly to library - just load into editor for user to review and save
+      const newCharacter = {
+        ...importedCharacter,
+        id: null, // Clear the ID so it's treated as new
+        created_at: new Date().toISOString().split('T')[0]
+      };
+
+      // Clear active character and set editor to "create new" mode
+      setActiveCharacter(null);
+      setIsCreatingNew(true);
+
+      // Load the imported data into the editor
+      setCharacter(newCharacter);
+
+      alert(`Character imported successfully! Please review and click "Create Character" to save to your library.`);
+
+    } catch (error) {
+      console.error('Import failed:', error);
+      alert(`Import failed: ${error.message}`);
+    } finally {
+      setIsImporting(false);
+      event.target.value = ''; // Reset file input
+    }
+  }, [setActiveCharacter, setIsCreatingNew, setCharacter]);
 
   // Handle exporting as TavernAI JSON
   const handleExportTavernJSON = useCallback(() => {
@@ -131,8 +131,10 @@ const handleImportCard = useCallback(async (event) => {
     }
   }, [activeCharacter, character]);
 
-  // Handle exporting as GingerGUI JSON
-  const handleExportGingerJSON = useCallback(() => {
+
+  // Handle PNG export instructions
+  // Replace handleExportPNGInstructions with this:
+  const handleExportPNG = useCallback(async () => {
     const charToExport = activeCharacter || character;
     if (!charToExport || !charToExport.name?.trim()) {
       alert('Please select a character to export');
@@ -141,35 +143,15 @@ const handleImportCard = useCallback(async (event) => {
 
     setIsExporting(true);
     try {
-      CharacterCardIntegration.exportAsJSON(charToExport, 'ginger');
+      await CharacterCardIntegration.exportAsPNG(charToExport, PRIMARY_API_URL);
+      alert('PNG character card exported successfully!');
     } catch (error) {
-      console.error('Export failed:', error);
-      alert(`Export failed: ${error.message}`);
+      console.error('PNG export failed:', error);
+      alert(`PNG export failed: ${error.message}`);
     } finally {
       setIsExporting(false);
     }
-  }, [activeCharacter, character]);
-
-  // Handle PNG export instructions
- // Replace handleExportPNGInstructions with this:
-const handleExportPNG = useCallback(async () => {
-  const charToExport = activeCharacter || character;
-  if (!charToExport || !charToExport.name?.trim()) {
-    alert('Please select a character to export');
-    return;
-  }
-
-  setIsExporting(true);
-  try {
-    await CharacterCardIntegration.exportAsPNG(charToExport, PRIMARY_API_URL);
-    alert('PNG character card exported successfully!');
-  } catch (error) {
-    console.error('PNG export failed:', error);
-    alert(`PNG export failed: ${error.message}`);
-  } finally {
-    setIsExporting(false);
-  }
-}, [activeCharacter, character, PRIMARY_API_URL]);
+  }, [activeCharacter, character, PRIMARY_API_URL]);
 
   // Handle standard input/textarea changes
   const handleChange = (e) => {
@@ -180,16 +162,16 @@ const handleExportPNG = useCallback(async () => {
   // --- LORE MANAGEMENT ---
 
   // Add a new empty lore entry
-const addLoreEntry = () => {
-  setCharacter(prev => ({
-    ...prev,
-    loreEntries: [...ensureArray(prev.loreEntries), { 
-      content: '', 
-      keywords: [],
-      keywordsInput: '' // Initialize empty input
-    }]
-  }));
-};
+  const addLoreEntry = () => {
+    setCharacter(prev => ({
+      ...prev,
+      loreEntries: [...ensureArray(prev.loreEntries), {
+        content: '',
+        keywords: [],
+        keywordsInput: '' // Initialize empty input
+      }]
+    }));
+  };
 
   // Remove a lore entry by index
   const removeLoreEntry = (index) => {
@@ -209,127 +191,127 @@ const addLoreEntry = () => {
     }));
   };
 
-// STEP 1: Replace the keywords change handler with this:
-const handleLoreKeywordsChange = (index, value) => {
-  // Store the raw input without processing - let user type freely
-  setCharacter(prev => ({
-    ...prev,
-    loreEntries: ensureArray(prev.loreEntries).map((entry, i) =>
-      i === index ? { 
-        ...entry, 
-        keywordsInput: value // Store raw input for display
-      } : entry
-    )
-  }));
-};
+  // STEP 1: Replace the keywords change handler with this:
+  const handleLoreKeywordsChange = (index, value) => {
+    // Store the raw input without processing - let user type freely
+    setCharacter(prev => ({
+      ...prev,
+      loreEntries: ensureArray(prev.loreEntries).map((entry, i) =>
+        i === index ? {
+          ...entry,
+          keywordsInput: value // Store raw input for display
+        } : entry
+      )
+    }));
+  };
 
-// STEP 2: Add a new function to process keywords on blur/save:
-const processKeywords = (index, value) => {
-  const keywords = value ? value.split(',').map(k => k.trim()).filter(Boolean) : [];
-  setCharacter(prev => ({
-    ...prev,
-    loreEntries: ensureArray(prev.loreEntries).map((entry, i) =>
-      i === index ? { 
-        ...entry, 
-        keywords: keywords,
-        keywordsInput: keywords.join(', ') // Clean up the display
-      } : entry
-    )
-  }));
-};
+  // STEP 2: Add a new function to process keywords on blur/save:
+  const processKeywords = (index, value) => {
+    const keywords = value ? value.split(',').map(k => k.trim()).filter(Boolean) : [];
+    setCharacter(prev => ({
+      ...prev,
+      loreEntries: ensureArray(prev.loreEntries).map((entry, i) =>
+        i === index ? {
+          ...entry,
+          keywords: keywords,
+          keywordsInput: keywords.join(', ') // Clean up the display
+        } : entry
+      )
+    }));
+  };
 
 
   // --- EXAMPLE DIALOGUE MANAGEMENT --- (Basic for now)
 
   const handleDialogueChange = (index, field, value) => {
-      setCharacter(prev => ({
-          ...prev,
-          example_dialogue: ensureArray(prev.example_dialogue).map((entry, i) =>
-              i === index ? { ...entry, [field]: value } : entry
-          )
-      }));
+    setCharacter(prev => ({
+      ...prev,
+      example_dialogue: ensureArray(prev.example_dialogue).map((entry, i) =>
+        i === index ? { ...entry, [field]: value } : entry
+      )
+    }));
   };
 
   // --- AVATAR UPLOAD ---
   const handleAvatarUpload = useCallback(async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
+
     const allowedTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-    if (!allowedTypes.includes(file.type)) { 
-      alert(`Invalid file type. Please select: ${allowedTypes.join(', ')}`); 
-      return; 
+    if (!allowedTypes.includes(file.type)) {
+      alert(`Invalid file type. Please select: ${allowedTypes.join(', ')}`);
+      return;
     }
-    
+
     const maxSizeMB = 5;
-    if (file.size > maxSizeMB * 1024 * 1024) { 
-      alert(`File is too large. Maximum size is ${maxSizeMB}MB.`); 
-      return; 
+    if (file.size > maxSizeMB * 1024 * 1024) {
+      alert(`File is too large. Maximum size is ${maxSizeMB}MB.`);
+      return;
     }
-    
+
     const formData = new FormData();
     formData.append("file", file);
-    
+
     try {
       console.log("🧠 Uploading avatar to backend...");
       const uploadUrl = `${PRIMARY_API_URL || getBackendUrl()}/upload_avatar`;
       const response = await fetch(uploadUrl, { method: 'POST', body: formData });
-      
-      if (!response.ok) { 
-        const errorData = await response.json().catch(() => ({ detail: 'Unknown server error' })); 
-        throw new Error(`Avatar upload failed: ${response.status} - ${errorData.detail || response.statusText}`); 
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown server error' }));
+        throw new Error(`Avatar upload failed: ${response.status} - ${errorData.detail || response.statusText}`);
       }
-      
+
       const result = await response.json();
       if (result.status === 'success' && result.file_url) {
         console.log("🧠 Avatar uploaded successfully. URL:", result.file_url);
         setCharacter(prev => ({ ...prev, avatar: result.file_url }));
         alert("Avatar uploaded successfully!");
-      } else { 
-        throw new Error(result.detail || "Backend indicated upload failure."); 
+      } else {
+        throw new Error(result.detail || "Backend indicated upload failure.");
       }
-    } catch (error) { 
-      console.error("Error uploading avatar:", error); 
-      alert(`Avatar upload failed: ${error.message}`); 
-    } finally { 
-      e.target.value = null; 
+    } catch (error) {
+      console.error("Error uploading avatar:", error);
+      alert(`Avatar upload failed: ${error.message}`);
+    } finally {
+      e.target.value = null;
     }
   }, [setCharacter, PRIMARY_API_URL]);
 
- // Replace the handleSubmit function in CharacterEditor.jsx:
-const handleSubmit = () => {
-  if (!character.name.trim()) {
-    alert("Character name is required");
-    return;
-  }
-  
-  // Prepare the character data
-  const characterToSave = {
-    ...character,
-    loreEntries: ensureArray(character.loreEntries),
-    example_dialogue: ensureArray(character.example_dialogue).length > 0
-      ? ensureArray(character.example_dialogue)
-      : DEFAULT_CHARACTER.example_dialogue,
+  // Replace the handleSubmit function in CharacterEditor.jsx:
+  const handleSubmit = () => {
+    if (!character.name.trim()) {
+      alert("Character name is required");
+      return;
+    }
+
+    // Prepare the character data
+    const characterToSave = {
+      ...character,
+      loreEntries: ensureArray(character.loreEntries),
+      example_dialogue: ensureArray(character.example_dialogue).length > 0
+        ? ensureArray(character.example_dialogue)
+        : DEFAULT_CHARACTER.example_dialogue,
+    };
+
+    try {
+      // Save the character and get the saved character with its final ID
+      const savedCharacter = saveCharacter(characterToSave);
+
+      // Update our local state with the complete character data (including ID)
+      setCharacter(savedCharacter);
+
+      // Set as active character and switch to edit mode
+      setActiveCharacter(savedCharacter);
+      setIsCreatingNew(false);
+
+      console.log("Character saved via context:", savedCharacter.name, "with ID:", savedCharacter.id);
+      alert("Character saved successfully!");
+    } catch (error) {
+      console.error("Failed to save character via context:", error);
+      alert("Failed to save character.");
+    }
   };
-  
-  try {
-    // Save the character and get the saved character with its final ID
-    const savedCharacter = saveCharacter(characterToSave);
-    
-    // Update our local state with the complete character data (including ID)
-    setCharacter(savedCharacter);
-    
-    // Set as active character and switch to edit mode
-    setActiveCharacter(savedCharacter);
-    setIsCreatingNew(false);
-    
-    console.log("Character saved via context:", savedCharacter.name, "with ID:", savedCharacter.id);
-    alert("Character saved successfully!"); 
-  } catch (error) { 
-    console.error("Failed to save character via context:", error); 
-    alert("Failed to save character."); 
-  }
-};
   // Action to start creating a new character
   const handleCreateNew = () => {
     setActiveCharacter(null); // Clear active character in context, useEffect will reset form
@@ -337,26 +319,26 @@ const handleSubmit = () => {
 
   // Action to delete the currently edited character
   const handleDelete = () => {
-      if (character.id && window.confirm(`Are you sure you want to delete character: ${character.name}?`)) {
-          try { deleteCharacter(character.id); console.log("Character deleted:", character.name); }
-          catch (error) { console.error("Failed to delete character:", error); alert("Failed to delete character."); }
-      }
+    if (character.id && window.confirm(`Are you sure you want to delete character: ${character.name}?`)) {
+      try { deleteCharacter(character.id); console.log("Character deleted:", character.name); }
+      catch (error) { console.error("Failed to delete character:", error); alert("Failed to delete character."); }
+    }
   };
 
-    // Action to duplicate the currently edited character
-    const handleDuplicate = () => {
-        if (character.id) {
-            try { duplicateCharacter(character.id); console.log("Character duplicated:", character.name); alert(`${character.name} duplicated.`); }
-            catch (error) { console.error("Failed to duplicate character:", error); alert("Failed to duplicate character."); }
-        }
-    };
+  // Action to duplicate the currently edited character
+  const handleDuplicate = () => {
+    if (character.id) {
+      try { duplicateCharacter(character.id); console.log("Character duplicated:", character.name); alert(`${character.name} duplicated.`); }
+      catch (error) { console.error("Failed to duplicate character:", error); alert("Failed to duplicate character."); }
+    }
+  };
 
   return (
     <div className="w-full min-h-screen p-4 space-y-4">
       {/* Header with Import/Export - ALWAYS VISIBLE */}
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold">Character Management</h2>
-        
+
         {/* Import/Export Controls */}
         <div className="flex items-center gap-3">
           {/* Import Section */}
@@ -388,41 +370,31 @@ const handleSubmit = () => {
           </Button>
 
           {/* Export Buttons - Only show if there's an active character */}
-          
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleExportTavernJSON}
-                disabled={isExporting}
-                className="flex items-center gap-2"
-              >
-                <FileJson className="w-4 h-4" />
-                Export TavernAI
-              </Button>
-              
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleExportGingerJSON}
-                disabled={isExporting}
-                className="flex items-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                Export GingerGUI
-              </Button>
 
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleExportPNG}
-                disabled={isExporting}
-                className="flex items-center gap-2"
-              >
-                <Image className="w-4 h-4" />
-                PNG Card
-              </Button>
-            </>
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportTavernJSON}
+              disabled={isExporting}
+              className="flex items-center gap-2"
+            >
+              <FileJson className="w-4 h-4" />
+              Export TavernAI
+            </Button>
+
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportPNG}
+              disabled={isExporting}
+              className="flex items-center gap-2"
+            >
+              <Image className="w-4 h-4" />
+              PNG Card
+            </Button>
+          </>
 
           <Button onClick={handleCreateNew} variant="default">
             + New Character
@@ -473,56 +445,56 @@ const handleSubmit = () => {
                   placeholder="Base instructions for the LLM's behavior. E.g., 'Respond in character as [Name]. Use markdown for non-verbal actions like *smiles*. Avoid discussing forbidden topics. Keep responses under 150 words.'"
                   className="h-32" // Make text area larger
                 />
-                 <p className="text-xs text-muted-foreground mt-1">Tell the AI *how* to act (style, format, constraints).</p>
-             </div>
+                <p className="text-xs text-muted-foreground mt-1">Tell the AI *how* to act (style, format, constraints).</p>
+              </div>
 
               {/* Scenario - Large Textarea */}
               <div>
                 <Label htmlFor="scenario" className="block text-sm font-medium mb-1">Scenario / Setting</Label>
                 <Textarea
-                   id="scenario"
-                   name="scenario"
-                   value={character.scenario || ''}
-                   onChange={handleChange}
-                   placeholder="Describe the context or situation for the interaction. E.g., 'The scene is a dusty, ancient library. The user is seeking a lost artifact.'"
-                   className="h-24" // Make text area larger
+                  id="scenario"
+                  name="scenario"
+                  value={character.scenario || ''}
+                  onChange={handleChange}
+                  placeholder="Describe the context or situation for the interaction. E.g., 'The scene is a dusty, ancient library. The user is seeking a lost artifact.'"
+                  className="h-24" // Make text area larger
                 />
                 <p className="text-xs text-muted-foreground mt-1">Where and when is this interaction taking place?</p>
               </div>
 
-               {/* First Message (Greeting) - Textarea */}
-               <div>
-                  <Label htmlFor="first_message" className="block text-sm font-medium mb-1">Greeting Message</Label>
-                  <Textarea
-                      id="first_message"
-                      name="first_message"
-                      value={character.first_message || ''}
-                      onChange={handleChange}
-                      className="h-20"
-                      placeholder="The first message the character says when a chat starts. E.g., *You enter the dimly lit library. Professor Eldrin looks up from a large tome.* 'Ah, welcome seeker. What knowledge do you pursue today?'"
-                  />
-               </div>
+              {/* First Message (Greeting) - Textarea */}
+              <div>
+                <Label htmlFor="first_message" className="block text-sm font-medium mb-1">Greeting Message</Label>
+                <Textarea
+                  id="first_message"
+                  name="first_message"
+                  value={character.first_message || ''}
+                  onChange={handleChange}
+                  className="h-20"
+                  placeholder="The first message the character says when a chat starts. E.g., *You enter the dimly lit library. Professor Eldrin looks up from a large tome.* 'Ah, welcome seeker. What knowledge do you pursue today?'"
+                />
+              </div>
 
               {/* Example Dialogue Section */}
               <div>
-                  <Label className="block text-sm font-medium mb-1">Example Dialogue</Label>
-                  <Card className="p-4 bg-muted/30">
-                       <div className="space-y-3">
-                           {ensureArray(character.example_dialogue).map((turn, index) => (
-                               <div key={index} className="space-y-1">
-                                   <Label htmlFor={`dialogue-${index}-role`} className="text-xs font-semibold">{turn.role === 'user' ? 'User says:' : 'Character says:'}</Label>
-                                   <Textarea
-                                       id={`dialogue-${index}-content`}
-                                       value={turn.content || ''}
-                                       onChange={(e) => handleDialogueChange(index, 'content', e.target.value)}
-                                       placeholder={turn.role === 'user' ? 'Example user input...' : 'Example character response...'}
-                                       className="h-16 text-sm" // Smaller text area for examples
-                                   />
-                               </div>
-                           ))}
-                       </div>
-                  </Card>
-                   <p className="text-xs text-muted-foreground mt-1">Provide a short snippet to demonstrate the character's voice and interaction style.</p>
+                <Label className="block text-sm font-medium mb-1">Example Dialogue</Label>
+                <Card className="p-4 bg-muted/30">
+                  <div className="space-y-3">
+                    {ensureArray(character.example_dialogue).map((turn, index) => (
+                      <div key={index} className="space-y-1">
+                        <Label htmlFor={`dialogue-${index}-role`} className="text-xs font-semibold">{turn.role === 'user' ? 'User says:' : 'Character says:'}</Label>
+                        <Textarea
+                          id={`dialogue-${index}-content`}
+                          value={turn.content || ''}
+                          onChange={(e) => handleDialogueChange(index, 'content', e.target.value)}
+                          placeholder={turn.role === 'user' ? 'Example user input...' : 'Example character response...'}
+                          className="h-16 text-sm" // Smaller text area for examples
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+                <p className="text-xs text-muted-foreground mt-1">Provide a short snippet to demonstrate the character's voice and interaction style.</p>
               </div>
 
               {/* Avatar Upload */}
@@ -533,7 +505,7 @@ const handleSubmit = () => {
                   {character.avatar && (
                     <div className="mt-2 flex-shrink-0">
                       <img
-                        src={character.avatar} 
+                        src={character.avatar}
                         alt="Avatar Preview"
                         className="w-16 h-16 rounded-full object-cover border border-border"
                         onError={(e) => {
@@ -551,74 +523,74 @@ const handleSubmit = () => {
         </Card>
       )}
 
-       {/* World Lore / Context Section */}
-       {(activeCharacter || isCreatingNew) && (
-         <Card className="mb-8 w-full">
-           <CardHeader>
-               <CardTitle>World Lore / Context Entries</CardTitle>
-               <CardDescription>Define specific facts or rules triggered by keywords during chat.</CardDescription>
-           </CardHeader>
-           <CardContent className="space-y-4">
-               {ensureArray(character.loreEntries).map((entry, index) => (
-                   <Card key={index} className="p-4 relative bg-muted/50">
-                       <Button
-                           variant="ghost"
-                           size="icon"
-                           onClick={() => removeLoreEntry(index)}
-                           className="absolute top-2 right-2 h-6 w-6 text-muted-foreground hover:text-destructive"
-                           aria-label="Remove Lore Entry"
-                       >
-                           <Trash2 className="h-4 w-4" />
-                       </Button>
-                       <div className="space-y-2">
-                           <div>
-                               <Label htmlFor={`lore-content-${index}`} className="text-xs font-semibold">Lore Content:</Label>
-                               <Textarea
-                                   id={`lore-content-${index}`}
-                                   value={entry.content || ''}
-                                   onChange={(e) => handleLoreContentChange(index, e.target.value)}
-                                   placeholder="Enter the fact, rule, or piece of lore..."
-                                   className="h-20" // Adjust height as needed
-                               />
-                           </div>
-                           <div>
-                               <Label htmlFor={`lore-keywords-${index}`} className="text-xs font-semibold">Trigger Keywords (comma-separated):</Label>
-                               <Input
-  id={`lore-keywords-${index}`}
-  value={entry.keywordsInput !== undefined ? entry.keywordsInput : ensureArray(entry.keywords).join(', ')}
-  onChange={(e) => handleLoreKeywordsChange(index, e.target.value)}
-  onBlur={(e) => processKeywords(index, e.target.value)}
-  placeholder="e.g., castle, king, prophecy"
-/>
-                           </div>
-                       </div>
-                   </Card>
-               ))}
-               <Button onClick={addLoreEntry} variant="outline" size="sm">
-                   <PlusCircle className="mr-2 h-4 w-4" /> Add Lore Entry
-               </Button>
-           </CardContent>
-         </Card>
-       )}
-
-       {/* Action Buttons */}
-       {(activeCharacter || isCreatingNew) && (
-         <div className="flex flex-wrap gap-2 pt-4 justify-center">
-            <Button onClick={handleSubmit} className="bg-green-600 hover:bg-green-700 min-w-[150px]">
-              {isCreatingNew ? 'Create Character' : 'Update Character'}
+      {/* World Lore / Context Section */}
+      {(activeCharacter || isCreatingNew) && (
+        <Card className="mb-8 w-full">
+          <CardHeader>
+            <CardTitle>World Lore / Context Entries</CardTitle>
+            <CardDescription>Define specific facts or rules triggered by keywords during chat.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {ensureArray(character.loreEntries).map((entry, index) => (
+              <Card key={index} className="p-4 relative bg-muted/50">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => removeLoreEntry(index)}
+                  className="absolute top-2 right-2 h-6 w-6 text-muted-foreground hover:text-destructive"
+                  aria-label="Remove Lore Entry"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+                <div className="space-y-2">
+                  <div>
+                    <Label htmlFor={`lore-content-${index}`} className="text-xs font-semibold">Lore Content:</Label>
+                    <Textarea
+                      id={`lore-content-${index}`}
+                      value={entry.content || ''}
+                      onChange={(e) => handleLoreContentChange(index, e.target.value)}
+                      placeholder="Enter the fact, rule, or piece of lore..."
+                      className="h-20" // Adjust height as needed
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor={`lore-keywords-${index}`} className="text-xs font-semibold">Trigger Keywords (comma-separated):</Label>
+                    <Input
+                      id={`lore-keywords-${index}`}
+                      value={entry.keywordsInput !== undefined ? entry.keywordsInput : ensureArray(entry.keywords).join(', ')}
+                      onChange={(e) => handleLoreKeywordsChange(index, e.target.value)}
+                      onBlur={(e) => processKeywords(index, e.target.value)}
+                      placeholder="e.g., castle, king, prophecy"
+                    />
+                  </div>
+                </div>
+              </Card>
+            ))}
+            <Button onClick={addLoreEntry} variant="outline" size="sm">
+              <PlusCircle className="mr-2 h-4 w-4" /> Add Lore Entry
             </Button>
-            {!isCreatingNew && character.id && (
-              <>
-                <Button onClick={handleDelete} variant="destructive" size="sm" className="min-w-[150px]">
-                  Delete Character
-                </Button>
-                <Button onClick={handleDuplicate} variant="secondary" size="sm" className="min-w-[150px]">
-                  Duplicate Character
-                </Button>
-              </>
-            )}
-         </div>
-       )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Action Buttons */}
+      {(activeCharacter || isCreatingNew) && (
+        <div className="flex flex-wrap gap-2 pt-4 justify-center">
+          <Button onClick={handleSubmit} className="bg-green-600 hover:bg-green-700 min-w-[150px]">
+            {isCreatingNew ? 'Create Character' : 'Update Character'}
+          </Button>
+          {!isCreatingNew && character.id && (
+            <>
+              <Button onClick={handleDelete} variant="destructive" size="sm" className="min-w-[150px]">
+                Delete Character
+              </Button>
+              <Button onClick={handleDuplicate} variant="secondary" size="sm" className="min-w-[150px]">
+                Duplicate Character
+              </Button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Character List - ALWAYS VISIBLE */}
       <div className="mt-12">
@@ -652,14 +624,14 @@ const handleSubmit = () => {
                 </CardHeader>
                 <CardContent className="flex-grow flex flex-col justify-end">
                   <div className="flex space-x-2 mt-4">
-                    <Button 
-                      size="sm" 
-                      onClick={() => setActiveCharacter(char)} 
+                    <Button
+                      size="sm"
+                      onClick={() => setActiveCharacter(char)}
                       variant="outline"
                     >
                       Edit
                     </Button>
-                    
+
                     {/* Individual Export Button */}
                     <Button
                       size="sm"
