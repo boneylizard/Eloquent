@@ -3,11 +3,15 @@
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 import torch
 import librosa
+import soundfile as sf
+import tempfile
+import contextlib
 import logging
 import os
 import sys
 import importlib
 import asyncio
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -66,34 +70,57 @@ def load_parakeet_model():
     """Loads the NVIDIA Parakeet model using NeMo."""
     global parakeet_model
     if parakeet_model is None:
+        # Crucial: Disable NeMo's buggy OneLogger telemetry integration
+        # This prevents the TypeError: `OneLoggerPTLTrainer.save_checkpoint: weights_only must be a supertype...`
+        os.environ["NEMO_DISABLE_ONELOGGER"] = "True"
+        # Silence NeMo's internal logging level via environment variable
+        os.environ["NEMO_LOGGING_LEVEL"] = "ERROR"
+        
+        # Aggressively suppress noisy/verbose logs from NeMo and its internal dependencies
+        # We target specific sub-modules that are known to be chatty during setup/inference
+        for noisy_logger in [
+            'nemo', 'nemo_logging', 'torch.distributed', 'lhotse', 'torio', 
+            'pytorch_lightning', 'nv_one_logger', 'nemo.utils.import_utils'
+        ]:
+            logging.getLogger(noisy_logger).setLevel(logging.ERROR)
+            logging.getLogger(noisy_logger).propagate = False
+        
         try:
             # Try to import nemo
             try:
                 import nemo.collections.asr as nemo_asr
-            except ImportError:
-                logger.info("NeMo toolkit not found. Attempting to install automatically...")
+            except (ImportError, TypeError) as e:
+                logger.info(f"NeMo toolkit not found or failed to load ({e}). Attempting to install/fix automatically...")
                 try:
                     import subprocess
                     import sys
                     
-                    # First downgrade NumPy to a compatible version
-                    logger.info("Downgrading NumPy to a compatible version...")
+                    # Ensure pip is up to date
+                    logger.info("Ensuring pip is up to date...")
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+
+                    # Then install NeMo toolkit with ASR support
+                    logger.info("Installing NeMo toolkit with ASR support...")
                     subprocess.check_call([
-                        sys.executable, "-m", "pip", "install", "numpy==2.1.0", "--force-reinstall"
+                        sys.executable, "-m", "pip", "install", "nemo_toolkit[asr]"
                     ])
                     
-                    # Then install NeMo toolkit with ASR support
-                    subprocess.check_call([
-                        sys.executable, "-m", "pip", "install", "-U", "nemo_toolkit[asr]"
-                    ])
                     logger.info("NeMo toolkit installed successfully!")
                     
                     # Now import nemo after installation
+                    importlib.invalidate_caches()
                     import nemo.collections.asr as nemo_asr
                 except Exception as install_err:
                     logger.error(f"Failed to automatically install NeMo: {install_err}")
                     return None
-                
+            
+            # Additional silence for NeMo's custom logging system if it exists
+            try:
+                from nemo.utils import logging as nemo_logging
+                nemo_logging.set_verbosity(nemo_logging.ERROR)
+            except:
+                pass
+
             logger.info(f"Loading NVIDIA Parakeet model '{PARAKEET_MODEL_ID}' onto device {DEVICE}...")
             # Load pre-trained model (this will download the model if not present)
             asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=PARAKEET_MODEL_ID)
@@ -216,7 +243,29 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
     if not parakeet_model:
         raise RuntimeError("Parakeet model is not loaded.")
 
+    temp_wav_path = None
     try:
+        # Workaround for FFmpeg/lhotse initialization errors on Windows
+        # If the file is not a WAV, we convert it to a temporary WAV using librosa
+        # which we know is working reliably for Whisper.
+        if not audio_file_path.lower().endswith(('.wav', '.flac')):
+            logger.info(f"🔄 Converting {audio_file_path} to temporary WAV for Parakeet...")
+            try:
+                # Load using librosa (handles .webm, etc. reliably via soundfile/audioread)
+                audio, sr = librosa.load(audio_file_path, sr=16000)
+                
+                # Create a temporary WAV file
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                    temp_wav_path = tmp.name
+                
+                # Save as WAV
+                sf.write(temp_wav_path, audio, sr)
+                audio_file_path = temp_wav_path
+                logger.info(f"✅ Conversion successful: {temp_wav_path}")
+            except Exception as conv_err:
+                logger.error(f"❌ Failed to convert audio: {conv_err}")
+                # Fallback to trying original path, but it will likely fail with the FFmpeg error
+
         logger.info(f"Transcribing with Parakeet: {audio_file_path}")
         
         # Parakeet uses a different API than Whisper
@@ -236,6 +285,14 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
     except Exception as e:
         logger.error(f"Error during Parakeet transcription: {e}", exc_info=True)
         raise RuntimeError(f"Parakeet transcription failed: {str(e)}")
+    finally:
+        # Clean up temporary WAV file if it was created
+        if temp_wav_path and os.path.exists(temp_wav_path):
+            try:
+                os.remove(temp_wav_path)
+                logger.info(f"🧹 Cleaned up temporary file: {temp_wav_path}")
+            except Exception as cleanup_err:
+                logger.warning(f"Could not delete temp file {temp_wav_path}: {cleanup_err}")
 
 def is_engine_available(engine: str) -> bool:
     """Check if the specified STT engine is available."""
