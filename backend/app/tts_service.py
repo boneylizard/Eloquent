@@ -80,6 +80,17 @@ tts_pipeline = None
 chatterbox_model = None
 speaker_embeddings = None
 CHATTERBOX_VOICE_WARMED_UP = False
+CHATTERBOX_EXECUTOR = None # Global executor to keep synthesis on one persistent thread
+
+def get_chatterbox_executor():
+    """Returns a persistent ThreadPoolExecutor with 1 worker to ensure CUDA thread consistency."""
+    global CHATTERBOX_EXECUTOR
+    if CHATTERBOX_EXECUTOR is None:
+        from concurrent.futures import ThreadPoolExecutor
+        CHATTERBOX_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+        logger.info("🧵 [Chatterbox] Persistent thread executor initialized")
+    return CHATTERBOX_EXECUTOR
+
 def get_device(preferred_gpu_id: int = 0):
     """Determines the correct Torch device for the current process.
     
@@ -416,7 +427,8 @@ async def _synthesize_with_chatterbox(
     import asyncio
     import torch
     from concurrent.futures import ThreadPoolExecutor
-
+    
+    loop = asyncio.get_event_loop()
     total_start_time = time.perf_counter()
 
     if audio_prompt_path and not os.path.isabs(audio_prompt_path):
@@ -432,10 +444,14 @@ async def _synthesize_with_chatterbox(
         if not model:
             raise RuntimeError("Failed to load Chatterbox model")
 
-        # One-time voice warmup
+        # One-time voice warmup - MUST BE IN EXECUTOR
         if audio_prompt_path and not CHATTERBOX_VOICE_WARMED_UP:
-            with torch.inference_mode():
-                model.generate("warm up", language_id="en", audio_prompt_path=audio_prompt_path)
+            def _warmup():
+                with torch.inference_mode():
+                    model.generate("warm up", language_id="en", audio_prompt_path=audio_prompt_path)
+            
+            logger.info("🔥 [Chatterbox] Warming up voice reference on persistent thread...")
+            await loop.run_in_executor(get_chatterbox_executor(), _warmup)
             CHATTERBOX_VOICE_WARMED_UP = True
         
         generation_kwargs = {
@@ -463,21 +479,21 @@ async def _synthesize_with_chatterbox(
             
             # Generate all chunks and concatenate audio
             all_audio_chunks = []
-            loop = asyncio.get_event_loop()
             
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                for i, chunk in enumerate(text_chunks):
-                    logger.info(f"🔀 Generating chunk {i+1}/{len(text_chunks)} ({len(chunk)} chars)")
-                    
-                    def _generate_chunk():
-                        with torch.inference_mode():
-                            return model.generate(chunk, **generation_kwargs)
-                    
-                    # Generate this chunk
-                    chunk_audio = await loop.run_in_executor(executor, _generate_chunk)
-                    all_audio_chunks.append(chunk_audio)
-                    
-                    logger.info(f"✅ Chunk {i+1}/{len(text_chunks)} complete")
+            # Use persistent executor
+            executor = get_chatterbox_executor()
+            for i, chunk in enumerate(text_chunks):
+                logger.info(f"🔀 Generating chunk {i+1}/{len(text_chunks)} ({len(chunk)} chars)")
+                
+                def _generate_chunk(c=chunk): # Bind chunk locally
+                    with torch.inference_mode():
+                        return model.generate(c, **generation_kwargs)
+                
+                # Generate this chunk
+                chunk_audio = await loop.run_in_executor(executor, _generate_chunk)
+                all_audio_chunks.append(chunk_audio)
+                
+                logger.info(f"✅ Chunk {i+1}/{len(text_chunks)} complete")
             
             # Concatenate all audio chunks
             audio_tensor = torch.cat(all_audio_chunks, dim=-1)
@@ -485,14 +501,12 @@ async def _synthesize_with_chatterbox(
             
         else:
             # STANDARD SINGLE GENERATION for short texts
-            loop = asyncio.get_event_loop()
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                def _generate():
-                    with torch.inference_mode():
-                        return model.generate(text, **generation_kwargs)
-                
-                # Run the blocking operation in a thread
-                audio_tensor = await loop.run_in_executor(executor, _generate)
+            def _generate():
+                with torch.inference_mode():
+                    return model.generate(text, **generation_kwargs)
+            
+            # Run the blocking operation in the persistent thread
+            audio_tensor = await loop.run_in_executor(get_chatterbox_executor(), _generate)
         
         # Calculate and log RTF
         synthesis_time = time.perf_counter() - synthesis_start
@@ -639,6 +653,20 @@ class TTSStreamer:
         except Exception as e:
             logger.error(f"❌ [Streamer] Error processing text: {e}")
 
+    def _clear_synthesis_queue(self):
+        """Helper method to clear all items from the synthesis queue"""
+        cleared_count = 0
+        while not self._synthesis_queue.empty():
+            try:
+                item = self._synthesis_queue.get_nowait()
+                if item is not None:  # Don't count sentinel values
+                    cleared_count += 1
+                self._synthesis_queue.task_done()
+            except:
+                break
+        if cleared_count > 0:
+            logger.info(f"🧹 [Streamer] Cleared {cleared_count} items from synthesis queue")
+
     def _find_and_queue_chunks(self):
         """
         Fast chunking for all chunks: minimum 8 words, then break at next punctuation.
@@ -690,14 +718,10 @@ class TTSStreamer:
         """The 'consumer' loop that synthesizes sentences from the queue."""
         import time
 
-        # This loop now runs until it explicitly receives the 'None' sentinel.
-        # This prevents it from exiting prematurely if the '_is_active' flag is set false too early.
         while True:
             try:
-                # Wait for the next item from the queue.
                 sentence = await self._synthesis_queue.get()
 
-                # If the item is the 'None' sentinel, the stream is finished. Break the loop.
                 if sentence is None:
                     logger.info("🛑 [Streamer] Sentinel received. Synthesis loop is shutting down.")
                     break
@@ -706,7 +730,6 @@ class TTSStreamer:
                 
                 start_time = time.perf_counter()
 
-                # Synthesize the speech using the settings stored for this streamer instance.
                 audio_bytes = await synthesize_speech(
                     text=sentence, 
                     voice=self._tts_settings['voice'],
@@ -721,17 +744,30 @@ class TTSStreamer:
                 logger.info(f"⏱️ [Streamer] Synthesis task took {duration_ms:.2f}ms")
 
                 if audio_bytes:
-                    await self._websocket.send_bytes(audio_bytes)
-                    logger.info(f"✅ [Streamer] Sent audio chunk of {len(audio_bytes)} bytes.")
+                    # Check if WebSocket is still connected before sending
+                    if self._websocket.client_state.value == 1:  # CONNECTED state
+                        await self._websocket.send_bytes(audio_bytes)
+                        logger.info(f"✅ [Streamer] Sent audio chunk of {len(audio_bytes)} bytes.")
+                    else:
+                        logger.warning(f"⚠️ [Streamer] WebSocket in state {self._websocket.client_state.value}, clearing synthesis queue")
+                        self._clear_synthesis_queue()
+                        break  # Exit synthesis loop since client disconnected
                 
-                # Signal that the queue item is processed.
                 self._synthesis_queue.task_done()
 
             except asyncio.CancelledError:
                 logger.info("🛑 [Streamer] Synthesis task was cancelled.")
-                break # Also exit the loop if cancelled.
+                self._clear_synthesis_queue()
+                break
             except Exception as e:
-                logger.error(f"❌ [Streamer] Error in synthesis loop: {e}", exc_info=True)
+                error_msg = str(e)
+                if "Cannot call" in error_msg and "close" in error_msg:
+                    logger.warning("⚠️ [Streamer] WebSocket closed during send, clearing synthesis queue")
+                    self._clear_synthesis_queue()
+                    break
+                else:
+                    logger.error(f"❌ [Streamer] Error in synthesis loop: {e}", exc_info=True)
+
     def _extract_word_chunk(self, text: str) -> dict:
         """
         Extract a chunk based on word count: minimum 10 words, 
@@ -876,13 +912,13 @@ class TTSStreamer:
     
     async def cancel(self):
         self._is_active = False
+        self._clear_synthesis_queue()  # Clear queue before cancelling task
         self._synthesis_task.cancel()
         try:
             await self._synthesis_task
         except asyncio.CancelledError:
             logger.info("🛑 [Streamer] Synthesis task cancelled successfully.")
 
-    
 @router.websocket("/tts-stream")
 async def tts_stream_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -1050,61 +1086,60 @@ async def reload_chatterbox():
 
 
 def comprehensive_model_warmup():
-    """Warm up all models and compilation paths on startup"""
+    """Warm up all models and compilation paths on startup using the persistent executor"""
     import time
     global chatterbox_model, CHATTERBOX_VOICE_WARMED_UP
     
-    try:
-        model = load_chatterbox_model()
-        if not model:
-            return
-        
-        # 2. Basic model warm-up (default voice)
-        with torch.inference_mode():
-            model.generate("Warming up the model for optimal performance.", language_id="en")
-        
-        # 3. Additional synthesis warm-up
-        with torch.inference_mode():
-            model.generate("Testing additional synthesis for compilation.", language_id="en")
-        
-        # 4. Voice cloning warm-up (if default voice file exists)
-        voices_dir = Path(__file__).parent / "static" / "voice_references"
-        default_voice_files = ["default.wav", "narrator.wav", "sample.wav"]  # Adjust as needed
-        
-        for voice_file in default_voice_files:
-            voice_path = voices_dir / voice_file
-            if voice_path.exists():
-                try:
-                    with torch.inference_mode():
-                        # This will cache the voice and warm up cloning pipeline
-                        clone_wav = model.generate(
-                            "Voice cloning warm up test.",
-                            language_id="en",
-                            audio_prompt_path=str(voice_path)
-                        )
-                    
-                    CHATTERBOX_VOICE_WARMED_UP = True
-                    break  # Only need to warm up once
-                
-                except Exception as e:
-                    logger.warning(f"⚠️ Voice cloning warm-up failed for {voice_file}: {e}")
-        
-        # 5. Clear any warm-up artifacts from memory
-        if 'dummy_wav' in locals():
-            del dummy_wav
-        if 'additional_wav' in locals():
-            del additional_wav
-        if 'clone_wav' in locals():
-            del clone_wav
-        
-        # Force garbage collection
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-    except Exception as e:
-        logger.error(f"Model warm-up failed: {e}")
+    executor = get_chatterbox_executor()
+
+    def _warmup_logic():
+        try:
+            model = load_chatterbox_model()
+            if not model:
+                return
+            
+            # 2. Basic model warm-up (default voice)
+            with torch.inference_mode():
+                model.generate("Warming up the model for optimal performance.", language_id="en")
+            
+            # 3. Additional synthesis warm-up
+            with torch.inference_mode():
+                model.generate("Testing additional synthesis for compilation.", language_id="en")
+            
+            # 4. Voice cloning warm-up (if default voice file exists)
+            voices_dir = Path(__file__).parent / "static" / "voice_references"
+            default_voice_files = ["default.wav", "narrator.wav", "sample.wav"]
+            
+            for voice_file in default_voice_files:
+                voice_path = voices_dir / voice_file
+                if voice_path.exists():
+                    try:
+                        with torch.inference_mode():
+                            model.generate(
+                                "Voice cloning warm up test.",
+                                language_id="en",
+                                audio_prompt_path=str(voice_path)
+                            )
+                        global CHATTERBOX_VOICE_WARMED_UP
+                        CHATTERBOX_VOICE_WARMED_UP = True
+                        break 
+                    except Exception as e:
+                        logger.warning(f"⚠️ Voice cloning warm-up failed for {voice_file}: {e}")
+            
+            # 5. Clear artifacts
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+        except Exception as e:
+            logger.error(f"Model warm-up logic failed: {e}")
+
+    # Submit to persistent thread and WAIT for it to complete
+    logger.info("🔥 [Chatterbox] Submitting comprehensive warmup to persistent thread...")
+    future = executor.submit(_warmup_logic)
+    future.result() # Synchronous wait
+    logger.info("✅ [Chatterbox] Comprehensive warmup complete")
 
 def load_chatterbox_model():
     """Enhanced model loading with comprehensive warm-up"""

@@ -136,8 +136,11 @@ def _prepare_endpoint_request(model_name: str, request_data: dict):
             # Use a generic default that most OpenAI-compatible APIs accept
             request_data['model'] = 'gpt-3.5-turbo'
     
+    # Log payload size for debugging context issues
+    msg_count = len(request_data.get('messages', []))
+    char_count = sum(len(m.get('content', '')) for m in request_data.get('messages', []))
+    logger.info(f"[OpenAI Compat] Outgoing API Payload: {msg_count} messages, ~{char_count} chars")
     logger.info(f"[OpenAI Compat] Forwarding {model_name} to {endpoint_config['name']} at {url}")
-    logger.info(f"[OpenAI Compat] Request data: {request_data}")
     
     return endpoint_config, url, request_data
 
@@ -190,8 +193,27 @@ async def forward_to_configured_endpoint_streaming(endpoint_config: dict, url: s
                     yield "data: [DONE]\n\n"
                     return
                 
+                chunk_count = 0
                 async for chunk in response.aiter_raw():
+                    chunk_count += 1
+                    if chunk_count % 50 == 0:
+                        logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
+                    
+                    # Log the actual data for debugging (at debug level)
+                    try:
+                        chunk_str = chunk.decode('utf-8')
+                        if chunk_count == 1:
+                            logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
+                        
+                        # Check for error data even in 200 OK responses
+                        if "error" in chunk_str.lower() and '"message":' in chunk_str:
+                            logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
+                    except:
+                        pass
+                        
                     yield chunk
+                
+                logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
                     
     except httpx.RequestError as e:
         logger.error(f"[OpenAI Compat] Connection error to {url}: {type(e).__name__}: {e}", exc_info=True)
@@ -239,6 +261,11 @@ async def forward_to_configured_endpoint_non_streaming(endpoint_config: dict, ur
     base_url = endpoint_config['url']
     
     logger.info(f"[OpenAI Compat] Making non-streaming request to {url}")
+    
+    # Log payload size
+    msg_count = len(request_data.get('messages', []))
+    char_count = sum(len(m.get('content', '')) for m in request_data.get('messages', []))
+    logger.info(f"[OpenAI Compat] Outgoing API Payload: {msg_count} messages, ~{char_count} chars")
     
     try:
         async with httpx.AsyncClient(timeout=150.0, follow_redirects=True) as client:
