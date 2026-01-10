@@ -6,11 +6,23 @@ import sys
 import uvicorn
 from pathlib import Path
 
+# Disable problematic Torch optimizations for Python 3.12+ (MUST BE AT TOP)
+os.environ["TORCH_DYNAMO_DISABLE"] = "1"
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+
+# MONKEYPATCH: Disable torch.compile to avoid Dynamo error on Python 3.12+
+try:
+    import torch
+    if not hasattr(torch, '_original_compile'):
+        torch._original_compile = torch.compile
+        def dummy_compile(f, *args, **kwargs): return f
+        torch.compile = dummy_compile
+        print("🔧 [Monkeypatch] torch.compile disabled to bypass Dynamo 3.12+ error")
+except Exception:
+    pass
+
 def main():
     """Launch the TTS service"""
-    # Disable problematic Torch optimizations for Python 3.12+
-    os.environ["TORCH_DYNAMO_DISABLE"] = "1"
-    os.environ["TORCH_COMPILE_DISABLE"] = "1"
     
     # Add the backend directory to the path
     backend_dir = Path(__file__).parent / "backend" / "app"
@@ -47,6 +59,8 @@ def main():
     except KeyboardInterrupt:
         print("\n🛑 TTS Service stopped by user")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"❌ Failed to start TTS service: {e}")
         sys.exit(1)
 

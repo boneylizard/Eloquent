@@ -1,5 +1,18 @@
-# --- Imports ---
 import os
+# Disable problematic Torch optimizations for Python 3.12+ (MUST BE AT TOP)
+os.environ["TORCH_DYNAMO_DISABLE"] = "1"
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+
+# MONKEYPATCH: Disable torch.compile to avoid Dynamo error on Python 3.12+
+try:
+    import torch
+    if not hasattr(torch, '_original_compile'):
+        torch._original_compile = torch.compile
+        def dummy_compile(f, *args, **kwargs): return f
+        torch.compile = dummy_compile
+except Exception:
+    pass
+
 os.environ["CUDA_MODULE_LOADING"] = "EAGER" # Ensure CUDA modules load eagerly
 # REMOVED: CUDA_LAUNCH_BLOCKING="1" - This can hurt GPU performance!
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
