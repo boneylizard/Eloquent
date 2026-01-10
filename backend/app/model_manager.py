@@ -1,6 +1,16 @@
 # --- START: FORCE LLAMA_CPP IMPORT FIRST ---
 # This MUST be the absolute first import to ensure llama.cpp claims the CUDA context
 # before any other library (like nemo or torch) can.
+import os
+import sys
+
+if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+    import site
+    for site_pkg in site.getsitepackages():
+        lib_path = os.path.join(site_pkg, "llama_cpp", "lib")
+        if os.path.exists(lib_path):
+            os.add_dll_directory(lib_path)
+
 try:
     from llama_cpp import Llama
     from llama_cpp.llama_chat_format import Llava15ChatHandler

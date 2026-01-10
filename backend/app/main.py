@@ -4012,32 +4012,50 @@ Vary your sentence structure and word choices naturally."""
                     if is_api:
                         logger.info(f"[generate] Detected API endpoint: {body.model_name}. Routing to OpenAI-compatible endpoint.")
                         
-                        # Convert prompt to OpenAI messages format
-                        # Split the prompt into system and user messages
+                        # Improved prompt parsing to extract multiple conversation turns
                         messages = []
-                        if "Character Persona:" in prompt_text_for_llm:
-                            parts = prompt_text_for_llm.split("Character Persona:", 1)
-                            if parts[0].strip():
-                                messages.append({"role": "system", "content": parts[0].strip()})
-                            if len(parts) > 1:
-                                persona_and_user = parts[1]
-                                if "User Query:" in persona_and_user:
-                                    persona, user_query = persona_and_user.split("User Query:", 1)
-                                    if persona.strip():
-                                        messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
-                                    messages.append({"role": "user", "content": user_query.strip()})
-                                else:
-                                    # No user query marker, treat everything as user message
-                                    messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
-                        elif "User Query:" in prompt_text_for_llm:
-                            parts = prompt_text_for_llm.split("User Query:", 1)
-                            if parts[0].strip():
-                                messages.append({"role": "system", "content": parts[0].strip()})
-                            messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
+                        
+                        # Use regex to find all segments like <start_of_turn>user\n...\n<end_of_turn>
+                        # This works for Gemma and similar formats
+                        segments = re.findall(r'<start_of_turn>(user|model)\n(.*?)(?:<end_of_turn>|$)', prompt_text_for_llm, re.DOTALL)
+                        
+                        if segments:
+                            logger.info(f"[generate] Parsed {len(segments)} segments from prompt using Gemma format logic.")
+                            for role, content in segments:
+                                messages.append({
+                                    "role": "assistant" if role == "model" else "user",
+                                    "content": content.strip()
+                                })
+                            
+                            # If there's a system part before the first turn, add it as system message
+                            system_part = prompt_text_for_llm.split("<start_of_turn>")[0].strip()
+                            if system_part:
+                                messages.insert(0, {"role": "system", "content": system_part})
                         else:
-                            # Simple prompt - treat as user message
-                            clean_prompt = prompt_text_for_llm.replace("Assistant:", "").strip()
-                            messages.append({"role": "user", "content": clean_prompt})
+                            # Fallback to simple split logic for other formats or if regex fails
+                            logger.info("[generate] Falling back to manual splitting for prompt parsing.")
+                            if "Character Persona:" in prompt_text_for_llm:
+                                parts = prompt_text_for_llm.split("Character Persona:", 1)
+                                if parts[0].strip():
+                                    messages.append({"role": "system", "content": parts[0].strip()})
+                                if len(parts) > 1:
+                                    persona_and_user = parts[1]
+                                    if "User Query:" in persona_and_user:
+                                        persona, user_query = persona_and_user.split("User Query:", 1)
+                                        if persona.strip():
+                                            messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
+                                        messages.append({"role": "user", "content": user_query.strip()})
+                                    else:
+                                        messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
+                            elif "User Query:" in prompt_text_for_llm:
+                                parts = prompt_text_for_llm.split("User Query:", 1)
+                                if parts[0].strip():
+                                    messages.append({"role": "system", "content": parts[0].strip()})
+                                messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
+                            else:
+                                # Simple prompt - treat as user message
+                                clean_prompt = prompt_text_for_llm.replace("Assistant:", "").strip()
+                                messages.append({"role": "user", "content": clean_prompt})
                         
                         # Prepare request data for API endpoint
                         request_data = {
@@ -4226,29 +4244,41 @@ Vary your sentence structure and word choices naturally."""
             if is_api:
                 logger.info(f"[generate] Detected API endpoint: {body.model_name}. Routing to OpenAI-compatible endpoint (non-streaming).")
                 
-                # Convert prompt to OpenAI messages format
+                # Improved prompt parsing for non-streaming
                 messages = []
-                if "Character Persona:" in llm_prompt:
-                    parts = llm_prompt.split("Character Persona:", 1)
-                    if parts[0].strip():
-                        messages.append({"role": "system", "content": parts[0].strip()})
-                    if len(parts) > 1:
-                        persona_and_user = parts[1]
-                        if "User Query:" in persona_and_user:
-                            persona, user_query = persona_and_user.split("User Query:", 1)
-                            if persona.strip():
-                                messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
-                            messages.append({"role": "user", "content": user_query.strip()})
-                        else:
-                            messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
-                elif "User Query:" in llm_prompt:
-                    parts = llm_prompt.split("User Query:", 1)
-                    if parts[0].strip():
-                        messages.append({"role": "system", "content": parts[0].strip()})
-                    messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
+                segments = re.findall(r'<start_of_turn>(user|model)\n(.*?)(?:<end_of_turn>|$)', llm_prompt, re.DOTALL)
+                
+                if segments:
+                    for role, content in segments:
+                        messages.append({
+                            "role": "assistant" if role == "model" else "user",
+                            "content": content.strip()
+                        })
+                    system_part = llm_prompt.split("<start_of_turn>")[0].strip()
+                    if system_part:
+                        messages.insert(0, {"role": "system", "content": system_part})
                 else:
-                    clean_prompt = llm_prompt.replace("Assistant:", "").strip()
-                    messages.append({"role": "user", "content": clean_prompt})
+                    if "Character Persona:" in llm_prompt:
+                        parts = llm_prompt.split("Character Persona:", 1)
+                        if parts[0].strip():
+                            messages.append({"role": "system", "content": parts[0].strip()})
+                        if len(parts) > 1:
+                            persona_and_user = parts[1]
+                            if "User Query:" in persona_and_user:
+                                persona, user_query = persona_and_user.split("User Query:", 1)
+                                if persona.strip():
+                                    messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
+                                messages.append({"role": "user", "content": user_query.strip()})
+                            else:
+                                messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
+                    elif "User Query:" in llm_prompt:
+                        parts = llm_prompt.split("User Query:", 1)
+                        if parts[0].strip():
+                            messages.append({"role": "system", "content": parts[0].strip()})
+                        messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
+                    else:
+                        clean_prompt = llm_prompt.replace("Assistant:", "").strip()
+                        messages.append({"role": "user", "content": clean_prompt})
                 
                 # Prepare request data for API endpoint
                 request_data = {

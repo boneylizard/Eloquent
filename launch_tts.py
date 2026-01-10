@@ -8,6 +8,10 @@ from pathlib import Path
 
 def main():
     """Launch the TTS service"""
+    # Disable problematic Torch optimizations for Python 3.12+
+    os.environ["TORCH_DYNAMO_DISABLE"] = "1"
+    os.environ["TORCH_COMPILE_DISABLE"] = "1"
+    
     # Add the backend directory to the path
     backend_dir = Path(__file__).parent / "backend" / "app"
     if str(backend_dir) not in sys.path:

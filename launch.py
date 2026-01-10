@@ -1,6 +1,8 @@
-# launch.py - Fixed version
-
 import os
+# Disable problematic Torch optimizations for Python 3.12+
+os.environ["TORCH_DYNAMO_DISABLE"] = "1"
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+
 import sys
 import uvicorn
 from multiprocessing import Process, freeze_support
