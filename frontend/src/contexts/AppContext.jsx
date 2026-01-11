@@ -1018,17 +1018,17 @@ const AppProvider = ({ children }) => {
 
 
   // --- playTTS (Modified to prevent auto-replay) ---
-  const playTTS = useCallback(async (messageId, text) => {
+  const playTTS = useCallback(async (messageId, text, optionsOverrides = null) => {
     console.log(`🗣️ [TTS] Attempting to play message ${messageId}: "${text.substring(0, 40)}..."`);
 
     // Check if this is the same message that was just played
-    if (lastPlayedMessageRef.current === messageId) {
+    if (lastPlayedMessageRef.current === messageId && !optionsOverrides) {
       console.log(`🗣️ [TTS] Skipping message ${messageId} as it was just played.`);
       return;
     }
     // ADD THIS CODE: Check if the message is still streaming
     const message = messages.find(m => m.id === messageId);
-    if (message && message.isStreaming) {
+    if (message && message.isStreaming && !optionsOverrides) {
       console.log(`🗣️ [TTS] Skipping message ${messageId} as it is still streaming.`);
       return;
     }
@@ -1054,24 +1054,24 @@ const AppProvider = ({ children }) => {
       // 1. Synthesize Speech -> Blob URL
       console.log(`🗣️ [TTS] Calling synthesizeSpeech API for message ${messageId}...`);
 
+      // Resolve options: priority to overrides, then current state settings
+      const currentTtsEngine = optionsOverrides?.ttsEngine || settings.ttsEngine || 'kokoro';
+      const currentTtsVoice = optionsOverrides?.ttsVoice || settings.ttsVoice || 'af_heart';
+      const currentTtsSpeed = optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0;
+      const currentTtsPitch = optionsOverrides?.ttsPitch ?? settings.ttsPitch ?? 0;
+
       // Build options object for TTS engines
       const ttsOptions = {
-        voice: settings.ttsVoice || 'af_heart',
-        engine: settings.ttsEngine || 'kokoro'
+        voice: currentTtsVoice,
+        engine: currentTtsEngine
       };
 
       // Add Chatterbox-specific parameters if using Chatterbox
-      if (settings.ttsEngine === 'chatterbox') {
-        ttsOptions.exaggeration = settings.ttsExaggeration || 0.5;
-        ttsOptions.cfg = settings.ttsCfg || 0.5;
+      if (currentTtsEngine === 'chatterbox') {
+        ttsOptions.exaggeration = optionsOverrides?.ttsExaggeration ?? settings.ttsExaggeration ?? 0.5;
+        ttsOptions.cfg = optionsOverrides?.ttsCfg ?? settings.ttsCfg ?? 0.5;
 
         console.log(`🔊 [TTS] Chatterbox params - exaggeration: ${ttsOptions.exaggeration}, cfg: ${ttsOptions.cfg}`);
-
-        // If using a custom voice, add the file path
-        if (settings.ttsVoice && settings.ttsVoice !== 'default' && !settings.ttsVoice.startsWith('voice_ref_')) {
-          // For now, we'll use default voice. Later we can implement voice upload
-          console.log(`🔊 [TTS] Using Chatterbox default voice`);
-        }
       }
 
       console.log(`🔊 [TTS] Using engine: ${ttsOptions.engine} with options:`, ttsOptions);
@@ -1082,11 +1082,12 @@ const AppProvider = ({ children }) => {
       // UNCHANGED: Everything after this stays exactly the same
       if (!audioUrl) throw new Error("SynthesizeSpeech returned an invalid URL.");
       console.log(`🗣️ [TTS] Received audio URL for message ${messageId}: ${audioUrl.substring(0, 50)}...`);
+
       // 2. Playback branch: HTML5 Audio if no pitch shift, otherwise Web Audio API
-      if (settings.ttsPitch === 0) {
+      if (currentTtsPitch === 0) {
         // --- HTML5 Audio path (only speed) ---
         const audio = new Audio(audioUrl);
-        audio.playbackRate = settings.ttsSpeed;
+        audio.playbackRate = currentTtsSpeed;
         audioPlayerRef.current = audio;
 
         const handleEnd = () => {
@@ -1124,8 +1125,8 @@ const AppProvider = ({ children }) => {
 
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
-        source.playbackRate.value = settings.ttsSpeed;
-        source.detune.value = settings.ttsPitch * 100; // semitones → cents
+        source.playbackRate.value = currentTtsSpeed;
+        source.detune.value = currentTtsPitch * 100; // semitones → cents
         source.connect(ctx.destination);
 
         // store so stopTTS can reach it if needed
