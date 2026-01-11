@@ -11,7 +11,7 @@ import { Switch } from './ui/switch';
 import { Label } from './ui/label';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { Slider } from './ui/slider';
-import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshCw, AlertTriangle, Globe, X, Power, RotateCw } from 'lucide-react';
+import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshCw, AlertTriangle, Globe, X, Power, RotateCw, Volume2 } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import CharacterEditor from './CharacterEditor';
@@ -47,7 +47,9 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     clearError,
     fetchAvailableSTTEngines,
     sttEnginesAvailable,
-
+    playTTS,
+    stopTTS,
+    isPlayingAudio,
   } = useApp();
 
   // Local editable copy of context settings
@@ -2149,29 +2151,39 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   )}
 
                   {/* Test TTS Button */}
-                  <div className="mt-4 pt-2">
+                  <div className="mt-4 pt-2 flex items-center gap-2">
                     <Button
                       variant="outline"
-                      disabled={!ttsEnabled}
+                      size="sm"
+                      disabled={!ttsEnabled || isPlayingAudio === 'test-tts'}
                       onClick={() => {
                         const testText = "This is a test of the text-to-speech system with the current settings.";
-
-                        // Save current settings so the test uses them
-                        updateSettings({
-                          ttsVoice: localSettings.ttsVoice || 'af_heart',
-                          ttsSpeed: localSettings.ttsSpeed || 1.0,
-                          ttsPitch: localSettings.ttsPitch || 0,
-                          ttsEngine: localSettings.ttsEngine || 'kokoro',
-                          ttsExaggeration: localSettings.ttsExaggeration || 0.5,
-                          ttsCfg: localSettings.ttsCfg || 0.5
-                        });
-
-                        // Use your existing playTTS function - don't change AppContext
-                        playTTS('test-tts', testText);
+                        playTTS('test-tts', testText, localSettings);
                       }}
                     >
-                      Test Voice Settings
+                      {isPlayingAudio === 'test-tts' ? (
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Playing...
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Volume2 className="w-4 h-4" />
+                          Test Voice Settings
+                        </div>
+                      )}
                     </Button>
+
+                    {isPlayingAudio === 'test-tts' && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => stopTTS()}
+                        className="text-red-500 hover:text-red-600 hover:bg-red-50 border border-red-100"
+                      >
+                        Stop
+                      </Button>
+                    )}
                   </div>
                 </>
               )}
