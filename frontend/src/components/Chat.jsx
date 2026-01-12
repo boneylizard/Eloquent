@@ -393,62 +393,141 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
     setEditingMessageContent(currentContent);
   };
   // Add this regeneration function that uses the edited prompt
-const handleRegenerateFromEditedPrompt = useCallback(
-  async (userMessageId, overrideContent = null) => {
-    if (isGenerating) return;
+  const handleRegenerateFromEditedPrompt = useCallback(
+    async (userMessageId, overrideContent = null) => {
+      if (isGenerating) return;
 
-    // 1) Locate the user message
-    const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
-    if (userMsgIndex < 0) return;
+      // 1) Locate the user message
+      const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
+      if (userMsgIndex < 0) return;
 
-    const userMsg = messages[userMsgIndex];
-    if (userMsg.role !== "user") return;
+      const userMsg = messages[userMsgIndex];
+      if (userMsg.role !== "user") return;
 
-    // 2) Use overrideContent (from "Save & Regenerate") to avoid React state race
-    const editedPromptText = (overrideContent ?? userMsg.content ?? "").trim();
-    if (!editedPromptText) return;
+      // 2) Use overrideContent (from "Save & Regenerate") to avoid React state race
+      const editedPromptText = (overrideContent ?? userMsg.content ?? "").trim();
+      if (!editedPromptText) return;
 
-    // 3) Build a local history slice that definitely contains the edited content
-    const regenHistory = messages
-      .slice(0, userMsgIndex + 1)
-      .map((m) => (m.id === userMessageId ? { ...m, content: editedPromptText } : m));
+      // 3) Build a local history slice that definitely contains the edited content
+      const regenHistory = messages
+        .slice(0, userMsgIndex + 1)
+        .map((m) => (m.id === userMessageId ? { ...m, content: editedPromptText } : m));
 
-    // 4) Find the FIRST bot message after this user message
-    let botMsgIndex = -1;
-    for (let i = userMsgIndex + 1; i < messages.length; i++) {
-      if (messages[i].role === "bot") {
-        botMsgIndex = i;
-        break;
+      // 4) Find the FIRST bot message after this user message
+      let botMsgIndex = -1;
+      for (let i = userMsgIndex + 1; i < messages.length; i++) {
+        if (messages[i].role === "bot") {
+          botMsgIndex = i;
+          break;
+        }
       }
-    }
 
-    // --- CASE A: No bot message to regenerate; create a new bot reply ---
-    if (botMsgIndex === -1) {
-      setIsGenerating(true);
-      const botId = generateUniqueId();
+      // --- CASE A: No bot message to regenerate; create a new bot reply ---
+      if (botMsgIndex === -1) {
+        setIsGenerating(true);
+        const botId = generateUniqueId();
 
-      try {
-        if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botId);
+        try {
+          if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botId);
 
-        // Placeholder for streaming
-        const placeholderBotMessage = {
-          id: botId,
-          role: "bot",
-          content: "",
-          modelId: "primary",
-          characterName: activeCharacter?.name,
-          avatar: activeCharacter?.avatar,
-          isStreaming: true,
+          // Placeholder for streaming
+          const placeholderBotMessage = {
+            id: botId,
+            role: "bot",
+            content: "",
+            modelId: "primary",
+            characterName: activeCharacter?.name,
+            avatar: activeCharacter?.avatar,
+            isStreaming: true,
+          };
+          setMessages((prev) => [...prev, placeholderBotMessage]);
+
+          let lastSentTtsContent = "";
+          await generateReply(
+            editedPromptText,
+            regenHistory,
+            (token, fullContent) => {
+              // Update UI
+              setMessages((prev) => prev.map((m) => (m.id === botId ? { ...m, content: fullContent } : m)));
+
+              // Update TTS
+              if (settings.ttsAutoPlay && settings.ttsEnabled) {
+                const newTextChunk = fullContent.slice(lastSentTtsContent.length);
+                if (newTextChunk) {
+                  addStreamingText(newTextChunk);
+                  lastSentTtsContent = fullContent;
+                }
+              }
+            },
+            { webSearchEnabled, authorNote }
+          );
+
+          // Finalize
+          setMessages((prev) => prev.map((m) => (m.id === botId ? { ...m, isStreaming: false } : m)));
+          if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
+        } catch (err) {
+          console.error("Regeneration error:", err);
+          // Optional: mark placeholder as failed
+          setMessages((prev) =>
+            prev.map((m) => (m.id === botId ? { ...m, isStreaming: false } : m))
+          );
+          if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
+        } finally {
+          setIsGenerating(false);
+        }
+        return;
+      }
+
+      // --- CASE B: Regenerate as a variant on the first bot message after the edited user message ---
+      const botMsg = messages[botMsgIndex];
+      const botMsgId = botMsg.id;
+
+      // Add variant + compute new index in a way that never relies on stale `messageVariants`
+      let newVariantIndex = 0;
+      setMessageVariants((prev) => {
+        const existingVariants = prev[botMsgId] || [];
+        const currentContent = botMsg.content ?? "";
+
+        // Ensure the current content is captured at least once (if variants list doesn't already include it)
+        const nextVariants = existingVariants.includes(currentContent)
+          ? [...existingVariants, ""]
+          : [...existingVariants, currentContent, ""];
+
+        newVariantIndex = nextVariants.length - 1;
+
+        return {
+          ...prev,
+          [botMsgId]: nextVariants,
         };
-        setMessages((prev) => [...prev, placeholderBotMessage]);
+      });
+
+      // Point UI to the new (last) variant using the same computed index
+      setCurrentVariantIndex((prev) => ({
+        ...prev,
+        [botMsgId]: newVariantIndex,
+      }));
+
+      setIsGenerating(true);
+      try {
+        if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botMsgId);
 
         let lastSentTtsContent = "";
-        await generateReply(
+        const botContent = await generateReply(
           editedPromptText,
           regenHistory,
           (token, fullContent) => {
-            // Update UI
-            setMessages((prev) => prev.map((m) => (m.id === botId ? { ...m, content: fullContent } : m)));
+            // Update messages for streaming
+            setMessages((prev) =>
+              prev.map((m) => (m.id === botMsgId ? { ...m, content: fullContent, isStreaming: true } : m))
+            );
+
+            // Update variants for streaming (always update the last slot)
+            setMessageVariants((prev) => {
+              const arr = (prev[botMsgId] || []).slice();
+              if (arr.length === 0) arr.push(fullContent);
+              else arr[arr.length - 1] = fullContent;
+              return { ...prev, [botMsgId]: arr };
+            });
 
             // Update TTS
             if (settings.ttsAutoPlay && settings.ttsEnabled) {
@@ -462,115 +541,36 @@ const handleRegenerateFromEditedPrompt = useCallback(
           { webSearchEnabled, authorNote }
         );
 
-        // Finalize
-        setMessages((prev) => prev.map((m) => (m.id === botId ? { ...m, isStreaming: false } : m)));
+        // Finalize message state
+        setMessages((prev) =>
+          prev.map((m) => (m.id === botMsgId ? { ...m, content: botContent, isStreaming: false } : m))
+        );
+
         if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
       } catch (err) {
         console.error("Regeneration error:", err);
-        // Optional: mark placeholder as failed
         setMessages((prev) =>
-          prev.map((m) => (m.id === botId ? { ...m, isStreaming: false } : m))
+          prev.map((m) => (m.id === botMsgId ? { ...m, isStreaming: false } : m))
         );
         if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
       } finally {
         setIsGenerating(false);
       }
-      return;
-    }
-
-    // --- CASE B: Regenerate as a variant on the first bot message after the edited user message ---
-    const botMsg = messages[botMsgIndex];
-    const botMsgId = botMsg.id;
-
-    // Add variant + compute new index in a way that never relies on stale `messageVariants`
-    let newVariantIndex = 0;
-    setMessageVariants((prev) => {
-      const existingVariants = prev[botMsgId] || [];
-      const currentContent = botMsg.content ?? "";
-
-      // Ensure the current content is captured at least once (if variants list doesn't already include it)
-      const nextVariants = existingVariants.includes(currentContent)
-        ? [...existingVariants, ""]
-        : [...existingVariants, currentContent, ""];
-
-      newVariantIndex = nextVariants.length - 1;
-
-      return {
-        ...prev,
-        [botMsgId]: nextVariants,
-      };
-    });
-
-    // Point UI to the new (last) variant using the same computed index
-    setCurrentVariantIndex((prev) => ({
-      ...prev,
-      [botMsgId]: newVariantIndex,
-    }));
-
-    setIsGenerating(true);
-    try {
-      if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botMsgId);
-
-      let lastSentTtsContent = "";
-      const botContent = await generateReply(
-        editedPromptText,
-        regenHistory,
-        (token, fullContent) => {
-          // Update messages for streaming
-          setMessages((prev) =>
-            prev.map((m) => (m.id === botMsgId ? { ...m, content: fullContent, isStreaming: true } : m))
-          );
-
-          // Update variants for streaming (always update the last slot)
-          setMessageVariants((prev) => {
-            const arr = (prev[botMsgId] || []).slice();
-            if (arr.length === 0) arr.push(fullContent);
-            else arr[arr.length - 1] = fullContent;
-            return { ...prev, [botMsgId]: arr };
-          });
-
-          // Update TTS
-          if (settings.ttsAutoPlay && settings.ttsEnabled) {
-            const newTextChunk = fullContent.slice(lastSentTtsContent.length);
-            if (newTextChunk) {
-              addStreamingText(newTextChunk);
-              lastSentTtsContent = fullContent;
-            }
-          }
-        },
-        { webSearchEnabled, authorNote }
-      );
-
-      // Finalize message state
-      setMessages((prev) =>
-        prev.map((m) => (m.id === botMsgId ? { ...m, content: botContent, isStreaming: false } : m))
-      );
-
-      if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
-    } catch (err) {
-      console.error("Regeneration error:", err);
-      setMessages((prev) =>
-        prev.map((m) => (m.id === botMsgId ? { ...m, isStreaming: false } : m))
-      );
-      if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
-    } finally {
-      setIsGenerating(false);
-    }
-  },
-  [
-    isGenerating,
-    messages,
-    setMessages,
-    setMessageVariants,
-    setCurrentVariantIndex,
-    setIsGenerating,
-    activeCharacter,
-    generateReply,
-    settings,
-    webSearchEnabled,
-    authorNote,
-  ]
-);
+    },
+    [
+      isGenerating,
+      messages,
+      setMessages,
+      setMessageVariants,
+      setCurrentVariantIndex,
+      setIsGenerating,
+      activeCharacter,
+      generateReply,
+      settings,
+      webSearchEnabled,
+      authorNote,
+    ]
+  );
 
 
 
@@ -2519,7 +2519,7 @@ const handleRegenerateFromEditedPrompt = useCallback(
                                 size="sm"
                                 onClick={() => {
                                   handleSaveEditedMessage(msg.id, editingMessageContent);
-                                  setTimeout(() => handleRegenerateFromEditedPrompt(msg.id), 100);
+                                  setTimeout(() => handleRegenerateFromEditedPrompt(msg.id, editingMessageContent), 100);
                                 }}
                                 disabled={!editingMessageContent.trim() || isGenerating}
                               >
