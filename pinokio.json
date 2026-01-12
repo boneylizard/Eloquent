@@ -18,10 +18,7 @@
       "params": {
         "message": "run.bat",
         "path": ".",
-        "daemon": true,
-        "on": [
-          { "event": "/http:\\/\\/localhost:5173/", "done": true }
-        ]
+        "daemon": true
       }
     }
   ]
