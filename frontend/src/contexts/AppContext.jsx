@@ -91,34 +91,42 @@ const getStoryTrackerContext = () => {
     const tracker = JSON.parse(saved);
     const sections = [];
 
+    if (tracker.currentObjective) {
+      sections.push(`[CURRENT OBJECTIVE]: ${tracker.currentObjective}`);
+    }
+
     if (tracker.characters?.length > 0) {
       const chars = tracker.characters.map(c => c.notes ? `${c.value} (${c.notes})` : c.value).join(', ');
-      sections.push(`Characters: ${chars}`);
+      sections.push(`[CHARACTERS]: ${chars}`);
     }
 
     if (tracker.inventory?.length > 0) {
       const items = tracker.inventory.map(i => i.notes ? `${i.value} (${i.notes})` : i.value).join(', ');
-      sections.push(`Inventory: ${items}`);
+      sections.push(`[INVENTORY]: ${items}`);
     }
 
     if (tracker.locations?.length > 0) {
       const locs = tracker.locations.map(l => l.notes ? `${l.value} (${l.notes})` : l.value).join(', ');
-      sections.push(`Locations: ${locs}`);
+      sections.push(`[LOCATIONS]: ${locs}`);
     }
 
     if (tracker.plotPoints?.length > 0) {
       const plots = tracker.plotPoints.map(p => `• ${p.notes ? `${p.value}: ${p.notes}` : p.value}`).join('\n');
-      sections.push(`Key Events:\n${plots}`);
+      sections.push(`[KEY EVENTS / RECENT HISTORY]:\n${plots}`);
+    }
+
+    if (tracker.storyNotes) {
+      sections.push(`[STORY NOTES / WORLD BACKGROUND]:\n${tracker.storyNotes}`);
     }
 
     if (tracker.customFields?.length > 0) {
       const custom = tracker.customFields.map(c => c.notes ? `${c.value}: ${c.notes}` : c.value).join(', ');
-      sections.push(`Additional: ${custom}`);
+      sections.push(`[ADDITIONAL DETAILS]: ${custom}`);
     }
 
     if (sections.length === 0) return '';
 
-    return `\n\n[STORY STATE - Use this to maintain consistency]\n${sections.join('\n')}`;
+    return `\n\n[STORY STATE / TRACKER - Use this for continuity and world knowledge]\n${sections.join('\n\n')}`;
   } catch (e) {
     console.error('Error reading story tracker:', e);
     return '';
