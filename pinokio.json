@@ -1,0 +1,28 @@
+{
+  "version": "2.1",
+  "title": "Eloquent",
+  "description": "Local AI Workstation",
+  "icon": "static/favicon.ico",
+  "menu": [
+    {
+      "label": "Install",
+      "method": "shell.run",
+      "params": {
+        "message": "git clone https://github.com/boneylizard/Eloquent . && install.bat",
+        "path": "."
+      }
+    },
+    {
+      "label": "Start",
+      "method": "shell.run",
+      "params": {
+        "message": "run.bat",
+        "path": ".",
+        "daemon": true,
+        "on": [
+          { "event": "/http:\\/\\/localhost:5173/", "done": true }
+        ]
+      }
+    }
+  ]
+}
