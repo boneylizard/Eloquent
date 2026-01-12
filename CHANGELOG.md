@@ -8,6 +8,10 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ## 2026-01-12
 
+### Added
+
+* Added a KNOWN_ISSUES.md file to document known problems, limitations, and temporary workarounds.
+
 ### Fixed
 
 * The **“Test Voice Settings”** button in the Audio tab now works.
