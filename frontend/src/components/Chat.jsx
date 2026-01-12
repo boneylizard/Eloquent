@@ -393,273 +393,185 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
     setEditingMessageContent(currentContent);
   };
   // Add this regeneration function that uses the edited prompt
-  const handleRegenerateFromEditedPrompt = useCallback(async (userMessageId) => {
+const handleRegenerateFromEditedPrompt = useCallback(
+  async (userMessageId, overrideContent = null) => {
     if (isGenerating) return;
 
-    // Find the user message
-    const userMsgIndex = messages.findIndex(m => m.id === userMessageId);
+    // 1) Locate the user message
+    const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
     if (userMsgIndex < 0) return;
 
     const userMsg = messages[userMsgIndex];
-    if (userMsg.role !== 'user') return;
+    if (userMsg.role !== "user") return;
 
-    // Find the FIRST bot message after this user message
+    // 2) Use overrideContent (from "Save & Regenerate") to avoid React state race
+    const editedPromptText = (overrideContent ?? userMsg.content ?? "").trim();
+    if (!editedPromptText) return;
+
+    // 3) Build a local history slice that definitely contains the edited content
+    const regenHistory = messages
+      .slice(0, userMsgIndex + 1)
+      .map((m) => (m.id === userMessageId ? { ...m, content: editedPromptText } : m));
+
+    // 4) Find the FIRST bot message after this user message
     let botMsgIndex = -1;
     for (let i = userMsgIndex + 1; i < messages.length; i++) {
-      if (messages[i].role === 'bot') {
+      if (messages[i].role === "bot") {
         botMsgIndex = i;
         break;
       }
     }
 
+    // --- CASE A: No bot message to regenerate; create a new bot reply ---
     if (botMsgIndex === -1) {
-      // No bot message to regenerate, just generate a new one
       setIsGenerating(true);
+      const botId = generateUniqueId();
+
       try {
-        if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botMsgIdPlaceholder);
+        if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botId);
 
-        const botContent = await generateReply(userMsg.content, messages.slice(0, userMsgIndex + 1));
-        const botMsg = {
-          id: botMsgIdPlaceholder,
-          role: 'bot',
-          content: botContent,
-          modelId: 'primary',
+        // Placeholder for streaming
+        const placeholderBotMessage = {
+          id: botId,
+          role: "bot",
+          content: "",
+          modelId: "primary",
           characterName: activeCharacter?.name,
-          avatar: activeCharacter?.avatar
+          avatar: activeCharacter?.avatar,
+          isStreaming: true,
         };
-        setMessages(prev => [...prev, botMsg]);
+        setMessages((prev) => [...prev, placeholderBotMessage]);
 
-        // If non-streaming, we might need a manual playTTS call here if generateReply doesn't handle it
-        // But startStreamingTTS/endStreamingTTS is for streaming.
-        // Wait, generateReply DOES handle it now (as I just added it to AppContext.jsx).
-        // However, handleRegenerateFromEditedPrompt has its own streaming logic below.
+        let lastSentTtsContent = "";
+        await generateReply(
+          editedPromptText,
+          regenHistory,
+          (token, fullContent) => {
+            // Update UI
+            setMessages((prev) => prev.map((m) => (m.id === botId ? { ...m, content: fullContent } : m)));
+
+            // Update TTS
+            if (settings.ttsAutoPlay && settings.ttsEnabled) {
+              const newTextChunk = fullContent.slice(lastSentTtsContent.length);
+              if (newTextChunk) {
+                addStreamingText(newTextChunk);
+                lastSentTtsContent = fullContent;
+              }
+            }
+          },
+          { webSearchEnabled, authorNote }
+        );
+
+        // Finalize
+        setMessages((prev) => prev.map((m) => (m.id === botId ? { ...m, isStreaming: false } : m)));
+        if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
       } catch (err) {
-        console.error('Regeneration error:', err);
+        console.error("Regeneration error:", err);
+        // Optional: mark placeholder as failed
+        setMessages((prev) =>
+          prev.map((m) => (m.id === botId ? { ...m, isStreaming: false } : m))
+        );
+        if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
       } finally {
         setIsGenerating(false);
       }
       return;
     }
 
-    // Get the bot message to add a variant to
+    // --- CASE B: Regenerate as a variant on the first bot message after the edited user message ---
     const botMsg = messages[botMsgIndex];
     const botMsgId = botMsg.id;
 
-    // Add the current bot message content as a variant if it's not already there
-    setMessageVariants(prev => {
+    // Add variant + compute new index in a way that never relies on stale `messageVariants`
+    let newVariantIndex = 0;
+    setMessageVariants((prev) => {
       const existingVariants = prev[botMsgId] || [];
-      const currentContent = botMsg.content;
+      const currentContent = botMsg.content ?? "";
 
-      // Only add current content if it's not already in variants
-      if (!existingVariants.includes(currentContent)) {
-        return {
-          ...prev,
-          [botMsgId]: [...existingVariants, currentContent, ''] // Add current + placeholder for new
-        };
-      } else {
-        return {
-          ...prev,
-          [botMsgId]: [...existingVariants, ''] // Just add placeholder for new variant
-        };
-      }
-    });
+      // Ensure the current content is captured at least once (if variants list doesn't already include it)
+      const nextVariants = existingVariants.includes(currentContent)
+        ? [...existingVariants, ""]
+        : [...existingVariants, currentContent, ""];
 
-    // Set the current variant index to the new (last) variant
-    setCurrentVariantIndex(prev => {
-      const existingVariants = messageVariants[botMsgId] || [];
-      const newIndex = existingVariants.length; // This will be the index of the new variant
+      newVariantIndex = nextVariants.length - 1;
+
       return {
         ...prev,
-        [botMsgId]: newIndex
+        [botMsgId]: nextVariants,
       };
     });
+
+    // Point UI to the new (last) variant using the same computed index
+    setCurrentVariantIndex((prev) => ({
+      ...prev,
+      [botMsgId]: newVariantIndex,
+    }));
 
     setIsGenerating(true);
     try {
-      // Generate new bot response using edited user message
-      const agentMem = await fetchMemoriesFromAgent(userMsg.content);
-      const lore = await fetchTriggeredLore(userMsg.content, activeCharacter);
-      let memoryContext = '';
-
-      if (agentMem.length) {
-        memoryContext = agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
-      }
-
-      if (lore.length) {
-        const loreContext = lore.map(l => {
-          if (typeof l === 'string') {
-            return `• ${l}`;
-          } else if (typeof l === 'object' && l.content) {
-            return `• ${l.content}`;
-          } else {
-            return `• ${JSON.stringify(l)}`;
-          }
-        }).join('\n');
-
-        if (memoryContext) {
-          memoryContext += `\n\nWORLD KNOWLEDGE:\n${loreContext}`;
-        } else {
-          memoryContext = `WORLD KNOWLEDGE:\n${loreContext}`;
-        }
-      }
-
-      let systemMsg = activeCharacter
-        ? buildSystemPrompt(activeCharacter)
-        : 'You are a helpful assistant...';
-
-      if (memoryContext) {
-        systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
-      }
-
-      // Include story tracker context if available
-      const storyContext = getStoryTrackerContext();
-      if (storyContext) {
-        systemMsg += `\n\nSTORY STATE:\n${storyContext}`;
-      }
-
-      // --- DYNAMIC CONTEXT PRUNING (8k Limit) ---
-      const MAX_CONTEXT_TOKENS = 7500;
-      const estimateTokens = (str) => Math.ceil((str || '').length / 4);
-      const systemTokens = estimateTokens(systemMsg);
-      let availableTokens = MAX_CONTEXT_TOKENS - systemTokens;
-
-      const historyUpToUser = messages.slice(0, userMsgIndex + 1);
-      const reversedHistory = [...historyUpToUser].reverse();
-      let slicedMessages = [];
-      let currentTokens = 0;
-      const MIN_CONTINUITY = 5;
-
-      for (let i = 0; i < reversedHistory.length; i++) {
-        const msg = reversedHistory[i];
-        const msgTokens = estimateTokens(msg.content) + 10;
-        if (i >= MIN_CONTINUITY && (currentTokens + msgTokens) > availableTokens) break;
-        slicedMessages.unshift(msg);
-        currentTokens += msgTokens;
-      }
-
-      const prompt = formatPrompt(slicedMessages, primaryModel, systemMsg);
-
-      // Use streaming to generate the new variant
-      const {
-        temperature,
-        top_p,
-        top_k,
-        repetition_penalty,
-        use_rag,
-        selectedDocuments = []
-      } = settings;
-
-      const payload = {
-        prompt,
-        model_name: primaryModel,
-        temperature,
-        top_p,
-        top_k,
-        repetition_penalty,
-        use_rag,
-        rag_docs: selectedDocuments,
-        gpu_id: 0,
-        userProfile: { id: userProfile?.id ?? 'anonymous' },
-        authorNote: authorNote.trim() || undefined,
-        memoryEnabled: true,
-        stream: true
-      };
-
-      const res = await fetch(`${PRIMARY_API_URL}/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) throw new Error(`Stream error ${res.status}`);
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let acc = '';
-      let done = false;
-      let sseBuffer = ''; // Buffer for incomplete SSE events
-
-      // Start streaming TTS if enabled
-      let lastSentTtsContent = '';
       if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botMsgId);
 
-      while (!done) {
-        const { done: rDone, value } = await reader.read();
-        if (rDone) break;
-        const chunk = decoder.decode(value, { stream: true });
-        sseBuffer += chunk;
-        const events = sseBuffer.split('\n\n');
-        sseBuffer = events.pop() || '';
-        for (const line of events) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            done = true;
-            break;
-          }
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.text) {
-              acc += parsed.text;
-              const partial = cleanModelOutput(acc);
+      let lastSentTtsContent = "";
+      const botContent = await generateReply(
+        editedPromptText,
+        regenHistory,
+        (token, fullContent) => {
+          // Update messages for streaming
+          setMessages((prev) =>
+            prev.map((m) => (m.id === botMsgId ? { ...m, content: fullContent, isStreaming: true } : m))
+          );
 
-              // Send to TTS
-              const newTextChunk = partial.slice(lastSentTtsContent?.length || 0);
-              if (newTextChunk) {
-                addStreamingText(newTextChunk);
-                lastSentTtsContent = partial;
-              }
+          // Update variants for streaming (always update the last slot)
+          setMessageVariants((prev) => {
+            const arr = (prev[botMsgId] || []).slice();
+            if (arr.length === 0) arr.push(fullContent);
+            else arr[arr.length - 1] = fullContent;
+            return { ...prev, [botMsgId]: arr };
+          });
 
-              // Update the last variant (the new one being generated)
-              setMessageVariants(prev => {
-                const arr = prev[botMsgId]?.slice() || [];
-                if (arr.length > 0) {
-                  arr[arr.length - 1] = partial;
-                }
-                return { ...prev, [botMsgId]: arr };
-              });
+          // Update TTS
+          if (settings.ttsAutoPlay && settings.ttsEnabled) {
+            const newTextChunk = fullContent.slice(lastSentTtsContent.length);
+            if (newTextChunk) {
+              addStreamingText(newTextChunk);
+              lastSentTtsContent = fullContent;
             }
-          } catch { }
-        }
-      }
+          }
+        },
+        { webSearchEnabled, authorNote }
+      );
+
+      // Finalize message state
+      setMessages((prev) =>
+        prev.map((m) => (m.id === botMsgId ? { ...m, content: botContent, isStreaming: false } : m))
+      );
 
       if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
-
-      // Final cleanup
-      const finalText = cleanModelOutput(acc);
-      setMessageVariants(prev => {
-        const arr = prev[botMsgId]?.slice() || [];
-        if (arr.length > 0) {
-          arr[arr.length - 1] = finalText;
-        }
-        return { ...prev, [botMsgId]: arr };
-      });
-
     } catch (err) {
-      console.error('Regeneration error:', err);
+      console.error("Regeneration error:", err);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === botMsgId ? { ...m, isStreaming: false } : m))
+      );
+      if (settings.ttsAutoPlay && settings.ttsEnabled) endStreamingTTS();
     } finally {
       setIsGenerating(false);
     }
-  }, [
+  },
+  [
     isGenerating,
     messages,
-    messageVariants,
     setMessages,
     setMessageVariants,
     setCurrentVariantIndex,
     setIsGenerating,
-    fetchMemoriesFromAgent,
-    fetchTriggeredLore,
     activeCharacter,
-    buildSystemPrompt,
     generateReply,
-    formatPrompt,
-    cleanModelOutput,
     settings,
-    primaryModel,
-    userProfile,
+    webSearchEnabled,
     authorNote,
-    PRIMARY_API_URL
-  ]);
+  ]
+);
+
 
 
   // Replace the existing generateCharacterImagePrompt function in Chat.jsx with this much better version:

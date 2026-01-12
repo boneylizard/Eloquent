@@ -1589,175 +1589,183 @@ const AppProvider = ({ children }) => {
       setIsGenerating(false);
     }
   }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent]);
-  // In AppContext.jsx, replace the entire generateReply function
-  // In AppContext.jsx, replace the entire generateReply function
-  // In AppContext.jsx, replace the entire generateReply function
-  const generateReply = useCallback(async (text, recentMessages) => {
-    if (primaryIsAPI && primaryModel) {
-      // --- API Model Path ---
-      const agentMem = await fetchMemoriesFromAgent(text);
-      const lore = await fetchTriggeredLore(text, activeCharacter);
-      let memoryContext = '';
-      if (agentMem.length) {
-        memoryContext = agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
-      }
-      if (lore.length) {
-        const loreBlock = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
-        memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreBlock;
-      }
-      // Note: buildSystemPrompt already includes story tracker context
-      let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
-      if (memoryContext) {
-        systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
-      }
-      const historyLimit = 15; // Increased from implicitly smaller limit
-      const slicedMessages = recentMessages.slice(-historyLimit);
+  // New shared helper to build the FULL generation system prompt (memories, lore, etc.)
+  const getGenerationSystemPrompt = useCallback(async (text, character, authorNote = null) => {
+    let systemMsg = character
+      ? buildSystemPrompt(character)
+      : ('You are a helpful assistant.' + getStoryTrackerContext());
 
-      const sanitizedMessages = slicedMessages
-        .filter(msg => (msg.role === 'user' || msg.role === 'bot') && typeof msg.content === 'string' && msg.content.trim() !== '')
-        .map(msg => ({
-          role: msg.role === 'bot' ? 'assistant' : 'user',
-          content: msg.content
-        }));
+    let contextToAdd = '';
 
-      const finalMessages = [{ role: 'system', content: systemMsg }, ...sanitizedMessages];
-
-      try {
-        const response = await generateReplyOpenAI({
-          messages: finalMessages,
-          model: primaryModel,
-          settings: settings, // Pass the whole settings object
-          apiUrl: PRIMARY_API_URL,
-          stream: settings.streamResponses,
-          targetGpuId: 0
-        });
-
-        if (settings.streamResponses) {
-          return await processOpenAIStream(response, () => { }, (fullText) => fullText, (error) => { throw error; });
-        } else {
-          const result = await response.json();
-          return result.choices?.[0]?.message?.content || "[No response]";
-        }
-      } catch (error) {
-        console.error("API call failed in generateReply:", error);
-        throw error;
-      }
-
-    } else {
-      // --- Local Model Path (No changes needed here) ---
-      // Your existing, working logic for local models goes here.
-      // I have included it fully for completeness.
-      const agentMem = await fetchMemoriesFromAgent(text);
-      const lore = await fetchTriggeredLore(text, activeCharacter);
-      let memoryContext = '';
-      if (agentMem.length) {
-        memoryContext = agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
-      }
-      if (lore.length) {
-        const loreContext = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
-        memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreContext;
-      }
-      // Note: buildSystemPrompt already includes story tracker context
-      let systemMsg = activeCharacter ? buildSystemPrompt(activeCharacter) : ('You are a helpful assistant.' + getStoryTrackerContext());
-
-      if (memoryContext) {
-        systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
-      }
-
-      // --- DYNAMIC CONTEXT PRUNING (8k Limit) ---
-      const MAX_CONTEXT_TOKENS = 7500; // Safe margin for 8k limit
-      const estimateTokens = (str) => Math.ceil((str || '').length / 4);
-
-      const systemTokens = estimateTokens(systemMsg);
-      let availableTokens = MAX_CONTEXT_TOKENS - systemTokens;
-
-      // Always keep at least the last 5 messages for direct continuity
-      const MIN_CONTINUITY = 5;
-      let slicedMessages = [];
-      let currentTokens = 0;
-
-      // Iterate backwards from the most recent messages
-      const reversedHistory = [...recentMessages].reverse();
-      for (let i = 0; i < reversedHistory.length; i++) {
-        const msg = reversedHistory[i];
-        const msgTokens = estimateTokens(msg.content) + 10; // Extra buffer for formatting
-
-        // If we've already included the minimum continuity, check if adding more exceeds limit
-        if (i >= MIN_CONTINUITY && (currentTokens + msgTokens) > availableTokens) {
-          console.log(`✂️ [Context] Pruning older history at message ${reversedHistory.length - i}. Estimated tokens: ${currentTokens + systemTokens}`);
-          break;
-        }
-
-        slicedMessages.unshift(msg);
-        currentTokens += msgTokens;
-      }
-      console.log(`🧠 [Context] Included ${slicedMessages.length} messages. Total estimated tokens: ${currentTokens + systemTokens}`);
-      const payload = {
-        prompt: formatPrompt(slicedMessages, primaryModel, systemMsg),
-        model_name: primaryModel,
-        temperature: settings.temperature,
-        top_p: settings.top_p,
-        top_k: settings.top_k,
-        repetition_penalty: settings.repetition_penalty,
-        max_tokens: settings.max_tokens,
-        use_rag: settings.use_rag,
-        rag_docs: settings.selectedDocuments || [],
-        gpu_id: 0,
-        userProfile: { id: userProfile?.id ?? 'anonymous' },
-        authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
-        memoryEnabled: true
-      };
-      if (settings.streamResponses) {
-        const streamRes = await fetch(`${PRIMARY_API_URL}/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, stream: true })
-        });
-        if (!streamRes.ok) throw new Error(`API returned status ${streamRes.status}`);
-        const reader = streamRes.body.getReader();
-        const decoder = new TextDecoder();
-        let accumulatedText = '';
-        let sseBuffer = ''; // Buffer for incomplete SSE events
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          sseBuffer += chunk;
-          const events = sseBuffer.split('\n\n');
-          sseBuffer = events.pop() || '';
-          for (const line of events) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') return cleanModelOutput(accumulatedText);
-              try {
-                const parsed = JSON.parse(data);
-                if (parsed.text) accumulatedText += parsed.text;
-              } catch (e) { }
+    if (settings.directProfileInjection) {
+      const userId = userProfile?.id || (typeof memoryContext !== 'undefined' ? memoryContext?.activeProfileId : null);
+      if (userId) {
+        try {
+          const res = await fetch(`${MEMORY_API_URL}/memory/get_all?user_id=${userId}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.memories && data.memories.length > 0) {
+              const profileString = data.memories.map(mem => {
+                const category = mem.category?.replace('_', ' ') || 'memory';
+                const importance = mem.importance?.toFixed(1) || 'N/A';
+                return `• ${mem.content} (Category: ${category}, Importance: ${importance})`;
+              }).join('\n');
+              contextToAdd += `\n\nUSER MEMORY PROFILE:\n${profileString}`;
             }
           }
+        } catch (error) {
+          console.error("🧠 [Direct Injection] Error:", error);
         }
-        return cleanModelOutput(accumulatedText);
-      } else {
+      }
+    } else {
+      const agentMem = await fetchMemoriesFromAgent(text);
+      if (agentMem.length) {
+        contextToAdd += `\n\nUSER CONTEXT:\n` + agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
+      }
+    }
+
+    if (character) {
+      const lore = await fetchTriggeredLore(text, character);
+      if (lore.length) {
+        const loreBlock = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
+        contextToAdd += `\n\nWORLD KNOWLEDGE:\n${loreBlock}`;
+      }
+    }
+
+    systemMsg += contextToAdd;
+
+    const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || null;
+    if (effectiveAuthorNote) {
+      systemMsg += `\n\n[AUTHOR'S NOTE - Writing style guidance for this response]\n${effectiveAuthorNote}`;
+    }
+
+    return systemMsg;
+  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore]);
+
+  // In AppContext.jsx, replace the entire generateReply function
+  const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
+    const { authorNote = null, webSearchEnabled = false } = options;
+    const systemMsg = await getGenerationSystemPrompt(text, activeCharacter, authorNote);
+
+    // --- Unified Payload Construction (Matching sendMessage exactly) ---
+    const {
+      temperature, top_p, top_k, repetition_penalty, frequencyPenalty = 0, presencePenalty = 0,
+      antiRepetitionMode = false, use_rag, selectedDocuments = [], streamResponses
+    } = settings;
+
+    const historyLimitLocal = 15;
+    const historyLimitAPI = 12;
+    const currentHistoryLimit = primaryIsAPI ? historyLimitAPI : historyLimitLocal;
+
+    const payload = {
+      directProfileInjection: settings.directProfileInjection,
+      prompt: formatPrompt(recentMessages.slice(-currentHistoryLimit), primaryModel, systemMsg),
+      model_name: primaryModel,
+      temperature, top_p, top_k, repetition_penalty,
+      frequency_penalty: frequencyPenalty,
+      presence_penalty: presencePenalty,
+      anti_repetition_mode: antiRepetitionMode,
+      use_rag,
+      rag_docs: selectedDocuments,
+      use_web_search: webSearchEnabled,
+      gpu_id: 0,
+      userProfile: { id: userProfile?.id ?? 'anonymous' },
+      authorNote: authorNote || (settings.authorNote && settings.authorNote.trim()) || undefined,
+      memoryEnabled: true,
+      stream: streamResponses
+    };
+
+    let attempts = 0;
+    const maxAttempts = primaryIsAPI ? 2 : 1;
+    let success = false;
+    let finalOutput = '';
+
+    while (attempts < maxAttempts && !success) {
+      attempts++;
+      if (attempts > 1) console.log(`🔄 [generateReply] Auto-Retry Attempt ${attempts}...`);
+
+      try {
+        const controller = new AbortController();
         const res = await fetch(`${PRIMARY_API_URL}/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: controller.signal
         });
-        if (!res.ok) throw new Error(`API returned status ${res.status}`);
-        const { text: botText } = await res.json();
-        return cleanModelOutput(botText);
+
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+
+        if (streamResponses) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let accumulatedText = '';
+          let sseBuffer = '';
+          let doneStreaming = false;
+
+          while (!doneStreaming) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            sseBuffer += chunk;
+            const events = sseBuffer.split('\n\n');
+            sseBuffer = events.pop() || '';
+
+            for (const line of events) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') {
+                  doneStreaming = true;
+                  break;
+                }
+                try {
+                  const parsed = JSON.parse(data);
+                  if (parsed.text) {
+                    accumulatedText += parsed.text;
+                    const currentFull = cleanModelOutput(accumulatedText);
+                    if (onToken) onToken(parsed.text, currentFull);
+                  }
+                  if (parsed.done) {
+                    doneStreaming = true;
+                    break;
+                  }
+                } catch (e) { }
+              }
+            }
+          }
+
+          const cleanedText = cleanModelOutput(accumulatedText);
+          // If empty and we have attempts left, retry
+          if (primaryIsAPI && !cleanedText && attempts < maxAttempts) {
+            continue;
+          }
+          finalOutput = cleanedText;
+          success = true;
+        } else {
+          const data = await res.json();
+          const cleaned = cleanModelOutput(data.text);
+          if (primaryIsAPI && !cleaned && attempts < maxAttempts) {
+            continue;
+          }
+          if (onToken) onToken(cleaned, cleaned);
+          finalOutput = cleaned;
+          success = true;
+        }
+      } catch (error) {
+        console.error(`Attempt ${attempts} failed in generateReply:`, error);
+        if (attempts >= maxAttempts) throw error;
+        await new Promise(r => setTimeout(r, 500));
       }
     }
+    return finalOutput;
   }, [
     primaryIsAPI,
     primaryModel,
     settings,
-    fetchMemoriesFromAgent,
-    fetchTriggeredLore,
     activeCharacter,
     userProfile?.id,
     PRIMARY_API_URL,
-    buildSystemPrompt,
+    getGenerationSystemPrompt,
     formatPrompt,
     cleanModelOutput
   ]);
@@ -1824,7 +1832,7 @@ const AppProvider = ({ children }) => {
       const response = await generateReplyOpenAI({
         messages: finalMessages,
         systemPrompt: null,
-        model: primaryModel, // <-- FIX: Changed from modelName to model
+        model: primaryModel,
         settings,
         apiUrl,
         apiKey: null,
@@ -1836,7 +1844,7 @@ const AppProvider = ({ children }) => {
       const response = await generateReplyOpenAI({
         messages: finalMessages,
         systemPrompt: null,
-        model: primaryModel, // <-- FIX: Changed from modelName to model
+        model: primaryModel,
         settings,
         apiUrl,
         apiKey: null,
@@ -1916,48 +1924,7 @@ const AppProvider = ({ children }) => {
       }
 
       // 3) Build System Prompt with layered context
-      let systemMsg = activeCharacter
-        ? buildSystemPrompt(activeCharacter)
-        : ('You are a helpful assistant.' + getStoryTrackerContext());
-
-      let contextToAdd = '';
-
-      if (settings.directProfileInjection) {
-        const userId = userProfile?.id || memoryContext?.activeProfileId;
-        if (userId) {
-          try {
-            const res = await fetch(`${MEMORY_API_URL}/memory/get_all?user_id=${userId}`);
-            if (res.ok) {
-              const data = await res.json();
-              if (data.memories && data.memories.length > 0) {
-                const profileString = data.memories.map(mem => {
-                  const category = mem.category?.replace('_', ' ') || 'memory';
-                  const importance = mem.importance?.toFixed(1) || 'N/A';
-                  return `• ${mem.content} (Category: ${category}, Importance: ${importance})`;
-                }).join('\n');
-                contextToAdd += `\n\nUSER MEMORY PROFILE:\n${profileString}`;
-              }
-            }
-          } catch (error) {
-            console.error("🧠 [Direct Injection] Error:", error);
-          }
-        }
-      } else {
-        const agentMem = await fetchMemoriesFromAgent(text);
-        if (agentMem.length) {
-          contextToAdd += `\n\nUSER CONTEXT:\n` + agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
-        }
-      }
-
-      if (activeCharacter) {
-        const lore = await fetchTriggeredLore(text, activeCharacter);
-        if (lore.length) {
-          const loreBlock = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
-          contextToAdd += `\n\nWORLD KNOWLEDGE:\n${loreBlock}`;
-        }
-      }
-
-      systemMsg += contextToAdd;
+      const systemMsg = await getGenerationSystemPrompt(text, activeCharacter, authorNote);
 
       // 4) Prepare payload
       const {
@@ -1965,10 +1932,7 @@ const AppProvider = ({ children }) => {
         antiRepetitionMode = false, use_rag, selectedDocuments = [], streamResponses
       } = settings;
 
-      const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || null;
-      if (effectiveAuthorNote) {
-        systemMsg += `\n\n[AUTHOR'S NOTE - Writing style guidance for this response]\n${effectiveAuthorNote}`;
-      }
+      const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || undefined;
 
       const historyLimitLocal = 15;
       const historyLimitAPI = 12; // Reduced for stability
@@ -1987,7 +1951,7 @@ const AppProvider = ({ children }) => {
         use_web_search: webSearchEnabled,
         gpu_id: 0,
         userProfile: { id: userProfile?.id ?? 'anonymous' },
-        authorNote: effectiveAuthorNote || undefined,
+        authorNote: effectiveAuthorNote,
         memoryEnabled: true,
         stream: streamResponses
       };
