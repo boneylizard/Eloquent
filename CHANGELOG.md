@@ -10,9 +10,19 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ### Added
 
-* Added support for **Chatterbox Turbo** as a text-to-speech engine.
-* Users can now select Chatterbox Turbo alongside Chatterbox-Faster or Kokoro for use of paralinguistic social tags such as [laugh], [groan], etc. 
-* Chatterbox Turbo integrates with existing voice testing and playback workflows.
+* Added full support for **Chatterbox Turbo** as a text-to-speech engine.
+* Chatterbox Turbo supports paralinguistic cues such as `[laugh]`, `[cough]`, and similar expressive markers.
+* These cues are now passed through correctly and rendered in voice output.
+* Added a manual **"Fix Parakeet Dependencies (Downgrade NumPy)"** button in Settings > Audio.
+* Added a backend endpoint `POST /stt/fix-parakeet-numpy` to safely apply the Parakeet dependency fix.
+
+### Fixed
+
+* Patched Parakeet / NeMo installation and compatibility issues.
+* The Parakeet installation process (`stt_service.py`) now automatically detects NeMo and forces a downgrade to `numpy<2` to prevent compatibility crashes.
+* Improved handling of interrupted or partially completed Parakeet installs.
+* Added explicit frontend alerts and backend warning logs instructing users to restart the backend after the fix is applied.
+* Ensured the Parakeet engine loads correctly after dependency repair.
 
 ---
 
