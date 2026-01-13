@@ -473,6 +473,7 @@ async def _synthesize_with_chatterbox(
         if audio_prompt_path and not CHATTERBOX_VOICE_WARMED_UP:
             def _warmup():
                 with torch.inference_mode():
+                    # Signature: (self, text, audio_prompt_path=None, ...)
                     model.generate("warm up", audio_prompt_path=audio_prompt_path)
             
             logger.info("🔥 [Chatterbox] Warming up voice reference on persistent thread...")
@@ -480,7 +481,7 @@ async def _synthesize_with_chatterbox(
             CHATTERBOX_VOICE_WARMED_UP = True
         
         generation_kwargs = {
-            # 'language_id': 'en',  # Removed: Not supported by current installed version
+            # 'language_id': 'en',  # Removed: Verified this is NOT in the signature
             'exaggeration': exaggeration,
             'cfg_weight': cfg,
         }
@@ -1315,7 +1316,6 @@ def comprehensive_model_warmup():
                         with torch.inference_mode():
                             model.generate(
                                 "Voice cloning warm up test.",
-                                # language_id="en", # Removed
                                 audio_prompt_path=str(voice_path)
                             )
                         global CHATTERBOX_VOICE_WARMED_UP
