@@ -14,6 +14,7 @@ import asyncio
 import subprocess
 import re
 import json
+import inspect
 # --- FastAPI and WebSocket Imports ---
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
@@ -486,8 +487,9 @@ async def _synthesize_with_chatterbox(
             'cfg_weight': cfg,
         }
         
-        if audio_prompt_path and os.path.exists(audio_prompt_path):
-            generation_kwargs['audio_prompt_path'] = audio_prompt_path
+        
+        # if audio_prompt_path and os.path.exists(audio_prompt_path):
+        #     generation_kwargs['audio_prompt_path'] = audio_prompt_path
         
         synthesis_start = time.perf_counter()
         
