@@ -101,6 +101,8 @@ def load_parakeet_model():
 
                     # Then install NeMo toolkit with ASR support
                     logger.info("Installing NeMo toolkit with ASR support...")
+                    subprocess.check_call([
+                        sys.executable, "-m", "pip", "install", "nemo_toolkit[asr]"
                     ])
                     
                     # FORCE FIX: Installation often pulls in numpy 2.x which breaks stuff
