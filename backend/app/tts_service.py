@@ -451,6 +451,7 @@ async def _synthesize_with_chatterbox(
     import soundfile as sf
     import asyncio
     import torch
+    import inspect
     from concurrent.futures import ThreadPoolExecutor
     
     loop = asyncio.get_event_loop()
@@ -473,15 +474,14 @@ async def _synthesize_with_chatterbox(
         if audio_prompt_path and not CHATTERBOX_VOICE_WARMED_UP:
             def _warmup():
                 with torch.inference_mode():
-                    # Signature: (self, text, audio_prompt_path=None, ...)
-                    model.generate("warm up", audio_prompt_path=audio_prompt_path)
+                    # model.generate("warm up", audio_prompt_path=audio_prompt_path)
+                    _call_chatterbox_generate(model, "warm up", audio_prompt_path=audio_prompt_path)
             
             logger.info("🔥 [Chatterbox] Warming up voice reference on persistent thread...")
             await loop.run_in_executor(get_chatterbox_executor(), _warmup)
             CHATTERBOX_VOICE_WARMED_UP = True
         
         generation_kwargs = {
-            # 'language_id': 'en',  # Removed: Verified this is NOT in the signature
             'exaggeration': exaggeration,
             'cfg_weight': cfg,
         }
@@ -513,7 +513,7 @@ async def _synthesize_with_chatterbox(
                 
                 def _generate_chunk(c=chunk): # Bind chunk locally
                     with torch.inference_mode():
-                        return model.generate(c, **generation_kwargs)
+                        return _call_chatterbox_generate(model, c, audio_prompt_path, **generation_kwargs)
                 
                 # Generate this chunk
                 chunk_audio = await loop.run_in_executor(executor, _generate_chunk)
@@ -529,7 +529,7 @@ async def _synthesize_with_chatterbox(
             # STANDARD SINGLE GENERATION for short texts
             def _generate():
                 with torch.inference_mode():
-                    return model.generate(text, **generation_kwargs)
+                    return _call_chatterbox_generate(model, text, audio_prompt_path, **generation_kwargs)
             
             # Run the blocking operation in the persistent thread
             audio_tensor = await loop.run_in_executor(get_chatterbox_executor(), _generate)
@@ -575,6 +575,57 @@ async def _synthesize_with_chatterbox(
     except Exception as e:
         logger.error(f"Chatterbox synthesis failed: {e}")
         raise RuntimeError(f"Chatterbox synthesis failed: {str(e)}")
+
+def _call_chatterbox_generate(model, text, audio_prompt_path=None, **kwargs):
+    """
+    Dynamically adapts to the Chatterbox model's generate signature.
+    Handles versions that require 'language_id' vs those that don't.
+    """
+    sig = inspect.signature(model.generate)
+    params = sig.parameters
+    
+    call_args = [text]
+    call_kwargs = kwargs.copy()
+    
+    # 1. Handle audio_prompt_path (Position 2 in some versions)
+    # Check if 'audio_prompt_path' is a named parameter
+    if 'audio_prompt_path' in params:
+        call_kwargs['audio_prompt_path'] = audio_prompt_path
+    else:
+        # If not named but we have enough positional args, assume pos 2
+        # But safer to just look at the list of params
+        param_names = list(params.keys())
+        if len(param_names) > 1 and param_names[1] == 'audio_prompt_path':
+             call_kwargs['audio_prompt_path'] = audio_prompt_path
+        elif len(param_names) > 1:
+             # Fallback: some versions might take it as 2nd arg?
+             # For now, let's assume if it's not in kwargs it might be positional 2
+             # But usually it is a kwarg in new versions. 
+             # Refined strategy: If explicitly present in signature, use it.
+             pass
+
+    # Actually, simplistic approach:
+    # Version A: (text, audio_prompt_path=None, ...)
+    # Version B: (text, audio_prompt_path, language_id, ...)
+    
+    # Let's try to construct args based on known patterns
+    if 'language_id' in params:
+        # Version B likely: might need language_id passed
+        # Check if it has a default
+        if params['language_id'].default == inspect.Parameter.empty:
+             # Mandatory language_id
+             if 'audio_prompt_path' in params and list(params.keys()).index('audio_prompt_path') < list(params.keys()).index('language_id'):
+                 # It's likely (text, audio_prompt_path, language_id)
+                 return model.generate(text, audio_prompt_path, "en", **kwargs)
+             else:
+                 call_kwargs['language_id'] = "en"
+
+    # Standard call for Version A (text, audio_prompt_path=...)
+    if audio_prompt_path:
+        call_kwargs['audio_prompt_path'] = audio_prompt_path
+        
+    return model.generate(text, **call_kwargs)
+
 
 async def _synthesize_with_kokoro(text: str, voice: str) -> bytes:
     """Synthesize speech using Kokoro TTS and return raw audio bytes."""
@@ -1299,11 +1350,11 @@ def comprehensive_model_warmup():
             
             # 2. Basic model warm-up (default voice)
             with torch.inference_mode():
-                model.generate("Warming up the model for optimal performance.")
+                _call_chatterbox_generate(model, "Warming up the model for optimal performance.")
             
             # 3. Additional synthesis warm-up
             with torch.inference_mode():
-                model.generate("Testing additional synthesis for compilation.")
+                _call_chatterbox_generate(model, "Testing additional synthesis for compilation.")
             
             # 4. Voice cloning warm-up (if default voice file exists)
             voices_dir = Path(__file__).parent / "static" / "voice_references"
@@ -1314,7 +1365,8 @@ def comprehensive_model_warmup():
                 if voice_path.exists():
                     try:
                         with torch.inference_mode():
-                            model.generate(
+                            _call_chatterbox_generate(
+                                model,
                                 "Voice cloning warm up test.",
                                 audio_prompt_path=str(voice_path)
                             )
