@@ -6,6 +6,16 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-13
+
+### Added
+
+* Added support for **Chatterbox Turbo** as a text-to-speech engine.
+* Users can now select Chatterbox Turbo alongside Chatterbox-Faster or Kokoro for use of paralinguistic social tags such as [laugh], [groan], etc. 
+* Chatterbox Turbo integrates with existing voice testing and playback workflows.
+
+---
+
 ## 2026-01-12
 
 ### Added
@@ -19,12 +29,11 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * Fixed the Story Tracker so its contents are now correctly injected into the LLM context.
 * The Story Tracker can be opened from the control panel, auto-filled by the AI, edited manually, or used in combination.
 * Once closed, the tracked state (characters, inventory, locations, key events, etc.) is automatically formatted, persisted as structured continuity data, and injected into subsequent LLM messages.
-* Fixed a bug where **Save & Regenerate** sometimes didn’t work after editing a message. 
+* Fixed a bug where **Save & Regenerate** sometimes didn’t work after editing a message.
 * **Save & Regenerate** now correctly sends the edited user prompt to the AI instead of the original text.
 * Regeneration now always uses the edited text straight away.
 * Fixed an issue where the AI could fail silently and return a blank response.
 * API-based models are now more reliable and retry automatically if they briefly fail.
-
 
 ---
 
