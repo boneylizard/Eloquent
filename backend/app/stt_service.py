@@ -111,6 +111,10 @@ def load_parakeet_model():
                     subprocess.check_call([
                         sys.executable, "-m", "pip", "install", "numpy<2"
                     ])
+                    logger.warning("************************************************************")
+                    logger.warning("PARAKEET FIX APPLIED: NumPy has been downgraded.")
+                    logger.warning("YOU MUST RESTART THE BACKEND FOR THIS TO TAKE EFFECT.")
+                    logger.warning("************************************************************")
                     
                     logger.info("NeMo toolkit installed successfully!")
                     

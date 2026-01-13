@@ -1496,6 +1496,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
 
                             } catch (error) {
                               console.error("Error installing Parakeet:", error);
+                              alert("⚠️ Parakeet installation incomplete (likely due to NumPy compatibility).\n\nIf the 'Fix Parakeet Dependencies' button appears, please use it.\n\nRestarting the backend is likely required.");
                             } finally {
                               setIsInstallingEngine(false);
                             }
@@ -1578,7 +1579,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                             const data = await response.json();
 
                             if (response.ok && data.status === 'success') {
-                              alert("✅ " + data.message);
+                              alert("✅ " + data.message + "\n\n⚠️ YOU MUST RESTART THE BACKEND NOW to successfully use Parakeet.");
                             } else {
                               throw new Error(data.message || `Fix failed: ${response.status}`);
                             }
