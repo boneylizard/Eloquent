@@ -1571,6 +1571,35 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         onClick={async () => {
                           try {
                             setIsInstallingEngine(true);
+                            // Call the new manual fix endpoint
+                            const response = await fetch(`${PRIMARY_API_URL}/stt/fix-parakeet-numpy`, {
+                              method: 'POST'
+                            });
+                            const data = await response.json();
+
+                            if (response.ok && data.status === 'success') {
+                              alert("✅ " + data.message);
+                            } else {
+                              throw new Error(data.message || `Fix failed: ${response.status}`);
+                            }
+                          } catch (error) {
+                            console.error("Error fixing Parakeet:", error);
+                            alert(`Failed to apply fix: ${error.message}`);
+                          } finally {
+                            setIsInstallingEngine(false);
+                          }
+                        }}
+                        disabled={isInstallingEngine}
+                      >
+                        Fix Parakeet Dependencies (Downgrade NumPy)
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          try {
+                            setIsInstallingEngine(true);
                             const response = await fetch(`${PRIMARY_API_URL}/stt/install-engine?engine=whisper3&force=true`, {
                               method: 'POST'
                             });

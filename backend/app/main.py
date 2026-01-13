@@ -3119,6 +3119,28 @@ async def install_stt_engine(engine: str = Query(...)):
             status_code=400,
             content={"status": "error", "message": f"Unknown engine: {engine}"}
         )
+
+@router.post("/stt/fix-parakeet-numpy")
+async def fix_parakeet_numpy():
+    """Force install numpy<2 to fix Parakeet/NeMo issues."""
+    logger.info("Received request to force fix Parakeet NumPy dependency")
+    try:
+        import sys
+        import subprocess
+        
+        logger.info("Running: pip install \"numpy<2\"")
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "numpy<2"
+        ])
+        
+        logger.info("NumPy fix applied successfully via pip")
+        return {"status": "success", "message": "Successfully downgraded NumPy (numpy<2). Please restart the app if issues persist."}
+    except Exception as e:
+        logger.error(f"Error applying NumPy fix: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Failed to fix NumPy: {str(e)}"}
+        )
 @router.get("/gpu/count")
 def check_gpu_count():
     """Check how many GPUs are available using pynvml to avoid initializing a CUDA context."""
