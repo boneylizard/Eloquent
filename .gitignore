@@ -57,6 +57,7 @@ settings.json
 *.bin
 *.safetensors
 models/
+!backend/app/chatterbox_turbo/models/
 
 # Cache directories
 .cache/
