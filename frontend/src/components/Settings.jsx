@@ -1648,6 +1648,9 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         } else if (value === 'chatterbox') {
                           handleChange('ttsVoice', 'default');
                           updateSettings({ ttsVoice: 'default' });
+                        } else if (value === 'chatterbox_turbo') {
+                          handleChange('ttsVoice', 'default');
+                          updateSettings({ ttsVoice: 'default' });
                         }
                       }}
                       disabled={!ttsEnabled}
@@ -1657,7 +1660,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="kokoro">Kokoro TTS</SelectItem>
-                        <SelectItem value="chatterbox">Chatterbox TTS</SelectItem>
+                        <SelectItem value="chatterbox">Chatterbox (Faster)</SelectItem>
+                        <SelectItem value="chatterbox_turbo">Chatterbox Turbo</SelectItem>
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-muted-foreground">
@@ -1767,8 +1771,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     </>
                   )}
 
-                  {/* Voice Cloning - Chatterbox */}
-                  {(localSettings.ttsEngine === "chatterbox") && (
+                  {/* Voice Cloning - Chatterbox & Chatterbox Turbo */}
+                  {((localSettings.ttsEngine === "chatterbox") || (localSettings.ttsEngine === "chatterbox_turbo")) && (
                     <>
                       <div className="space-y-4">
                         <div>
@@ -1811,7 +1815,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({
                                       voice_id: result.voice_id,
-                                      engine: 'chatterbox'
+                                      engine: localSettings.ttsEngine
                                     })
                                   });
 
@@ -1856,7 +1860,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                   voice_id: value,
-                                  engine: 'chatterbox'
+                                  engine: localSettings.ttsEngine
                                 })
                               })
                                 .then(response => {
@@ -2058,10 +2062,70 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                                 </>
                               ) : (
                                 <>
-                                  <RotateCw className="mr-2 h-4 w-4" />
-                                  Reload Chatterbox
+                                  <RefreshCw className="mr-2 h-4 w-4" />
+                                  Reload Chatterbox (Faster)
                                 </>
                               )}
+                            </Button>
+                          </div>
+
+                          {/* Turbo VRAM Controls */}
+                          <div className="flex gap-3 mt-2">
+                            <Button
+                              variant="outline"
+                              onClick={async () => {
+                                try {
+                                  // Reuse state or add new one if strictly necessary, but reusing is fine for UI blocking
+                                  setIsUnloadingChatterbox(true);
+                                  const response = await fetch(`${TTS_API_URL}/tts/unload-chatterbox-turbo`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' }
+                                  });
+
+                                  const result = await response.json();
+
+                                  if (result.status === 'success') {
+                                    alert(`✅ ${result.message}`);
+                                  } else {
+                                    alert(`❌ Error: ${result.message || 'Failed to unload Chatterbox Turbo'}`);
+                                  }
+                                } catch (error) {
+                                  console.error('Error unloading Chatterbox Turbo:', error);
+                                  alert(`❌ Failed to unload Chatterbox Turbo: ${error.message}`);
+                                } finally {
+                                  setIsUnloadingChatterbox(false);
+                                }
+                              }}
+                              disabled={isUnloadingChatterbox || isReloadingChatterbox}
+                              className="flex-1"
+                            >
+                              <>
+                                <Power className="mr-2 h-4 w-4" />
+                                Unload Chatterbox Turbo
+                              </>
+                            </Button>
+
+                            <Button
+                              variant="outline"
+                              onClick={async () => {
+                                try {
+                                  setIsReloadingChatterbox(true);
+                                  const response = await fetch(`${TTS_API_URL}/tts/reload-chatterbox-turbo`, {
+                                    method: 'POST'
+                                  });
+                                  const result = await response.json();
+                                  alert(result.message);
+                                } catch (e) {
+                                  alert("Error: " + e.message);
+                                } finally {
+                                  setIsReloadingChatterbox(false);
+                                }
+                              }}
+                              disabled={isReloadingChatterbox || isUnloadingChatterbox}
+                              className="flex-1"
+                            >
+                              <RefreshCw className="mr-2 h-4 w-4" />
+                              Reload Turbo
                             </Button>
                           </div>
 

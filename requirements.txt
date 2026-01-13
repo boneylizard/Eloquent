@@ -37,6 +37,7 @@ coloredlogs
 colorlog
 compressed-tensors
 confection
+conformer
 contourpy
 csvw
 ctranslate2
@@ -221,6 +222,7 @@ pydantic
 pydantic_core
 pydub
 Pygments
+pykakasi
 pyloudnorm
 pynvml
 pyparsing
@@ -247,6 +249,7 @@ referencing
 regex
 requests
 requests-oauthlib
+resemble-perth
 resampy
 rfc3986
 rich
@@ -255,6 +258,7 @@ rpds-py
 ruamel.yaml
 ruamel.yaml.clib
 sacremoses
+s3tokenizer
 safetensors
 scikit-learn
 scikit_build_core
@@ -278,6 +282,7 @@ soupsieve
 sox
 soxr
 spacy
+spacy-pkuseg
 spacy-curated-transformers
 spacy-legacy
 spacy-loggers
