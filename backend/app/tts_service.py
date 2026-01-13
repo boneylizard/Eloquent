@@ -66,6 +66,22 @@ except ImportError:
     ChatterboxTTS = None
 
 try:
+    # Use the vendored version for Turbo to avoid conflicts
+    try:
+        from .chatterbox_turbo.tts_turbo import ChatterboxTurboTTS
+    except ImportError:
+        try:
+            from app.chatterbox_turbo.tts_turbo import ChatterboxTurboTTS
+        except ImportError:
+            from chatterbox_turbo.tts_turbo import ChatterboxTurboTTS
+    
+    startup_logger.info("✅ Chatterbox Turbo (Vendored) library loaded successfully")
+except Exception as e:
+    startup_logger = logging.getLogger(__name__)
+    startup_logger.warning(f"\n--- WARNING: Chatterbox Turbo (Vendored) not available: {e} ---")
+    ChatterboxTurboTTS = None
+
+try:
     from datasets import load_dataset
 except ImportError:
     startup_logger = logging.getLogger(__name__)
@@ -78,8 +94,10 @@ except ImportError:
 logger = logging.getLogger(__name__)
 tts_pipeline = None
 chatterbox_model = None
+chatterbox_turbo_model = None # NEW: Turbo model global
 speaker_embeddings = None
 CHATTERBOX_VOICE_WARMED_UP = False
+CHATTERBOX_TURBO_VOICE_WARMED_UP = False # NEW: Turbo warmup flag
 CHATTERBOX_EXECUTOR = None # Global executor to keep synthesis on one persistent thread
 
 def get_chatterbox_executor():
@@ -308,6 +326,13 @@ async def synthesize_speech(
             exaggeration=exaggeration, 
             cfg=cfg
         )
+    elif engine.lower() == 'chatterbox_turbo':
+        return await _synthesize_with_chatterbox_turbo(
+            cleaned_text,
+            audio_prompt_path=audio_prompt_path,
+            exaggeration=exaggeration, # Note: Turbo warns this is unused, but we pass it for compat
+            cfg=cfg
+        )
     else:
         # Default to Kokoro for unknown engines, fall back to Chatterbox if unavailable
         logger.warning(f"⚠️ Unknown engine '{engine}', using Kokoro.")
@@ -448,14 +473,14 @@ async def _synthesize_with_chatterbox(
         if audio_prompt_path and not CHATTERBOX_VOICE_WARMED_UP:
             def _warmup():
                 with torch.inference_mode():
-                    model.generate("warm up", language_id="en", audio_prompt_path=audio_prompt_path)
+                    model.generate("warm up", audio_prompt_path=audio_prompt_path)
             
             logger.info("🔥 [Chatterbox] Warming up voice reference on persistent thread...")
             await loop.run_in_executor(get_chatterbox_executor(), _warmup)
             CHATTERBOX_VOICE_WARMED_UP = True
         
         generation_kwargs = {
-            'language_id': 'en',  # Required for chatterbox-faster multilingual
+            # 'language_id': 'en',  # Removed: Not supported by current installed version
             'exaggeration': exaggeration,
             'cfg_weight': cfg,
         }
@@ -610,6 +635,136 @@ async def _synthesize_with_kokoro(text: str, voice: str) -> bytes:
         logger.error(f"❌ [Kokoro] Synthesis failed: {e}", exc_info=True)
         raise RuntimeError(f"Kokoro synthesis failed: {str(e)}")
 
+
+async def _synthesize_with_chatterbox_turbo(
+    text: str, 
+    audio_prompt_path: str = None,
+    exaggeration: float = 0.5,
+    cfg: float = 0.5
+) -> bytes:
+    """Synthesize speech using Chatterbox TTS (Turbo) and return raw audio bytes."""
+    global CHATTERBOX_TURBO_VOICE_WARMED_UP
+    import time
+    import tempfile
+    import os
+    import soundfile as sf
+    import asyncio
+    import torch
+    
+    loop = asyncio.get_event_loop()
+    
+    if audio_prompt_path and not os.path.isabs(audio_prompt_path):
+        voices_dir = Path(__file__).parent / "static" / "voice_references"
+        full_path = voices_dir / audio_prompt_path
+        if full_path.exists():
+            audio_prompt_path = str(full_path)
+        else:
+            audio_prompt_path = None
+    
+    try:
+        model = load_chatterbox_turbo_model()
+        if not model:
+            raise RuntimeError("Failed to load Chatterbox Turbo model")
+
+        # One-time voice warmup - MUST BE IN EXECUTOR
+        if audio_prompt_path and not CHATTERBOX_TURBO_VOICE_WARMED_UP:
+            def _warmup_turbo():
+                with torch.inference_mode():
+                    # Turbo generate signature: text, audio_prompt_path=None
+                    model.generate("warm up", audio_prompt_path=audio_prompt_path)
+            
+            logger.info("🔥 [Chatterbox Turbo] Warming up voice reference on persistent thread...")
+            await loop.run_in_executor(get_chatterbox_executor(), _warmup_turbo)
+            CHATTERBOX_TURBO_VOICE_WARMED_UP = True
+        
+        # Generation kwargs for Turbo
+        generation_kwargs = {
+            'temperature': 0.8,
+            # 'exaggeration': exaggeration, # Not supported in Turbo
+            # 'cfg_weight': cfg, # Not supported in Turbo
+        }
+        
+        if audio_prompt_path and os.path.exists(audio_prompt_path):
+            generation_kwargs['audio_prompt_path'] = audio_prompt_path
+        
+        synthesis_start = time.perf_counter()
+        
+        # CHECK IF TEXT NEEDS CHUNKING
+        # Using same logic as standard Chatterbox for paranoia/safety, though Turbo handles long text better
+        estimated_tokens = int(len(text) * 1.5)
+        
+        if estimated_tokens > 400:  # Use chunked generation for texts that might hit cache limits  
+            logger.info(f"🔀 [Turbo] Long text detected ({len(text)} chars, ~{estimated_tokens} tokens), using chunked generation")
+            
+            text_chunks = _split_text_for_chunked_generation(text, max_tokens=200)
+            logger.info(f"🔀 [Turbo] Split into {len(text_chunks)} chunks")
+            
+            all_audio_chunks = []
+            executor = get_chatterbox_executor()
+            
+            for i, chunk in enumerate(text_chunks):
+                logger.info(f"🔀 [Turbo] Generating chunk {i+1}/{len(text_chunks)} ({len(chunk)} chars)")
+                
+                def _generate_chunk_turbo(c=chunk): 
+                    with torch.inference_mode():
+                        return model.generate(c, **generation_kwargs)
+                
+                chunk_audio = await loop.run_in_executor(executor, _generate_chunk_turbo)
+                all_audio_chunks.append(chunk_audio)
+                
+                logger.info(f"✅ [Turbo] Chunk {i+1}/{len(text_chunks)} complete")
+            
+            audio_tensor = torch.cat(all_audio_chunks, dim=-1)
+            
+        else:
+            # STANDARD SINGLE GENERATION
+            def _generate_turbo():
+                with torch.inference_mode():
+                    return model.generate(text, **generation_kwargs)
+            
+            audio_tensor = await loop.run_in_executor(get_chatterbox_executor(), _generate_turbo)
+        
+        # Calculate and log RTF
+        synthesis_time = time.perf_counter() - synthesis_start
+        if hasattr(model, 'sr') and model.sr:
+            total_audio_length = audio_tensor.shape[-1] if hasattr(audio_tensor, 'shape') else len(audio_tensor)
+            audio_duration = total_audio_length / model.sr
+            rtf = synthesis_time / audio_duration
+            logger.info(f"🚀 [Turbo] RTF: {rtf:.3f} ({synthesis_time:.2f}s for {audio_duration:.2f}s audio)")
+
+        # Convert to audio bytes
+        if hasattr(audio_tensor, 'detach'):
+            audio_tensor = audio_tensor.detach()
+        if hasattr(audio_tensor, 'to'):
+            audio_tensor = audio_tensor.to('cpu')
+        
+        if hasattr(audio_tensor, 'numpy'):
+            audio_numpy = audio_tensor.numpy()
+        elif hasattr(audio_tensor, 'cpu'):
+            audio_numpy = audio_tensor.cpu().numpy()
+        else:
+            audio_numpy = audio_tensor
+        
+        if len(audio_numpy.shape) > 1:
+            audio_numpy = audio_numpy.squeeze()
+        
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        try:
+            sf.write(temp_path, audio_numpy, model.sr)
+            with open(temp_path, 'rb') as f:
+                audio_bytes = f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        
+        return audio_bytes
+
+    except Exception as e:
+        logger.error(f"Chatterbox Turbo synthesis failed: {e}")
+        raise RuntimeError(f"Chatterbox Turbo synthesis failed: {str(e)}")
+
 # --- NEW BACKEND STREAMING LOGIC ---
 
 
@@ -675,7 +830,7 @@ class TTSStreamer:
         import re
         
         # Chatterbox benefits from fast first chunk extraction
-        is_slow_engine = self._tts_settings.get('engine') == 'chatterbox'
+        is_slow_engine = self._tts_settings.get('engine') in ('chatterbox', 'chatterbox_turbo')
         is_first_extraction = is_slow_engine and not self._has_queued_before
 
         if is_first_extraction:
@@ -1085,6 +1240,49 @@ async def reload_chatterbox():
         return {"status": "error", "message": str(e)}
 
 
+@router.post("/tts/unload-chatterbox-turbo")
+async def unload_chatterbox_turbo():
+    """Unload Chatterbox Turbo model from VRAM"""
+    global chatterbox_turbo_model, CHATTERBOX_TURBO_VOICE_WARMED_UP
+    
+    try:
+        if chatterbox_turbo_model is None:
+            return {"status": "success", "message": "Chatterbox Turbo already unloaded"}
+        
+        del chatterbox_turbo_model
+        chatterbox_turbo_model = None
+        CHATTERBOX_TURBO_VOICE_WARMED_UP = False
+        
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        logger.info("✅ [Chatterbox Turbo] Model unloaded successfully")
+        return {"status": "success", "message": "Chatterbox Turbo unloaded"}
+        
+    except Exception as e:
+        logger.error(f"❌ [Chatterbox Turbo] Error unloading: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/tts/reload-chatterbox-turbo")
+async def reload_chatterbox_turbo():
+    """Reload Chatterbox Turbo model"""
+    global chatterbox_turbo_model
+    try:
+        if chatterbox_turbo_model is not None:
+             return {"status": "success", "message": "Already loaded"}
+        
+        model = load_chatterbox_turbo_model()
+        if model is None:
+            raise RuntimeError("Failed to load Chatterbox Turbo")
+            
+        return {"status": "success", "message": "Chatterbox Turbo loaded"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def comprehensive_model_warmup():
     """Warm up all models and compilation paths on startup using the persistent executor"""
     import time
@@ -1100,11 +1298,11 @@ def comprehensive_model_warmup():
             
             # 2. Basic model warm-up (default voice)
             with torch.inference_mode():
-                model.generate("Warming up the model for optimal performance.", language_id="en")
+                model.generate("Warming up the model for optimal performance.")
             
             # 3. Additional synthesis warm-up
             with torch.inference_mode():
-                model.generate("Testing additional synthesis for compilation.", language_id="en")
+                model.generate("Testing additional synthesis for compilation.")
             
             # 4. Voice cloning warm-up (if default voice file exists)
             voices_dir = Path(__file__).parent / "static" / "voice_references"
@@ -1117,7 +1315,7 @@ def comprehensive_model_warmup():
                         with torch.inference_mode():
                             model.generate(
                                 "Voice cloning warm up test.",
-                                language_id="en",
+                                # language_id="en", # Removed
                                 audio_prompt_path=str(voice_path)
                             )
                         global CHATTERBOX_VOICE_WARMED_UP
@@ -1140,6 +1338,58 @@ def comprehensive_model_warmup():
     future = executor.submit(_warmup_logic)
     future.result() # Synchronous wait
     logger.info("✅ [Chatterbox] Comprehensive warmup complete")
+
+
+def load_chatterbox_turbo_model():
+    """Load the vendored Chatterbox Turbo model"""
+    global chatterbox_turbo_model
+    
+    if ChatterboxTurboTTS is None:
+         raise RuntimeError("Chatterbox Turbo library failed to import.")
+
+    if chatterbox_turbo_model is None:
+        try:
+            target_device = get_tts_device()
+            logger.info(f"Loading Chatterbox TURBO TTS model onto device {target_device}...")
+            
+            # Force CUDA context if applicable (same logic as main Chatterbox)
+            if target_device.startswith('cuda:'):
+                import torch
+                device_id = int(target_device.split(':')[1])
+                torch.cuda.set_device(device_id)
+
+            chatterbox_turbo_model = ChatterboxTurboTTS.from_pretrained(device=target_device)
+            
+            # Basic warnup
+            if not os.environ.get('CUDA_VISIBLE_DEVICES', ''):
+                 with torch.inference_mode():
+                     chatterbox_turbo_model.generate("Turbo model warmup.", temperature=0.8)
+            
+            logger.info("✅ Chatterbox TURBO model loaded successfully.")
+
+            # Pre-cache voices from settings (similar logic to main Chatterbox)
+            settings = load_settings()
+            voice_cache = settings.get('voice_cache', [])
+            if voice_cache:
+                voices_dir = Path(__file__).parent / "static" / "voice_references"
+                for voice_entry in voice_cache:
+                    if voice_entry.get('engine') == 'chatterbox_turbo':
+                        voice_id = voice_entry.get('voice_id')
+                        if voice_id and voice_id != 'default':
+                            voice_path = voices_dir / voice_id
+                            if voice_path.exists():
+                                try:
+                                    chatterbox_turbo_model.prepare_conditionals(str(voice_path))
+                                    logger.info(f"🔥 [Turbo] Cached voice: {voice_id}")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ [Turbo] Failed to cache voice {voice_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to load Chatterbox Turbo model: {e}", exc_info=True)
+            chatterbox_turbo_model = None
+            raise RuntimeError(f"Failed to load Chatterbox Turbo model: {e}") from e
+
+    return chatterbox_turbo_model
 
 def load_chatterbox_model():
     """Enhanced model loading with comprehensive warm-up"""
