@@ -227,9 +227,19 @@ def _prepare_endpoint_request(model_name: str, request_data: dict):
     
     # --- CONTEXT PRUNING LOGIC ---
     # Smart context limit management to prevent upstream "input too long" errors.
-    # We assume a standard SAFE limit of 8192 tokens for most modern endpoints if not specified.
-    # Ideally, this should come from settings, but 8192 is a safe robust default for GPT-4/Mistral/etc.
-    CONTEXT_WINDOW_LIMIT = 8192
+    # We allow the limit to be configured in the endpoint settings (settings.json),
+    # defaulting to 8192 which is a safe common denominator (Chub.ai, etc.).
+    default_limit = 8192
+    configured_limit = endpoint_config.get('context_window')
+    
+    if configured_limit:
+        try:
+            CONTEXT_WINDOW_LIMIT = int(configured_limit)
+        except (ValueError, TypeError):
+            CONTEXT_WINDOW_LIMIT = default_limit
+    else:
+        CONTEXT_WINDOW_LIMIT = default_limit
+
     SAFETY_MARGIN = 200
     
     requested_gen_tokens = request_data.get('max_tokens', 2048)

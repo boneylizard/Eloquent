@@ -15,6 +15,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * Added **"Visualize Scene"** functionality to prompt LLM to automatically generate images based on the current chat context.
 * Added a **"Set BG"** button to set generated images as the chat background.
 * Added an Upscaler Model Directory setting in **Settings > Local SD / EloDiffusion**.
+* Added **Paralinguistic Tag Normalization** for Chatterbox Turbo, enabling support for expressive tags like `[laugh]`, `[sigh]`, and `[clear throat]`.
 
 ### Fixed
 
@@ -28,6 +29,11 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * **UI Polish**: Updated all message dismissal/delete buttons to be **neutral (white/gray)** by default to reduce visual clutter, only turning red on hover.
 * Fixed significant **Typing Lag** in the Chat interface.
 * Optimized the Chat component by memoizing message rendering (`ChatMessage`) and stabilizing event handlers. Inputting text no longer triggers re-rendering of the entire message history, keeping the UI snappy even in long conversations.
+* Fixed **Invisible Chat Buttons** where action buttons (Regenerate, Delete) were hidden on hover.
+* Fixed **Disappearing AI Responses**: Resolved a critical bug where responses starting with "Assistant:" were being deleted by the text cleaner.
+* Fixed- **OpenAI API Context Errors:** Added intelligent context pruning (preserves system + last user message) to prevent "input too long" errors. Default limit is 8192 tokens, but this is now **configurable per custom endpoint** in Settings > LLM Settings.
+* Fixed **Chatterbox Turbo Voice Cloning**: Restored correct voice reference passing for Chatterbox engines.
+* Fixed **Streaming TTS Tag Stripping**: Corrected regex logic to preserve paralinguistic tags (e.g., `[laugh]`, `[clear_throat]`) during streaming playback.
 
 ---
 

@@ -1193,6 +1193,21 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           }}
                         />
                       </div>
+                      <div>
+                        <Label className="text-xs">Context Window Limit</Label>
+                        <Input
+                          placeholder="Auto (8192)"
+                          type="number"
+                          min="1024"
+                          step="1024"
+                          value={endpoint.context_window || ''}
+                          onChange={(e) => {
+                            const updated = [...localSettings.customApiEndpoints];
+                            updated[index] = { ...endpoint, context_window: e.target.value };
+                            handleChange('customApiEndpoints', updated);
+                          }}
+                        />
+                      </div>
                     </div>
 
                     {endpoint.url.includes('openai.com') && (
