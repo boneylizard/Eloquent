@@ -199,7 +199,7 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Could not verify CUDA device isolation: {e}")
 
-def clean_markdown_for_tts(text: str) -> str:
+def clean_markdown_for_tts(text: str, engine: str = 'kokoro') -> str:
     """Removes common Markdown formatting and problematic characters for clearer TTS."""
     if not text:
         return ""
@@ -233,7 +233,12 @@ def clean_markdown_for_tts(text: str) -> str:
     text = re.sub(r'!\[(.*?)\]\(.*?\)', r'\1', text)
     
     # Remove punctuation marks but PRESERVE apostrophes, question marks, and exclamation marks
-    text = re.sub(r'[:;(){}[\]"""``~@#$%^&*+=<>|\\/_-]', '', text)
+    if engine.lower() == 'chatterbox_turbo':
+        # Preserve brackets [] for Chatterbox Turbo tags like [laugh]
+        text = re.sub(r'[:;(){}"``~@#$%^&*+=<>|\\/_-]', '', text)
+    else:
+        # Standard cleaning removes brackets
+        text = re.sub(r'[:;(){}[\]"""``~@#$%^&*+=<>|\\/_-]', '', text)
     
     text = re.sub(r'\s{2,}', ' ', text).strip()
     return text
@@ -302,7 +307,8 @@ async def synthesize_speech(
     Cleans input text, synthesizes speech using the specified engine, and returns raw audio bytes.
     Available engines: kokoro, chatterbox
     """
-    cleaned_text = clean_markdown_for_tts(text)
+    """
+    cleaned_text = clean_markdown_for_tts(text, engine=engine)
     if not cleaned_text:
         logger.warning("🗣️ [TTS Service] Text became empty after cleaning, skipping synthesis.")
         return b""
