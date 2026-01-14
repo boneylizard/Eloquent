@@ -307,8 +307,16 @@ async def synthesize_speech(
     Cleans input text, synthesizes speech using the specified engine, and returns raw audio bytes.
     Available engines: kokoro, chatterbox
     """
-    """
+
     cleaned_text = clean_markdown_for_tts(text, engine=engine)
+    
+    # Fallback: If using Chatterbox/Turbo and no audio_prompt_path is provided, 
+    # try to use the 'voice' parameter as the path (if it's not 'default' or 'af_heart')
+    if (engine.lower().startswith('chatterbox')) and not audio_prompt_path:
+        if voice and voice.lower() not in ('default', 'af_heart'):
+            audio_prompt_path = voice
+            logger.info(f"🗣️ [TTS Service] Adapting 'voice' parameter '{voice}' as audio_prompt_path")
+
     if not cleaned_text:
         logger.warning("🗣️ [TTS Service] Text became empty after cleaning, skipping synthesis.")
         return b""
