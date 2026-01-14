@@ -12,7 +12,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 * Added **Variable Upscaling Options** (2x, 3x, 4x) to the chat interface and Image Gen tab.
 * Added a **Model Selector** dropdown for choosing specific ESRGAN upscaler models (.pth).
-* Added **"Visualize Scene"** functionality to automatically generate images based on the current chat context.
+* Added **"Visualize Scene"** functionality to prompt LLM to automatically generate images based on the current chat context.
 * Added a **"Set BG"** button to set generated images as the chat background.
 * Added an Upscaler Model Directory setting in **Settings > Local SD / EloDiffusion**.
 
@@ -22,6 +22,9 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * Fixed the **Upscaler logic** to correctly handle image paths and utilize the backend `UpscaleManager`.
 * Resolved a crash (`useEffect` error) in the chat image component.
 * Fixed API mode compatibility for the "Visualize Scene" feature.
+* Fixed the **"Visualization failed"** error message to include a close (X) button, allowing it to be dismissed without a page reload.
+* Improved the **"Back" button** behavior in Chat. It now removes only the last message (acting as an "Undo") rather than deleting the entire user/bot exchange.
+* Added a **"Delete" (Trash/X)** button to **ALL** messages (User, Bot, System, and **Images**), giving you full control to remove any individual message from the history.
 
 ---
 
