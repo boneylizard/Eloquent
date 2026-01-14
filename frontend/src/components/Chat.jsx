@@ -380,31 +380,25 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
     }
   };
 
-  // Handle "back" - remove last user message and bot response
+  // Handle "back" - remove ONLY the last message (User or Bot)
   const handleBack = useCallback(() => {
     if (messages.length === 0) return;
 
-    // Find the last user message
-    let lastUserIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        lastUserIndex = i;
-        break;
+    // Remove only the very last message
+    // This allows undoing a specific generation or user input without wiping the whole turn
+    setMessages(prev => {
+      const lastMsg = prev[prev.length - 1];
+      const newMessages = prev.slice(0, -1);
+
+      // Clean up variants if we removed a message
+      if (lastMsg) {
+        setMessageVariants(v => {
+          const newV = { ...v };
+          delete newV[lastMsg.id];
+          return newV;
+        });
       }
-    }
-
-    if (lastUserIndex === -1) return; // No user message found
-
-    // Remove from last user message to the end (includes bot response if any)
-    setMessages(prev => prev.slice(0, lastUserIndex));
-
-    // Also clean up message variants for removed messages
-    setMessageVariants(prev => {
-      const newVariants = { ...prev };
-      messages.slice(lastUserIndex).forEach(msg => {
-        delete newVariants[msg.id];
-      });
-      return newVariants;
+      return newMessages;
     });
 
     // Stop any ongoing audio playback
@@ -2758,9 +2752,24 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
                                   </div>
                                 )}
 
-                                <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm]} className="prose prose-sm dark:prose-invert max-w-none">
-                                  {getCurrentVariantContent(msg.id, msg.content)}
-                                </ReactMarkdown>
+                                {msg.error ? (
+                                  <div className="bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-900 rounded p-3 relative pr-8 group">
+                                    <div className="text-sm text-red-600 dark:text-red-400 font-medium whitespace-pre-wrap">
+                                      {msg.content}
+                                    </div>
+                                    <button
+                                      onClick={() => setMessages(prev => prev.filter(m => m.id !== msg.id))}
+                                      className="absolute top-2 right-2 p-1 text-red-500 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-full transition-colors opacity-0 group-hover:opacity-100"
+                                      title="Dismiss error"
+                                    >
+                                      <X size={14} />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm]} className="prose prose-sm dark:prose-invert max-w-none">
+                                    {getCurrentVariantContent(msg.id, msg.content)}
+                                  </ReactMarkdown>
+                                )}
                               </>
                             )}
                           </div>
