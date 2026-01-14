@@ -199,11 +199,135 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Could not verify CUDA device isolation: {e}")
 
+def normalize_chatterbox_tags(text: str) -> str:
+    """
+    Normalizes a wide range of paralinguistic tag synonyms, variants, and hallucinations 
+    to the specific canonical set supported by Chatterbox Turbo.
+    
+    Handles:
+    1. Synonyms: "giggles" -> [laugh]
+    2. Variations: *sighs*, (laughing) -> [tag]
+    3. Plain text attempts in brackets: [guffaw] -> [laugh]
+    4. Unsupported tags: [screams] -> removed
+    """
+    if not text:
+        return ""
+        
+    canonical_map = {
+        '[laugh]': [
+            'laugh', 'laughs', 'laughing', 'laughter', 
+            'giggle', 'giggles', 'giggling', 
+            'chortle', 'chortling', 
+            'snicker', 'snickering', 
+            'guffaw', 'guffawing', 
+            'haha', 'hahaha', 'lol', 'lmao', 'rofl'
+        ],
+        '[chuckle]': [
+            'chuckle', 'chuckles', 'chuckling', 
+            'soft laugh', 'teehee', 'hehe'
+        ],
+        '[sigh]': [
+            'sigh', 'sighs', 'sighing', 'sighed', 
+            'exhale', 'exhaling', 'exhales', 
+            'phew', 'huff', 'huffing'
+        ],
+        '[groan]': [
+            'groan', 'groans', 'groaning', 'groaned', 
+            'moan', 'moans', 'moaning', 
+            'grunt', 'grunting', 'argh', 'ugh'
+        ],
+        '[gasp]': [
+            'gasp', 'gasps', 'gasping', 'gasped', 
+            'sharp breath', 'intake of breath'
+        ],
+        '[clear throat]': [
+            'clear throat', 'clears throat', 'clearing throat', 
+            'ahem', 'throat clear'
+        ],
+        '[cough]': [
+            'cough', 'coughs', 'coughing', 
+            'hack', 'hacking'
+        ],
+        '[sniff]': [
+            'sniff', 'sniffs', 'sniffing', 
+            'sniffle', 'sniffles', 'sniffling'
+        ],
+        '[shush]': [
+            'shush', 'shushes', 'shushing', 
+            'hush', 'hushing', 
+            'shh', 'shhh', 'be quiet'
+        ],
+        '[um]': [
+            'um', 'umm', 'uh', 'uhh', 'er', 'err', 'erm', 'ah', 'ahh'
+        ],
+        '[hm]': [
+            'hm', 'hmm', 'hmmm', 'hum', 'hums', 'humming'
+        ]
+    }
+    
+    # 1. Normalize Synonyms
+    # We look for patterns like: [word], *word*, (word)
+    # matching the synonyms case-insensitively
+    
+    normalized_text = text
+    
+    for canonical_tag, synonyms in canonical_map.items():
+        # Create a giant OR regex for all synonyms of this tag
+        # We perform replacement for each canonical tag group
+        # Sort synonyms by length descending to catch 'soft laugh' before 'laugh'
+        sorted_synonyms = sorted(synonyms, key=len, reverse=True)
+        escaped_synonyms = [re.escape(s) for s in sorted_synonyms]
+        pattern_str = '|'.join(escaped_synonyms)
+        
+        # Match [synonym], *synonym*, (synonym)
+        # We allow flexible whitespace inside the wrappers
+        regex = re.compile(
+            r'(\[|\*|\()\s*(' + pattern_str + r')\s*(\]|\*|\))', 
+            re.IGNORECASE
+        )
+        normalized_text = regex.sub(canonical_tag, normalized_text)
+
+    # 2. Cleanup "Hallucinated" or Unsupported Tags
+    # Chatterbox will read aloud any [...] that it doesn't recognize (or we strip the brackets and it reads the text).
+    # The requirement is to STRIP unsupported tags entirely.
+    
+    supported_tags = set(canonical_map.keys())
+    
+    def tag_validator(match):
+        content = match.group(0) # The full [tag]
+        # Check if it is exactly one of our supported tags
+        if content in supported_tags:
+            return content
+        else:
+            # It's an unsupported bracketed sequence.
+            # If it looks like a paralinguistic instruction (letters/spaces only), strip it.
+            # If it looks like legitimate text (numbers, special chars), keep it (but stripped of brackets later by clean_markdown).
+            # Heuristic: If it contains only letters and spaces/hyphens/underscores, assume it's a failed tag and delete.
+            inner_text = match.group(1)
+            if re.match(r'^[a-zA-Z\s\-_]+$', inner_text):
+                return "" # Delete entirely
+            return content # Keep (likely data)
+            
+    # Find all square bracket sequences
+    # Note: normalized_text already has our canonical tags in it
+    normalized_text = re.sub(r'\[(.*?)\]', tag_validator, normalized_text)
+    
+    # Clean up any double spaces created by deletions
+    normalized_text = re.sub(r'\s{2,}', ' ', normalized_text).strip()
+    
+    return normalized_text
+
 def clean_markdown_for_tts(text: str, engine: str = 'kokoro') -> str:
     """Removes common Markdown formatting and problematic characters for clearer TTS."""
     if not text:
         return ""
     import re
+    
+    # NEW: Apply Chatterbox Paralinguistic Normalization FIRST
+    if engine.lower().startswith('chatterbox'):
+        # Normalizes [giggles] -> [laugh], removes [screams], etc.
+        text = normalize_chatterbox_tags(text)
+        
     emoji_pattern = re.compile("["
         u"\U0001F600-\U0001F64F"
         u"\U0001F300-\U0001F5FF"
@@ -233,11 +357,12 @@ def clean_markdown_for_tts(text: str, engine: str = 'kokoro') -> str:
     text = re.sub(r'!\[(.*?)\]\(.*?\)', r'\1', text)
     
     # Remove punctuation marks but PRESERVE apostrophes, question marks, and exclamation marks
-    if engine.lower() == 'chatterbox_turbo':
-        # Preserve brackets [] for Chatterbox Turbo tags like [laugh]
-        text = re.sub(r'[:;(){}"``~@#$%^&*+=<>|\\/_-]', '', text)
+    # Remove punctuation marks but PRESERVE apostrophes, question marks, and exclamation marks
+    if engine.lower().startswith('chatterbox'):
+        # Preserve brackets [] and underscores/hyphens for Chatterbox tags like [laugh] or [clear_throat]
+        text = re.sub(r'[:;(){}"``~@#$%^&*+=<>|\\/]', '', text)
     else:
-        # Standard cleaning removes brackets
+        # Standard cleaning removes brackets and other special chars
         text = re.sub(r'[:;(){}[\]"""``~@#$%^&*+=<>|\\/_-]', '', text)
     
     text = re.sub(r'\s{2,}', ' ', text).strip()
