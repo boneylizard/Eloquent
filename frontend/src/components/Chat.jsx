@@ -2620,6 +2620,19 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
                                 >
                                   <RotateCcw size={12} />
                                 </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 text-red-400 hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                  onClick={() => setMessages(prev => prev.filter(m => m.id !== msg.id))}
+                                  disabled={isGenerating}
+                                  title="Delete message"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                  </svg>
+                                </Button>
                               </div>
                             </div>
                             <ReactMarkdown
@@ -2694,6 +2707,21 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
                                 >
                                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <polyline points="9,18 15,12 9,6" />
+                                  </svg>
+                                </Button>
+
+                                {/* Delete button */}
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 text-red-400 hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                  onClick={() => setMessages(prev => prev.filter(m => m.id !== msg.id))}
+                                  disabled={isGenerating}
+                                  title="Delete message"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
                                   </svg>
                                 </Button>
                               </div>
@@ -2776,6 +2804,21 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
                         </>
                       )}
                     </div>
+                    {/* Delete button for system messages that are NOT explicitly flagged as errors 
+                        (Error messages already handle their own delete button in the new block above) 
+                    */}
+                    {!msg.error && msg.role === 'system' && (
+                      <button
+                        onClick={() => setMessages(prev => prev.filter(m => m.id !== msg.id))}
+                        className="absolute -right-6 top-1/2 transform -translate-y-1/2 p-1 text-muted-foreground hover:text-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete system message"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      </button>
+                    )}
 
                     {msg.role === 'user' && renderUserAvatar()}
                   </div>

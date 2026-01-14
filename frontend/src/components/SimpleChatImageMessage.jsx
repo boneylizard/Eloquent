@@ -558,8 +558,18 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
               className='h-8 px-2 text-xs'
               title='View image in full size'
             >
-              <ZoomIn className='h-3 w-3 mr-1' />
               View
+            </Button>
+
+            <Button
+              size='sm'
+              variant='ghost'
+              onClick={() => setMessages(prev => prev.filter(m => m.id !== message.id))}
+              className='h-8 px-2 text-xs text-red-500 hover:text-red-600 hover:bg-red-50'
+              title='Delete image message'
+            >
+              <X className='h-3 w-3 mr-1' />
+              Delete
             </Button>
           </div>
         </div>
