@@ -6,6 +6,25 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-14
+
+### Added
+
+* Added **Variable Upscaling Options** (2x, 3x, 4x) to the chat interface and Image Gen tab.
+* Added a **Model Selector** dropdown for choosing specific ESRGAN upscaler models (.pth).
+* Added **"Visualize Scene"** functionality to automatically generate images based on the current chat context.
+* Added a **"Set BG"** button to set generated images as the chat background.
+* Added an Upscaler Model Directory setting in **Settings > Local SD / EloDiffusion**.
+
+### Fixed
+
+* Fixed the **Chat Background Image** to cover the entire screen behind messages (previously obscured by the message scroll area).
+* Fixed the **Upscaler logic** to correctly handle image paths and utilize the backend `UpscaleManager`.
+* Resolved a crash (`useEffect` error) in the chat image component.
+* Fixed API mode compatibility for the "Visualize Scene" feature.
+
+---
+
 ## 2026-01-13
 
 ### Added

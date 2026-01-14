@@ -75,6 +75,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     ttsCfg: contextSettings.ttsCfg ?? 0.5,
     ttsSpeedMode: contextSettings.ttsSpeedMode ?? 'standard',
     sdModelDirectory: contextSettings.sdModelDirectory ?? '',
+    upscalerModelDirectory: contextSettings.upscalerModelDirectory ?? '', // Add Upscaler Directory
     sdSteps: contextSettings.sdSteps ?? 20,
     sdSampler: contextSettings.sdSampler ?? 'Euler a',
     sdCfgScale: contextSettings.sdCfgScale ?? 7.0,
@@ -2428,6 +2429,54 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                 <p className="text-xs text-muted-foreground">
                   Directory containing ADetailer .pt model files. Restart backend for changes to take effect.
                 </p>
+              </div>
+              <Separator />
+
+              {/* Upscaler Configuration */}
+              <div className="space-y-4">
+                <h3 className="text-md font-medium">Upscaler Configuration</h3>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="upscaler-directory">Upscaler Models Directory (ESRGAN .pth)</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="upscaler-directory"
+                        value={localSettings.upscalerModelDirectory || ''}
+                        className="max-w-xs"
+                        onChange={(e) => handleChange('upscalerModelDirectory', e.target.value)}
+                        placeholder="C:\stable-diffusion-webui\models\ESRGAN"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          if (localSettings.upscalerModelDirectory) {
+                            fetch(`${PRIMARY_API_URL}/models/update-upscaler-dir`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ directory: localSettings.upscalerModelDirectory })
+                            })
+                              .then(response => response.json())
+                              .then(data => {
+                                if (data.status === 'success') {
+                                  alert(`Upscaler directory updated!\n\n${data.message}`);
+                                } else {
+                                  alert(`Error: ${data.message || 'Failed to update directory'}`);
+                                }
+                              })
+                              .catch(err => {
+                                console.error("Error updating directory:", err);
+                                alert("Failed to update directory.");
+                              });
+                          } else {
+                            alert("Please enter a directory path first.");
+                          }
+                        }}
+                      >
+                        <Save className="mr-1 h-4 w-4" />Save
+                      </Button>
+                    </div>
+                  </div>
+                </div>
               </div>
               <Separator />
 

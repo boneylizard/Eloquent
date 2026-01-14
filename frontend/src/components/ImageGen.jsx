@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../contexts/AppContext';
 import { Button } from './ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { Separator } from './ui/separator';
@@ -9,31 +10,32 @@ import { Label } from './ui/label';
 import { Card, CardContent } from './ui/card';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
-import { 
-  Settings, 
-  ImagePlus, 
-  Loader2, 
-  Download, 
-  Copy, 
-  Trash2, 
+import {
+  Settings,
+  ImagePlus,
+  Loader2,
+  Download,
+  Copy,
+  Trash2,
   RefreshCw,
   AlertTriangle,
   Image as ImageIcon
 } from 'lucide-react';
 
 const ImageGen = () => {
-  const { 
-    sdStatus, 
-    checkSdStatus, 
-    generateImage, 
-    generatedImages, 
+  const {
+    sdStatus,
+    checkSdStatus,
+    generateImage,
+    generatedImages,
     isImageGenerating,
     apiError,
     clearError,
     PRIMARY_API_URL,
-    SECONDARY_API_URL
+    SECONDARY_API_URL,
+    setBackgroundImage // Add this
   } = useApp();
-  
+
   // Image generation settings
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
@@ -43,29 +45,30 @@ const ImageGen = () => {
   const [guidanceScale, setGuidanceScale] = useState(7.0);
   const [sampler, setSampler] = useState('Euler a');
   const [seed, setSeed] = useState(-1);
-  
+
   // UI State
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  const [scaleFactor, setScaleFactor] = useState("2");
   const [selectedImage, setSelectedImage] = useState(null);
   const [samplers, setSamplers] = useState([
-    'Euler a', 'Euler', 'LMS', 'Heun', 'DPM2', 'DPM2 a', 
+    'Euler a', 'Euler', 'LMS', 'Heun', 'DPM2', 'DPM2 a',
     'DPM++ 2S a', 'DPM++ 2M', 'DPM++ SDE', 'DDIM'
   ]);
-  
+
   // Determine the API URL to use for image paths
   const API_URL = SECONDARY_API_URL || PRIMARY_API_URL;
-  
+
   // Check SD status on mount
   useEffect(() => {
     checkSdStatus();
   }, [checkSdStatus]);
-  
+
   // Handle prompt submission
   const handleGenerateImage = async (e) => {
     e.preventDefault();
-    
+
     if (!prompt.trim()) return;
-    
+
     await generateImage(prompt, {
       negative_prompt: negativePrompt,
       width,
@@ -76,23 +79,23 @@ const ImageGen = () => {
       seed
     });
   };
-  
+
   // Refresh SD status
   const handleRefreshStatus = async () => {
     setIsCheckingStatus(true);
     await checkSdStatus();
     setIsCheckingStatus(false);
   };
-  
+
   // View image details
   const handleViewImage = (image) => {
     setSelectedImage(image);
   };
-  
+
   // Download image
   const handleDownloadImage = (imagePath) => {
     const filename = imagePath.split('/').pop();
-    
+
     // Create a link and trigger download
     const link = document.createElement('a');
     link.href = `${API_URL}/static/images/${filename}`;
@@ -101,21 +104,21 @@ const ImageGen = () => {
     link.click();
     document.body.removeChild(link);
   };
-  
+
   // Copy prompt to clipboard
   const handleCopyPrompt = (text) => {
     navigator.clipboard.writeText(text);
   };
-  
+
   // Get image URL helper
   const getImageUrl = (imagePath) => {
     if (!imagePath) return '';
-    
+
     // Handle different path formats
     const filename = imagePath.split('/').pop();
     return `${API_URL}/static/images/${filename}`;
   };
-  
+
   return (
     <div className="container max-w-6xl mx-auto py-6">
       <div className="flex flex-col md:flex-row gap-6">
@@ -124,17 +127,17 @@ const ImageGen = () => {
           <Card>
             <CardContent className="p-6">
               <h2 className="text-2xl font-bold mb-4">Image Generation</h2>
-              
+
               {!sdStatus.automatic1111 && (
                 <Alert className="mb-4">
                   <AlertTriangle className="h-4 w-4" />
                   <AlertTitle>Stable Diffusion Not Available</AlertTitle>
                   <AlertDescription>
                     Please make sure Automatic1111 WebUI is running on http://127.0.0.1:7860/
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      className="mt-2" 
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
                       onClick={handleRefreshStatus}
                       disabled={isCheckingStatus}
                     >
@@ -153,7 +156,7 @@ const ImageGen = () => {
                   </AlertDescription>
                 </Alert>
               )}
-              
+
               {apiError && (
                 <Alert variant="destructive" className="mb-4">
                   <AlertDescription className="flex justify-between items-center">
@@ -162,7 +165,7 @@ const ImageGen = () => {
                   </AlertDescription>
                 </Alert>
               )}
-              
+
               <form onSubmit={handleGenerateImage} className="space-y-4">
                 <div>
                   <Label htmlFor="prompt">Prompt</Label>
@@ -176,7 +179,7 @@ const ImageGen = () => {
                     disabled={isImageGenerating || !sdStatus.automatic1111}
                   />
                 </div>
-                
+
                 <div>
                   <Label htmlFor="negativePrompt">Negative Prompt</Label>
                   <Textarea
@@ -188,9 +191,9 @@ const ImageGen = () => {
                     disabled={isImageGenerating || !sdStatus.automatic1111}
                   />
                 </div>
-                
+
                 <Separator />
-                
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label htmlFor="width">Width: {width}px</Label>
@@ -204,7 +207,7 @@ const ImageGen = () => {
                       disabled={isImageGenerating || !sdStatus.automatic1111}
                     />
                   </div>
-                  
+
                   <div>
                     <Label htmlFor="height">Height: {height}px</Label>
                     <Slider
@@ -218,7 +221,7 @@ const ImageGen = () => {
                     />
                   </div>
                 </div>
-                
+
                 <div>
                   <Label htmlFor="steps">Steps: {steps}</Label>
                   <Slider
@@ -231,7 +234,7 @@ const ImageGen = () => {
                     disabled={isImageGenerating || !sdStatus.automatic1111}
                   />
                 </div>
-                
+
                 <div>
                   <Label htmlFor="guidanceScale">Guidance Scale: {guidanceScale}</Label>
                   <Slider
@@ -244,7 +247,7 @@ const ImageGen = () => {
                     disabled={isImageGenerating || !sdStatus.automatic1111}
                   />
                 </div>
-                
+
                 <div>
                   <Label htmlFor="sampler">Sampler</Label>
                   <select
@@ -259,7 +262,7 @@ const ImageGen = () => {
                     ))}
                   </select>
                 </div>
-                
+
                 <div>
                   <Label htmlFor="seed">Seed ({seed < 0 ? 'random' : seed})</Label>
                   <div className="flex gap-2">
@@ -282,7 +285,7 @@ const ImageGen = () => {
                     </Button>
                   </div>
                 </div>
-                
+
                 <Button
                   type="submit"
                   className="w-full"
@@ -304,13 +307,13 @@ const ImageGen = () => {
             </CardContent>
           </Card>
         </div>
-        
+
         {/* Gallery Column */}
         <div className="w-full md:w-2/3">
           <Card>
             <CardContent className="p-6">
               <h2 className="text-2xl font-bold mb-4">Generated Images</h2>
-              
+
               {generatedImages.length === 0 ? (
                 <div className="text-center py-10 border border-dashed rounded-lg">
                   <ImageIcon className="mx-auto h-12 w-12 text-muted-foreground" />
@@ -321,8 +324,8 @@ const ImageGen = () => {
                   {generatedImages.map((image) => (
                     <Card key={image.id} className="overflow-hidden">
                       <CardContent className="p-0">
-                        <div 
-                          className="h-40 bg-cover bg-center cursor-pointer" 
+                        <div
+                          className="h-40 bg-cover bg-center cursor-pointer"
                           style={{ backgroundImage: `url(${getImageUrl(image.path)})` }}
                           onClick={() => handleViewImage(image)}
                         />
@@ -331,17 +334,17 @@ const ImageGen = () => {
                             {image.prompt}
                           </p>
                           <div className="flex justify-end mt-2 space-x-1">
-                            <Button 
-                              size="icon" 
-                              variant="ghost" 
+                            <Button
+                              size="icon"
+                              variant="ghost"
                               onClick={() => handleCopyPrompt(image.prompt)}
                               title="Copy prompt"
                             >
                               <Copy className="h-4 w-4" />
                             </Button>
-                            <Button 
-                              size="icon" 
-                              variant="ghost" 
+                            <Button
+                              size="icon"
+                              variant="ghost"
                               onClick={() => handleDownloadImage(image.path)}
                               title="Download image"
                             >
@@ -358,7 +361,7 @@ const ImageGen = () => {
           </Card>
         </div>
       </div>
-      
+
       {/* Image Details Dialog */}
       <Dialog open={!!selectedImage} onOpenChange={() => setSelectedImage(null)}>
         <DialogContent className="max-w-2xl">
@@ -368,36 +371,36 @@ const ImageGen = () => {
           {selectedImage && (
             <div className="space-y-4">
               <div className="relative aspect-square overflow-hidden rounded-lg">
-                <img 
-                  src={getImageUrl(selectedImage.path)} 
+                <img
+                  src={getImageUrl(selectedImage.path)}
                   alt={selectedImage.prompt}
                   className="object-contain w-full h-full"
                 />
               </div>
-              
+
               <div className="space-y-2">
                 <div>
                   <Label className="font-medium">Prompt</Label>
                   <div className="flex items-start mt-1">
                     <p className="text-sm flex-1">{selectedImage.prompt}</p>
-                    <Button 
-                      size="icon" 
-                      variant="ghost" 
+                    <Button
+                      size="icon"
+                      variant="ghost"
                       onClick={() => handleCopyPrompt(selectedImage.prompt)}
                     >
                       <Copy className="h-4 w-4" />
                     </Button>
                   </div>
                 </div>
-                
+
                 {selectedImage.negative_prompt && (
                   <div>
                     <Label className="font-medium">Negative Prompt</Label>
                     <div className="flex items-start mt-1">
                       <p className="text-sm flex-1">{selectedImage.negative_prompt}</p>
-                      <Button 
-                        size="icon" 
-                        variant="ghost" 
+                      <Button
+                        size="icon"
+                        variant="ghost"
                         onClick={() => handleCopyPrompt(selectedImage.negative_prompt)}
                       >
                         <Copy className="h-4 w-4" />
@@ -405,7 +408,7 @@ const ImageGen = () => {
                     </div>
                   </div>
                 )}
-                
+
                 <div className="grid grid-cols-2 gap-2 mt-2">
                   <div>
                     <Label className="font-medium">Size</Label>
@@ -428,8 +431,70 @@ const ImageGen = () => {
                     <p className="text-sm">{selectedImage.seed}</p>
                   </div>
                 </div>
-                
-                <div className="flex justify-end mt-4">
+
+                <div className="flex justify-end mt-4 gap-2">
+                  <div className="flex items-center gap-1">
+                    <Select value={scaleFactor} onValueChange={setScaleFactor}>
+                      <SelectTrigger className="h-9 w-[70px] px-2 bg-transparent text-secondary-foreground border-input">
+                        <SelectValue placeholder="2x" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="2">2x</SelectItem>
+                        <SelectItem value="3">3x</SelectItem>
+                        <SelectItem value="4">4x</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        if (!selectedImage) return;
+                        try {
+                          const response = await fetch(`${PRIMARY_API_URL}/sd-local/upscale`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              image_url: getImageUrl(selectedImage.path),
+                              scale_factor: parseFloat(scaleFactor),
+                              strength: 0.2,
+                              prompt: selectedImage.prompt,
+                              // We don't have GPU ID in image metadata usually, default to 0
+                              gpu_id: 0
+                            })
+                          });
+
+                          if (!response.ok) throw new Error('Upscale failed');
+
+                          const result = await response.json();
+                          if (result.status === 'success') {
+                            // Close dialog and refresh (or show success)
+                            setSelectedImage(null);
+                            handleRefreshStatus(); // To refresh gallery
+                            // Ideally we'd show the new image immediately
+                          }
+                        } catch (e) {
+                          console.error('Upscale error:', e);
+                        }
+                      }}
+                    >
+                      <ArrowUpCircle className="mr-2 h-4 w-4" />
+                      Upscale
+                    </Button>
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      if (selectedImage) {
+                        setBackgroundImage(getImageUrl(selectedImage.path));
+                        // Optional: show toast
+                      }
+                    }}
+                  >
+                    <ImageIcon className="mr-2 h-4 w-4" />
+                    Set BG
+                  </Button>
+
                   <Button onClick={() => handleDownloadImage(selectedImage.path)}>
                     <Download className="mr-2 h-4 w-4" />
                     Download
