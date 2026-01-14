@@ -149,7 +149,7 @@ const ChatMessage = memo(({
     return (
         <div
             className={cn(
-                "my-3 p-3 rounded-lg flex items-start gap-3 shadow-sm",
+                "my-3 p-3 rounded-lg flex items-start gap-3 shadow-sm group",
                 msg.role === 'user' ? 'bg-primary/10 justify-end ml-10' :
                     msg.role === 'system' ? 'bg-yellow-100 dark:bg-yellow-900/20 text-center mx-auto max-w-[80%]' :
                         msg.modelId === 'primary' ? 'bg-blue-100 dark:bg-blue-900/20 mr-10' :

@@ -11,37 +11,33 @@
  */
 export function cleanModelOutput(text, isDualChat = false) {
   if (!text) return "";
-  
+
   // Special handling for dual chat mode
   if (isDualChat) {
     return cleanDualChatOutput(text);
   }
-  
+
   // --- Standard cleaning for normal mode ---
-  
+
   // 1. Handle common meta-commentary and instruction leakage at the beginning
   const beginningPatterns = [
     // Meta-commentary about completing responses
     /^(?:In order|To indicate|To signal|To let you know|To show|To mark|To ensure) .*?(?:completion|finished|complete|end|done)[^.]*\./i,
     /^(?:I'll|I will) (?:now|just|simply) (?:respond|answer|provide)[^.]*\./i,
     /^(?:I hope|I trust|I believe) (?:this|that|my|the) (?:response|answer|information|explanation) (?:is|was|has been)[^.]*\./i,
-    
+
     // Phrases that acknowledge instructions
     /^As (?:instructed|requested|per your request|mentioned in the instructions)[^.]*\./i,
     /^Following (?:your|the) instructions[^.]*\./i,
     /^According to (?:your|the) instructions[^.]*\./i,
-    
+
     // Stock response beginnings
     /^(?:I'd be happy to|I'll help you with that|Sure,? (?:I can|here's|let me)|Certainly)[^.]*\./i,
     /^(?:Here is|Here's|Below is|The following is)[^.]*\./i,
-    /^(?:Let me|I will|I'll) (?:provide|give|share|offer)[^.]*\./i,
-    
-    // Assistant prefixes
-    /^(###\s*)?((assistant|ai|bot|claude|llm|chatbot|gpt|model):\s*)/i,
-    /^\*\*\s*assistant\s*\*\*\s*:/i
+    /^(?:Let me|I will|I'll) (?:provide|give|share|offer)[^.]*\./i
   ];
-  
-  // Apply each beginning pattern replacement
+
+  // Apply each beginning pattern replacement (for full sentences)
   let cleaned = text;
   for (const pattern of beginningPatterns) {
     const match = cleaned.match(pattern);
@@ -52,7 +48,17 @@ export function cleanModelOutput(text, isDualChat = false) {
       }
     }
   }
-  
+
+  // 1b. Handle simple Assistant prefixes (just strip the prefix, don't kill the sentence)
+  const prefixPatterns = [
+    /^(###\s*)?((assistant|ai|bot|claude|llm|chatbot|gpt|model):\s*)/i,
+    /^\*\*\s*assistant\s*\*\*\s*:/i
+  ];
+
+  for (const pattern of prefixPatterns) {
+    cleaned = cleaned.replace(pattern, "");
+  }
+
   // 2. Handle mid-text assistant interruptions and meta-commentary
   // These regex patterns target common formats of assistant interruptions
   const midTextPatterns = [
@@ -63,12 +69,12 @@ export function cleanModelOutput(text, isDualChat = false) {
     // Mid-text meta-commentary
     /\n\s*(?:to signal|to indicate|to mark|to show|to let you know|to ensure) (?:completion|that I'm done|I've finished|the end)[^.]*\./gi
   ];
-  
+
   // Apply each pattern replacement
   midTextPatterns.forEach(pattern => {
     cleaned = cleaned.replace(pattern, "\n");
   });
-  
+
   // 3. Truncate at any user/human markers (indicating a new turn)
   const userMarkers = [
     /###\s*user:/i,
@@ -79,14 +85,14 @@ export function cleanModelOutput(text, isDualChat = false) {
     /\n*\[user\]:/i,
     /\*\*user\*\*:/i  // Bold markdown user marker
   ];
-  
+
   for (const marker of userMarkers) {
     const match = cleaned.match(marker);
     if (match && match.index !== undefined) {
       cleaned = cleaned.substring(0, match.index).trim();
     }
   }
-  
+
   // 4. Remove trailing continuation markers and meta-commentary endings
   const trailingPatterns = [
     // Standard continuation markers
@@ -95,7 +101,7 @@ export function cleanModelOutput(text, isDualChat = false) {
     /###\s*$/m,                          // "###" with optional whitespace
     /continue\s*(>>>|→|—|-->|→→→)$/i,    // "continue >>>" or similar
     /\[continue\]$/i,                    // "[continue]"
-    
+
     // Meta-commentary endings
     /\s*(?:Is there anything else|Do you need|Let me know|Hope this helps|If you have any).*?$/i,
     /\s*Please feel free to.*?$/i,
@@ -103,20 +109,20 @@ export function cleanModelOutput(text, isDualChat = false) {
     /\s*I'm here to.*?$/i,
     /\s*(?:to indicate|to signal|to mark|to show) (?:completion|the end|that I'm done|I've finished).*?$/i
   ];
-  
+
   trailingPatterns.forEach(pattern => {
     cleaned = cleaned.replace(pattern, "");
   });
-  
+
   // 5. Remove XML-like tags that some models generate
   cleaned = cleaned.replace(/<\/?assistant>|<\/?ai>|<\/?response>|<\/?answer>|<\/?completion>/g, "");
-  
+
   // 6. Normalize whitespace - collapse multiple newlines to max 2
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
-  
+
   // 7. Trim leading/trailing whitespace
   cleaned = cleaned.trim();
-  
+
   return cleaned;
 }
 
@@ -127,10 +133,10 @@ export function cleanModelOutput(text, isDualChat = false) {
  */
 function cleanDualChatOutput(text) {
   if (!text) return "";
-  
+
   // 1. Remove control phrases that keep appearing
   let cleaned = text;
-  
+
   // Remove meta-commentary and instruction leakage more aggressively
   const metaCommentaryPatterns = [
     // Beginning patterns
@@ -141,13 +147,13 @@ function cleanDualChatOutput(text) {
     /^\s*(?:I hope|I trust|I believe) (?:this|that|my|the) (?:response|answer|information|explanation) (?:is|was|has been)[^.]*\./i,
     /^\s*(?:I'd be happy to|I'll help you with that|Sure,? (?:I can|here's|let me)|Certainly)[^.]*\./i,
     /^\s*(?:Here is|Here's|Below is|The following is)[^.]*\./i,
-    
+
     // Mid-text patterns
     /\s+to\s+(signal|indicate|finish|return|mark|show|let).*?(response|answer|end|complete|stop|control|finished)[^.]*\./gi,
     /\s+This (?:answer|response) (?:is|was) provided to (?:help|address|clarify)[^.]*\./gi,
     /\s+I have (?:completed|finished|prepared) my (?:response|answer|analysis)[^.]*\./gi
   ];
-  
+
   // Apply all patterns
   for (const pattern of metaCommentaryPatterns) {
     const match = cleaned.match(pattern);
@@ -164,21 +170,21 @@ function cleanDualChatOutput(text) {
       }
     }
   }
-  
+
   // 2. Remove thinking sections
   cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/g, "");
-  
+
   // 3. Remove The Assistant markers with enhanced patterns
   const assistantMarkerPatterns = [
     /\s*(\|?—\s*The Assistant\s*\|?|\(The Assistant\)|\(?\|?—.*?Assistant.*?\|?\)?)\s*/g,
     /\s*(\|?—\s*The AI\s*\|?|\(The AI\)|\(?\|?—.*?AI.*?\|?\)?)\s*/g,
     /\s*(\|?—\s*The Model\s*\|?|\(The Model\)|\(?\|?—.*?Model.*?\|?\)?)\s*/g
   ];
-  
+
   assistantMarkerPatterns.forEach(pattern => {
     cleaned = cleaned.replace(pattern, "\n\n");
   });
-  
+
   // 4. Remove generic endings that plague dual chat
   const genericEndings = [
     /Feel free to share any.*?I may have missed\.$/i,
@@ -191,15 +197,15 @@ function cleanDualChatOutput(text) {
     /I'm here if you need.*?$/i,
     /Is there anything else.*?$/i
   ];
-  
+
   genericEndings.forEach(pattern => {
     cleaned = cleaned.replace(pattern, "");
   });
-  
+
   // 5. Ensure proper formatting
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n"); // Normalize excessive newlines
   cleaned = cleaned.trim();
-  
+
   return cleaned;
 }
 
@@ -209,10 +215,10 @@ function cleanDualChatOutput(text) {
  */
 export function processDualChatOutput(text, modelName) {
   if (!text) return "";
-  
+
   // First apply the dual chat cleaning
   let processed = cleanDualChatOutput(text);
-  
+
   // Ensure there's a sensible ending if needed
   if (!processed.match(/[.!?]\s*$/)) {
     const lastChar = processed.slice(-1);
@@ -221,7 +227,7 @@ export function processDualChatOutput(text, modelName) {
       processed += ".";
     }
   }
-  
+
   return processed;
 }
 
@@ -231,24 +237,24 @@ export function processDualChatOutput(text, modelName) {
  */
 export function stripMetaCommentary(text) {
   if (!text) return "";
-  
+
   const metaPatterns = [
     // Beginning meta-commentary
     /^(?:In order|To indicate|To signal|To let you know|To show|To mark|To ensure) .*?(?:completion|finished|complete|end|done)[^.]*\./i,
     /^(?:I'll|I will) (?:now|just|simply) (?:respond|answer|provide)[^.]*\./i,
     /^As (?:instructed|requested|per your request|mentioned in the instructions)[^.]*\./i,
-    
+
     // Mid-text meta-commentary
     /\s+(?:to signal|to indicate|to mark|to show|to let you know|to ensure) (?:completion|that I'm done|I've finished|the end)[^.]*\./gi,
-    
+
     // Ending meta-commentary
     /\s*(?:In conclusion|To sum up|To summarize|In summary),.*?(?:to signal|to indicate|to mark|to show) (?:completion|the end|that I'm done|I've finished).*?$/i,
     /\s*This (?:answer|response) has been provided to (?:help|address|clarify).*?$/i,
     /\s*I have (?:completed|finished|prepared) my (?:response|answer|analysis).*?$/i
   ];
-  
+
   let cleaned = text;
-  
+
   // Apply all patterns
   for (const pattern of metaPatterns) {
     if (pattern.toString().includes('^')) {
@@ -268,6 +274,6 @@ export function stripMetaCommentary(text) {
       cleaned = cleaned.replace(pattern, " ");
     }
   }
-  
+
   return cleaned.trim();
 }

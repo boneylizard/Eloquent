@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 import asyncio
 import logging
 import httpx
+import tiktoken # Added for accurate token counting
 from .model_manager import ModelManager
 from . import inference
 from pathlib import Path
@@ -110,6 +111,94 @@ def get_configured_endpoint(model_id: str = None):
     except Exception as e:
         logger.error(f"Error reading settings: {e}")
         return None
+
+def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
+    """Return the number of tokens used by a list of messages.
+    Adapted from OpenAI cookbook."""
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        # Fallback to cl100k_base for newer models if unknown
+        encoding = tiktoken.get_encoding("cl100k_base")
+        
+    tokens_per_message = 3 # every message follows <|start|>{role/name}\n{content}<|end|>\n
+    tokens_per_name = 1
+    
+    num_tokens = 0
+    for message in messages:
+        num_tokens += tokens_per_message
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(str(value)))
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
+    return num_tokens
+
+def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str = "gpt-3.5-turbo"):
+    """
+    Prunes the message history to fit within max_input_tokens.
+    Strategies:
+    1. ALWAYS keep the System message (if present at index 0).
+    2. ALWAYS keep the LAST user message (index -1).
+    3. Remove messages from the beginning of the history (after system) until it fits.
+    """
+    if not messages:
+        return [], 0, 0
+        
+    current_tokens = num_tokens_from_messages(messages, model_name)
+    original_tokens = current_tokens
+    
+    # If we are already under the limit, return early!
+    if current_tokens <= max_input_tokens:
+        return messages, original_tokens, current_tokens
+        
+    # Identification
+    has_system = messages[0]['role'] == 'system'
+    system_msg = messages[0] if has_system else None
+    
+    # We must preserve the last message at absolute minimum
+    last_msg = messages[-1]
+    
+    # Define the "prunable" slice
+    # If system exists, skipping index 0. Always skipping index -1.
+    start_index = 1 if has_system else 0
+    end_index = len(messages) - 1
+    
+    # If there's nothing to prune (e.g. only system + last msg), we can't do much but return them
+    if start_index >= end_index:
+        return messages, original_tokens, current_tokens
+        
+    # Create the mutable list of middle messages
+    middle_messages = messages[start_index:end_index]
+    
+    # Iteratively remove from the front of middle_messages until we fit
+    # Or until middle is empty
+    
+    while middle_messages:
+        # Reconstruct the potential new history
+        candidate_history = []
+        if system_msg:
+            candidate_history.append(system_msg)
+        candidate_history.extend(middle_messages)
+        candidate_history.append(last_msg)
+        
+        token_count = num_tokens_from_messages(candidate_history, model_name)
+        
+        if token_count <= max_input_tokens:
+            return candidate_history, original_tokens, token_count
+            
+        # If still too big, pop the oldest message from middle
+        middle_messages.pop(0)
+        
+    # Worst case: only system + last message
+    final_fallback = []
+    if system_msg:
+        final_fallback.append(system_msg)
+    final_fallback.append(last_msg)
+    
+    final_count = num_tokens_from_messages(final_fallback, model_name)
+    return final_fallback, original_tokens, final_count
+
 def _prepare_endpoint_request(model_name: str, request_data: dict):
     """Prepare endpoint config and URL - returns (endpoint_config, url, request_data) or raises HTTPException"""
     endpoint_config = get_configured_endpoint(model_name)
@@ -133,9 +222,40 @@ def _prepare_endpoint_request(model_name: str, request_data: dict):
         if configured_model:
             request_data['model'] = configured_model
         else:
-            # Use a generic default that most OpenAI-compatible APIs accept
+             # Use a generic default that most OpenAI-compatible APIs accept
             request_data['model'] = 'gpt-3.5-turbo'
     
+    # --- CONTEXT PRUNING LOGIC ---
+    # Smart context limit management to prevent upstream "input too long" errors.
+    # We assume a standard SAFE limit of 8192 tokens for most modern endpoints if not specified.
+    # Ideally, this should come from settings, but 8192 is a safe robust default for GPT-4/Mistral/etc.
+    CONTEXT_WINDOW_LIMIT = 8192
+    SAFETY_MARGIN = 200
+    
+    requested_gen_tokens = request_data.get('max_tokens', 2048)
+    # The budget for INPUT tokens is Total - Output - Safety
+    max_input_tokens = CONTEXT_WINDOW_LIMIT - requested_gen_tokens - SAFETY_MARGIN
+    
+    # Ensure sane minimum
+    if max_input_tokens < 1000:
+        max_input_tokens = 1000 # Force at least 1k input context, risking truncation error over garbage output
+    
+    messages = request_data.get('messages', [])
+    
+    # Prune messages to fit budget
+    pruned_messages, original_count, new_count = prune_messages(
+        messages, 
+        max_input_tokens=max_input_tokens,
+        model_name=request_data['model']
+    )
+    
+    request_data['messages'] = pruned_messages
+    
+    if original_count > new_count:
+        logger.warning(f"[OpenAI Compat] Pruned context from {original_count} to {new_count} tokens (Limit: {max_input_tokens}). Removed {len(messages) - len(pruned_messages)} messages.")
+    else:
+        logger.info(f"[OpenAI Compat] Context OK: {original_count} tokens (Limit: {max_input_tokens})")
+
     # Log payload size for debugging context issues
     msg_count = len(request_data.get('messages', []))
     char_count = sum(len(m.get('content', '')) for m in request_data.get('messages', []))
