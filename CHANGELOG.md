@@ -25,6 +25,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * Fixed the **"Visualization failed"** error message to include a close (X) button, allowing it to be dismissed without a page reload.
 * Improved the **"Back" button** behavior in Chat. It now removes only the last message (acting as an "Undo") rather than deleting the entire user/bot exchange.
 * Added a **"Delete" (Trash/X)** button to **ALL** messages (User, Bot, System, and **Images**), giving you full control to remove any individual message from the history.
+* **UI Polish**: Updated all message dismissal/delete buttons to be **neutral (white/gray)** by default to reduce visual clutter, only turning red on hover.
 
 ---
 
