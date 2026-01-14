@@ -2623,7 +2623,7 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="h-6 w-6 text-red-400 hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                  className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
                                   onClick={() => setMessages(prev => prev.filter(m => m.id !== msg.id))}
                                   disabled={isGenerating}
                                   title="Delete message"
@@ -2710,11 +2710,10 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
                                   </svg>
                                 </Button>
 
-                                {/* Delete button */}
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="h-6 w-6 text-red-400 hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                  className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
                                   onClick={() => setMessages(prev => prev.filter(m => m.id !== msg.id))}
                                   disabled={isGenerating}
                                   title="Delete message"
