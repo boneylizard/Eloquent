@@ -286,6 +286,7 @@ spacy-pkuseg
 spacy-curated-transformers
 spacy-legacy
 spacy-loggers
+spandrel
 sphn
 SQLAlchemy
 srsly
