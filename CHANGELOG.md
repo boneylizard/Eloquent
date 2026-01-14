@@ -26,6 +26,8 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * Improved the **"Back" button** behavior in Chat. It now removes only the last message (acting as an "Undo") rather than deleting the entire user/bot exchange.
 * Added a **"Delete" (Trash/X)** button to **ALL** messages (User, Bot, System, and **Images**), giving you full control to remove any individual message from the history.
 * **UI Polish**: Updated all message dismissal/delete buttons to be **neutral (white/gray)** by default to reduce visual clutter, only turning red on hover.
+* Fixed significant **Typing Lag** in the Chat interface.
+* Optimized the Chat component by memoizing message rendering (`ChatMessage`) and stabilizing event handlers. Inputting text no longer triggers re-rendering of the entire message history, keeping the UI snappy even in long conversations.
 
 ---
 
