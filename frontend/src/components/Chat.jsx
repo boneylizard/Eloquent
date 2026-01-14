@@ -4,7 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -66,6 +66,7 @@ const Chat = ({ layoutMode }) => {
     userProfile,
     // Settings
     settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode, setIsCallModeActive,
+    backgroundImage, // Add backgroundImage from context
   } = useApp();
 
   // Local state for the input field
@@ -137,6 +138,55 @@ const Chat = ({ layoutMode }) => {
   const autoEnhanceEnabled = localStorage.getItem('adetailer-auto-enhance') === 'true';
   const adetailerSettings = JSON.parse(localStorage.getItem('adetailer-settings') || '{}');
   const selectedAdetailerModel = localStorage.getItem('adetailer-selected-model') || 'face_yolov8n.pt';
+
+
+
+  const handleVisualizeScene = useCallback(async () => {
+    if (messages.length === 0 || isGenerating) return;
+
+    // Optional: Add a system message saying "Visualizing scene..."
+    const tempId = generateUniqueId();
+    setMessages(prev => [...prev, {
+      id: tempId,
+      role: 'system',
+      content: '🎨 Visualizing current scene...'
+    }]);
+
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/sd-local/visualize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: messages,
+          model_name: primaryModel,
+          gpu_id: 0
+        })
+      });
+
+      if (!response.ok) throw new Error('Visualization failed');
+
+      const data = await response.json();
+
+      // Remove temp message and add image message
+      setMessages(prev => {
+        const filtered = prev.filter(m => m.id !== tempId);
+        return [...filtered, {
+          id: generateUniqueId(),
+          role: 'bot',
+          type: 'image', // Ensure it uses the image renderer
+          content: data.generated_prompt, // Use prompt as content
+          imagePath: data.image_url,
+          prompt: data.generated_prompt,
+          model: 'SD-Local',
+          timestamp: new Date().toISOString()
+        }];
+      });
+
+    } catch (error) {
+      console.error('Visualization error:', error);
+      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, content: `❌ Visualization failed: ${error.message}`, error: true } : m));
+    }
+  }, [messages, isGenerating, primaryModel, PRIMARY_API_URL, setMessages, generateUniqueId]);
 
   // Author's Note helper functions
   const countTokens = (text) => {
@@ -2042,7 +2092,16 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
 
   // --- Component Render ---
   return (
-    <div className="flex flex-col h-full bg-background text-foreground">
+    <div
+      className="flex flex-col h-full bg-background text-foreground transition-all duration-500"
+      style={{
+        backgroundImage: backgroundImage ? `url("${backgroundImage}")` : undefined,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundBlendMode: 'overlay',
+        backgroundColor: backgroundImage ? 'rgba(0,0,0,0.85)' : undefined // Dark overlay
+      }}
+    >
       {/* Header Area */}
       <div className="border-b border-border p-3 flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -2149,7 +2208,7 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
 
       {/* Message Display Area with Floating Controls */}
       <div className="relative flex-1">
-        <ScrollArea className="h-full p-4 bg-background">
+        <ScrollArea className={`h-full p-4 ${backgroundImage ? 'bg-transparent' : 'bg-background'}`}>
           <div className="max-w-4xl mx-auto p-4">
             {/* Floating controls - positioned fixed relative to viewport */}
             {showFloatingControls && (
@@ -2163,6 +2222,18 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
                   className="flex-shrink-0 h-10 w-10"
                 >
                   <Cpu size={18} />
+                </Button>
+
+                {/* Visualize Scene Button */}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleVisualizeScene}
+                  disabled={isGenerating || messages.length === 0}
+                  title="Visualize Scene"
+                  className="flex-shrink-0 h-10 w-10"
+                >
+                  <Eye size={18} />
                 </Button>
 
                 {/* Microphone Button */}

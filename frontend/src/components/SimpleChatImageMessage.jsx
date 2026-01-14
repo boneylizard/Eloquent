@@ -1,14 +1,15 @@
 // SimpleChatImageMessage.jsx - Enhanced with in-place enhancement replacement
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Button } from './ui/button';
-import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo, ArrowUpCircle, Image as ImageIcon } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { useApp } from '../contexts/AppContext';
 
 const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) => {
-  const { primaryModel, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile } = useApp();
-  
+  const { primaryModel, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile, setBackgroundImage } = useApp();
+
   // Existing state
   const [isImageLoaded, setIsImageLoaded] = useState(false);
   const [isViewerOpen, setIsViewerOpen] = useState(false);
@@ -17,9 +18,11 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
   const [showImageQuery, setShowImageQuery] = useState(false);
   const [imageQuery, setImageQuery] = useState('');
   // Add this state near your other useState declarations
-const [selectedGpuId, setSelectedGpuId] = useState(0);
+  const [selectedGpuId, setSelectedGpuId] = useState(0);
   // Manual enhancement state
   const [isEnhancing, setIsEnhancing] = useState(false);
+  const [isUpscaling, setIsUpscaling] = useState(false);
+  const [scaleFactor, setScaleFactor] = useState("2");
 
   // Existing functions
   const getImageUrl = () => {
@@ -68,25 +71,25 @@ const [selectedGpuId, setSelectedGpuId] = useState(0);
       }
 
       const result = await response.json();
-      
+
       if (result.status === 'success' && result.enhanced_image_url) {
         // Update message with enhancement history tracking
-        setMessages(prev => prev.map(msg => 
-          msg.id === message.id 
-            ? { 
-                ...msg, 
-                imagePath: result.enhanced_image_url,
-                // Initialize or update enhancement history
-                enhancement_history: msg.enhancement_history 
-                  ? [...msg.enhancement_history, result.enhanced_image_url]
-                  : [msg.imagePath, result.enhanced_image_url],
-                current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
-                enhanced: true, 
-                enhancement_settings: {...settings, model_name: savedModel}
-              }
+        setMessages(prev => prev.map(msg =>
+          msg.id === message.id
+            ? {
+              ...msg,
+              imagePath: result.enhanced_image_url,
+              // Initialize or update enhancement history
+              enhancement_history: msg.enhancement_history
+                ? [...msg.enhancement_history, result.enhanced_image_url]
+                : [msg.imagePath, result.enhanced_image_url],
+              current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
+              enhanced: true,
+              enhancement_settings: { ...settings, model_name: savedModel }
+            }
             : msg
         ));
-        
+
       } else {
         throw new Error('No enhanced image returned');
       }
@@ -106,23 +109,111 @@ const [selectedGpuId, setSelectedGpuId] = useState(0);
     }
   }, [imageUrl, isEnhancing, MEMORY_API_URL, PRIMARY_API_URL, setMessages, message, generateUniqueId]);
 
+  // Add this state near your other useState declarations
+  const [upscalerModels, setUpscalerModels] = useState([]);
+  const [selectedUpscaler, setSelectedUpscaler] = useState('');
+
+  // Fetch available upscalers on mount
+  useEffect(() => {
+    const fetchUpscalers = async () => {
+      try {
+        const response = await fetch(`${PRIMARY_API_URL}/sd-local/upscalers`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.models && data.models.length > 0) {
+            setUpscalerModels(data.models);
+            // Default to localStorage preference or first available
+            const savedUpscaler = localStorage.getItem('local-upscaler-model');
+            if (savedUpscaler && data.models.includes(savedUpscaler)) {
+              setSelectedUpscaler(savedUpscaler);
+            } else {
+              setSelectedUpscaler(data.models[0]);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching upscalers:", error);
+      }
+    };
+    fetchUpscalers();
+  }, [PRIMARY_API_URL]);
+
+  const handleUpscale = useCallback(async () => {
+    if (!imageUrl || isUpscaling) return;
+    setIsUpscaling(true);
+
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/sd-local/upscale`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_url: imageUrl,
+          scale_factor: parseFloat(scaleFactor),
+          strength: 0.2,
+          prompt: message.prompt || "",
+          gpu_id: message.gpuId || 0,
+          model_name: selectedUpscaler // Pass selected model
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || `Upscale failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      if (result.status === 'success' && result.image_url) {
+        // Update message
+        setMessages(prev => prev.map(msg =>
+          msg.id === message.id
+            ? {
+              ...msg,
+              imagePath: result.image_url,
+              width: (msg.width || 512) * parseFloat(scaleFactor),
+              height: (msg.height || 512) * parseFloat(scaleFactor),
+              // Add to history
+              enhancement_history: msg.enhancement_history
+                ? [...msg.enhancement_history, result.image_url]
+                : [msg.imagePath, result.image_url],
+              current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
+              enhanced: true,
+              upscaled: true
+            }
+            : msg
+        ));
+      }
+    } catch (error) {
+      console.error('Upscale error:', error);
+      // Optional: show toast or error message
+    } finally {
+      setIsUpscaling(false);
+    }
+  }, [imageUrl, isUpscaling, PRIMARY_API_URL, setMessages, message, scaleFactor, selectedUpscaler]);
+
+  const handleSetBackground = () => {
+    if (imageUrl) {
+      setBackgroundImage(imageUrl);
+    }
+  };
+
   // Reset to last enhancement level
   const handleResetToLast = useCallback(() => {
     const currentLevel = message.current_enhancement_level || 0;
     if (currentLevel <= 0 || !message.enhancement_history) return;
-    
+
     const newLevel = currentLevel - 1;
     const previousImageUrl = message.enhancement_history[newLevel];
-    
-    setMessages(prev => prev.map(msg => 
-      msg.id === message.id 
-        ? { 
-            ...msg, 
-            imagePath: previousImageUrl,
-            current_enhancement_level: newLevel,
-            enhanced: newLevel > 0,
-            enhancement_settings: newLevel > 0 ? msg.enhancement_settings : undefined
-          }
+
+    setMessages(prev => prev.map(msg =>
+      msg.id === message.id
+        ? {
+          ...msg,
+          imagePath: previousImageUrl,
+          current_enhancement_level: newLevel,
+          enhanced: newLevel > 0,
+          enhancement_settings: newLevel > 0 ? msg.enhancement_settings : undefined
+        }
         : msg
     ));
   }, [message.id, message.current_enhancement_level, message.enhancement_history, setMessages]);
@@ -132,18 +223,18 @@ const [selectedGpuId, setSelectedGpuId] = useState(0);
     const question = customQuery || "Analyze this image in detail. Describe what you see, including objects, people, settings, colors, mood, and any text visible in the image.";
     const systemPrompt = 'System: You are a helpful AI assistant.';
     const fullPrompt = `${systemPrompt}\n\nHuman: ${question}`;
-    
+
     if (!imageUrl || isAnalyzing) return;
 
     setIsAnalyzing(true);
     setShowImageQuery(false);
     setImageQuery('');
-    
+
     try {
       // Convert image URL to base64
       const response = await fetch(imageUrl);
       const blob = await response.blob();
-      
+
       const base64 = await new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result.split(',')[1]);
@@ -246,7 +337,7 @@ const [selectedGpuId, setSelectedGpuId] = useState(0);
           src={imageUrl}
           alt={message.prompt || 'Generated image'}
           className='w-full max-w-2xl mx-auto rounded-md object-contain cursor-pointer'
-          style={{ 
+          style={{
             display: isImageLoaded ? 'block' : 'none',
             maxHeight: '400px',
             minHeight: '200px'
@@ -335,12 +426,74 @@ const [selectedGpuId, setSelectedGpuId] = useState(0);
               ) : (
                 <Sparkles className='h-3 w-3 mr-1' />
               )}
-              {isEnhancing 
-                ? 'Enhancing...' 
-                : message.enhanced 
+              {isEnhancing
+                ? 'Enhancing...'
+                : message.enhanced
                   ? `Enhance Again (${(message.current_enhancement_level || 0) + 1}x)`
                   : 'Enhance'
               }
+            </Button>
+
+
+
+            {/* Upscale Controls */}
+            <div className="flex items-center gap-1">
+              {upscalerModels.length > 0 && (
+                <Select
+                  value={selectedUpscaler}
+                  onValueChange={(val) => {
+                    setSelectedUpscaler(val);
+                    localStorage.setItem('local-upscaler-model', val);
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-[140px] text-xs px-2 bg-transparent border-input/50 truncate">
+                    <SelectValue placeholder="Model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {upscalerModels.map((m) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <Select value={scaleFactor} onValueChange={setScaleFactor}>
+                <SelectTrigger className="h-8 w-[60px] text-xs px-2 bg-transparent border-input/50">
+                  <SelectValue placeholder="2x" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="2">2x</SelectItem>
+                  <SelectItem value="3">3x</SelectItem>
+                  <SelectItem value="4">4x</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={handleUpscale}
+                disabled={isUpscaling || isEnhancing}
+                className='h-8 px-2 text-xs border bg-primary/5 text-primary hover:bg-primary/10 transition-colors'
+                title={`Upscale ${scaleFactor}x`}
+              >
+                {isUpscaling ? (
+                  <Loader2 className='h-3 w-3 mr-1 animate-spin' />
+                ) : (
+                  <ArrowUpCircle className='h-3 w-3 mr-1' />
+                )}
+                {isUpscaling ? '...' : 'Upscale'}
+              </Button>
+            </div>
+
+            {/* Set Background Button */}
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={handleSetBackground}
+              className='h-8 px-2 text-xs border bg-primary/5 text-primary hover:bg-primary/10 transition-colors'
+              title='Set as chat background'
+            >
+              <ImageIcon className='h-3 w-3 mr-1' />
+              Set BG
             </Button>
 
             {/* Reset to last button (shown when enhanced) */}
@@ -367,8 +520,8 @@ const [selectedGpuId, setSelectedGpuId] = useState(0);
               title='Ask a question about this image'
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
-                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10-7-3-7-10-7Z"/>
-                <circle cx="12" cy="12" r="3"/>
+                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10-7-3-7-10-7Z" />
+                <circle cx="12" cy="12" r="3" />
               </svg>
               Ask
             </Button>
@@ -517,39 +670,41 @@ const [selectedGpuId, setSelectedGpuId] = useState(0);
       </Dialog>
 
       {/* Image query dialog */}
-      {showImageQuery && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="relative w-full max-w-md bg-background rounded-lg p-4 shadow-xl">
-            <h3 className="text-lg font-semibold mb-3">Ask about this image</h3>
-            <textarea
-              value={imageQuery}
-              onChange={(e) => setImageQuery(e.target.value)}
-              placeholder="What would you like to know about this image? e.g. 'How many people are in this image?' or 'Describe the mood of this scene'"
-              className="w-full p-2 border rounded resize-none bg-background text-foreground"
-              rows={3}
-              autoFocus
-            />
-            <div className="flex gap-2 mt-3">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setShowImageQuery(false);
-                  setImageQuery('');
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={() => handleAnalyzeImage(imageQuery.trim())}
-                disabled={!imageQuery.trim() || isAnalyzing}
-              >
-                {isAnalyzing ? 'Asking...' : 'Ask'}
-              </Button>
+      {
+        showImageQuery && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="relative w-full max-w-md bg-background rounded-lg p-4 shadow-xl">
+              <h3 className="text-lg font-semibold mb-3">Ask about this image</h3>
+              <textarea
+                value={imageQuery}
+                onChange={(e) => setImageQuery(e.target.value)}
+                placeholder="What would you like to know about this image? e.g. 'How many people are in this image?' or 'Describe the mood of this scene'"
+                className="w-full p-2 border rounded resize-none bg-background text-foreground"
+                rows={3}
+                autoFocus
+              />
+              <div className="flex gap-2 mt-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowImageQuery(false);
+                    setImageQuery('');
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => handleAnalyzeImage(imageQuery.trim())}
+                  disabled={!imageQuery.trim() || isAnalyzing}
+                >
+                  {isAnalyzing ? 'Asking...' : 'Ask'}
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )
+      }
+    </div >
   );
 };
 

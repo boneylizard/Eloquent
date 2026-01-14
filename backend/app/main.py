@@ -81,6 +81,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 from .sd_manager import SDManager
+from .upscale_manager import UpscaleManager
 import random
 from .web_search_service import perform_web_search
 from .openai_compat import router as openai_router, is_api_endpoint, get_configured_endpoint, forward_to_configured_endpoint_streaming, forward_to_configured_endpoint_non_streaming
@@ -346,25 +347,54 @@ CODE_EDITOR_BASE_DIR = os.getcwd()  # You can change this to a specific project 
 # Add this to your existing FastAPI app
 async def generate_llm_response(prompt: str, model_manager, model_name: str, **kwargs) -> str:
     """
-    Adapter for your existing LLM generation
-    Uses your actual inference function
+    Adapter for your existing LLM generation, handling both local and API models.
     """
     from .inference import generate_text
-    
-    # Call your existing LLM logic with proper parameters
-    response = await generate_text(
-        model_manager=model_manager,
-        model_name=model_name,
-        prompt=prompt,
-        max_tokens=kwargs.get('max_tokens', 1024),
-        temperature=kwargs.get('temperature', 0.7),
-        top_p=kwargs.get('top_p', 0.9),
-        top_k=kwargs.get('top_k', 40),
-        repetition_penalty=kwargs.get('repetition_penalty', 1.1),
-        stop_sequences=kwargs.get('stop_sequences', []),
-        gpu_id=kwargs.get('gpu_id', 0)
-    )
-    return response
+    from .openai_compat import is_api_endpoint, _prepare_endpoint_request, forward_to_configured_endpoint_non_streaming
+
+    if is_api_endpoint(model_name):
+        logger.info(f"Routing generate_llm_response for API endpoint: {model_name}")
+        
+        # Construct request data compatible with OpenAI API
+        request_data = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": kwargs.get('max_tokens', 1024),
+            "temperature": kwargs.get('temperature', 0.7),
+            "top_p": kwargs.get('top_p', 0.9),
+            # Add other params if needed
+        }
+        
+        try:
+            endpoint_config, url, prepared_data = _prepare_endpoint_request(model_name, request_data)
+            response_json = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, prepared_data)
+            
+            # Extract content from OpenAI response format
+            if 'choices' in response_json and len(response_json['choices']) > 0:
+                content = response_json['choices'][0]['message']['content']
+                return content
+            else:
+                logger.error(f"Unexpected API response format: {response_json}")
+                return ""
+        except Exception as e:
+            logger.error(f"API generation failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    else:
+        # Call your existing LLM logic with proper parameters
+        response = await generate_text(
+            model_manager=model_manager,
+            model_name=model_name,
+            prompt=prompt,
+            max_tokens=kwargs.get('max_tokens', 1024),
+            temperature=kwargs.get('temperature', 0.7),
+            top_p=kwargs.get('top_p', 0.9),
+            top_k=kwargs.get('top_k', 40),
+            repetition_penalty=kwargs.get('repetition_penalty', 1.1),
+            stop_sequences=kwargs.get('stop_sequences', []),
+            gpu_id=kwargs.get('gpu_id', 0)
+        )
+        return response
 # WebSocket TTS streaming endpoint moved to TTS service on port 8002
 # Use /tts-stream endpoint on port 8002 for TTS WebSocket connections
 
@@ -5540,7 +5570,7 @@ async def sd_local_txt2img(body: dict, request: Request):
             prompt=prompt,
             gpu_id=gpu_id, # Pass the GPU ID to the manager
             negative_prompt=body.get("negative_prompt", ""),
-            width=body.get("width", 512),
+            width=body.get("width", 768), # Changed from 512 to 768 to match user's working aspect ratio
             height=body.get("height", 512),
             steps=body.get("steps", 20),
             cfg_scale=body.get("guidance_scale", 7.0),
@@ -5562,6 +5592,223 @@ async def sd_local_txt2img(body: dict, request: Request):
 
     except Exception as e:
         logger.error(f"Local SD generation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/models/update-upscaler-dir")
+async def update_upscaler_dir(body: dict):
+    """Update the Upscaler models directory setting."""
+    try:
+        directory = body.get("directory")
+        if not directory:
+            raise HTTPException(status_code=400, detail="Directory path required")
+            
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        
+        # Load existing
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+            
+        # Update
+        settings["upscaler_model_directory"] = directory
+        
+        # Save
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f, indent=2)
+            
+        return {"status": "success", "message": f"Upscaler directory updated to {directory}"}
+        
+    except Exception as e:
+        logger.error(f"Error updating upscaler directory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sd-local/upscalers")
+async def get_upscalers(request: Request):
+    """List available upscaler models."""
+    upscale_manager = getattr(request.app.state, 'upscale_manager', None)
+    if not upscale_manager:
+        # Quick init check if not initialized (reuse logic or simple check)
+        # For simplicity, if not init, try to init with settings or default
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        models_dir = r"C:\stable-diffusion-webui\models\ESRGAN"
+        if settings_path.exists():
+            try:
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                    if settings.get("upscaler_model_directory"):
+                        models_dir = settings["upscaler_model_directory"]
+            except: pass
+            
+        try:
+            from .upscale_manager import UpscaleManager
+            upscale_manager = UpscaleManager(models_dir)
+            request.app.state.upscale_manager = upscale_manager
+        except Exception:
+            return {"models": []} # Return empty if init fails
+
+    return {"models": list(upscale_manager.models.keys())}
+
+@app.post("/sd-local/upscale")
+async def sd_upscale(body: dict, request: Request, model_manager: ModelManager = Depends(get_model_manager)):
+    """Upscale an image using custom UpscaleManager (ESRGAN)."""
+    # Lazy initialization of UpscaleManager
+    upscale_manager = getattr(request.app.state, 'upscale_manager', None)
+    if not upscale_manager:
+        # Load from settings
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        models_dir = r"C:\stable-diffusion-webui\models\ESRGAN" # Default fallback
+        
+        if settings_path.exists():
+            try:
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                    if settings.get("upscaler_model_directory"):
+                        models_dir = settings["upscaler_model_directory"]
+            except Exception as e:
+                logger.error(f"Error reading upscaler setting: {e}")
+
+        logger.info(f"Initializing UpscaleManager with models dir: {models_dir}")
+        try:
+            from .upscale_manager import UpscaleManager
+            upscale_manager = UpscaleManager(models_dir)
+            request.app.state.upscale_manager = upscale_manager
+        except Exception as e:
+             logger.error(f"Failed to initialize UpscaleManager: {e}")
+             raise HTTPException(status_code=500, detail=f"Upscale Manager failed to initialize: {str(e)}")
+
+    try:
+        image_url = body.get("image_url")
+        image_data_b64 = body.get("image_data")
+        scale_factor = float(body.get("scale_factor", 2.0)) # Note: Many ESRGAN models are fixed 4x, manager handles this
+        model_name = body.get("model_name") # Optional specific model
+        
+        image_bytes = None
+        
+        # Handle URL or Base64 (prefer base64 if provided, else path from URL)
+        if image_data_b64:
+            image_bytes = base64.b64decode(image_data_b64)
+        elif image_url:
+            # Convert URL to local path if possible
+            # Assumes URL is like /static/generated_images/...
+            if "/static/generated_images/" in image_url:
+                filename = image_url.split("/")[-1]
+                file_path = generated_images_dir / filename
+                if file_path.exists():
+                    with open(file_path, "rb") as f:
+                        image_bytes = f.read()
+                else:
+                    raise HTTPException(status_code=404, detail="Source image file not found")
+            else:
+                raise HTTPException(status_code=400, detail="Only local generated images supported for now")
+        
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="No image provided")
+
+        # Load PIL Image
+        input_image = Image.open(io.BytesIO(image_bytes))
+
+        # Perform Upscale
+        upscaled_image = upscale_manager.upscale(
+            image=input_image,
+            model_name=model_name,
+            scale_factor=scale_factor
+        )
+
+        # Save result
+        with io.BytesIO() as output:
+            upscaled_image.save(output, format="PNG")
+            upscaled_bytes = output.getvalue()
+
+        new_image_url = save_image_and_get_url(upscaled_bytes)
+
+        return {
+            "status": "success",
+            "image_url": new_image_url,
+            "original_url": image_url,
+            "scale_factor": scale_factor,
+            "model_used": upscale_manager.current_model_name
+        }
+
+    except Exception as e:
+        logger.error(f"Upscale error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/sd-local/visualize")
+async def sd_local_visualize(body: dict, request: Request, model_manager: ModelManager = Depends(get_model_manager)):
+    """Generate an image based on the chat context."""
+    sd_manager = getattr(request.app.state, 'sd_manager', None)
+    if not sd_manager:
+        raise HTTPException(status_code=500, detail="SD Manager not available")
+
+    try:
+        messages = body.get("messages", [])
+        if not messages:
+            raise HTTPException(status_code=400, detail="Messages required")
+        
+        # Use primary model for prompt generation
+        # Find a suitable model similar to chat completion logic
+        model_name = body.get("model_name")
+        if not model_name and model_manager.loaded_models:
+             model_name = next(iter(model_manager.loaded_models.keys()))[0]
+
+        if not model_name:
+             raise HTTPException(status_code=500, detail="No LLM loaded for prompt generation")
+
+        # 1. Summarize context into an image prompt
+        # We limit context to last 10 messages for speed and relevance
+        recent_context = messages[-10:]
+        context_str = "\\n".join([f"{m['role']}: {m['content']}" for m in recent_context])
+        
+        system_prompt = "You are an expert stable diffusion prompt engineer. Your task is to visualize the current scene described in the conversation."
+        user_prompt = f"""Based on the following conversation, create a detailed Stable Diffusion prompt to visualize the current scene. 
+Include details about characters, setting, lighting, and mood.
+Format the output as a SINGLE paragraph of comma-separated keywords.
+Do NOT use bullet points, newlines, or lists.
+Do NOT include negative prompts or explanations. Just the prompt keywords.
+
+Conversation:
+{context_str}
+
+Image Prompt:"""
+
+        # Generate prompt using the LLM
+        # using standard generation helper or direct inference call
+        generated_prompt = await generate_llm_response(
+            prompt=f"{system_prompt}\\n\\n{user_prompt}", 
+            model_manager=model_manager,
+            model_name=model_name,
+            max_tokens=150,
+            temperature=0.7
+        )
+        
+        # Clean up prompt (remove "Image Prompt:" prefix if model excessively chattered)
+        clean_prompt = generated_prompt.replace("Image Prompt:", "").strip()
+        logger.info(f"Visualizing scene with prompt: {clean_prompt}")
+
+        # 2. Generate Image
+        gpu_id = body.get("gpu_id", 0)
+        
+        image_bytes = sd_manager.generate_image(
+            prompt=clean_prompt,
+            gpu_id=gpu_id,
+            steps=25,
+            width=512,
+            height=512,
+            cfg_scale=7.5
+        )
+        
+        image_url = save_image_and_get_url(image_bytes)
+        
+        return {
+            "status": "success",
+            "image_url": image_url,
+            "generated_prompt": clean_prompt
+        }
+
+    except Exception as e:
+        logger.error(f"Visualization error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.post("/code_editor/read_file")

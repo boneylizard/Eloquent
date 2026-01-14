@@ -282,6 +282,7 @@ const AppProvider = ({ children }) => {
   // Character management states
   const [characters, setCharacters] = useState([]);
   const [activeCharacter, setActiveCharacter] = useState(null);
+  const [backgroundImage, setBackgroundImage] = useState(null); // New state for chat background
 
   // Refs for avatar canvases
   const primaryAvatarRef = useRef(null);
@@ -2675,6 +2676,8 @@ const AppProvider = ({ children }) => {
     activeAvatar,
     primaryAvatarRef,
     secondaryAvatarRef,
+    // Chat background
+    backgroundImage, setBackgroundImage,
     showAvatars,
     setShowAvatars,
     setApplyAvatar,

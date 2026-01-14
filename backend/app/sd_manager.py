@@ -134,6 +134,144 @@ class SDManager:
         """Backward compatibility property"""
         return self.adetailer_processor
 
+    def upscale_image(self, image_bytes: bytes, prompt: str = "", scale_factor: float = 2.0, strength: float = 0.2, gpu_id: int = 0) -> bytes:
+        """
+        Upscale an image by resizing it and running a weak img2img pass.
+        """
+        model_instance = self.loaded_models.get(gpu_id)
+        if not model_instance:
+            raise RuntimeError(f"No SD model loaded on GPU {gpu_id} for upscaling")
+
+        try:
+            # 1. Load the original image
+            original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            original_width, original_height = original_image.size
+            
+            # 2. Resize (Upscale) using Lanczos
+            new_width = int(original_width * scale_factor)
+            new_height = int(original_height * scale_factor)
+            
+            # Ensure dimensions are multiples of 64 (requirement for many SD models)
+            new_width = (new_width // 64) * 64
+            new_height = (new_height // 64) * 64
+            # 3. Prepare prompt (if empty, use a generic enhancer)
+            # Truncate prompt if too long and remove newlines to avoid CUDA errors
+            if prompt:
+                 # Sanitize: remove newlines and carriage returns, replace with comma
+                 prompt = prompt.replace('\n', ', ').replace('\r', '')
+                 # Reduce multiple spaces
+                 import re
+                 prompt = re.sub(r'\s+', ' ', prompt).strip()
+                 
+                 # Aggressive truncation to 100 chars for upscaling stability
+                 # The "invalid configuration argument" CUDA error is likely triggered by
+                 # prompts nearing the 77-token limit during img2img encoded batch processing.
+                 if len(prompt) > 100:
+                     logger.info(f"Aggressively truncating long prompt for upscale (len={len(prompt)})")
+                     prompt = prompt[:100]
+                     # Try to cut at the last comma to be cleaner and avoiding cutting words
+                     last_comma = prompt.rfind(',')
+                     if last_comma > 10: 
+                         prompt = prompt[:last_comma]
+                     else:
+                         last_space = prompt.rfind(' ')
+                         if last_space > 10:
+                             prompt = prompt[:last_space]
+
+            if not prompt:
+                prompt = "highly detailed, high resolution, 8k, sharp focus, best quality"
+            else:
+                prompt = f"{prompt}, highly detailed, high resolution, 8k, sharp focus, best quality, masterpiece"
+
+            # 4. Run img2img (weak strength to preserve structure but add detail)
+            # Clean up PyTorch CUDA state
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+            logger.info(f"Running img2img for upscale with strength {strength}")
+            
+            # Create a temporary file for the input image
+            # We pass the ORIGINAL image and let img_to_img handle the resize to target width/height
+            # This avoids potential issues with passing already-large images to the pipeline
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_input_file:
+                original_image.save(temp_input_file, format="PNG")
+                temp_input_path = temp_input_file.name
+
+            try:
+                upscaled_result = None
+                
+                # Try generate_image_from_image if available (some wrappers have this specific method)
+                if hasattr(model_instance, 'generate_image_from_image'):
+                     upscaled_result = model_instance.generate_image_from_image(
+                        prompt=prompt,
+                        image=temp_input_path,
+                        strength=strength,
+                        step_count=20, # method arg name might vary
+                        cfg_scale=7.0,
+                        sample_method="euler_a"
+                     )
+                elif hasattr(model_instance, 'img_to_img'):
+                    # Correct method name from inspection
+                    upscaled_result = model_instance.img_to_img(
+                        prompt=prompt,
+                        image=temp_input_path, # Pass path string
+                        strength=strength,
+                        width=new_width,
+                        height=new_height,
+                        sample_steps=20,
+                        cfg_scale=7.0,
+                        sample_method="euler_a"
+                    )
+                elif hasattr(model_instance, 'generate_image'):
+                    upscaled_result = model_instance.generate_image(
+                        prompt=prompt,
+                        image=temp_input_path, # Pass path string
+                        strength=strength,
+                        width=new_width,
+                        height=new_height,
+                        sample_steps=20, 
+                        cfg_scale=7.0,
+                        sample_method="euler_a"
+                    )
+                elif hasattr(model_instance, 'img2img'):
+                    upscaled_result = model_instance.img2img(
+                        prompt=prompt,
+                        image=temp_input_path, # Pass path string
+                        strength=strength,
+                        width=new_width,
+                        height=new_height,
+                        sample_steps=20,
+                        cfg_scale=7.0,
+                        sample_method="euler_a"
+                    )
+                
+                if upscaled_result and len(upscaled_result) > 0:
+                    final_image = upscaled_result[0]
+                    
+                    # Convert to bytes
+                    with io.BytesIO() as buffer:
+                        final_image.save(buffer, format="PNG")
+                        return buffer.getvalue()
+                else:
+                    raise RuntimeError("Upscaling returned no results (img2img pass failed)")
+                    
+            finally:
+                # Cleanup temp file
+                if os.path.exists(temp_input_path):
+                    try:
+                        os.unlink(temp_input_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp upscale input: {e}")
+
+        except Exception as e:
+            logger.error(f"Upscaling failed: {e}", exc_info=True)
+            raise
+
     def enhance_image_with_adetailer(self, image_path: str, original_prompt: str = "",
                                      face_prompt: str = "", strength: float = 0.35,
                                      confidence: float = 0.3, model_name: str = "face_yolov8n_v2.pt", gpu_id: int = 0) -> bytes:
@@ -146,7 +284,12 @@ class SDManager:
             raise RuntimeError(f"No SD model loaded for ADetailer enhancement on GPU {gpu_id}")
 
         try:
-            original_image = Image.open(image_path)
+            # Check if image_path is a path or raw bytes (for internal calls like after upscale)
+            if isinstance(image_path, (bytes, bytearray)):
+                original_image = Image.open(io.BytesIO(image_path))
+            else:
+                original_image = Image.open(image_path)
+                
             logger.info(f"Loaded image for ADetailer enhancement: {original_image.size}")
 
             # CRITICAL FIX: Use the correct GPU ID for face detection
@@ -154,8 +297,10 @@ class SDManager:
 
             if not face_boxes:
                 logger.info("No faces detected, returning original image")
-                with open(image_path, 'rb') as f:
-                    return f.read()
+                # Return bytes of original
+                with io.BytesIO() as buffer:
+                    original_image.save(buffer, format="PNG")
+                    return buffer.getvalue()
 
             logger.info(f"Detected {len(face_boxes)} faces for enhancement using {model_name} on GPU {gpu_id}")
 
@@ -248,8 +393,15 @@ class SDManager:
 
         except Exception as e:
             logger.error(f"ADetailer enhancement failed: {e}", exc_info=True)
-            with open(image_path, 'rb') as f:
-                return f.read()
+            if 'original_image' in locals():
+                with io.BytesIO() as buffer:
+                    original_image.save(buffer, format="PNG")
+                    return buffer.getvalue()
+            # If we failed before loading, just re-read or fail
+            if isinstance(image_path, str) and os.path.exists(image_path):
+                 with open(image_path, 'rb') as f:
+                    return f.read()
+            return b"" # Should probably handle this better upstream
 
     def _clean_redundant_prompt_terms(self, prompt: str) -> str:
         """Remove redundant terms that might conflict in prompts - UNIVERSAL COMPATIBILITY"""
