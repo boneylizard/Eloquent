@@ -18,6 +18,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * Added **OOC (Director Note) Injection**: Narrative beats are now injected as `(Director: ...)` notes to steer the AI without forcing a character action.
 * Added a **Scene Summary** field to the Story Tracker. This persistent context grounds the AI in the current scene and mood.
 * Added **AI Auto-Detection for Scene Summaries**: The Story Tracker analysis now automatically summarizes the current situation from chat history.
+* Added **Instructional World Knowledge**: Enhanced lore injection to use a more instructional header `[WORLD KNOWLEDGE - Essential lore guidance for this response]`, ensuring the AI treats lore entries as direct guidance similar to the Author's Note.
 
 ### Fixed
 

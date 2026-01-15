@@ -104,20 +104,20 @@ export const syncBackendMemoriesToLocalStorage = async (memoryContext, activePro
 
     // 3. Filter out memories whose normalized content already exists in the frontend state
     const memoriesNotInFrontend = backendMemories.filter(memory => {
-        if (!memory || typeof memory.content !== 'string') return false;
-        return !existingNormalizedContents.has(normalizeContent(memory.content));
+      if (!memory || typeof memory.content !== 'string') return false;
+      return !existingNormalizedContents.has(normalizeContent(memory.content));
     });
     console.log(`🧠 [INFO] Sync: Found ${memoriesNotInFrontend.length} memories not already present in frontend.`);
 
     // 4. Deduplicate the *new* batch itself based on normalized content
     const uniqueNewMemoriesMap = new Map();
     memoriesNotInFrontend.forEach(memory => {
-        const normalizedContentKey = normalizeContent(memory.content);
-        if (!uniqueNewMemoriesMap.has(normalizedContentKey)) {
-            uniqueNewMemoriesMap.set(normalizedContentKey, { id: memory.id || generateId(), ...memory });
-        } else {
-             console.log(`🧠 [INFO] Sync: Skipping duplicate memory within the new backend batch: ${memory.content.substring(0, 50)}...`);
-        }
+      const normalizedContentKey = normalizeContent(memory.content);
+      if (!uniqueNewMemoriesMap.has(normalizedContentKey)) {
+        uniqueNewMemoriesMap.set(normalizedContentKey, { id: memory.id || generateId(), ...memory });
+      } else {
+        console.log(`🧠 [INFO] Sync: Skipping duplicate memory within the new backend batch: ${memory.content.substring(0, 50)}...`);
+      }
     });
     const uniqueNewMemories = Array.from(uniqueNewMemoriesMap.values());
     console.log(`🧠 [INFO] Sync: After internal batch deduplication, ${uniqueNewMemories.length} unique new memories remain.`);
@@ -126,12 +126,12 @@ export const syncBackendMemoriesToLocalStorage = async (memoryContext, activePro
     if (uniqueNewMemories.length > 0) {
       console.log(`🧠 [INFO] Sync: Adding ${uniqueNewMemories.length} unique new memories to frontend state via context...`);
       uniqueNewMemories.forEach(memoryToAdd => {
-          console.debug("🧠 [DEBUG] Sync: Adding memory:", memoryToAdd);
-          memoryContext.addMemory(memoryToAdd);
+        console.debug("🧠 [DEBUG] Sync: Adding memory:", memoryToAdd);
+        memoryContext.addMemory(memoryToAdd);
       });
-       console.log(`🧠 [INFO] Sync: Finished adding ${uniqueNewMemories.length} new memories to frontend state.`);
+      console.log(`🧠 [INFO] Sync: Finished adding ${uniqueNewMemories.length} new memories to frontend state.`);
     } else {
-       console.log("🧠 [INFO] Sync: No unique new memories found to add to frontend state.");
+      console.log("🧠 [INFO] Sync: No unique new memories found to add to frontend state.");
     }
 
     return true;
@@ -190,11 +190,11 @@ export async function initializeMemories(memoryContext) {
  * @returns {Promise<object>} - Object like { memories: [], formatted_memories: "", memory_count: 0 }
  */
 export const getRelevantMemoriesFromBackend = async (prompt, memoryContext) => {
-   // ... (Implementation from previous version - seems okay) ...
-   try {
+  // ... (Implementation from previous version - seems okay) ...
+  try {
     const userProfile = memoryContext?.userProfile;
     if (!userProfile) {
-        console.warn("🧠 [WARN] No active userProfile in context for getRelevantMemoriesFromBackend");
+      console.warn("🧠 [WARN] No active userProfile in context for getRelevantMemoriesFromBackend");
     }
 
     console.log(`🧠 [INFO] Calling backend /relevant for prompt: ${prompt.substring(0, 50)}...`);
@@ -243,8 +243,8 @@ export const getRelevantMemoriesFromBackend = async (prompt, memoryContext) => {
  * @returns {string} - Formatted memory string for prompt
  */
 export const formatMemoriesForPrompt = (memories, maxMemories = 5, maxChars = 1000) => {
-   // ... (Implementation from previous version - seems okay) ...
-   if (!Array.isArray(memories) || memories.length === 0) {
+  // ... (Implementation from previous version - seems okay) ...
+  if (!Array.isArray(memories) || memories.length === 0) {
     return "";
   }
 
@@ -263,12 +263,12 @@ export const formatMemoriesForPrompt = (memories, maxMemories = 5, maxChars = 10
     const memoryLine = `• [${category}] ${content} (${stars})\n`;
 
     if (totalChars + memoryLine.length > maxChars) {
-        const availableChars = maxChars - totalChars - (category.length + 10); // Approx space
-        if (availableChars > 20) {
-             formatted += `• [${category}] ${content.substring(0, availableChars)}... (${stars})\n`;
-             memoriesIncludedCount++;
-        }
-        break;
+      const availableChars = maxChars - totalChars - (category.length + 10); // Approx space
+      if (availableChars > 20) {
+        formatted += `• [${category}] ${content.substring(0, availableChars)}... (${stars})\n`;
+        memoriesIncludedCount++;
+      }
+      break;
     }
 
     formatted += memoryLine;
@@ -294,42 +294,42 @@ export const formatMemoriesForPrompt = (memories, maxMemories = 5, maxChars = 10
 export const retrieveRelevantMemories = (query, limit = 5) => { // Restored EXPORT
   try {
     // ... (Implementation from previous correct version) ...
-     if (!query) return [];
-     console.log(`🧠 [INFO] Retrieving memories locally for: ${query.substring(0, 50)}...`);
-     const userProfilesStr = localStorage.getItem('user-profiles');
-     if (!userProfilesStr) return [];
+    if (!query) return [];
+    console.log(`🧠 [INFO] Retrieving memories locally for: ${query.substring(0, 50)}...`);
+    const userProfilesStr = localStorage.getItem('user-profiles');
+    if (!userProfilesStr) return [];
 
-     let userProfile;
-     try {
-       const userProfiles = JSON.parse(userProfilesStr);
-       if (!userProfiles || !userProfiles.profiles || !userProfiles.activeProfileId) return [];
-       userProfile = userProfiles.profiles.find(p => p.id === userProfiles.activeProfileId);
-       if (!userProfile) userProfile = userProfiles.profiles[0];
-     } catch (e) { return []; }
+    let userProfile;
+    try {
+      const userProfiles = JSON.parse(userProfilesStr);
+      if (!userProfiles || !userProfiles.profiles || !userProfiles.activeProfileId) return [];
+      userProfile = userProfiles.profiles.find(p => p.id === userProfiles.activeProfileId);
+      if (!userProfile) userProfile = userProfiles.profiles[0];
+    } catch (e) { return []; }
 
-     if (!userProfile || !userProfile.memories || !Array.isArray(userProfile.memories)) return [];
+    if (!userProfile || !userProfile.memories || !Array.isArray(userProfile.memories)) return [];
 
-     const memories = userProfile.memories;
-     if (memories.length === 0) return [];
+    const memories = userProfile.memories;
+    if (memories.length === 0) return [];
 
-     const queryWords = query.toLowerCase().split(/\W+/).filter(w => w.length > 2);
+    const queryWords = query.toLowerCase().split(/\W+/).filter(w => w.length > 2);
 
-     const scoredMemories = memories
-       .filter(m => m && m.content)
-       .map(memory => {
-         const content = memory.content.toLowerCase();
-         const memoryWords = content.split(/\W+/).filter(w => w.length > 2);
-         const matchingWords = queryWords.filter(word => memoryWords.includes(word));
-         const wordScore = queryWords.length > 0 ? matchingWords.length / queryWords.length : 0;
-         const relevanceScore = wordScore;
-         return { ...memory, relevanceScore };
-       })
-       .filter(m => m.relevanceScore > 0.1)
-       .sort((a, b) => b.relevanceScore - a.relevanceScore)
-       .slice(0, limit);
+    const scoredMemories = memories
+      .filter(m => m && m.content)
+      .map(memory => {
+        const content = memory.content.toLowerCase();
+        const memoryWords = content.split(/\W+/).filter(w => w.length > 2);
+        const matchingWords = queryWords.filter(word => memoryWords.includes(word));
+        const wordScore = queryWords.length > 0 ? matchingWords.length / queryWords.length : 0;
+        const relevanceScore = wordScore;
+        return { ...memory, relevanceScore };
+      })
+      .filter(m => m.relevanceScore > 0.1)
+      .sort((a, b) => b.relevanceScore - a.relevanceScore)
+      .slice(0, limit);
 
-     console.log(`🧠 [INFO] Found ${scoredMemories.length} relevant memories locally`);
-     return scoredMemories;
+    console.log(`🧠 [INFO] Found ${scoredMemories.length} relevant memories locally`);
+    return scoredMemories;
   } catch (error) {
     console.error("🧠 [ERROR] Error retrieving memories locally:", error);
     return [];
@@ -356,15 +356,15 @@ export const observeConversation = async (prompt, response, currentUserName, act
     // Pass activeProfileId to the sync function
     const success = await syncBackendMemoriesToLocalStorage(memoryContext, activeProfileId);
     if (success) {
-        console.log("🧠 [INFO] observeConversation: Background sync completed successfully.");
+      console.log("🧠 [INFO] observeConversation: Background sync completed successfully.");
     } else {
-        console.error("🧠 [ERROR] observeConversation: Background sync failed.");
+      console.error("🧠 [ERROR] observeConversation: Background sync failed.");
     }
     // Return status object for consistency with other functions
 
     return {
-        status: success ? "sync_attempted_success" : "sync_attempted_failed",
-        reason: "Automatic observation disabled, ran sync instead."
+      status: success ? "sync_attempted_success" : "sync_attempted_failed",
+      reason: "Automatic observation disabled, ran sync instead."
     };
   } catch (error) {
     console.error("🧠 [ERROR] Error in observeConversation wrapper (triggering sync):", error);

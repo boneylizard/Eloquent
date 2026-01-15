@@ -1682,7 +1682,7 @@ const AppProvider = ({ children }) => {
           const content = typeof l === 'string' ? l : (l.content || JSON.stringify(l));
           return "• " + replaceTags(content);
         }).join('\n');
-        contextToAdd += `\n\nWORLD KNOWLEDGE:\n${loreBlock}`;
+        contextToAdd += `\n\n[WORLD KNOWLEDGE - Essential lore guidance for this response]\n${loreBlock}`;
       }
     }
 
@@ -1880,7 +1880,7 @@ const AppProvider = ({ children }) => {
         const content = typeof l === 'string' ? l : (l.content || JSON.stringify(l));
         return `• ${replaceLoreTags(content)}`;
       }).join('\n');
-      memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreContext;
+      memoryContext += (memoryContext ? "\n\n[WORLD KNOWLEDGE - Essential lore guidance for this response]\n" : "[WORLD KNOWLEDGE - Essential lore guidance for this response]\n") + loreContext;
     }
 
     // Note: buildSystemPrompt already includes story tracker context
