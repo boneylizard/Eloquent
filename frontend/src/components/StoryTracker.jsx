@@ -6,11 +6,11 @@ import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { X, Plus, Trash2, Users, Package, MapPin, Flag, Sparkles, ChevronDown, ChevronRight, Pin, Copy, MessageSquare, Star, Edit3, Check, BookOpen } from 'lucide-react';
 
-const StoryTracker = ({ 
-  isOpen, 
-  onClose, 
-  messages, 
-  onAnalyze, 
+const StoryTracker = ({
+  isOpen,
+  onClose,
+  messages,
+  onAnalyze,
   isAnalyzing,
   onInjectContext, // New: callback to inject text into chat
   activeCharacter // New: current character for context
@@ -21,10 +21,11 @@ const StoryTracker = ({
     locations: [],
     plotPoints: [],
     customFields: [],
-    storyNotes: '', // New: general story notes
-    currentObjective: '' // New: current goal/objective
+    storyNotes: '', // general story notes
+    currentObjective: '', // current goal/objective
+    sceneSummary: '' // New: concise description of current scene
   });
-  
+
   const [expandedSections, setExpandedSections] = useState({
     characters: true,
     inventory: true,
@@ -32,7 +33,7 @@ const StoryTracker = ({
     plotPoints: true,
     customFields: false
   });
-  
+
   const [newItem, setNewItem] = useState({ section: '', value: '' });
   const [editingItem, setEditingItem] = useState(null);
   const [editValue, setEditValue] = useState('');
@@ -64,9 +65,9 @@ const StoryTracker = ({
     if (!value.trim()) return;
     setTrackerData(prev => ({
       ...prev,
-      [section]: [...prev[section], { 
-        id: Date.now(), 
-        value: value.trim(), 
+      [section]: [...prev[section], {
+        id: Date.now(),
+        value: value.trim(),
         notes: '',
         pinned: false,
         important: false
@@ -85,7 +86,7 @@ const StoryTracker = ({
   const updateItem = (section, id, updates) => {
     setTrackerData(prev => ({
       ...prev,
-      [section]: prev[section].map(item => 
+      [section]: prev[section].map(item =>
         item.id === id ? { ...item, ...updates } : item
       )
     }));
@@ -108,7 +109,8 @@ const StoryTracker = ({
         plotPoints: [],
         customFields: [],
         storyNotes: '',
-        currentObjective: ''
+        currentObjective: '',
+        sceneSummary: ''
       });
     }
   };
@@ -116,15 +118,19 @@ const StoryTracker = ({
   // Generate context summary for AI
   const generateContextSummary = () => {
     const parts = [];
-    
+
     if (trackerData.currentObjective) {
       parts.push(`🎯 Current Objective: ${trackerData.currentObjective}`);
     }
-    
+
+    if (trackerData.sceneSummary) {
+      parts.push(`🎬 Current Scene: ${trackerData.sceneSummary}`);
+    }
+
     // Get pinned/important items first
     const getPinnedItems = (arr) => arr.filter(i => i.pinned || i.important);
     const getRegularItems = (arr) => arr.filter(i => !i.pinned && !i.important);
-    
+
     if (trackerData.characters?.length > 0) {
       const pinned = getPinnedItems(trackerData.characters);
       const regular = getRegularItems(trackerData.characters);
@@ -136,26 +142,26 @@ const StoryTracker = ({
       });
       parts.push(`👥 Characters: ${chars.join(', ')}`);
     }
-    
+
     if (trackerData.locations?.length > 0) {
       const locs = trackerData.locations.map(l => l.notes ? `${l.value} (${l.notes})` : l.value);
       parts.push(`📍 Locations: ${locs.join(', ')}`);
     }
-    
+
     if (trackerData.inventory?.length > 0) {
       const items = trackerData.inventory.map(i => i.notes ? `${i.value} (${i.notes})` : i.value);
       parts.push(`🎒 Inventory: ${items.join(', ')}`);
     }
-    
+
     if (trackerData.plotPoints?.length > 0) {
       const recent = trackerData.plotPoints.slice(-5);
       parts.push(`📜 Recent Events:\n${recent.map(p => `  • ${p.value}`).join('\n')}`);
     }
-    
+
     if (trackerData.storyNotes) {
       parts.push(`📝 Story Notes: ${trackerData.storyNotes}`);
     }
-    
+
     return parts.join('\n\n');
   };
 
@@ -196,7 +202,7 @@ const StoryTracker = ({
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      
+
       {/* Panel */}
       <div className="relative w-full max-w-md h-[85vh] bg-background border rounded-xl shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
@@ -248,6 +254,19 @@ const StoryTracker = ({
             value={trackerData.currentObjective}
             onChange={(e) => setTrackerData(prev => ({ ...prev, currentObjective: e.target.value }))}
             className="h-8 text-sm bg-background/50"
+          />
+        </div>
+
+        {/* Scene Summary */}
+        <div className="p-3 border-b bg-gradient-to-r from-blue-500/5 to-indigo-500/5">
+          <label className="text-xs font-medium text-muted-foreground flex items-center gap-1 mb-1">
+            🎬 Scene Summary
+          </label>
+          <Textarea
+            placeholder="Describe the current scene, mood, and immediate surroundings..."
+            value={trackerData.sceneSummary || ''}
+            onChange={(e) => setTrackerData(prev => ({ ...prev, sceneSummary: e.target.value }))}
+            className="min-h-[40px] text-sm bg-background/50 resize-none py-1"
           />
         </div>
 
@@ -304,8 +323,8 @@ const StoryTracker = ({
                                 autoFocus
                               />
                               <div className="flex gap-1">
-                                <Button 
-                                  size="sm" 
+                                <Button
+                                  size="sm"
                                   className="h-6 text-xs"
                                   onClick={() => {
                                     updateItem(key, item.id, { value: editValue });
@@ -332,7 +351,7 @@ const StoryTracker = ({
                             </>
                           )}
                         </div>
-                        
+
                         {/* Item actions */}
                         <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                           <Button
@@ -430,9 +449,9 @@ const StoryTracker = ({
         <div className="p-3 border-t bg-muted/30 space-y-2">
           {/* Context Actions */}
           <div className="flex gap-2">
-            <Button 
-              variant="outline" 
-              size="sm" 
+            <Button
+              variant="outline"
+              size="sm"
               className="flex-1 text-xs"
               onClick={copyContextToClipboard}
             >
@@ -440,9 +459,9 @@ const StoryTracker = ({
               Copy Context
             </Button>
             {onInjectContext && (
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 className="flex-1 text-xs"
                 onClick={injectContextToChat}
               >
@@ -451,7 +470,7 @@ const StoryTracker = ({
               </Button>
             )}
           </div>
-          
+
           {/* Stats and Clear */}
           <div className="flex justify-between items-center">
             <span className="text-xs text-muted-foreground">
@@ -459,10 +478,10 @@ const StoryTracker = ({
                 .filter(([k]) => Array.isArray(trackerData[k]))
                 .reduce((sum, [, arr]) => sum + arr.length, 0)} items tracked
             </span>
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={clearAll} 
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearAll}
               className="text-xs text-red-500 hover:text-red-600"
             >
               <Trash2 className="w-3 h-3 mr-1" />
@@ -483,9 +502,12 @@ export const getStoryTrackerContext = () => {
     if (saved) {
       const data = JSON.parse(saved);
       const parts = [];
-      
+
       if (data.currentObjective) {
         parts.push(`Current Objective: ${data.currentObjective}`);
+      }
+      if (data.sceneSummary) {
+        parts.push(`Current Scene: ${data.sceneSummary}`);
       }
       if (data.characters?.length > 0) {
         parts.push(`Characters: ${data.characters.map(c => c.notes ? `${c.value} (${c.notes})` : c.value).join(', ')}`);
@@ -502,7 +524,7 @@ export const getStoryTrackerContext = () => {
       if (data.storyNotes) {
         parts.push(`Story notes: ${data.storyNotes}`);
       }
-      
+
       return parts.length > 0 ? parts.join('\n') : null;
     }
   } catch (e) {

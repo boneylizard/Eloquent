@@ -67,10 +67,10 @@ async function generateAndShowImage(promptText) {
     console.log("📝 [DEBUG] Image URL:", imageUrl);
 
     // 6) Append to the DOM
-    const img = document.createElement("img");
-    img.src = imageUrl;
-    img.alt = promptText;
-    document.body.appendChild(img);
+    // const img = document.createElement("img");
+    // img.src = imageUrl;
+    // img.alt = promptText;
+    // document.body.appendChild(img);
 
   } catch (err) {
     console.error("📝 [ERROR] generateAndShowImage failed:", err);
@@ -134,28 +134,46 @@ const getStoryTrackerContext = () => {
 };
 
 // Helper function to build system prompt from character data
-const buildSystemPrompt = (character) => {
+const _buildSystemPrompt = (character, userProfile = null) => {
   if (!character) return null;
 
   // Get story tracker context
   const storyContext = getStoryTrackerContext();
 
-  return `You are ${character.name}, ${character.description}.
+  // Tag substitution variables
+  const charName = character.name || 'Character';
+  const userName = userProfile?.name || userProfile?.username || 'User';
 
-PERSONALITY: ${character.personality}
+  // Helper to replace tags in a string
+  const replaceTags = (text) => {
+    if (!text) return '';
+    return text
+      .replace(/{{char}}/gi, charName)
+      .replace(/{{user}}/gi, userName);
+  };
 
-BACKGROUND: ${character.background || ''}
+  const personality = replaceTags(character.personality);
+  const description = replaceTags(character.description);
+  const scenario = character.scenario ? replaceTags(character.scenario) : '';
+  const speechStyle = character.speech_style ? replaceTags(character.speech_style) : '';
+  const background = character.background ? replaceTags(character.background) : '';
 
-${character.scenario ? `SCENARIO: ${character.scenario}` : ''}
+  return `You are ${charName}, ${description}.
 
-SPEAKING STYLE: ${character.speech_style || ''}
+PERSONALITY: ${personality}
 
-IMPORTANT: Stay in character at all times. Respond as ${character.name} would, maintaining the defined personality and speech patterns.
+BACKGROUND: ${background}
+
+${scenario ? `SCENARIO: ${scenario}` : ''}
+
+SPEAKING STYLE: ${speechStyle}
+
+IMPORTANT: Stay in character at all times. Respond as ${charName} would, maintaining the defined personality and speech patterns.
 
 ${character.example_dialogue && character.example_dialogue.length > 0
       ? `EXAMPLE DIALOGUE:
 ${character.example_dialogue.map(msg =>
-        `${msg.role === 'character' ? character.name : 'User'}: ${msg.content}`
+        `${replaceTags(msg.role === 'character' ? charName : (msg.role === 'user' ? userName : 'User'))}: ${replaceTags(msg.content)}`
       ).join('\n')}` : ''}${storyContext}`;
 };
 
@@ -198,6 +216,7 @@ const drawAvatar = (canvas, imageUrl, name) => {
 const AppProvider = ({ children }) => {
   const memoryContext = useMemory();
   const userProfile = memoryContext?.userProfile;
+  const buildSystemPrompt = useCallback((char) => _buildSystemPrompt(char, userProfile), [userProfile]);
   const getRelevantMemories = memoryContext?.getRelevantMemories;
   const addConversationSummary = memoryContext?.addConversationSummary;
   const [sdStatus, setSdStatus] = useState({ automatic1111: false });
@@ -282,6 +301,10 @@ const AppProvider = ({ children }) => {
   // Character management states
   const [characters, setCharacters] = useState([]);
   const [activeCharacter, setActiveCharacter] = useState(null);
+  const activeCharacterRef = useRef(null);
+  useEffect(() => {
+    activeCharacterRef.current = activeCharacter;
+  }, [activeCharacter]);
   const [backgroundImage, setBackgroundImage] = useState(null); // New state for chat background
 
   // Refs for avatar canvases
@@ -1359,8 +1382,22 @@ const AppProvider = ({ children }) => {
   const createNewConversation = useCallback(() => {
     console.log('🔍 [DEBUG] Creating new conversation');
     const id = generateUniqueId();
-    const initial = primaryCharacter?.first_message
-      ? [{ id: generateUniqueId(), role: 'bot', content: primaryCharacter.first_message, modelId: 'primary', characterName: primaryCharacter.name, avatar: primaryCharacter.avatar }]
+    // Helper to replace tags
+    const replaceTags = (text, charName, userName) => {
+      if (!text) return '';
+      return text
+        .replace(/{{char}}/gi, charName)
+        .replace(/{{user}}/gi, userName);
+    };
+
+    const charName = primaryCharacter?.name || 'Character';
+    const userName = userProfile?.name || userProfile?.username || 'User';
+    const firstMessage = primaryCharacter?.first_message
+      ? replaceTags(primaryCharacter.first_message, charName, userName)
+      : null;
+
+    const initial = firstMessage
+      ? [{ id: generateUniqueId(), role: 'bot', content: firstMessage, modelId: 'primary', characterName: charName, avatar: primaryCharacter?.avatar }]
       : [];
 
     const conv = { id, name: 'New Chat', messages: initial, characterIds: { primary: primaryCharacter?.id, secondary: secondaryCharacter?.id }, created: new Date().toISOString(), requiresTitle: true };
@@ -1592,11 +1629,21 @@ const AppProvider = ({ children }) => {
   }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent]);
   // New shared helper to build the FULL generation system prompt (memories, lore, etc.)
   const getGenerationSystemPrompt = useCallback(async (text, character, authorNote = null) => {
+    console.log('🔍 [SystemPrompt] Building for character:', character?.name, 'User:', userProfile?.name);
+    console.log('🔍 [SystemPrompt] Tag replacer check. Character valid?', !!character, 'UserProfile valid?', !!userProfile);
     let systemMsg = character
       ? buildSystemPrompt(character)
       : ('You are a helpful assistant.' + getStoryTrackerContext());
 
     let contextToAdd = '';
+
+    // Helper for tag replacement in lore/profile
+    const replaceTags = (content) => {
+      if (!content || !character) return content;
+      const charName = character.name || 'Character';
+      const userName = userProfile?.name || userProfile?.username || 'User';
+      return content.replace(/{{char}}/gi, charName).replace(/{{user}}/gi, userName);
+    };
 
     if (settings.directProfileInjection) {
       const userId = userProfile?.id || (typeof memoryContext !== 'undefined' ? memoryContext?.activeProfileId : null);
@@ -1609,7 +1656,9 @@ const AppProvider = ({ children }) => {
               const profileString = data.memories.map(mem => {
                 const category = mem.category?.replace('_', ' ') || 'memory';
                 const importance = mem.importance?.toFixed(1) || 'N/A';
-                return `• ${mem.content} (Category: ${category}, Importance: ${importance})`;
+                // Apply tag substitution here
+                const content = replaceTags(mem.content);
+                return `• ${content} (Category: ${category}, Importance: ${importance})`;
               }).join('\n');
               contextToAdd += `\n\nUSER MEMORY PROFILE:\n${profileString}`;
             }
@@ -1625,10 +1674,14 @@ const AppProvider = ({ children }) => {
       }
     }
 
+
     if (character) {
       const lore = await fetchTriggeredLore(text, character);
       if (lore.length) {
-        const loreBlock = lore.map(l => "• " + (typeof l === 'string' ? l : l.content || JSON.stringify(l))).join('\n');
+        const loreBlock = lore.map(l => {
+          const content = typeof l === 'string' ? l : (l.content || JSON.stringify(l));
+          return "• " + replaceTags(content);
+        }).join('\n');
         contextToAdd += `\n\nWORLD KNOWLEDGE:\n${loreBlock}`;
       }
     }
@@ -1646,7 +1699,7 @@ const AppProvider = ({ children }) => {
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
     const { authorNote = null, webSearchEnabled = false } = options;
-    const systemMsg = await getGenerationSystemPrompt(text, activeCharacter, authorNote);
+    const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote);
 
     // --- Unified Payload Construction (Matching sendMessage exactly) ---
     const {
@@ -1811,11 +1864,22 @@ const AppProvider = ({ children }) => {
     const lore = await fetchTriggeredLore(text, activeCharacter);
     let memoryContext = '';
 
+    // Helper for tag replacement in lore
+    const replaceLoreTags = (content) => {
+      if (!content || !activeCharacter) return content;
+      const charName = activeCharacter.name || 'Character';
+      const userName = userProfile?.name || userProfile?.username || 'User';
+      return content.replace(/{{char}}/gi, charName).replace(/{{user}}/gi, userName);
+    };
+
     if (agentMem.length) {
       memoryContext = agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
     }
     if (lore.length) {
-      const loreContext = lore.map(l => (typeof l === 'string' ? `• ${l}` : `• ${l.content || JSON.stringify(l)}`)).join('\n');
+      const loreContext = lore.map(l => {
+        const content = typeof l === 'string' ? l : (l.content || JSON.stringify(l));
+        return `• ${replaceLoreTags(content)}`;
+      }).join('\n');
       memoryContext += (memoryContext ? "\n\nWORLD KNOWLEDGE:\n" : "WORLD KNOWLEDGE:\n") + loreContext;
     }
 
@@ -1925,7 +1989,7 @@ const AppProvider = ({ children }) => {
       }
 
       // 3) Build System Prompt with layered context
-      const systemMsg = await getGenerationSystemPrompt(text, activeCharacter, authorNote);
+      const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote);
 
       // 4) Prepare payload
       const {
@@ -2585,6 +2649,7 @@ const AppProvider = ({ children }) => {
     setTtsEnabled: (enabled) => updateSettings({ ttsEnabled: enabled }),
     isRecording,
     fetchTriggeredLore,
+    getGenerationSystemPrompt,
     generateChatTitle,
     setIsRecording,
     isPlayingAudio,
