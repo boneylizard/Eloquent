@@ -114,55 +114,50 @@ const StoryTracker = ({
       });
     }
   };
-
   // Generate context summary for AI
   const generateContextSummary = () => {
-    const parts = [];
+    const sections = [];
 
     if (trackerData.currentObjective) {
-      parts.push(`🎯 Current Objective: ${trackerData.currentObjective}`);
+      sections.push(`[CURRENT OBJECTIVE]: ${trackerData.currentObjective}`);
     }
-
-    if (trackerData.sceneSummary) {
-      parts.push(`🎬 Current Scene: ${trackerData.sceneSummary}`);
-    }
-
-    // Get pinned/important items first
-    const getPinnedItems = (arr) => arr.filter(i => i.pinned || i.important);
-    const getRegularItems = (arr) => arr.filter(i => !i.pinned && !i.important);
 
     if (trackerData.characters?.length > 0) {
-      const pinned = getPinnedItems(trackerData.characters);
-      const regular = getRegularItems(trackerData.characters);
-      const chars = [...pinned, ...regular].map(c => {
-        let str = c.value;
-        if (c.notes) str += ` (${c.notes})`;
-        if (c.important) str = `⭐${str}`;
-        return str;
-      });
-      parts.push(`👥 Characters: ${chars.join(', ')}`);
-    }
-
-    if (trackerData.locations?.length > 0) {
-      const locs = trackerData.locations.map(l => l.notes ? `${l.value} (${l.notes})` : l.value);
-      parts.push(`📍 Locations: ${locs.join(', ')}`);
+      const chars = trackerData.characters.map(c => c.notes ? `${c.value} (${c.notes})` : c.value).join(', ');
+      sections.push(`[CHARACTERS]: ${chars}`);
     }
 
     if (trackerData.inventory?.length > 0) {
-      const items = trackerData.inventory.map(i => i.notes ? `${i.value} (${i.notes})` : i.value);
-      parts.push(`🎒 Inventory: ${items.join(', ')}`);
+      const items = trackerData.inventory.map(i => i.notes ? `${i.value} (${i.notes})` : i.value).join(', ');
+      sections.push(`[INVENTORY]: ${items}`);
+    }
+
+    if (trackerData.locations?.length > 0) {
+      const locs = trackerData.locations.map(l => l.notes ? `${l.value} (${l.notes})` : l.value).join(', ');
+      sections.push(`[LOCATIONS]: ${locs}`);
     }
 
     if (trackerData.plotPoints?.length > 0) {
-      const recent = trackerData.plotPoints.slice(-5);
-      parts.push(`📜 Recent Events:\n${recent.map(p => `  • ${p.value}`).join('\n')}`);
+      const plots = trackerData.plotPoints.map(p => `• ${p.notes ? `${p.value}: ${p.notes}` : p.value}`).join('\n');
+      sections.push(`[KEY EVENTS / RECENT HISTORY]:\n${plots}`);
     }
 
     if (trackerData.storyNotes) {
-      parts.push(`📝 Story Notes: ${trackerData.storyNotes}`);
+      sections.push(`[STORY NOTES / WORLD BACKGROUND]:\n${trackerData.storyNotes}`);
     }
 
-    return parts.join('\n\n');
+    if (trackerData.sceneSummary) {
+      sections.push(`[CURRENT SCENE]: ${trackerData.sceneSummary}`);
+    }
+
+    if (trackerData.customFields?.length > 0) {
+      const custom = trackerData.customFields.map(c => c.notes ? `${c.value}: ${c.notes}` : c.value).join(', ');
+      sections.push(`[ADDITIONAL DETAILS]: ${custom}`);
+    }
+
+    if (sections.length === 0) return '';
+
+    return `\n\n[STORY TRACKER - Essential continuity guidance for this response]\n${sections.join('\n\n')}`;
   };
 
   const copyContextToClipboard = () => {
@@ -450,13 +445,25 @@ const StoryTracker = ({
           {/* Context Actions */}
           <div className="flex gap-2">
             <Button
+              variant="default"
+              size="sm"
+              className="flex-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-bold"
+              onClick={() => {
+                localStorage.setItem('eloquent-story-tracker', JSON.stringify(trackerData));
+                alert('Story Tracker state saved! This will be used in all subsequent messages.');
+              }}
+            >
+              <Check className="w-3 h-3 mr-1" />
+              Save Changes
+            </Button>
+            <Button
               variant="outline"
               size="sm"
               className="flex-1 text-xs"
               onClick={copyContextToClipboard}
             >
               <Copy className="w-3 h-3 mr-1" />
-              Copy Context
+              Copy
             </Button>
             {onInjectContext && (
               <Button
@@ -466,7 +473,7 @@ const StoryTracker = ({
                 onClick={injectContextToChat}
               >
                 <MessageSquare className="w-3 h-3 mr-1" />
-                Use in Chat
+                Inject
               </Button>
             )}
           </div>
@@ -499,38 +506,55 @@ const StoryTracker = ({
 export const getStoryTrackerContext = () => {
   try {
     const saved = localStorage.getItem('eloquent-story-tracker');
-    if (saved) {
-      const data = JSON.parse(saved);
-      const parts = [];
+    if (!saved) return '';
 
-      if (data.currentObjective) {
-        parts.push(`Current Objective: ${data.currentObjective}`);
-      }
-      if (data.sceneSummary) {
-        parts.push(`Current Scene: ${data.sceneSummary}`);
-      }
-      if (data.characters?.length > 0) {
-        parts.push(`Characters: ${data.characters.map(c => c.notes ? `${c.value} (${c.notes})` : c.value).join(', ')}`);
-      }
-      if (data.locations?.length > 0) {
-        parts.push(`Locations: ${data.locations.map(l => l.value).join(', ')}`);
-      }
-      if (data.inventory?.length > 0) {
-        parts.push(`Inventory: ${data.inventory.map(i => i.value).join(', ')}`);
-      }
-      if (data.plotPoints?.length > 0) {
-        parts.push(`Recent events: ${data.plotPoints.slice(-3).map(p => p.value).join('; ')}`);
-      }
-      if (data.storyNotes) {
-        parts.push(`Story notes: ${data.storyNotes}`);
-      }
+    const tracker = JSON.parse(saved);
+    const sections = [];
 
-      return parts.length > 0 ? parts.join('\n') : null;
+    if (tracker.currentObjective) {
+      sections.push(`[CURRENT OBJECTIVE]: ${tracker.currentObjective}`);
     }
+
+    if (tracker.characters?.length > 0) {
+      const chars = tracker.characters.map(c => c.notes ? `${c.value} (${c.notes})` : c.value).join(', ');
+      sections.push(`[CHARACTERS]: ${chars}`);
+    }
+
+    if (tracker.inventory?.length > 0) {
+      const items = tracker.inventory.map(i => i.notes ? `${i.value} (${i.notes})` : i.value).join(', ');
+      sections.push(`[INVENTORY]: ${items}`);
+    }
+
+    if (tracker.locations?.length > 0) {
+      const locs = tracker.locations.map(l => l.notes ? `${l.value} (${l.notes})` : l.value).join(', ');
+      sections.push(`[LOCATIONS]: ${locs}`);
+    }
+
+    if (tracker.plotPoints?.length > 0) {
+      const plots = tracker.plotPoints.map(p => `• ${p.notes ? `${p.value}: ${p.notes}` : p.value}`).join('\n');
+      sections.push(`[KEY EVENTS / RECENT HISTORY]:\n${plots}`);
+    }
+
+    if (tracker.storyNotes) {
+      sections.push(`[STORY NOTES / WORLD BACKGROUND]:\n${tracker.storyNotes}`);
+    }
+
+    if (tracker.sceneSummary) {
+      sections.push(`[CURRENT SCENE]: ${tracker.sceneSummary}`);
+    }
+
+    if (tracker.customFields?.length > 0) {
+      const custom = tracker.customFields.map(c => c.notes ? `${c.value}: ${c.notes}` : c.value).join(', ');
+      sections.push(`[ADDITIONAL DETAILS]: ${custom}`);
+    }
+
+    if (sections.length === 0) return '';
+
+    return `\n\n[STORY TRACKER - Essential continuity guidance for this response]\n${sections.join('\n\n')}`;
   } catch (e) {
     console.error('Failed to get story tracker context:', e);
   }
-  return null;
+  return '';
 };
 
 export default StoryTracker;

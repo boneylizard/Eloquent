@@ -16,6 +16,10 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * Added **Director Mode** to the Choice Generator, allowing users to toggle between "Character Actions" and "Narrative Beats" (plot steering).
 * Added **Emoji Support** to all AI-generated choices for better visual scanning.
 * Added **OOC (Director Note) Injection**: Narrative beats are now injected as `(Director: ...)` notes to steer the AI without forcing a character action.
+- **Choice Generator Reliability**: Hardened JSON parsing and instructions to prevent "Unexpected token" errors and ensure valid AI output.
+- **Fixed Story Tracker Crash**: Resolved a reference error that caused the Story Tracker to crash the app after recent updates.
+- **Standardized Story Tracker Headers**: Lore and Story context now use high-priority instructional headers (e.g., `[STORY TRACKER - Essential continuity guidance for this response]`) to improve AI adherence to world rules and plot state.
+- **Story Tracker Save Button**: Added an explicit "Save Changes" button to the Story Tracker for clear visual confirmation of state persistence.
 * Added a **Scene Summary** field to the Story Tracker. This persistent context grounds the AI in the current scene and mood.
 * Added **AI Auto-Detection for Scene Summaries**: The Story Tracker analysis now automatically summarizes the current situation from chat history.
 * Added **Instructional World Knowledge**: Enhanced lore injection to use a more instructional header `[WORLD KNOWLEDGE - Essential lore guidance for this response]`, ensuring the AI treats lore entries as direct guidance similar to the Author's Note.

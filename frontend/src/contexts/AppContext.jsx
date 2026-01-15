@@ -119,6 +119,10 @@ const getStoryTrackerContext = () => {
       sections.push(`[STORY NOTES / WORLD BACKGROUND]:\n${tracker.storyNotes}`);
     }
 
+    if (tracker.sceneSummary) {
+      sections.push(`[CURRENT SCENE]: ${tracker.sceneSummary}`);
+    }
+
     if (tracker.customFields?.length > 0) {
       const custom = tracker.customFields.map(c => c.notes ? `${c.value}: ${c.notes}` : c.value).join(', ');
       sections.push(`[ADDITIONAL DETAILS]: ${custom}`);
@@ -126,7 +130,7 @@ const getStoryTrackerContext = () => {
 
     if (sections.length === 0) return '';
 
-    return `\n\n[STORY STATE / TRACKER - Use this for continuity and world knowledge]\n${sections.join('\n\n')}`;
+    return `\n\n[STORY TRACKER - Essential continuity guidance for this response]\n${sections.join('\n\n')}`;
   } catch (e) {
     console.error('Error reading story tracker:', e);
     return '';
