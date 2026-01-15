@@ -177,43 +177,57 @@ const ChoiceGenerator = ({
       ? `\nDo NOT repeat these existing choices:\n${existingChoices.map(c => `- ${c.action}`).join('\n')}\n`
       : '';
 
-    if (isDirectorMode) {
-      return `You are a creative "Director" agent for a roleplay.
+    let prompt = `You are a creative roleplay choice generator.
 ${characterContext}${userSection}${storySection}
 ${behaviorInst}
 ${customDirection}
 RECENT CONVERSATION:
 ${context}
 
-${continueSection}${avoidSection}
-Generate ${numChoices} distinct "Narrative Beats" or "Plot Events" that should happen next.
+${continueSection}${avoidSection}`;
+
+    if (isDirectorMode) {
+      prompt += `
+Generate exactly ${numChoices} distinct "Narrative Beats" or "Plot Events" that should happen next.
 These should NOT be actions for the user character, but things that happen in the world, NPC actions, or environmental shifts.
 
-Each choice needs:
-- "action": A short, punchy title for the event (3-6 words)
-- "description": One sentence explaining the narrative beat
-- "emoji": A single relevant emoji for this event
+EACH CHOICE MUST FOLLOW THIS EXACT JSON FORMAT:
+{
+  "action": "Short, punchy title for the event (3-6 words)",
+  "description": "One sentence explaining the narrative beat accurately",
+  "emoji": "A single relevant emoji"
+}
 
-Output ONLY a JSON array:
-[{"action": "...", "description": "...", "emoji": "..."}]`;
+OUTPUT ONLY THE JSON ARRAY. DO NOT INCLUDE ANY OTHER TEXT, PREAMBLE, OR POSTAMBLE.
+EXAMPLE OUTPUT:
+[
+  {"action": "A Storm Approaches", "description": "Dark clouds gather quickly as the wind begins to howl through the trees.", "emoji": "⛈️"},
+  {"action": "Unseen Observer", "description": "You feel a pair of eyes watching you from the shadows of a nearby alleyway.", "emoji": "👁️"}
+]
+
+NOW GENERATE ${numChoices} CHOICES IN A VALID JSON ARRAY:`;
+    } else {
+      prompt += `
+Generate exactly ${numChoices} distinct action choices the user could take next.
+
+EACH CHOICE MUST FOLLOW THIS EXACT JSON FORMAT:
+{
+  "action": "Short, punchy action phrase (3-6 words)",
+  "description": "One sentence explaining what this choice means",
+  "emoji": "A single relevant emoji"
+}
+
+OUTPUT ONLY THE JSON ARRAY. DO NOT INCLUDE ANY OTHER TEXT, PREAMBLE, OR POSTAMBLE.
+EXAMPLE OUTPUT:
+[
+  {"action": "Confront the stranger", "description": "Step forward and demand to know why they are following you.", "emoji": "🤨"},
+  {"action": "Slip into the crowd", "description": "Quickly weave between the townspeople to lose whoever is watching.", "emoji": "👣"}
+]
+
+NOW GENERATE ${numChoices} CHOICES IN A VALID JSON ARRAY:`;
     }
 
-    return `You are a creative roleplay choice generator.
-${characterContext}${userSection}${storySection}
-${behaviorInst}
-${customDirection}
-RECENT CONVERSATION:
-${context}
-
-${continueSection}${avoidSection}
-Generate exactly ${numChoices} distinct action choice${numChoices > 1 ? 's' : ''} the user could take next.
-Each choice needs:
-- "action": A short, punchy action phrase (3-6 words)
-- "description": One sentence explaining what this choice means
-- "emoji": A single relevant emoji for this action
-
-Output ONLY a JSON array, nothing else:
-[{"action": "...", "description": "...", "emoji": "..."}]`;
+    return prompt;
   };
 
   // Generate a full user prompt from a choice
@@ -282,21 +296,27 @@ Write ONLY the user's message, nothing else:`;
       const fullText = await callAPI(prompt);
       console.log('[ChoiceGenerator] Response:', fullText); // Debug log
 
-      // Parse JSON from response
-      const firstBracket = fullText.indexOf('[');
-      const lastBracket = fullText.lastIndexOf(']');
+      // Parse JSON with a more robust regex to find the array
+      const jsonMatch = fullText.match(/\[\s*{[\s\S]*}\s*\]/);
 
-      if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-        const jsonStr = fullText.slice(firstBracket, lastBracket + 1);
-        const parsedChoices = JSON.parse(jsonStr);
+      if (jsonMatch) {
+        try {
+          const jsonStr = jsonMatch[0];
+          const parsedChoices = JSON.parse(jsonStr);
 
-        if (Array.isArray(parsedChoices) && parsedChoices.length > 0) {
-          setChoices(parsedChoices.slice(0, 4));
-        } else {
-          throw new Error('Invalid choice format');
+          if (Array.isArray(parsedChoices) && parsedChoices.length > 0) {
+            setChoices(parsedChoices.slice(0, 4));
+          } else {
+            throw new Error('Choice array was empty or invalid');
+          }
+        } catch (e) {
+          console.warn('[ChoiceGenerator] JSON.parse failed directly, trying cleanup:', e);
+          // Try to fix common JSON issues like unquoted values or missing trailing commas
+          // But for now, let's just throw the error with the raw text for debugging
+          throw new Error('The AI returned malformed data. Please try again.');
         }
       } else {
-        throw new Error('Could not parse choices from response');
+        throw new Error('No valid choice array found in response');
       }
     } catch (err) {
       console.error('Choice generation error:', err);
@@ -322,11 +342,10 @@ Write ONLY the user's message, nothing else:`;
       const prompt = buildChoicesPrompt(1, continueFrom, otherChoices);
       const fullText = await callAPI(prompt);
 
-      const firstBracket = fullText.indexOf('[');
-      const lastBracket = fullText.lastIndexOf(']');
+      const jsonMatch = fullText.match(/\[\s*{[\s\S]*}\s*\]/);
 
-      if (firstBracket !== -1 && lastBracket !== -1) {
-        const jsonStr = fullText.slice(firstBracket, lastBracket + 1);
+      if (jsonMatch) {
+        const jsonStr = jsonMatch[0];
         const parsedChoices = JSON.parse(jsonStr);
 
         if (Array.isArray(parsedChoices) && parsedChoices.length > 0) {
@@ -353,11 +372,10 @@ Write ONLY the user's message, nothing else:`;
       const prompt = buildChoicesPrompt(1, choice.action, choices.filter((_, i) => i !== index));
       const fullText = await callAPI(prompt);
 
-      const firstBracket = fullText.indexOf('[');
-      const lastBracket = fullText.lastIndexOf(']');
+      const jsonMatch = fullText.match(/\[\s*{[\s\S]*}\s*\]/);
 
-      if (firstBracket !== -1 && lastBracket !== -1) {
-        const jsonStr = fullText.slice(firstBracket, lastBracket + 1);
+      if (jsonMatch) {
+        const jsonStr = jsonMatch[0];
         const parsedChoices = JSON.parse(jsonStr);
 
         if (Array.isArray(parsedChoices) && parsedChoices.length > 0) {
@@ -462,8 +480,8 @@ Write ONLY the user's message, nothing else:`;
       <div className="relative w-full max-w-xl bg-background border rounded-xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className={`flex items-center justify-between p-4 border-b transition-colors duration-500 ${isDirectorMode
-            ? 'bg-gradient-to-r from-purple-500/10 to-indigo-500/10'
-            : 'bg-gradient-to-r from-amber-500/10 to-orange-500/10'
+          ? 'bg-gradient-to-r from-purple-500/10 to-indigo-500/10'
+          : 'bg-gradient-to-r from-amber-500/10 to-orange-500/10'
           }`}>
           <div className="flex items-center gap-2">
             <div className={`p-2 rounded-lg transition-colors duration-500 ${isDirectorMode ? 'bg-purple-500/20' : 'bg-amber-500/20'
@@ -588,8 +606,8 @@ Write ONLY the user's message, nothing else:`;
                 onClick={() => generateAllChoices()}
                 disabled={messages.length === 0 || parentIsGenerating}
                 className={`transition-all duration-500 ${isDirectorMode
-                    ? 'bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600'
-                    : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600'
+                  ? 'bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600'
+                  : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600'
                   }`}
               >
                 <Sparkles className="w-4 h-4 mr-2" />

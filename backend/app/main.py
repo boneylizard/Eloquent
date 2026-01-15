@@ -84,7 +84,7 @@ from .sd_manager import SDManager
 from .upscale_manager import UpscaleManager
 import random
 from .web_search_service import perform_web_search
-from .openai_compat import router as openai_router, is_api_endpoint, get_configured_endpoint, forward_to_configured_endpoint_streaming, forward_to_configured_endpoint_non_streaming
+from .openai_compat import router as openai_router, is_api_endpoint, get_configured_endpoint, forward_to_configured_endpoint_streaming, forward_to_configured_endpoint_non_streaming, prepare_endpoint_request
 import pynvml
 from .devstral_service import devstral_service, DevstralService
 # Only set DEBUG-level loggers to WARNING to suppress their excessive output
@@ -4140,28 +4140,14 @@ Vary your sentence structure and word choices naturally."""
                         if stop_seqs:
                             request_data["stop"] = stop_seqs
                         
-                        # Prepare endpoint config and URL
-                        endpoint_config = get_configured_endpoint(body.model_name)
-                        if not endpoint_config:
-                            error_msg = "No custom API endpoints configured. Please add one in Settings → LLM Settings → Custom API Endpoints"
-                            logger.error(f"[generate] {error_msg}")
-                            yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                        # Use centralized helper for config, URL, and CONTEXT PRUNING
+                        try:
+                            endpoint_config, url, request_data = prepare_endpoint_request(body.model_name, request_data)
+                        except HTTPException as e:
+                            logger.error(f"[generate] {e.detail}")
+                            yield f"data: {json.dumps({'error': e.detail})}\n\n"
                             yield f"data: {json.dumps({'done': True})}\n\n"
                             return
-                        
-                        base_url = endpoint_config['url']
-                        if base_url.endswith('/v1'):
-                            url = f"{base_url}/chat/completions"
-                        else:
-                            url = f"{base_url}/v1/chat/completions"
-                        
-                        # Don't send internal endpoint ID as model name - use configured model or a default
-                        if request_data.get('model', '').startswith('endpoint-'):
-                            configured_model = endpoint_config.get('model', '').strip()
-                            if configured_model:
-                                request_data['model'] = configured_model
-                            else:
-                                request_data['model'] = 'gpt-3.5-turbo'
                         
                         logger.info(f"[generate] Forwarding {body.model_name} to {endpoint_config['name']} at {url}")
                         
@@ -4363,26 +4349,8 @@ Vary your sentence structure and word choices naturally."""
                 if stop_seqs:
                     request_data["stop"] = stop_seqs
                 
-                # Prepare endpoint config and URL
-                endpoint_config = get_configured_endpoint(body.model_name)
-                if not endpoint_config:
-                    error_msg = "No custom API endpoints configured. Please add one in Settings → LLM Settings → Custom API Endpoints"
-                    logger.error(f"[generate] {error_msg}")
-                    raise HTTPException(status_code=400, detail=error_msg)
-                
-                base_url = endpoint_config['url']
-                if base_url.endswith('/v1'):
-                    url = f"{base_url}/chat/completions"
-                else:
-                    url = f"{base_url}/v1/chat/completions"
-                
-                # Don't send internal endpoint ID as model name - use configured model or a default
-                if request_data.get('model', '').startswith('endpoint-'):
-                    configured_model = endpoint_config.get('model', '').strip()
-                    if configured_model:
-                        request_data['model'] = configured_model
-                    else:
-                        request_data['model'] = 'gpt-3.5-turbo'
+                # Use centralized helper for config, URL, and CONTEXT PRUNING
+                endpoint_config, url, request_data = prepare_endpoint_request(body.model_name, request_data)
                 
                 logger.info(f"[generate] Forwarding {body.model_name} to {endpoint_config['name']} at {url}")
                 

@@ -197,9 +197,37 @@ def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str 
     final_fallback.append(last_msg)
     
     final_count = num_tokens_from_messages(final_fallback, model_name)
+    
+    # NEW: Safety check - if system + last message still exceeds the limit, 
+    # we MUST truncate the system message.
+    if final_count > max_input_tokens and has_system:
+        logger.warning(f"[OpenAI Compat] System message + last prompt ({final_count}) still exceeds limit ({max_input_tokens}). Truncating system message.")
+        
+        # Calculate how much we need to cut from the system message
+        last_msg_tokens = num_tokens_from_messages([last_msg], model_name)
+        allowed_system_tokens = max_input_tokens - last_msg_tokens - 50 # padding
+        
+        if allowed_system_tokens > 100:
+            try:
+                encoding = tiktoken.encoding_for_model(model_name)
+            except:
+                encoding = tiktoken.get_encoding("cl100k_base")
+            
+            system_tokens = encoding.encode(system_msg['content'])
+            # Truncate from the middle of the system prompt (often lore/tracker info is there)
+            half = allowed_system_tokens // 2
+            truncated_content = (
+                encoding.decode(system_tokens[:half]) + 
+                "\n... [Truncated for Context] ...\n" + 
+                encoding.decode(system_tokens[-(half):])
+            )
+            final_fallback[0]['content'] = truncated_content
+            final_count = num_tokens_from_messages(final_fallback, model_name)
+            logger.info(f"[OpenAI Compat] System message truncated. New total: {final_count}")
+
     return final_fallback, original_tokens, final_count
 
-def _prepare_endpoint_request(model_name: str, request_data: dict):
+def prepare_endpoint_request(model_name: str, request_data: dict):
     """Prepare endpoint config and URL - returns (endpoint_config, url, request_data) or raises HTTPException"""
     endpoint_config = get_configured_endpoint(model_name)
     
@@ -240,9 +268,9 @@ def _prepare_endpoint_request(model_name: str, request_data: dict):
     else:
         CONTEXT_WINDOW_LIMIT = default_limit
 
-    SAFETY_MARGIN = 200
+    SAFETY_MARGIN = 500 # Increased safety margin
     
-    requested_gen_tokens = request_data.get('max_tokens', 2048)
+    requested_gen_tokens = request_data.get('max_tokens', 1024) or 1024
     # The budget for INPUT tokens is Total - Output - Safety
     max_input_tokens = CONTEXT_WINDOW_LIMIT - requested_gen_tokens - SAFETY_MARGIN
     
@@ -596,7 +624,7 @@ async def chat_completions(raw_request: Request, model_manager: ModelManager = D
 
             # Prepare endpoint config BEFORE starting stream - this ensures errors are raised
             # before the response starts, so CORS headers are properly applied
-            endpoint_config, url, request_data = _prepare_endpoint_request(request.model, request_data)
+            endpoint_config, url, request_data = prepare_endpoint_request(request.model, request_data)
 
             if request.stream:
                 return StreamingResponse(
