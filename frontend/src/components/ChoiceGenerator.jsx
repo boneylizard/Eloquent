@@ -5,11 +5,11 @@ import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { X, Loader2, Sparkles, ArrowRight, RefreshCw, Dice6, Edit3, Wand2, Settings2, Plus, Trash2, Send, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
 
-const ChoiceGenerator = ({ 
-  isOpen, 
-  onClose, 
-  messages, 
-  onSelectChoice, 
+const ChoiceGenerator = ({
+  isOpen,
+  onClose,
+  messages,
+  onSelectChoice,
   apiUrl,
   isGenerating: parentIsGenerating,
   primaryModel,
@@ -27,6 +27,7 @@ const ChoiceGenerator = ({
   const [customPrompt, setCustomPrompt] = useState('');
   const [showSettings, setShowSettings] = useState(true); // Show settings by default
   const [behaviorMode, setBehaviorMode] = useState('balanced');
+  const [isDirectorMode, setIsDirectorMode] = useState(false); // Toggle between Character and Director
 
   // Get story tracker data for context
   const getStoryContext = () => {
@@ -116,14 +117,14 @@ const ChoiceGenerator = ({
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       const chunk = decoder.decode(value, { stream: true });
       sseBuffer += chunk;
-      
+
       // Process complete SSE events (each ends with \n\n)
       const events = sseBuffer.split('\n\n');
       sseBuffer = events.pop() || '';
-      
+
       for (const line of events) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
@@ -151,30 +152,51 @@ const ChoiceGenerator = ({
       .map(m => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`)
       .join('\n');
 
-    const characterContext = activeCharacter 
+    const characterContext = activeCharacter
       ? `CHARACTER: ${activeCharacter.name}\nPersonality: ${activeCharacter.personality || activeCharacter.description || 'Not specified'}\n`
       : '';
 
     const storyContext = getStoryContext();
     const storySection = storyContext ? `\nSTORY STATE:\n${storyContext}\n` : '';
-    
+
     const userContext = getUserContext();
     const userSection = userContext ? `\nUSER PLAYING AS:\n${userContext}\n` : '';
-    
+
     const behaviorInst = getBehaviorInstructions();
-    
+
     // Custom direction - make it prominent
-    const customDirection = customPrompt.trim() 
+    const customDirection = customPrompt.trim()
       ? `\n⚠️ IMPORTANT USER DIRECTION - YOU MUST FOLLOW THIS:\n${customPrompt.trim()}\n`
       : '';
 
-    const continueSection = continueFrom 
+    const continueSection = continueFrom
       ? `\nBASE ACTION: "${continueFrom}"\nGenerate ${numChoices} variations or ways to elaborate on this action.\n`
       : '';
 
     const avoidSection = existingChoices.length > 0
       ? `\nDo NOT repeat these existing choices:\n${existingChoices.map(c => `- ${c.action}`).join('\n')}\n`
       : '';
+
+    if (isDirectorMode) {
+      return `You are a creative "Director" agent for a roleplay.
+${characterContext}${userSection}${storySection}
+${behaviorInst}
+${customDirection}
+RECENT CONVERSATION:
+${context}
+
+${continueSection}${avoidSection}
+Generate ${numChoices} distinct "Narrative Beats" or "Plot Events" that should happen next.
+These should NOT be actions for the user character, but things that happen in the world, NPC actions, or environmental shifts.
+
+Each choice needs:
+- "action": A short, punchy title for the event (3-6 words)
+- "description": One sentence explaining the narrative beat
+- "emoji": A single relevant emoji for this event
+
+Output ONLY a JSON array:
+[{"action": "...", "description": "...", "emoji": "..."}]`;
+    }
 
     return `You are a creative roleplay choice generator.
 ${characterContext}${userSection}${storySection}
@@ -188,9 +210,10 @@ Generate exactly ${numChoices} distinct action choice${numChoices > 1 ? 's' : ''
 Each choice needs:
 - "action": A short, punchy action phrase (3-6 words)
 - "description": One sentence explaining what this choice means
+- "emoji": A single relevant emoji for this action
 
 Output ONLY a JSON array, nothing else:
-[{"action": "...", "description": "..."}]`;
+[{"action": "...", "description": "...", "emoji": "..."}]`;
   };
 
   // Generate a full user prompt from a choice
@@ -200,7 +223,7 @@ Output ONLY a JSON array, nothing else:
       .map(m => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`)
       .join('\n');
 
-    const characterContext = activeCharacter 
+    const characterContext = activeCharacter
       ? `You are writing a message TO ${activeCharacter.name}.\nTheir personality: ${activeCharacter.personality || activeCharacter.description || 'Not specified'}\n`
       : '';
 
@@ -228,17 +251,17 @@ Write a 2-4 sentence first-person roleplay message where the user takes this act
 Write ONLY the user's message, nothing else:`;
 
     const response = await callAPI(prompt, 0.9);
-    
+
     // Clean up the response - remove any quotes or prefixes
     let cleaned = response.trim();
     // Remove "User:" or similar prefixes
     cleaned = cleaned.replace(/^(User|Me|I):\s*/i, '');
     // Remove surrounding quotes if present
-    if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || 
-        (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    if ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
       cleaned = cleaned.slice(1, -1);
     }
-    
+
     return cleaned;
   };
 
@@ -255,18 +278,18 @@ Write ONLY the user's message, nothing else:`;
     try {
       const prompt = buildChoicesPrompt(4, continueFrom);
       console.log('[ChoiceGenerator] Prompt:', prompt); // Debug log
-      
+
       const fullText = await callAPI(prompt);
       console.log('[ChoiceGenerator] Response:', fullText); // Debug log
-      
+
       // Parse JSON from response
       const firstBracket = fullText.indexOf('[');
       const lastBracket = fullText.lastIndexOf(']');
-      
+
       if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
         const jsonStr = fullText.slice(firstBracket, lastBracket + 1);
         const parsedChoices = JSON.parse(jsonStr);
-        
+
         if (Array.isArray(parsedChoices) && parsedChoices.length > 0) {
           setChoices(parsedChoices.slice(0, 4));
         } else {
@@ -298,14 +321,14 @@ Write ONLY the user's message, nothing else:`;
       const otherChoices = choices.filter((_, i) => i !== index);
       const prompt = buildChoicesPrompt(1, continueFrom, otherChoices);
       const fullText = await callAPI(prompt);
-      
+
       const firstBracket = fullText.indexOf('[');
       const lastBracket = fullText.lastIndexOf(']');
-      
+
       if (firstBracket !== -1 && lastBracket !== -1) {
         const jsonStr = fullText.slice(firstBracket, lastBracket + 1);
         const parsedChoices = JSON.parse(jsonStr);
-        
+
         if (Array.isArray(parsedChoices) && parsedChoices.length > 0) {
           const newChoices = [...choices];
           newChoices[index] = parsedChoices[0];
@@ -329,14 +352,14 @@ Write ONLY the user's message, nothing else:`;
     try {
       const prompt = buildChoicesPrompt(1, choice.action, choices.filter((_, i) => i !== index));
       const fullText = await callAPI(prompt);
-      
+
       const firstBracket = fullText.indexOf('[');
       const lastBracket = fullText.lastIndexOf(']');
-      
+
       if (firstBracket !== -1 && lastBracket !== -1) {
         const jsonStr = fullText.slice(firstBracket, lastBracket + 1);
         const parsedChoices = JSON.parse(jsonStr);
-        
+
         if (Array.isArray(parsedChoices) && parsedChoices.length > 0) {
           const newChoices = [...choices];
           newChoices[index] = parsedChoices[0];
@@ -355,18 +378,25 @@ Write ONLY the user's message, nothing else:`;
   const handleSelectChoice = async (choice) => {
     setExpandingChoice(choice);
     setError(null);
-    
+
     try {
+      if (isDirectorMode) {
+        // In Director Mode, we send it as a director note
+        onSelectChoice(choice.action, choice.description, 'director');
+        onClose();
+        return;
+      }
+
       // Generate full prompt from the choice
       const fullPrompt = await expandChoiceToFullPrompt(choice);
-      
+
       // Send the expanded prompt
-      onSelectChoice(fullPrompt, choice.description);
+      onSelectChoice(fullPrompt, choice.description, 'prose');
       onClose();
     } catch (err) {
       console.error('Failed to expand choice:', err);
       // Fallback to just the action text
-      onSelectChoice(`*${choice.action}*`, choice.description);
+      onSelectChoice(`*${choice.action}*`, choice.description, 'direct');
       onClose();
     } finally {
       setExpandingChoice(null);
@@ -382,9 +412,9 @@ Write ONLY the user's message, nothing else:`;
   const handleSaveEdit = (index) => {
     if (editAction.trim()) {
       const newChoices = [...choices];
-      newChoices[index] = { 
-        action: editAction.trim(), 
-        description: editDescription.trim() || choices[index].description 
+      newChoices[index] = {
+        action: editAction.trim(),
+        description: editDescription.trim() || choices[index].description
       };
       setChoices(newChoices);
     }
@@ -416,7 +446,7 @@ Write ONLY the user's message, nothing else:`;
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      
+
       {/* Expanding overlay */}
       {expandingChoice && (
         <div className="absolute inset-0 bg-black/70 z-10 flex items-center justify-center">
@@ -427,25 +457,59 @@ Write ONLY the user's message, nothing else:`;
           </div>
         </div>
       )}
-      
+
       {/* Panel */}
       <div className="relative w-full max-w-xl bg-background border rounded-xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-amber-500/10 to-orange-500/10">
+        <div className={`flex items-center justify-between p-4 border-b transition-colors duration-500 ${isDirectorMode
+            ? 'bg-gradient-to-r from-purple-500/10 to-indigo-500/10'
+            : 'bg-gradient-to-r from-amber-500/10 to-orange-500/10'
+          }`}>
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-lg bg-amber-500/20">
-              <Dice6 className="w-5 h-5 text-amber-500" />
+            <div className={`p-2 rounded-lg transition-colors duration-500 ${isDirectorMode ? 'bg-purple-500/20' : 'bg-amber-500/20'
+              }`}>
+              {isDirectorMode ? (
+                <Sparkles className="w-5 h-5 text-purple-500" />
+              ) : (
+                <Dice6 className="w-5 h-5 text-amber-500" />
+              )}
             </div>
             <div>
-              <h2 className="text-lg font-bold">What will you do?</h2>
+              <h2 className="text-lg font-bold">
+                {isDirectorMode ? 'Director Mode' : 'What will you do?'}
+              </h2>
               <p className="text-xs text-muted-foreground">
-                {activeCharacter ? `${activeCharacter.name} will respond` : 'Choose your action'}
+                {isDirectorMode
+                  ? 'Drive the story with narrative beats'
+                  : (activeCharacter ? `${activeCharacter.name} will respond` : 'Choose your action')}
               </p>
             </div>
           </div>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            <X className="w-4 h-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <div className="flex bg-muted rounded-lg p-0.5 mr-2">
+              <button
+                onClick={() => {
+                  setIsDirectorMode(false);
+                  setChoices([]);
+                }}
+                className={`px-3 py-1 text-xs rounded-md transition-all ${!isDirectorMode ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Character
+              </button>
+              <button
+                onClick={() => {
+                  setIsDirectorMode(true);
+                  setChoices([]);
+                }}
+                className={`px-3 py-1 text-xs rounded-md transition-all ${isDirectorMode ? 'bg-purple-500 text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Director
+              </button>
+            </div>
+            <Button variant="ghost" size="icon" onClick={onClose}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
 
         {/* Settings Panel - Collapsible but prominent */}
@@ -465,7 +529,7 @@ Write ONLY the user's message, nothing else:`;
             </div>
             {showSettings ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>
-          
+
           {showSettings && (
             <div className="p-4 pt-0 space-y-4 bg-muted/20">
               {/* Behavior Mode */}
@@ -492,7 +556,7 @@ Write ONLY the user's message, nothing else:`;
                   ))}
                 </div>
               </div>
-              
+
               {/* Custom Direction */}
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-2 block">
@@ -520,13 +584,16 @@ Write ONLY the user's message, nothing else:`;
               <p className="text-xs text-muted-foreground/70 mb-4">
                 Clicking a choice will write a full action and send it
               </p>
-              <Button 
-                onClick={() => generateAllChoices()} 
+              <Button
+                onClick={() => generateAllChoices()}
                 disabled={messages.length === 0 || parentIsGenerating}
-                className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600"
+                className={`transition-all duration-500 ${isDirectorMode
+                    ? 'bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600'
+                    : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600'
+                  }`}
               >
                 <Sparkles className="w-4 h-4 mr-2" />
-                Generate Choices
+                Generate {isDirectorMode ? 'Beats' : 'Choices'}
               </Button>
             </div>
           )}
@@ -558,8 +625,11 @@ Write ONLY the user's message, nothing else:`;
                 <div
                   key={index}
                   className={`w-full text-left p-3 rounded-lg border transition-all
-                    ${regeneratingIndex === index ? 'bg-amber-500/10 border-amber-500/30' : 'bg-card hover:bg-accent/50 hover:border-amber-500/30'}
-                    ${editingIndex === index ? 'ring-2 ring-amber-500/50' : ''}
+                    ${regeneratingIndex === index
+                      ? (isDirectorMode ? 'bg-purple-500/10 border-purple-500/30' : 'bg-amber-500/10 border-amber-500/30')
+                      : `bg-card hover:bg-accent/50 ${isDirectorMode ? 'hover:border-purple-500/30' : 'hover:border-amber-500/30'}`
+                    }
+                    ${editingIndex === index ? (isDirectorMode ? 'ring-2 ring-purple-500/50' : 'ring-2 ring-amber-500/50') : ''}
                   `}
                 >
                   {regeneratingIndex === index ? (
@@ -591,8 +661,8 @@ Write ONLY the user's message, nothing else:`;
                       <div className="flex gap-2 flex-wrap">
                         <Button size="sm" onClick={() => handleSaveEdit(index)}>Save</Button>
                         <Button size="sm" variant="ghost" onClick={handleCancelEdit}>Cancel</Button>
-                        <Button 
-                          size="sm" 
+                        <Button
+                          size="sm"
                           variant="default"
                           className="bg-green-600 hover:bg-green-700"
                           onClick={() => {
@@ -608,14 +678,15 @@ Write ONLY the user's message, nothing else:`;
                   ) : (
                     <div className="group">
                       {/* Choice content - clickable to send */}
-                      <button 
+                      <button
                         className="w-full text-left"
                         onClick={() => handleSelectChoice(choice)}
                         disabled={parentIsGenerating || expandingChoice}
                       >
                         <div className="flex items-start gap-2">
-                          <span className="w-6 h-6 rounded-full bg-amber-500/20 text-amber-500 flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5">
-                            {index + 1}
+                          <span className={`w-8 h-8 rounded-full flex items-center justify-center text-lg flex-shrink-0 mt-0.5 ${isDirectorMode ? 'bg-purple-500/20 shadow-inner' : 'bg-amber-500/20'
+                            }`}>
+                            {choice.emoji || (isDirectorMode ? '🎬' : index + 1)}
                           </span>
                           <div className="flex-1 min-w-0">
                             <span className="font-semibold block">{choice.action}</span>
@@ -626,11 +697,11 @@ Write ONLY the user's message, nothing else:`;
                           <ArrowRight className="w-5 h-5 text-amber-500/30 group-hover:text-amber-500 group-hover:translate-x-1 transition-all flex-shrink-0 mt-1" />
                         </div>
                       </button>
-                      
+
                       {/* Action buttons */}
                       <div className="flex items-center gap-1 mt-2 ml-8 opacity-50 group-hover:opacity-100 transition-opacity">
-                        <Button 
-                          variant="ghost" 
+                        <Button
+                          variant="ghost"
                           size="sm"
                           className="h-6 text-xs px-2"
                           onClick={(e) => {
@@ -641,8 +712,8 @@ Write ONLY the user's message, nothing else:`;
                           <Edit3 className="w-3 h-3 mr-1" />
                           Edit
                         </Button>
-                        <Button 
-                          variant="ghost" 
+                        <Button
+                          variant="ghost"
                           size="sm"
                           className="h-6 text-xs px-2"
                           onClick={(e) => {
@@ -653,8 +724,8 @@ Write ONLY the user's message, nothing else:`;
                           <RotateCcw className="w-3 h-3 mr-1" />
                           Regen
                         </Button>
-                        <Button 
-                          variant="ghost" 
+                        <Button
+                          variant="ghost"
                           size="sm"
                           className="h-6 text-xs px-2"
                           onClick={(e) => {
@@ -665,8 +736,8 @@ Write ONLY the user's message, nothing else:`;
                           <Wand2 className="w-3 h-3 mr-1" />
                           Vary
                         </Button>
-                        <Button 
-                          variant="ghost" 
+                        <Button
+                          variant="ghost"
                           size="sm"
                           className="h-6 text-xs px-2 text-red-500 hover:text-red-600"
                           onClick={(e) => {
@@ -694,9 +765,9 @@ Write ONLY the user's message, nothing else:`;
 
               {/* Regenerate all */}
               <div className="flex justify-center pt-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => generateAllChoices()}
                   disabled={isGenerating || parentIsGenerating || regeneratingIndex !== null}
                 >

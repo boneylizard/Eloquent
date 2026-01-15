@@ -57,6 +57,7 @@ const Chat = ({ layoutMode }) => {
     createNewConversation, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateReply, fetchMemoriesFromAgent, fetchTriggeredLore, isStreamingStopped, handleStopGeneration,
     // Character info
     activeCharacter, primaryCharacter, secondaryCharacter,
+    getGenerationSystemPrompt,
     // Audio / STT / TTS flags & functions
     sttEnabled, ttsEnabled, isRecording, isTranscribing, primaryIsAPI, secondaryIsAPI,
     isPlayingAudio, playTTS, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS,
@@ -229,6 +230,7 @@ Carefully read the conversation and decide:
 - inventory: items the protagonist currently has, found, or clearly owns
 - locations: important places that matter to the story
 - plotPoints: key events that have already happened
+- sceneSummary: a one-sentence summary of the current scene and situation
 
 You may think through the conversation internally, but your *final* output must be a single JSON object on the last line, with **no extra text before or after it**.
 Do NOT include backticks, code fences, or explanations around the JSON.
@@ -238,10 +240,11 @@ The JSON must have exactly this shape:
   "characters": ["Name A", "Name B"],
   "inventory": ["item A", "item B"],
   "locations": ["place A", "place B"],
-  "plotPoints": ["event A", "event B"]
+  "plotPoints": ["event A", "event B"],
+  "sceneSummary": "Current situation description..."
 }
 
-If you are unsure about a field, return an empty array for that field.
+If you are unsure about a field, return an empty array for that field (or an empty string for sceneSummary).
 
 CONVERSATION:
 ${context}
@@ -338,6 +341,9 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
               inventory: mergeUnique(existing.inventory, detected.inventory),
               locations: mergeUnique(existing.locations, detected.locations),
               plotPoints: mergeUnique(existing.plotPoints, detected.plotPoints),
+              sceneSummary: detected.sceneSummary || existing.sceneSummary || '',
+              storyNotes: existing.storyNotes || '',
+              currentObjective: existing.currentObjective || '',
               customFields: existing.customFields || []
             };
 
@@ -358,15 +364,22 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
   };
 
   // Choice selection handler - sends the action to the AI for a response
-  const handleChoiceSelect = async (choice, description = '') => {
+  const handleChoiceSelect = async (choice, description = '', type = 'prose') => {
     if (!choice || isGenerating) return;
 
-    // Format the action as a roleplay action message
-    // Using asterisks to denote action in typical RP format
-    const actionMessage = `*${choice}*`;
+    let messageToSend = choice;
 
-    // Send the action directly to get an AI response
-    await sendMessage(actionMessage);
+    if (type === 'director') {
+      // Format as a director's/OOC note to steer the narrative
+      messageToSend = `(Director: ${choice})`;
+    } else if (type === 'direct') {
+      // Format as a simple action if it wasn't expanded into prose
+      messageToSend = `*${choice}*`;
+    }
+    // If type is 'prose', the choice is already the full expanded text
+
+    // Send the message directly to get an AI response
+    await sendMessage(messageToSend);
   };
 
   // Mic click handler
@@ -1424,53 +1437,24 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
 
     setIsGenerating(true);
     try {
-      // 3) FETCH MEMORY AND LORE (NEW)
-      const agentMem = await fetchMemoriesFromAgent(userText);
-      const lore = await fetchTriggeredLore(userText, activeCharacter);
-      let memoryContext = '';
-
-      if (agentMem.length) {
-        memoryContext = agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
-      }
-
-      if (lore.length) {
-        const loreContext = lore.map(l => {
-          if (typeof l === 'string') {
-            return `• ${l}`;
-          } else if (typeof l === 'object' && l.content) {
-            return `• ${l.content}`;
-          } else {
-            return `• ${JSON.stringify(l)}`;
-          }
-        }).join('\n');
-
-        if (memoryContext) {
-          memoryContext += `\n\nWORLD KNOWLEDGE:\n${loreContext}`;
-        } else {
-          memoryContext = `WORLD KNOWLEDGE:\n${loreContext}`;
-        }
-      }
-
-      // 4) rebuild exactly the same prompt your sendMessage uses (WITH MEMORY)
-      let systemMsg = activeCharacter
-        ? buildSystemPrompt(activeCharacter)
-        : 'You are a helpful assistant...';
-
-      // ADD MEMORY CONTEXT TO SYSTEM MESSAGE
-      if (memoryContext) {
-        systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
-      }
+      // 3) Use shared helper for full system prompt (includes Lore, Memories, User Profile with tag substitution)
+      const systemMsg = await getGenerationSystemPrompt(
+        userText,
+        activeCharacter,
+        authorNote // Pass author note directly
+      );
 
       // Include story tracker context if available
+      let fullSystemMsg = systemMsg;
       const storyContext = getStoryTrackerContext();
       if (storyContext) {
-        systemMsg += `\n\nSTORY STATE:\n${storyContext}`;
+        fullSystemMsg += `\n\nSTORY STATE:\n${storyContext}`;
       }
 
       // --- DYNAMIC CONTEXT PRUNING (8k Limit) ---
       const MAX_CONTEXT_TOKENS = 7500;
       const estimateTokens = (str) => Math.ceil((str || '').length / 4);
-      const systemTokens = estimateTokens(systemMsg);
+      const systemTokens = estimateTokens(fullSystemMsg);
       let availableTokens = MAX_CONTEXT_TOKENS - systemTokens;
 
       const historyUpToUser = messages.slice(0, userIdx + 1);
@@ -1487,7 +1471,7 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
         currentTokens += msgTokens;
       }
 
-      const prompt = formatPrompt(slicedMessages, primaryModel, systemMsg);
+      const prompt = formatPrompt(slicedMessages, primaryModel, fullSystemMsg);
 
       // 5) streaming payload (same as before)
       const {
@@ -1495,6 +1479,8 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
         top_p,
         top_k,
         repetition_penalty,
+        frequencyPenalty = 0, // Ensure these defaults match generateReply
+        presencePenalty = 0,
         use_rag,
         selectedDocuments = []
       } = settings;
@@ -1506,12 +1492,15 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
         top_p,
         top_k,
         repetition_penalty,
+        frequency_penalty: frequencyPenalty,
+        presence_penalty: presencePenalty,
         use_rag,
         rag_docs: selectedDocuments,
         gpu_id: 0,
         userProfile: { id: userProfile?.id ?? 'anonymous' },
         authorNote: authorNote.trim() || undefined,
-        memoryEnabled: true, // CHANGED FROM FALSE
+        directProfileInjection: settings.directProfileInjection, // Ensure this is passed if backend needs it, though frontend injection handled it
+        memoryEnabled: true,
         stream: true
       };
 
