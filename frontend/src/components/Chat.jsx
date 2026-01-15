@@ -1838,9 +1838,9 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
         }).join('\n');
 
         if (memoryContext) {
-          memoryContext += `\n\nWORLD KNOWLEDGE:\n${loreContext}`;
+          memoryContext += `\n\n[WORLD KNOWLEDGE - Essential lore guidance for this response]\n${loreContext}`;
         } else {
-          memoryContext = `WORLD KNOWLEDGE:\n${loreContext}`;
+          memoryContext = `[WORLD KNOWLEDGE - Essential lore guidance for this response]\n${loreContext}`;
         }
       }
 
