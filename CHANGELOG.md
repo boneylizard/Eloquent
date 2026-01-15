@@ -6,6 +6,28 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-15
+
+### Added
+
+* Added full support for `{{char}}` and `{{user}}` tag substitution in all character-related text fields.
+* Added support for tag substitution in **User Profile** (Direct Injection), allowing the AI to know your name even when it's just a variable in the profile.
+* Added support for tag substitution in **World Knowledge (Lore)** entries.
+* Added **Director Mode** to the Choice Generator, allowing users to toggle between "Character Actions" and "Narrative Beats" (plot steering).
+* Added **Emoji Support** to all AI-generated choices for better visual scanning.
+* Added **OOC (Director Note) Injection**: Narrative beats are now injected as `(Director: ...)` notes to steer the AI without forcing a character action.
+* Added a **Scene Summary** field to the Story Tracker. This persistent context grounds the AI in the current scene and mood.
+* Added **AI Auto-Detection for Scene Summaries**: The Story Tracker analysis now automatically summarizes the current situation from chat history.
+
+### Fixed
+
+* Fixed **Regenerate Response** to correctly use the updated character data, ensuring tags like `{{user}}` are properly replaced during regeneration.
+* Fixed **Regenerate Variant** (swiping) to correctly include all context (Lore, User Profile) and perform tag substitutions, resolving an issue where swipes would lose this critical information.
+* Refactored the prompt generation logic to use a centralized system, preventing future inconsistencies between different generation modes.
+* Deeply integrated **Story Tracker** context into the main generation stream and swipe (variant) logic, ensuring total continuity.
+
+---
+
 ## 2026-01-14
 
 ### Added
