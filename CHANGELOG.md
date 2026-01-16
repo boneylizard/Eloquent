@@ -10,12 +10,19 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ### Added
 
+* **Conversation Summary & Save Point**: Implemented a "Summarize" feature in the chat header. Users can now generate a summary of their current conversation, save it, and load it into a fresh chat.
+* **Context Injection**: Saved summaries are intelligently injected into the Prompt System, allowing the AI to "remember" past events even in new sessions or after a context reset.
+
 * **Devstral Large (OpenRouter) Integration**: Fully integrated support for running Devstral 2 123b Large via OpenRouter API within the Code Editor.
 * **Smart Model Routing**: The prompt engine now intelligently switches between local models (e.g., `devstral-small`) and external API models based on user selection.
 * **Session Controls**: Added a "New Chat" button and improved "Delete" buttons (styled as a persistent white 'X') to the Code Editor sidebar for better session management.
 * **Native Tool Execution**: Implemented a robust, brace-counting JSON parser (`_extract_balanced_json`) in `devstral_service.py`. This replaced the fragile regex parser, enabling "super fast" and reliable execution of file operations, even for complex code blocks with nested structures.
 
 ### Fixed
+
+* **Summary Injection Bug**: Fixed a stale closure issue where loaded summaries were visible in the UI but not actually sent to the AI backend.
+* **"Input Too Large" API Errors**: Fixed a critical bug in the context pruning logic. The system now correctly detects and truncates context even when the conversation history is a single massive block (regex failure scenario), preventing 400 Bad Request errors from upstream APIs.
+* **Context Window Validity**: Verified and adjusted the backend logic to ensure the `Context Window` setting (e.g., 8192) is strictly respected, with a configurable safety margin (now 1000 tokens) to ensure stable generation.
 
 * **Backend Crash Loop**: Fixed a critical `IndentationError` in `main.py` that was preventing the backend from started.
 * **Local Model Priority**: Resolved a routing bug where local model requests were incorrectly falling back to the legacy external API endpoint. Local models now correctly take precedence when loaded.
