@@ -6,6 +6,24 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-16
+
+### Added
+
+* **Devstral Large (OpenRouter) Integration**: Fully integrated support for running Devstral 2 123b Large via OpenRouter API within the Code Editor.
+* **Smart Model Routing**: The prompt engine now intelligently switches between local models (e.g., `devstral-small`) and external API models based on user selection.
+* **Session Controls**: Added a "New Chat" button and improved "Delete" buttons (styled as a persistent white 'X') to the Code Editor sidebar for better session management.
+* **Native Tool Execution**: Implemented a robust, brace-counting JSON parser (`_extract_balanced_json`) in `devstral_service.py`. This replaced the fragile regex parser, enabling "super fast" and reliable execution of file operations, even for complex code blocks with nested structures.
+
+### Fixed
+
+* **Backend Crash Loop**: Fixed a critical `IndentationError` in `main.py` that was preventing the backend from started.
+* **Local Model Priority**: Resolved a routing bug where local model requests were incorrectly falling back to the legacy external API endpoint. Local models now correctly take precedence when loaded.
+* **"No Model" UI Bug**: Fixed an issue where the Code Editor incorrectly displayed "No Model" when an API model was selected. It now correctly identifies API models as "Ready".
+* **Prompt Hardening**: Updated the `DEVSTRAL_SYSTEM_PROMPT` to strictly forbid the model from "simulating" edits. This forces the model to use the `write_file` tool, eliminating hallucinations and ensuring changes are actually saved to disk.
+
+---
+
 ## 2026-01-15
 
 ### Added

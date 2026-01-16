@@ -6,9 +6,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { 
-  X, Code, FileText, Loader2, FolderTree, Folder, FolderOpen, 
-  ChevronRight, ChevronDown, File, Search, RefreshCw, Settings, 
+import {
+  X, Code, FileText, Loader2, FolderTree, Folder, FolderOpen,
+  ChevronRight, ChevronDown, File, Search, RefreshCw, Settings,
   Send, Terminal, Image, Trash2, Plus, Zap
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -26,22 +26,22 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
 
   const handleSubmit = async () => {
     if (!inputPath.trim()) return;
-    
+
     setIsLoading(true);
     setError('');
-    
+
     try {
       const baseUrl = import.meta.env.VITE_API_URL || getBackendUrl();
       const response = await fetch(`${baseUrl}/code_editor/set_base_dir?path=${encodeURIComponent(inputPath)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
-      
+
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Failed to set directory');
       }
-      
+
       onSelectDirectory(inputPath);
       onClose();
     } catch (err) {
@@ -90,7 +90,7 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
 // ============================================================================
 const FileTreeItem = ({ item, level = 0, onFileSelect, onToggleFolder }) => {
   if (!item) return null;
-  
+
   const handleClick = () => {
     if (item.type === 'folder') {
       onToggleFolder(item);
@@ -160,6 +160,7 @@ const FileTreeItem = ({ item, level = 0, onFileSelect, onToggleFolder }) => {
 // MAIN CODE EDITOR OVERLAY COMPONENT
 // ============================================================================
 const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
+  const { activeModel, primaryIsAPI, primaryModel } = useApp(); // Get globally selected model
   const [input, setInput] = useState('');
   const [codeMessages, setCodeMessages] = useState([]);
   const [draggedFiles, setDraggedFiles] = useState([]);
@@ -187,12 +188,12 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
       headers: { 'Content-Type': 'application/json' },
       ...options
     });
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.detail || `API call failed: ${response.status}`);
     }
-    
+
     return response.json();
   };
 
@@ -200,6 +201,14 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   // DEVSTRAL STATUS CHECK
   // ============================================================================
   const checkDevstralStatus = async () => {
+    // If using an API model (endpoint-...), assume it's ready
+    const modelId = (primaryIsAPI && primaryModel) ? primaryModel : (typeof activeModel === 'string' ? activeModel : activeModel?.id);
+
+    if (modelId && modelId.startsWith('endpoint-')) {
+      setDevstralStatus({ devstral_loaded: true, is_api: true });
+      return;
+    }
+
     try {
       const status = await apiCall('/devstral/status');
       setDevstralStatus(status);
@@ -237,9 +246,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         method: 'POST',
         body: JSON.stringify({ filepath: file.name })
       });
-      
+
       const fileMessage = `📁 **${file.name}**\n\`\`\`\n${result.content}\n\`\`\``;
-      
+
       setCodeMessages(prev => [...prev, {
         role: 'assistant',
         content: fileMessage,
@@ -263,30 +272,30 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         return item;
       });
     };
-    
+
     setFileTree(prev => prev ? toggleFolder([prev])[0] : null);
   };
 
   const filteredTree = (node, search) => {
     if (!search) return node;
     if (!node) return null;
-    
+
     const searchLower = search.toLowerCase();
-    
+
     if (node.type === 'file') {
       return node.name.toLowerCase().includes(searchLower) ? node : null;
     }
-    
+
     if (node.children) {
       const filteredChildren = node.children
         .map(child => filteredTree(child, search))
         .filter(Boolean);
-      
+
       if (filteredChildren.length > 0 || node.name.toLowerCase().includes(searchLower)) {
         return { ...node, expanded: true, children: filteredChildren };
       }
     }
-    
+
     return null;
   };
 
@@ -314,7 +323,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
     const newMessages = [...codeMessages, userMessage];
     setCodeMessages(newMessages);
     updateActiveSession(newMessages);
-    
+
     const currentInput = input;
     const currentImage = imagePreview;
     setInput('');
@@ -326,8 +335,8 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
       // Build conversation history for Devstral
       const conversationMessages = newMessages.map(msg => ({
         role: msg.role,
-        content: msg.files 
-          ? `${msg.content}\n\nFiles in context: ${msg.files.join(', ')}` 
+        content: msg.files
+          ? `${msg.content}\n\nFiles in context: ${msg.files.join(', ')}`
           : msg.content
       }));
 
@@ -340,7 +349,13 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
           temperature: 0.15,
           max_tokens: 4096,
           image_base64: currentImage,
-          auto_execute: true  // Let backend auto-execute tool calls
+          auto_execute: true,
+          // Model ID handling: 
+          // 1. Check if activeModel is a string (legacy behavior) or object
+          // 2. Fallback to primaryModel if primaryIsAPI is true (most reliable for API)
+          model: (primaryIsAPI && primaryModel)
+            ? primaryModel
+            : ((typeof activeModel === 'string' ? activeModel : activeModel?.id) || 'devstral-small')
         })
       });
 
@@ -351,7 +366,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
       if (response.choices && response.choices[0]) {
         const message = response.choices[0].message;
         assistantContent = message.content || '';
-        
+
         // Check for tool calls
         if (message.tool_calls && message.tool_calls.length > 0) {
           toolsUsed = message.tool_calls.map(tc => tc.function?.name).filter(Boolean);
@@ -364,11 +379,11 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
           const icon = tr.success ? '✅' : '❌';
           return `${icon} **${tr.name}**:\n\`\`\`\n${tr.result}\n\`\`\``;
         }).join('\n\n');
-        
-        assistantContent = assistantContent 
+
+        assistantContent = assistantContent
           ? `${assistantContent}\n\n---\n\n**Tool Results:**\n${toolResultsText}`
           : toolResultsText;
-        
+
         toolsUsed = response.tool_results.map(tr => tr.name);
       }
 
@@ -387,14 +402,14 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
     } catch (error) {
       console.error('❌ Devstral chat error:', error);
-      
+
       const errorMessage = {
         role: 'assistant',
         content: `❌ Error: ${error.message}\n\nMake sure Devstral Small 2 24B is loaded.`,
         timestamp: Date.now(),
         tools_used: []
       };
-      
+
       setCodeMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsCodeGenerating(false);
@@ -407,7 +422,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64 = reader.result.split(',')[1];
@@ -434,9 +449,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   const handleDrop = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     const droppedJSON = e.dataTransfer.getData('application/json');
-    
+
     if (droppedJSON) {
       try {
         const fileData = JSON.parse(droppedJSON);
@@ -470,7 +485,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   const saveSessions = (next) => {
     try {
       localStorage.setItem(SESSIONS_KEY, JSON.stringify(next));
-    } catch {}
+    } catch { }
   };
 
   const createNewSession = (firstMessage) => {
@@ -487,9 +502,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
   const updateActiveSession = (messagesForSession) => {
     if (!activeSessionId) return;
-    const next = sessions.map(s => 
-      s.id === activeSessionId 
-        ? { ...s, messages: messagesForSession, updatedAt: Date.now() } 
+    const next = sessions.map(s =>
+      s.id === activeSessionId
+        ? { ...s, messages: messagesForSession, updatedAt: Date.now() }
         : s
     );
     setSessions(next);
@@ -573,7 +588,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
       <div className="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl w-[95vw] h-[90vh] flex flex-col max-w-7xl">
-        
+
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-zinc-700 bg-zinc-800/50 rounded-t-lg">
           <div className="flex items-center gap-3">
@@ -582,13 +597,15 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             </div>
             <div>
               <h2 className="text-lg font-semibold text-zinc-100">Eloquent Vibe</h2>
-              <p className="text-xs text-zinc-400">Powered by Devstral Small 2 24B</p>
+              <p className="text-xs text-zinc-400">
+                Powered by {(primaryIsAPI && primaryModel) ? primaryModel : (activeModel?.name || "Devstral Small 2 24B")}
+              </p>
             </div>
             {devstralStatus && (
               <div className={cn(
                 "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs",
-                devstralStatus.devstral_loaded 
-                  ? "bg-emerald-500/20 text-emerald-400" 
+                devstralStatus.devstral_loaded
+                  ? "bg-emerald-500/20 text-emerald-400"
                   : "bg-red-500/20 text-red-400"
               )}>
                 <Zap className="h-3 w-3" />
@@ -603,7 +620,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
         {/* Main Content */}
         <div className="flex-1 flex min-h-0">
-          
+
           {/* File Explorer */}
           <div className="w-72 border-r border-zinc-700 bg-zinc-800/30 flex flex-col">
             <div className="p-3 border-b border-zinc-700">
@@ -618,7 +635,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   </Button>
                 </div>
               </div>
-              
+
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-3 w-3 text-zinc-500" />
                 <Input
@@ -628,7 +645,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   className="pl-7 h-7 text-xs bg-zinc-800 border-zinc-600 text-zinc-300"
                 />
               </div>
-              
+
               <div className="mt-2 text-xs text-zinc-500 truncate bg-zinc-800/50 p-2 rounded" title={currentPath}>
                 📁 {currentPath || 'No directory selected'}
               </div>
@@ -650,9 +667,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   <div className="text-center py-8 text-zinc-500">
                     <FolderTree className="h-8 w-8 mx-auto mb-2 opacity-50" />
                     <p className="text-sm">No directory selected</p>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
+                    <Button
+                      variant="outline"
+                      size="sm"
                       className="mt-2 border-zinc-600"
                       onClick={() => setShowDirectoryPicker(true)}
                     >
@@ -669,13 +686,14 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             <div className="p-3 border-b border-zinc-700">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium text-zinc-300">Sessions</h3>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => createNewSession('')}
-                  className="h-6 w-6 p-0 text-zinc-400"
+                  className="h-7 text-xs gap-1 border-zinc-600 bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
                 >
-                  <Plus className="h-3.5 w-3.5" />
+                  <Plus className="h-3 w-3" />
+                  New Chat
                 </Button>
               </div>
             </div>
@@ -701,9 +719,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                       variant="ghost"
                       size="sm"
                       onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
-                      className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400"
+                      className="h-5 w-5 p-0 text-zinc-500 hover:text-white hover:bg-zinc-700 rounded-full"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <X className="h-3 w-3" />
                     </Button>
                   </div>
                 ))}
@@ -718,7 +736,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
           {/* Chat Area */}
           <div className="flex-1 flex flex-col min-w-0 bg-zinc-900">
-            
+
             {/* Messages */}
             <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
               <div className="space-y-4 max-w-4xl mx-auto">
@@ -752,8 +770,8 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     )}>
                       <div className={cn(
                         "max-w-[85%] rounded-xl p-4",
-                        message.role === 'user' 
-                          ? 'bg-emerald-600/30 text-zinc-100 ml-12' 
+                        message.role === 'user'
+                          ? 'bg-emerald-600/30 text-zinc-100 ml-12'
                           : 'bg-zinc-800 text-zinc-200 mr-12'
                       )}>
                         <div className="prose prose-sm max-w-none prose-invert">
@@ -786,7 +804,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     </div>
                   ))
                 )}
-                
+
                 {isCodeGenerating && (
                   <div className="flex gap-3 justify-start">
                     <div className="bg-zinc-800 rounded-xl p-4 flex items-center gap-2 text-zinc-400">
@@ -800,7 +818,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
             {/* Input Area */}
             <div className="border-t border-zinc-700 p-4 bg-zinc-800/30">
-              
+
               {/* Attached Files/Image Preview */}
               {(draggedFiles.length > 0 || imagePreview) && (
                 <div className="mb-3 flex flex-wrap gap-2">
@@ -818,12 +836,12 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   ))}
                   {imagePreview && (
                     <div className="relative">
-                      <img 
-                        src={`data:image/png;base64,${imagePreview}`} 
-                        alt="Preview" 
+                      <img
+                        src={`data:image/png;base64,${imagePreview}`}
+                        alt="Preview"
                         className="h-16 w-16 object-cover rounded border border-zinc-600"
                       />
-                      <button 
+                      <button
                         onClick={removeImage}
                         className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5"
                       >
@@ -873,9 +891,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   >
                     <Image className="h-4 w-4" />
                   </Button>
-                  
-                  <Button 
-                    type="submit" 
+
+                  <Button
+                    type="submit"
                     disabled={!input.trim() || isCodeGenerating}
                     className="flex-1 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-700 hover:to-cyan-700"
                   >
@@ -887,7 +905,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   </Button>
                 </div>
               </form>
-              
+
               <div className="mt-2 text-xs text-zinc-500 text-center">
                 Enter to send • Shift+Enter for new line • Drag files from explorer
               </div>
