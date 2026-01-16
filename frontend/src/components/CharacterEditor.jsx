@@ -26,7 +26,8 @@ const DEFAULT_CHARACTER = {
   loreEntries: [], // NEW field for lore [{ content: string, keywords: string[] }]
   avatar: null,
   created_at: '',
-  // Removed: personality, background, speech_style, tags (unless needed elsewhere)
+  speech_style: '', // NEW field
+  // Removed: personality, background, tags (unless needed elsewhere)
 };
 
 const CharacterEditor = () => {
@@ -446,6 +447,20 @@ const CharacterEditor = () => {
                   className="h-32" // Make text area larger
                 />
                 <p className="text-xs text-muted-foreground mt-1">Tell the AI *how* to act (style, format, constraints).</p>
+              </div>
+
+              {/* Speaking Style - Large Textarea */}
+              <div>
+                <Label htmlFor="speech_style" className="block text-sm font-medium mb-1">Speaking Style</Label>
+                <Textarea
+                  id="speech_style"
+                  name="speech_style"
+                  value={character.speech_style || ''}
+                  onChange={handleChange}
+                  placeholder="Describe the character's speaking style. E.g., 'Formal, uses archaic words', 'Stutters when nervous', 'Uses lots of slang'."
+                  className="h-24"
+                />
+                <p className="text-xs text-muted-foreground mt-1">How does the character speak? (Tone, dialect, quirks)</p>
               </div>
 
               {/* Scenario - Large Textarea */}

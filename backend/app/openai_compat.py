@@ -165,8 +165,8 @@ def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str 
     end_index = len(messages) - 1
     
     # If there's nothing to prune (e.g. only system + last msg), we can't do much but return them
-    if start_index >= end_index:
-        return messages, original_tokens, current_tokens
+    # if start_index >= end_index:
+    #     return messages, original_tokens, current_tokens
         
     # Create the mutable list of middle messages
     middle_messages = messages[start_index:end_index]
@@ -268,7 +268,7 @@ def prepare_endpoint_request(model_name: str, request_data: dict):
     else:
         CONTEXT_WINDOW_LIMIT = default_limit
 
-    SAFETY_MARGIN = 500 # Increased safety margin
+    SAFETY_MARGIN = 1000 # Increased safety margin to account for tokenizer mismatch (tiktoken vs Llama)
     
     requested_gen_tokens = request_data.get('max_tokens', 1024) or 1024
     # The budget for INPUT tokens is Total - Output - Safety

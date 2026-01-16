@@ -4411,59 +4411,59 @@ Vary your sentence structure and word choices naturally."""
                 if not model_instance:
                     raise ValueError(f"Model {body.model_name} not loaded on GPU {gpu_id}")
 
-            # --- UNIFIED DISPATCH LOGIC ---
-            # This logic block decides how to call the model based on whether an image is present.
-            # It uses the fully assembled 'llm_prompt' for both paths.
-            
-            if body.image_base64:
-                # --- VISION PATH ---
-                # For vision, we must use create_chat_completion. Our custom GemmaVisionChatHandler
-                # expects the full prompt string to be passed within the "text" part of the user message.
-                logger.info("✅ Constructing vision payload with full context.")
+                # --- UNIFIED DISPATCH LOGIC ---
+                # This logic block decides how to call the model based on whether an image is present.
+                # It uses the fully assembled 'llm_prompt' for both paths.
                 
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            # Pass the entire, context-rich prompt here. The handler will format it.
-                            {"type": "text", "text": llm_prompt},
-                            # Pass the image data using the stable data URI method.
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{body.image_base64}"}}
-                        ]
-                    }
-                ]
-                
-                response = model_instance.create_chat_completion(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=body.temperature,
-                    top_p=body.top_p,
-                    top_k=body.top_k,
-                    repeat_penalty=body.repetition_penalty,
-                    stop=["<end_of_turn>"] # Essential stop token for Gemma
-                )
-                if response and response.get('choices'):
-                    llm_output_raw_text = response['choices'][0]['message']['content']
-                else:
-                    llm_output_raw_text = "Vision model returned no valid response."
+                if body.image_base64:
+                    # --- VISION PATH ---
+                    # For vision, we must use create_chat_completion. Our custom GemmaVisionChatHandler
+                    # expects the full prompt string to be passed within the "text" part of the user message.
+                    logger.info("✅ Constructing vision payload with full context.")
+                    
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                # Pass the entire, context-rich prompt here. The handler will format it.
+                                {"type": "text", "text": llm_prompt},
+                                # Pass the image data using the stable data URI method.
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{body.image_base64}"}}
+                            ]
+                        }
+                    ]
+                    
+                    response = model_instance.create_chat_completion(
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        top_k=body.top_k,
+                        repeat_penalty=body.repetition_penalty,
+                        stop=["<end_of_turn>"] # Essential stop token for Gemma
+                    )
+                    if response and response.get('choices'):
+                        llm_output_raw_text = response['choices'][0]['message']['content']
+                    else:
+                        llm_output_raw_text = "Vision model returned no valid response."
 
-            else:
-                # --- TEXT-ONLY PATH (Your original, working logic) ---
-                # For text, we call the model directly with the full prompt string.
-                logger.info("✅ Dispatching to standard text generation.")
-                response = model_instance(
-                    prompt=llm_prompt,
-                    max_tokens=max_tokens,
-                    temperature=body.temperature,
-                    top_p=body.top_p,
-                    top_k=body.top_k,
-                    repeat_penalty=body.repetition_penalty,
-                    stop=["<end_of_turn>", "<|DONE|>"] + dcu.get_stop_sequences(body.stop)
-                )
-                if response and response.get('choices'):
-                    llm_output_raw_text = response['choices'][0]['text']
                 else:
-                    llm_output_raw_text = "Text model returned no valid response."
+                    # --- TEXT-ONLY PATH (Your original, working logic) ---
+                    # For text, we call the model directly with the full prompt string.
+                    logger.info("✅ Dispatching to standard text generation.")
+                    response = model_instance(
+                        prompt=llm_prompt,
+                        max_tokens=max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        top_k=body.top_k,
+                        repeat_penalty=body.repetition_penalty,
+                        stop=["<end_of_turn>", "<|DONE|>"] + dcu.get_stop_sequences(body.stop)
+                    )
+                    if response and response.get('choices'):
+                        llm_output_raw_text = response['choices'][0]['text']
+                    else:
+                        llm_output_raw_text = "Text model returned no valid response."
 
         except Exception as exc:
             logger.error(f"❌ Generation error (non-streaming): {exc}", exc_info=True)

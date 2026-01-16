@@ -3,6 +3,7 @@ import { formatPrompt } from '../utils/chat_templates';
 import { cleanModelOutput } from '../utils/cleanOutput';
 import { generateChatTitle, fetchTriggeredLore } from '../utils/apiCall';
 import { observeConversation, initializeMemories } from '../utils/memoryUtils';
+import { saveSummary } from '../utils/summaryUtils';
 import { useMemory } from '../contexts/MemoryContext';
 import { transcribeAudio, synthesizeSpeech } from '../utils/apiCall';
 import { generateReplyOpenAI, processOpenAIStream, generateReplyOpenAINonStreaming, convertToOpenAIMessages } from '../utils/openaiApi';
@@ -138,8 +139,15 @@ const getStoryTrackerContext = () => {
 };
 
 // Helper function to build system prompt from character data
-const _buildSystemPrompt = (character, userProfile = null) => {
+const _buildSystemPrompt = (character, userProfile = null, summaryContextOverride = null) => {
   if (!character) return null;
+
+  // Get active summary context if selected
+  const summaryContext = summaryContextOverride
+    ? `\n\n[PREVIOUS STORY SUMMARY]:\n${summaryContextOverride}\n[End of Summary]\n`
+    : (userProfile?.activeContextSummary
+      ? `\n\n[PREVIOUS STORY SUMMARY]:\n${userProfile.activeContextSummary}\n[End of Summary]\n`
+      : '');
 
   // Get story tracker context
   const storyContext = getStoryTrackerContext();
@@ -178,7 +186,7 @@ ${character.example_dialogue && character.example_dialogue.length > 0
       ? `EXAMPLE DIALOGUE:
 ${character.example_dialogue.map(msg =>
         `${replaceTags(msg.role === 'character' ? charName : (msg.role === 'user' ? userName : 'User'))}: ${replaceTags(msg.content)}`
-      ).join('\n')}` : ''}${storyContext}`;
+      ).join('\n')}` : ''}${summaryContext}${storyContext}`;
 };
 
 
@@ -220,7 +228,8 @@ const drawAvatar = (canvas, imageUrl, name) => {
 const AppProvider = ({ children }) => {
   const memoryContext = useMemory();
   const userProfile = memoryContext?.userProfile;
-  const buildSystemPrompt = useCallback((char) => _buildSystemPrompt(char, userProfile), [userProfile]);
+  const [activeContextSummary, setActiveContextSummary] = useState(null);
+  const buildSystemPrompt = useCallback((char) => _buildSystemPrompt(char, userProfile, activeContextSummary), [userProfile, activeContextSummary]);
   const getRelevantMemories = memoryContext?.getRelevantMemories;
   const addConversationSummary = memoryContext?.addConversationSummary;
   const [sdStatus, setSdStatus] = useState({ automatic1111: false });
@@ -316,6 +325,7 @@ const AppProvider = ({ children }) => {
   const secondaryAvatarRef = useRef(null);
   const [conversations, setConversations] = useState([]);
   const [activeConversation, setActiveConversation] = useState(null);
+
   const [messages, setMessages] = useState([]);
   const [taskProgress, setTaskProgress] = useState({ progress: 0, status: '', active: false });
   const deleteConversation = useCallback((id) => {
@@ -1631,6 +1641,8 @@ const AppProvider = ({ children }) => {
       setIsGenerating(false);
     }
   }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent]);
+
+
   // New shared helper to build the FULL generation system prompt (memories, lore, etc.)
   const getGenerationSystemPrompt = useCallback(async (text, character, authorNote = null) => {
     console.log('🔍 [SystemPrompt] Building for character:', character?.name, 'User:', userProfile?.name);
@@ -1698,7 +1710,7 @@ const AppProvider = ({ children }) => {
     }
 
     return systemMsg;
-  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore]);
+  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt]);
 
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
@@ -2613,6 +2625,54 @@ const AppProvider = ({ children }) => {
 
   }, []);
 
+  // ----------------------------------
+  // Summary Management
+  // ----------------------------------
+  const generateConversationSummary = useCallback(async (summaryPrompt = "Summarize the following story so far, focusing on key events and character status. Keep it concise.") => {
+    if (!primaryModel || messages.length === 0) return null;
+
+    setIsGenerating(true);
+    try {
+      // 1. Build context string
+      const chatHistory = messages.map(m => `${m.role === 'user' ? 'User' : (m.characterName || 'Character')}: ${m.content}`).join('\n');
+      const fullPrompt = `${summaryPrompt}\n\nCONVERSATION:\n${chatHistory}\n\nSUMMARY:`;
+
+      // 2. Call LLM
+      const response = await fetch(`${PRIMARY_API_URL}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_name: primaryModel,
+          prompt: fullPrompt,
+          max_tokens: 500,
+          temperature: 0.3,
+          gpu_id: 0,
+          stop: ['\n\nUser:', '\n\nCharacter:']
+        })
+      });
+
+      if (!response.ok) throw new Error("Failed to generate summary");
+
+      const data = await response.json();
+      const summaryText = data.text || data.choices?.[0]?.text || "";
+
+      // 3. Save automatically
+      const title = `Story - ${new Date().toLocaleString()}`;
+      const saved = saveSummary(title, summaryText.trim());
+
+      return saved;
+
+    } catch (e) {
+      console.error("Summary generation failed:", e);
+      return null;
+    } finally {
+      setIsGenerating(false);
+    }
+
+  }, [primaryModel, messages, PRIMARY_API_URL]);
+
+
+
   const contextValue = useMemo(() => ({
     messages,
     setMessages,
@@ -2769,9 +2829,12 @@ const AppProvider = ({ children }) => {
     agentConversationActive,
     PRIMARY_API_URL,
     TTS_API_URL,
-    clearError: () => setApiError(null)
+    clearError: () => setApiError(null),
+    generateConversationSummary,
+    activeContextSummary,
+    setActiveContextSummary
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary
   ]);
 
   return (

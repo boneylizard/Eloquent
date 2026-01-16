@@ -4,7 +4,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save } from 'lucide-react';
+import { getSummaries, deleteSummary } from '../utils/summaryUtils';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -69,6 +70,7 @@ const Chat = ({ layoutMode }) => {
     // Settings
     settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode, setIsCallModeActive,
     backgroundImage, // Add backgroundImage from context
+    generateConversationSummary, activeContextSummary, setActiveContextSummary // Summarizer logic
   } = useApp();
 
   // Local state for the input field
@@ -140,6 +142,27 @@ const Chat = ({ layoutMode }) => {
   const autoEnhanceEnabled = localStorage.getItem('adetailer-auto-enhance') === 'true';
   const adetailerSettings = JSON.parse(localStorage.getItem('adetailer-settings') || '{}');
   const selectedAdetailerModel = localStorage.getItem('adetailer-selected-model') || 'face_yolov8n.pt';
+
+  // Summarizer State
+  const [availableSummaries, setAvailableSummaries] = useState([]);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+
+  useEffect(() => {
+    setAvailableSummaries(getSummaries());
+  }, []);
+
+  const handleCreateSummary = async () => {
+    if (isSummarizing) return;
+    setIsSummarizing(true);
+    const result = await generateConversationSummary();
+    setIsSummarizing(false);
+    if (result) {
+      setAvailableSummaries(getSummaries()); // Refresh list
+      alert(`Summary saved: ${result.title}`);
+    } else {
+      alert("Failed to create summary. Check console/logs.");
+    }
+  };
 
 
 
@@ -2128,6 +2151,45 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
             >
               {showFloatingControls ? "Hide Controls" : "Show Controls"}
             </Button>
+
+            {/* Summarize Button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCreateSummary}
+              disabled={isSummarizing || messages.length < 2}
+              title="Summarize current conversation and save as context"
+            >
+              {isSummarizing ? <Loader2 className="animate-spin w-4 h-4" /> : <Save size={16} />}
+              <span className="ml-1 hidden sm:inline">Summarize</span>
+            </Button>
+
+            {/* Load Context Dropdown */}
+            {availableSummaries.length > 0 && (
+              <div className="relative">
+                <select
+                  className="h-9 px-2 text-sm border rounded bg-background max-w-[150px]"
+                  onChange={(e) => {
+                    const summary = availableSummaries.find(s => s.id === e.target.value);
+                    if (summary) {
+                      setActiveContextSummary(summary.content);
+                      alert(`Loaded context: ${summary.title}`);
+                    } else {
+                      setActiveContextSummary(null);
+                    }
+                  }}
+                  value={activeContextSummary ? "" : ""} // Reset selection visual
+                >
+                  <option value="">Load Context...</option>
+                  {availableSummaries.map(s => (
+                    <option key={s.id} value={s.id}>{s.title}</option>
+                  ))}
+                </select>
+                {activeContextSummary && (
+                  <div className="absolute -top-2 -right-2 w-3 h-3 bg-green-500 rounded-full" title="Context Active"></div>
+                )}
+              </div>
+            )}
 
             {/* New Chat Button */}
             <Button variant="ghost" size="sm" onClick={createNewConversation}>
