@@ -48,6 +48,7 @@ import logging
 from fastapi.logger import logger # Use FastAPI's logger
 import sys
 import time
+from . import openai_compat
 import shutil
 from .forensic_linguistics_service import ForensicLinguisticsService, TextDocument, SimilarityScore
 import uuid
@@ -1910,33 +1911,72 @@ async def devstral_chat_endpoint(
         if not messages:
             raise HTTPException(status_code=400, detail="messages is required")
         
+        # Check for model parameter (from frontend selector)
+        requested_model = data.get("model")
+        logger.info(f"📨 Devstral Chat Request. Model: {requested_model}")
+
+        api_config = None
         model_instance = None
         model_name = None
         
-        # Check if using external API (koboldcpp, ollama, etc.)
-        if EXTERNAL_LLM_ENABLED:
-            logger.info(f"🌐 Using external LLM API: {EXTERNAL_LLM_URL}")
-            model_name = "external-api"
-        else:
-            # Find the loaded Devstral model
-            for key, model_info in model_manager.loaded_models.items():
-                name, gpu_id = key
-                if devstral_service.is_devstral_model(name):
-                    model_instance = model_manager.get_model(name, gpu_id)
-                    model_name = name
-                    logger.info(f"🔧 Using Devstral model: {name} on GPU {gpu_id}")
-                    break
+        # 1. Check if requested model is an API endpoint (e.g. OpenRouter)
+        is_api = requested_model and is_api_endpoint(requested_model)
+        logger.info(f"❓ Is API Endpoint? {requested_model} -> {is_api}")
+
+        if is_api:
+            endpoint_config = get_configured_endpoint(requested_model)
+            logger.info(f"⚙️ Config lookup result: {endpoint_config is not None}")
             
-            # If no Devstral model, use any available model
-            if not model_instance and model_manager.loaded_models:
-                key = next(iter(model_manager.loaded_models.keys()))
-                name, gpu_id = key
-                model_instance = model_manager.get_model(name, gpu_id)
-                model_name = name
-                logger.info(f"🔧 Using fallback model: {name} on GPU {gpu_id}")
+            if endpoint_config:
+                logger.info(f"🌐 Devstral requested API model: {requested_model}")
+                api_config = {
+                    "url": endpoint_config.get("url"),
+                    "api_key": endpoint_config.get("api_key"),
+                    "model": endpoint_config.get("model")
+                }
+                model_name = requested_model
+                logger.info(f"✅ Found API config for {requested_model}")
+            else:
+                logger.warning(f"⚠️ API endpoint {requested_model} not found in settings")
+
+        if not api_config:
+            # 2. Try to find a loaded local model matching the request or default to Devstral
             
+            # First pass: try to match requested_model exactly or loosely
+            if requested_model:
+                for key, model_info in model_manager.loaded_models.items():
+                    name, gpu_id = key
+                    if requested_model.lower() in name.lower():
+                        model_instance = model_manager.get_model(name, gpu_id)
+                        model_name = name
+                        logger.info(f"🔧 Found matching local model: {name} (requested: {requested_model})")
+                        break
+            
+            # Second pass: Any Devstral model
             if not model_instance:
-                raise HTTPException(status_code=400, detail="No model loaded. Enable external API or load a model first.")
+                for key, model_info in model_manager.loaded_models.items():
+                    name, gpu_id = key
+                    if devstral_service.is_devstral_model(name):
+                        model_instance = model_manager.get_model(name, gpu_id)
+                        model_name = name
+                        logger.info(f"🔧 Using default Devstral model: {name}")
+                        break
+
+            # 3. Last Resort: Use Legacy External API if enabled AND no local model found
+            if not model_instance and EXTERNAL_LLM_ENABLED:
+                logger.info(f"🌐 Using legacy external LLM API (fallback): {EXTERNAL_LLM_URL}")
+                model_name = "external-api"
+            
+            # 4. Fallback: Any available model
+            if not model_instance and not EXTERNAL_LLM_ENABLED and model_manager.loaded_models:
+                 key = next(iter(model_manager.loaded_models.keys()))
+                 name, gpu_id = key
+                 model_instance = model_manager.get_model(name, gpu_id)
+                 model_name = name
+                 logger.info(f"🔧 Using fallback model (any): {name}")
+
+            if not model_instance and not EXTERNAL_LLM_ENABLED:
+                raise HTTPException(status_code=400, detail="No model loaded. Please load a model or check external API settings.")
         
         # Add system prompt if not present
         if not messages or messages[0].get('role') != 'system':
@@ -1946,13 +1986,15 @@ async def devstral_chat_endpoint(
             })
         
         # Get response from model with tools
+        # Get response from model with tools
         response = await devstral_service.chat_with_tools(
             messages=messages,
             model_instance=model_instance,
             working_dir=working_dir,
             temperature=temperature,
             max_tokens=max_tokens,
-            image_base64=image_base64
+            image_base64=image_base64,
+            api_config=api_config  # Pass the new config
         )
         
         # If auto_execute is enabled and we have tool calls, execute them

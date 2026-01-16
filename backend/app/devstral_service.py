@@ -25,8 +25,6 @@ EXTERNAL_LLM_URL = os.getenv("DEVSTRAL_API_URL", "http://localhost:5001/v1")  # 
 EXTERNAL_LLM_ENABLED = os.getenv("DEVSTRAL_EXTERNAL", "true").lower() == "true"
 
 # Devstral Small 2 system prompt
-# Note: Devstral Small 2 uses this prompt format: <s>[SYSTEM_PROMPT]{system_prompt}[/SYSTEM_PROMPT][INST]{prompt}[/INST]
-# llama-cpp-python should handle this automatically if chat_format is set correctly
 DEVSTRAL_SYSTEM_PROMPT = """You are Devstral, an expert AI coding assistant. You help with software engineering tasks by reading, writing, and modifying code.
 
 Current date: {today}
@@ -40,9 +38,15 @@ IMPORTANT GUIDELINES:
 4. Execute ONE tool at a time, then observe the result before continuing
 5. Be precise and thorough
 
-When you need to use a tool, call it directly. When done or communicating, respond with text.
-
-You are a DOER, not a DESCRIBER."""
+CRITICAL RULES:
+- DO NOT simulate tool execution.
+- DO NOT make up tool results or output "Tool Results:".
+- You MUST invoke the tool function directly to perform an action.
+- Wait for the system to provide the real tool output.
+- IF YOU OUTPUT CODE BUT DO NOT CALL `write_file`, YOU HAVE FAILED.
+- ALWAYS use `write_file` to save your changes to the disk.
+- DO NOT put the code in a markdown block in your text response. Put it ONLY in the `write_file` `content` parameter.
+- Providing the code in text WITHOUT the tool call is a critical error."""
 
 
 class DevstralService:
@@ -212,12 +216,7 @@ class DevstralService:
         """
         Parse tool calls from Devstral's response.
         
-        Devstral Small 2 can output tool calls in multiple formats:
-        1. Structured tool_calls in the response (preferred)
-        2. Text-based: function_name{"arg": "value"}
-        3. XML-like: <tool_call>...</tool_call>
-        
-        Returns: (list of parsed tool calls, remaining content)
+        Updated to robustly handle nested braces (critical for write_file code content).
         """
         if not content:
             return [], ""
@@ -225,40 +224,53 @@ class DevstralService:
         tool_calls = []
         remaining_content = content
         
-        # Pattern 1: function_name{json} format
-        # Match known tool names followed by JSON
         known_tools = ['read_file', 'write_file', 'list_directory', 'search_files', 
                        'run_command', 'create_directory', 'delete_file']
         
+        # Helper to find tool calls by scanning for "ToolName{" or "ToolName {"
+        # We iterate to find all potential starts
         for tool_name in known_tools:
-            # Look for tool_name{ or tool_name { patterns
-            pattern = rf'{tool_name}\s*(\{{[^}}]*\}})'
-            matches = re.finditer(pattern, content, re.DOTALL)
+            # Simple regex to find the start index of potential calls
+            # We don't try to capture the JSON with regex anymore
+            start_pattern = re.compile(rf'{re.escape(tool_name)}\s*\{{')
             
-            for match in matches:
-                try:
-                    json_str = match.group(1)
-                    # Handle potential nested braces by finding matching close
-                    args = self._parse_json_robust(json_str, content, match.start(1))
-                    
-                    if args is not None:
-                        tool_call = {
-                            "id": f"call_{uuid.uuid4().hex[:8]}",
-                            "type": "function",
-                            "function": {
-                                "name": tool_name,
-                                "arguments": json.dumps(args) if isinstance(args, dict) else args
-                            }
+            # We loop to find multiple occurrences
+            search_start_pos = 0
+            while True:
+                match = start_pattern.search(content, search_start_pos)
+                if not match:
+                    break
+                
+                # Start of the JSON object (the '{' character)
+                json_start_index = match.end() - 1 
+                
+                # Use robust brace counting to find the full object
+                args_dict, end_index = self._extract_balanced_json(content, json_start_index)
+                
+                if args_dict is not None:
+                    # Construct the tool call
+                    tool_call = {
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(args_dict)
                         }
-                        tool_calls.append(tool_call)
-                        # Remove the matched tool call from content
-                        remaining_content = remaining_content.replace(match.group(0), '', 1)
-                        
-                except Exception as e:
-                    logger.warning(f"Failed to parse tool call for {tool_name}: {e}")
-                    continue
-        
-        # Pattern 2: Look for [TOOL_CALL] or similar markers
+                    }
+                    tool_calls.append(tool_call)
+                    
+                    # Remove the text from remaining_content
+                    # We grab the full matched string: "tool_name { ... }"
+                    full_match_text = content[match.start():end_index]
+                    remaining_content = remaining_content.replace(full_match_text, "", 1)
+                    
+                    # Move search forward past this match
+                    search_start_pos = end_index
+                else:
+                    # If we couldn't parse valid JSON, just skip past the start to avoid infinite loop
+                    search_start_pos = match.end()
+
+        # Fallback: Look for [TOOL_CALL] markers (legacy format)
         tool_call_pattern = r'\[TOOL_CALL\]\s*(\w+)\s*(\{.*?\})\s*\[/TOOL_CALL\]'
         for match in re.finditer(tool_call_pattern, content, re.DOTALL):
             try:
@@ -278,35 +290,49 @@ class DevstralService:
                 continue
         
         return tool_calls, remaining_content.strip()
-    
-    def _parse_json_robust(self, json_str: str, full_content: str, start_pos: int) -> Optional[Dict]:
-        """Robustly parse JSON, handling nested braces"""
-        # First try direct parse
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            pass
-        
-        # Find matching brace by counting
+
+    def _extract_balanced_json(self, text: str, start_index: int) -> Tuple[Optional[Dict], int]:
+        """
+        Extract a JSON object starting at start_index by counting braces.
+        Returns (parsed_dict, end_index) or (None, -1).
+        """
+        if start_index >= len(text) or text[start_index] != '{':
+            return None, -1
+            
         brace_count = 0
-        json_end = -1
+        in_string = False
+        escape = False
         
-        for i in range(start_pos, len(full_content)):
-            if full_content[i] == '{':
-                brace_count += 1
-            elif full_content[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    json_end = i + 1
-                    break
-        
-        if json_end > 0:
-            try:
-                return json.loads(full_content[start_pos:json_end])
-            except:
-                pass
-        
-        return None
+        for i in range(start_index, len(text)):
+            char = text[i]
+            
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == '\\':
+                    escape = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        # Found the closing brace
+                        json_str = text[start_index:i+1]
+                        try:
+                            return json.loads(json_str), i+1
+                        except json.JSONDecodeError:
+                            return None, -1
+                            
+        return None, -1
+    
+    # Kept for backward compatibility if needed, but _extract_balanced_json is preferred
+    def _parse_json_robust(self, json_str: str, full_content: str, start_pos: int) -> Optional[Dict]:
+        return self._extract_balanced_json(full_content, start_pos)[0]
     
     def format_tool_result(self, tool_name: str, result: Any, success: bool = True) -> str:
         """Format tool execution result for the model"""
@@ -323,18 +349,10 @@ class DevstralService:
         return "devstral" in model_name
     
     def is_devstral_2(self, model_path: str) -> bool:
-        """
-        Check if specifically Devstral Small 2 24B
-        
-        Note from bartowski's GGUF release:
-        - Uses llama.cpp b7335+
-        - Tool calls work but chained tool calls may break
-        - Prompt format: <s>[SYSTEM_PROMPT]{system}[/SYSTEM_PROMPT][INST]{prompt}[/INST]
-        """
+        """Check if specifically Devstral Small 2 24B"""
         model_name = os.path.basename(model_path).lower()
-        # Match patterns like devstral-small-2, devstral_small_2, 2-24b, 2512, etc.
         is_devstral = "devstral" in model_name
-        is_v2 = any(x in model_name for x in ["small-2", "small_2", "2-24b", "24b", "2512"])
+        is_v2 = any(x in model_name for x in ["small-2", "small_2", "2-24b", "24b", "2512", "123b"])
         return is_devstral and is_v2
     
     async def chat_with_tools(
@@ -344,25 +362,11 @@ class DevstralService:
         working_dir: str = None,
         temperature: float = 0.15,
         max_tokens: int = 4096,
-        image_base64: str = None
+        image_base64: str = None,
+        api_config: Optional[Dict] = None
     ) -> Dict:
         """
         Send a chat request to Devstral with tool support.
-        
-        Supports two modes:
-        1. External API (koboldcpp, ollama, etc.) - when DEVSTRAL_EXTERNAL=true
-        2. Direct llama-cpp-python - when model_instance is provided
-        
-        Args:
-            messages: Conversation history
-            model_instance: The loaded llama-cpp model (optional if using external API)
-            working_dir: Current working directory for file operations
-            temperature: Sampling temperature (low for coding tasks)
-            max_tokens: Maximum response tokens
-            image_base64: Optional base64 image for vision
-            
-        Returns:
-            Response dict with message and optional tool_calls
         """
         tools = self.get_tools_definition()
         
@@ -385,9 +389,15 @@ class DevstralService:
                     break
         
         try:
-            # Use external API if enabled (koboldcpp, ollama, etc.)
-            if EXTERNAL_LLM_ENABLED:
+            # Mode 1: Specific API Configuration (e.g. OpenRouter)
+            if api_config:
+                response = await self._call_external_api(messages, tools, temperature, max_tokens, api_config)
+            
+            # Mode 2: Legacy External API (Env vars)
+            elif EXTERNAL_LLM_ENABLED:
                 response = await self._call_external_api(messages, tools, temperature, max_tokens)
+            
+            # Mode 3: Local Model
             elif model_instance:
                 # Direct llama-cpp-python call
                 response = model_instance.create_chat_completion(
@@ -411,7 +421,7 @@ class DevstralService:
                     logger.info(f"🔧 Got {len(message['tool_calls'])} structured tool calls")
                     return response
                 
-                # Otherwise, try to parse from content
+                # Otherwise, try to parse from content (Fixes Mistral/Devstral text-based fallback)
                 content = message.get('content', '')
                 if content:
                     parsed_calls, remaining = self.parse_tool_calls(content)
@@ -431,36 +441,82 @@ class DevstralService:
         messages: List[Dict],
         tools: List[Dict],
         temperature: float,
-        max_tokens: int
+        max_tokens: int,
+        api_config: Optional[Dict] = None
     ) -> Dict:
         """
-        Call an external OpenAI-compatible API (koboldcpp, ollama, etc.)
+        Call an external OpenAI-compatible API (koboldcpp, ollama, OpenRouter, etc.)
         """
-        url = f"{EXTERNAL_LLM_URL}/chat/completions"
+        if api_config:
+            # Use provided configuration
+            base_url = api_config.get('url', EXTERNAL_LLM_URL).rstrip('/')
+            
+            if base_url.endswith('/v1'):
+                url = f"{base_url}/chat/completions"
+            else:
+                url = f"{base_url}/v1/chat/completions"
+                
+            api_key = api_config.get('api_key')
+            model_name = api_config.get('model', 'default')
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Eloquent/Devstral",
+                "Authorization": f"Bearer {api_key}" if api_key else ""
+            }
+            
+            # Additional headers (e.g. for OpenRouter)
+            if 'openrouter.ai' in url:
+                headers["HTTP-Referer"] = "http://localhost:3000"
+                headers["X-Title"] = "Eloquent Code Editor"
+                
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False
+            }
+            
+            # NATIVE TOOL CALLING
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+            
+            logger.info(f"🌐 Calling API: {url} (Model: {model_name}) with native tools")
+            
+        else:
+            # Legacy/Env-var configuration
+            url = f"{EXTERNAL_LLM_URL}/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            
+            payload = {
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False
+            }
         
-        payload = {
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False
-        }
+            # Prompt Injection for backends without native tool support
+            if tools:
+                tool_text = self._format_tools_for_prompt(tools)
+                for msg in payload["messages"]:
+                    if msg.get("role") == "system":
+                        msg["content"] += f"\n\n{tool_text}"
+                        break
+            
+            logger.info(f"🌐 Calling legacy external LLM API: {url}")
         
-        # Add tools if supported (some backends don't support tool calling)
-        # koboldcpp might not support tools parameter, so we inject into system prompt
-        if tools:
-            # Inject tool descriptions into system prompt for backends without native tool support
-            tool_text = self._format_tools_for_prompt(tools)
-            for msg in payload["messages"]:
-                if msg.get("role") == "system":
-                    msg["content"] += f"\n\n{tool_text}"
-                    break
-        
-        logger.info(f"🌐 Calling external LLM API: {url}")
-        
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            result = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                if response.status_code != 200:
+                    logger.error(f"API Error ({response.status_code}) from {url}: {response.text}")
+                    response.raise_for_status()
+                result = response.json()
+        except Exception as e:
+            logger.error(f"Failed to connect to {url}: {e}")
+            raise Exception(f"Failed to connect to {url}: {e}")
             
         logger.info(f"✅ External API response received")
         return result
@@ -486,14 +542,6 @@ class DevstralService:
     async def execute_tool(self, tool_name: str, arguments: Dict, base_dir: str) -> Tuple[bool, Any]:
         """
         Execute a tool and return the result.
-        
-        Args:
-            tool_name: Name of the tool to execute
-            arguments: Tool arguments
-            base_dir: Base directory for file operations (security boundary)
-            
-        Returns:
-            Tuple of (success: bool, result: Any)
         """
         import subprocess
         import shutil
@@ -503,12 +551,10 @@ class DevstralService:
             """Ensure path is within base directory"""
             if not path:
                 return base
-            # Handle both absolute and relative paths
             if os.path.isabs(path):
                 full_path = os.path.normpath(path)
             else:
                 full_path = os.path.normpath(os.path.join(base, path))
-            # Check that the resolved path is within base
             if not full_path.startswith(os.path.normpath(base)):
                 return None
             return full_path
@@ -526,7 +572,6 @@ class DevstralService:
                 with open(safe_path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
                     
-                # Limit content size for very large files
                 if len(content) > 100000:
                     content = content[:100000] + f"\n\n... [Truncated - file has {len(content)} characters total]"
                     
@@ -540,10 +585,8 @@ class DevstralService:
                 if not safe_path:
                     return False, "Invalid file path (outside working directory)"
                 
-                # Create directories if needed
                 os.makedirs(os.path.dirname(safe_path), exist_ok=True)
                 
-                # Backup existing file
                 if os.path.exists(safe_path):
                     backup_path = f"{safe_path}.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     shutil.copy2(safe_path, backup_path)
@@ -573,7 +616,6 @@ class DevstralService:
                         'size': size
                     })
                 
-                # Sort: folders first, then files
                 items.sort(key=lambda x: (x['type'] == 'file', x['name'].lower()))
                 
                 result = f"Contents of {path}:\n"
@@ -597,7 +639,6 @@ class DevstralService:
                 max_results = 50
                 
                 for root, dirs, files in os.walk(safe_path):
-                    # Skip common non-code directories
                     dirs[:] = [d for d in dirs if d not in ['.git', 'node_modules', '__pycache__', 'venv', '.venv']]
                     
                     for file in files:
@@ -620,7 +661,6 @@ class DevstralService:
                                             break
                         except:
                             continue
-                            
                         if len(results) >= max_results:
                             break
                     if len(results) >= max_results:
@@ -639,7 +679,6 @@ class DevstralService:
                 command = arguments.get('command', '')
                 working_dir = arguments.get('working_dir', base_dir)
                 
-                # Security: block dangerous commands
                 dangerous = ['rm -rf /', 'format', 'mkfs', 'dd if=', ':(){', 'del /f /s /q c:']
                 if any(d in command.lower() for d in dangerous):
                     return False, "Command blocked for safety"
@@ -687,7 +726,6 @@ class DevstralService:
                 if not os.path.exists(safe_path):
                     return False, f"File not found: {filepath}"
                 
-                # Create backup before deleting
                 backup_path = f"{safe_path}.deleted.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 shutil.copy2(safe_path, backup_path)
                 os.remove(safe_path)
@@ -704,4 +742,3 @@ class DevstralService:
 
 # Global service instance
 devstral_service = DevstralService()
-
