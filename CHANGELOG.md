@@ -7,6 +7,24 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 ---
 
 
+## 2026-01-18
+
+### Added
+
+* **New Authentic Themes**:
+    * **Claude**: A warm, authentic light theme featuring cream backgrounds (`#FAF9F5`) and coral accents (`#CC785C`) for a calm, professional vibe.
+    * **Messenger**: Premium dark theme with pill-shaped bubbles, gradient accents, and glossy shadows.
+    * **WhatsApp**: Authentic dark mode with distinct flat bubbles and teal accents.
+* **Theme Selector Visibility**: Enhanced the Navbar dropdown to ensure theme names are always visible (Standardized Light Mode styling) regardless of the active theme's contrast settings.
+
+### Fixed
+
+* **Theme Contrast Overhaul**: Fixed critical accessibility issues where text was unreadable in dark themes.
+    * **"Grey on Grey" Fix**: Implemented CSS overrides (`.message-bubble .prose`) to force Markdown content to inherit high-contrast text colors from its container.
+    * **Bot Message Contrast**: Updated Dark and WhatsApp themes to use **Pure White** text for AI responses, resolving low-contrast slate-on-slate issues.
+* **Visual Hierarchy**: Established clear visual separation between User and AI message bubbles in both Light and Dark modes.
+* **Legacy Cleanup**: Removed "Nord" and "Dracula" themes to streamline the selection.
+
 ## 2026-01-17
 
 ### Fixed

@@ -82,11 +82,18 @@
     <script type="module" src="/src/main.jsx"></script>
     
     <script>
-      // Check for dark mode preference
-      if (localStorage.getItem('darkMode') === 'true' || 
-          (!localStorage.getItem('darkMode') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-        document.documentElement.classList.add('dark');
-      }
+      // Early hydration for theme to prevent flash
+      (function() {
+        try {
+          const storedTheme = localStorage.getItem('ui-theme') || 'dark';
+          document.documentElement.dataset.theme = storedTheme;
+          // Clean up any legacy classes just in case
+          document.documentElement.classList.remove('light', 'dark', 'messenger', 'whatsapp');
+        } catch (e) {
+          // Fallback
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
     </script>
   </body>
 </html>

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useApp } from '../contexts/AppContext';
+import { useTheme } from './ThemeProvider';
 import { Button } from './ui/button';
 import {
   Badge,
@@ -12,7 +13,8 @@ import {
   Zap,
   Search,
   Code,
-  Fingerprint
+  Fingerprint,
+  Palette
 } from 'lucide-react';
 
 const Navbar = ({ toggleSidebar }) => {
@@ -23,6 +25,8 @@ const Navbar = ({ toggleSidebar }) => {
     activeTab,
     setActiveTab
   } = useApp();
+
+  const { theme, setTheme } = useTheme();
 
   // Define the navigation items that mirror the sidebar
   const sidebarNavItems = [
@@ -42,10 +46,10 @@ const Navbar = ({ toggleSidebar }) => {
       <div className="container flex items-center h-16 px-4">
         {/* Brand/Logo - with more space */}
         <div className="flex items-center gap-3 mr-8">
-          <img 
-            src="/eloquent-logo.png" 
-            alt="Eloquent" 
-            className="h-9 w-9" 
+          <img
+            src="/eloquent-logo.png"
+            alt="Eloquent"
+            className="h-9 w-9"
           />
           <span className="font-bold text-xl" style={{ fontFamily: 'Poppins, sans-serif' }}>Eloquent</span>
         </div>
@@ -65,8 +69,32 @@ const Navbar = ({ toggleSidebar }) => {
           ))}
         </nav>
 
-        {/* Right Side: Status Indicators */}
+        {/* Right Side: Status Indicators & Theme Toggle */}
         <div className="flex items-center gap-4">
+
+          {/* Theme Selector - Custom Styled or Standard Select */}
+          <div className="flex items-center mr-2">
+            <Palette className="w-4 h-4 mr-2 text-muted-foreground" />
+            <select
+              value={theme}
+              onChange={(e) => setTheme(e.target.value)}
+              className="bg-white text-black border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400 cursor-pointer shadow-sm"
+            >
+              <optgroup label="Base">
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </optgroup>
+              <optgroup label="Chat">
+                <option value="whatsapp">WhatsApp</option>
+                <option value="messenger">Messenger</option>
+                <option value="claude">Claude</option>
+              </optgroup>
+              <optgroup label="Vibrant">
+                <option value="cyberpunk">Cyberpunk</option>
+              </optgroup>
+            </select>
+          </div>
+
           {/* Model Status Badges */}
           {loadedModels?.length > 0 && (
             <Badge variant="outline">
