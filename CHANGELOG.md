@@ -12,6 +12,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 ### Fixed
 
 * **Chatterbox Autoplay Delay**: Fixed a race condition where the first message in a conversation would not trigger audio autoplay. The system now uses a synchronous reference for the "is playing" state, ensuring the first text chunk is correctly queued for synthesis.
+* **TTS Latency Logs**: Restored missing performance logs (Time to First Audio, Total System Latency) in the browser console. These were previously hidden due to missing calculation logic in the playback handler.
 
 ## 2026-01-16
 
