@@ -6,6 +6,13 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+
+## 2026-01-17
+
+### Fixed
+
+* **Chatterbox Autoplay Delay**: Fixed a race condition where the first message in a conversation would not trigger audio autoplay. The system now uses a synchronous reference for the "is playing" state, ensuring the first text chunk is correctly queued for synthesis.
+
 ## 2026-01-16
 
 ### Added
