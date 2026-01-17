@@ -70,7 +70,8 @@ const Chat = ({ layoutMode }) => {
     // Settings
     settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode, setIsCallModeActive,
     backgroundImage, // Add backgroundImage from context
-    generateConversationSummary, activeContextSummary, setActiveContextSummary // Summarizer logic
+    generateConversationSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
+    capturePromptSubmissionTime // Latency monitoring
   } = useApp();
 
   // Local state for the input field
@@ -513,6 +514,7 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
         const botId = generateUniqueId();
 
         try {
+          capturePromptSubmissionTime(); // Reset latency timer for regeneration
           if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botId);
 
           // Placeholder for streaming
@@ -594,6 +596,7 @@ Now output ONLY the final JSON object on the last line, with no commentary:`;
 
       setIsGenerating(true);
       try {
+        capturePromptSubmissionTime(); // Reset latency timer for regeneration
         if (settings.ttsAutoPlay && settings.ttsEnabled) startStreamingTTS(botMsgId);
 
         let lastSentTtsContent = "";
