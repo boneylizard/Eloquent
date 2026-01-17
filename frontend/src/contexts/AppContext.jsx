@@ -598,6 +598,9 @@ const AppProvider = ({ children }) => {
     streamingTtsMessageIdRef.current = messageId;
     setIsAutoplaying(true);
 
+    // Local flag to track if this is the first audio chunk for this specific message
+    let firstAudioPlayed = false;
+
     const streamingTtsSettings = {
       engine: settings.ttsEngine || 'kokoro',
       voice: settings.ttsVoice || 'af_heart',
@@ -616,6 +619,25 @@ const AppProvider = ({ children }) => {
       if (ttsClient.audioQueue.length > 0 && !window.streamingAudioPlaying) {
         window.streamingAudioPlaying = true;
         setIsPlayingAudio(messageId);
+
+        // --- 🟢 RESTORED TIMING LOGS HERE ---
+        if (!firstAudioPlayed) {
+          const now = performance.now();
+          firstAudioPlayed = true;
+
+          // Log 1: Time from First Text Chunk -> Audio Start
+          if (textGenerationStartTime.current) {
+            const processingLatency = now - textGenerationStartTime.current;
+            console.log(`⏱️ [TTS Timing] 🟡 Latency (Text Chunk -> Audio): ${processingLatency.toFixed(2)}ms`);
+          }
+
+          // Log 2: Time from User Prompt -> Audio Start
+          if (promptSubmissionStartTime.current) {
+            const totalLatency = now - promptSubmissionStartTime.current;
+            console.log(`⏱️ [TTS Timing] 🟢 Time to First Audio (from Prompt): ${totalLatency.toFixed(2)}ms`);
+          }
+        }
+        // ------------------------------------
 
         try {
           while (ttsClient.audioQueue.length > 0) {
