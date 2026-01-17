@@ -621,11 +621,12 @@ async def _synthesize_with_chatterbox(
             await loop.run_in_executor(get_chatterbox_executor(), _warmup)
             CHATTERBOX_VOICE_WARMED_UP = True
         
+        # UPDATED: Added temperature to enable sampling so exaggeration works
         generation_kwargs = {
+            'temperature': 0.7,  # Enable sampling (crucial for emotion exaggeration)
             'exaggeration': exaggeration,
             'cfg_weight': cfg,
         }
-        
         
         # if audio_prompt_path and os.path.exists(audio_prompt_path):
         #     generation_kwargs['audio_prompt_path'] = audio_prompt_path

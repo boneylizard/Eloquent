@@ -27,7 +27,8 @@ const DEFAULT_CHARACTER = {
   avatar: null,
   created_at: '',
   speech_style: '', // NEW field
-  // Removed: personality, background, tags (unless needed elsewhere)
+  personality: '', // Restored field
+  background: '', // Restored field
 };
 
 const CharacterEditor = () => {
@@ -433,6 +434,32 @@ const CharacterEditor = () => {
                   className="h-32" // Make text area larger
                 />
                 <p className="text-xs text-muted-foreground mt-1">Combine personality, backstory, visual description, etc., here.</p>
+              </div>
+
+              {/* Personality - Large Textarea */}
+              <div>
+                <Label htmlFor="personality" className="block text-sm font-medium mb-1">Personality</Label>
+                <Textarea
+                  id="personality"
+                  name="personality"
+                  value={character.personality || ''}
+                  onChange={handleChange}
+                  placeholder="Detailed personality traits, quirks, fears, motivations..."
+                  className="h-24"
+                />
+              </div>
+
+              {/* Background - Large Textarea */}
+              <div>
+                <Label htmlFor="background" className="block text-sm font-medium mb-1">Background / Story</Label>
+                <Textarea
+                  id="background"
+                  name="background"
+                  value={character.background || ''}
+                  onChange={handleChange}
+                  placeholder="Character's history, origin story, and past experiences..."
+                  className="h-24"
+                />
               </div>
 
               {/* Model Instructions - Large Textarea */}

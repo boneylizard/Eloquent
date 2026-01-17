@@ -2848,6 +2848,7 @@ const AppProvider = ({ children }) => {
     dualModeEnabled,
     setDualModeEnabled,
     sendDualMessage,
+    capturePromptSubmissionTime: () => { promptSubmissionStartTime.current = performance.now(); },
     startAgentConversation,
     agentConversationActive,
     PRIMARY_API_URL,
