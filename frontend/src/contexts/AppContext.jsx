@@ -689,11 +689,12 @@ const AppProvider = ({ children }) => {
     }
 
     // ONLY send to TTS if we have an active message ID (haven't been stopped)
-    // and if autoplay is still enabled for this session
-    if (streamingTtsMessageIdRef.current && newTextChunk && isAutoplaying) {
+    // FIX: Removed 'isAutoplaying' check to avoid stale state closure issues.
+    // streamingTtsMessageIdRef is the reliable, synchronous source of truth.
+    if (streamingTtsMessageIdRef.current && newTextChunk) {
       ttsClient.send(newTextChunk);
     }
-  }, [ttsClient, isAutoplaying]);
+  }, [ttsClient]); // Removed isAutoplaying dependency
 
   const endStreamingTTS = useCallback(() => {
     if (streamingTtsMessageIdRef.current) {
