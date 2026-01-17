@@ -149,13 +149,14 @@ const ChatMessage = memo(({
     return (
         <div
             className={cn(
-                "my-3 p-3 rounded-lg flex items-start gap-3 shadow-sm group",
-                msg.role === 'user' ? 'bg-primary/10 justify-end ml-10' :
-                    msg.role === 'system' ? 'bg-yellow-100 dark:bg-yellow-900/20 text-center mx-auto max-w-[80%]' :
-                        msg.modelId === 'primary' ? 'bg-blue-100 dark:bg-blue-900/20 mr-10' :
-                            msg.modelId === 'secondary' ? 'bg-purple-100 dark:bg-purple-900/20 mr-10' :
-                                'bg-secondary mr-10'
+                "my-3 p-3 flex items-start gap-3 shadow-sm group transition-all duration-200 message-bubble",
+                msg.role === 'user'
+                    ? 'bg-secondary text-secondary-foreground justify-end ml-10 border border-transparent'
+                    : msg.role === 'system'
+                        ? 'bg-yellow-100 dark:bg-yellow-900/20 text-center mx-auto max-w-[80%] rounded-lg'
+                        : 'bg-muted text-muted-foreground mr-10 border border-border'
             )}
+            style={msg.role !== 'system' ? { borderRadius: 'var(--radius)' } : {}}
         >
             {msg.role !== 'user' && renderAvatar(msg, PRIMARY_API_URL, msg.modelId === 'primary' ? primaryCharacter : secondaryCharacter)}
 

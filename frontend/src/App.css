@@ -4,49 +4,273 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 3.9%;
-    --primary: 0 0% 9%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 96.1%;
-    --secondary-foreground: 0 0% 9%;
-    --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
-    --accent: 0 0% 96.1%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 89.8%;
-    --input: 0 0% 89.8%;
-    --ring: 0 0% 3.9%;
+    /* Base Token Schema (Defaults to Light) */
+    --background: #ffffff;
+    --foreground: #0f172a;
+    /* Slate 900 */
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+    --popover: #ffffff;
+    --popover-foreground: #0f172a;
+    --primary: #0f172a;
+    --primary-foreground: #f8fafc;
+    --secondary: #f1f5f9;
+    /* Slate 100 */
+    --secondary-foreground: #0f172a;
+    --muted: #ffffff;
+    /* White for Bot Bubble (Distinct from User) */
+    --muted-foreground: #64748b;
+    /* Slate 500 */
+    --accent: #f1f5f9;
+    --accent-foreground: #0f172a;
+    --destructive: #ef4444;
+    --destructive-foreground: #f8fafc;
+    --border: #e2e8f0;
+    /* Slate 200 */
+    --input: #e2e8f0;
+    --ring: #0f172a;
     --radius: 0.5rem;
+
+    /* Extended Tokens */
+    --input-bg: transparent;
+    --focus-ring: 2px solid var(--ring);
+    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+    /* Standard easy shadow */
+
+    /* Global Font Family Variable (optional to override per theme) */
+    --font-heading: 'Poppins', sans-serif;
+    --font-body: 'Inter', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
   }
 
-  .dark,
-  .discord {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --ring: 0 0% 83.1%;
+  /* --- THEMES --- */
+
+  /* Dark Mode (Standard) */
+  [data-theme="dark"] {
+    --background: #020617;
+    /* Slate 950 */
+    --foreground: #ffffff;
+    /* FORCE WHITE TEXT */
+    --card: #0f172a;
+    /* Slate 900 */
+    --card-foreground: #f8fafc;
+    --popover: #0f172a;
+    --popover-foreground: #f8fafc;
+    --primary: #f8fafc;
+    --primary-foreground: #020617;
+    --secondary: #1e293b;
+    /* Slate 800 (User Bubble) */
+    --secondary-foreground: #ffffff;
+    /* PURE WHITE */
+    --muted: #0f172a;
+    /* Slate 900 (Bot Bubble - Darker/Receded) */
+    --muted-foreground: #ffffff;
+    /* PURE WHITE for Bot text */
+    --accent: #1e293b;
+    --accent-foreground: #f8fafc;
+    --destructive: #7f1d1d;
+    --destructive-foreground: #f8fafc;
+    --border: #1e293b;
+    --input: #1e293b;
+    --ring: #cbd5e1;
+    /* Slate 300 */
+
+    /* Extended Tokens - Dark Mode Overrides */
+    --input-bg: var(--input);
+    --button-text: #ffffff;
+  }
+
+  /* WhatsApp Theme (Authentic Dark) */
+  [data-theme="whatsapp"] {
+    --background: #0b141a;
+    /* WA Dark Bg */
+    --foreground: #e9edef;
+    /* WA Text */
+    --card: #1f2c34;
+    /* WA Panels */
+    --card-foreground: #e9edef;
+    --popover: #1f2c34;
+    --popover-foreground: #e9edef;
+    --primary: #00a884;
+    /* WA Teal */
+    --primary-foreground: #ffffff;
+    --secondary: #005c4b;
+    /* Outgoing Bubble Green */
+    --secondary-foreground: #e9edef;
+    --muted: #202c33;
+    /* Incoming Bubble */
+    --muted-foreground: #e9edef;
+    /* WA Primary Text for Bot */
+    --accent: #202c33;
+    --accent-foreground: #e9edef;
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+    --border: #202c33;
+    /* Seamless borders */
+    --input: #2a3942;
+    /* Search Bar */
+    --ring: #00a884;
+    --radius: 1rem;
+    /* Rounder bubbles */
+    --shadow: none;
+    /* Flat aesthetic */
+  }
+
+  /* Messenger Theme (Premium Dark + Gradient) */
+  [data-theme="messenger"] {
+    --background: #000000;
+    --foreground: #ffffff;
+    /* Pure White Text */
+    --card: #000000;
+    --card-foreground: #ffffff;
+    --popover: #1f1f1f;
+    --popover-foreground: #ffffff;
+
+    /* Brand Color: Facebook Messenger Blue #0084FF */
+    --primary: #0084FF;
+    --primary-foreground: #ffffff;
+
+    /* Bubbles & UI Elements */
+    --secondary: #0084FF;
+    /* Use primary for outgoing bubbles (Blue) */
+    --secondary-foreground: #ffffff;
+
+    --muted: #262626;
+    /* Dark Gray Bubble (Incoming) */
+    --muted-foreground: #e4e6eb;
+    /* Lighter text for incoming */
+
+    --accent: #262626;
+    --accent-foreground: #ffffff;
+    --destructive: #ff3b30;
+    --destructive-foreground: #ffffff;
+
+    --border: #262626;
+    --input: #1a1a1a;
+    /* Lighter than bg, distinct input area */
+    --ring: #0084FF;
+    --radius: 1.5rem;
+    /* Full Pill shapes */
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    /* Deep glossy shadow */
+
+    /* Special Gradient Token */
+    --primary-gradient: linear-gradient(to right, #00C6FF, #0072FF);
+  }
+
+  /* Cyberpunk Theme (Neon, High Contrast) */
+  [data-theme="cyberpunk"] {
+    --background: #000b1e;
+    /* Deep Navy/Black */
+    --foreground: #ffffff;
+    /* Force White for readability */
+    --card: #051628;
+    /* Slightly lighter navy */
+    --card-foreground: #ffffff;
+    --popover: #051628;
+    --popover-foreground: #ffffff;
+    --primary: #fcee0a;
+    /* Neon Yellow */
+    --primary-foreground: #000000;
+    --secondary: #00f0ff;
+    /* Neon Blue */
+    --secondary-foreground: #000000;
+    /* Black text on Neon Blue */
+    --muted: #0a2a4a;
+    --muted-foreground: #00f0ff;
+    /* Neon text only for muted labels/icons */
+    --accent: #fcee0a;
+    /* Selection/Active */
+    --accent-foreground: #000000;
+    --destructive: #ff003c;
+    /* Neon Red */
+    --destructive-foreground: #ffffff;
+    --border: #00f0ff;
+    /* Neon Borders */
+    --input: #051628;
+    --ring: #fcee0a;
+    --radius: 0px;
+    /* Sharp edges */
+    --shadow: 0 0 10px rgba(252, 238, 10, 0.3), 0 0 5px rgba(0, 240, 255, 0.2);
+    /* Neon Glow */
+  }
+
+  /* Claude Theme - Light Mode (Actual claude.ai colors) */
+  [data-theme="claude"] {
+    --background: #FAF9F5;
+    /* Warm cream - actual body background */
+    --foreground: #141413;
+    /* Near-black text */
+    --card: #FFFFFF;
+    /* Pure white for cards */
+    --card-foreground: #141413;
+    --popover: #FFFFFF;
+    --popover-foreground: #141413;
+
+    --primary: #CC785C;
+    /* Claude's coral/salmon orange - the actual brand color */
+    --primary-foreground: #FFFFFF;
+
+    /* User Bubble */
+    --secondary: #F0EEE6;
+    /* Light beige - actual user message background */
+    --secondary-foreground: #141413;
+    /* Dark text for contrast */
+
+    /* Bot Bubble - Claude's responses appear on the background */
+    --muted: #FAF9F5;
+    /* Same as background - Claude's messages don't have a bubble */
+    --muted-foreground: #141413;
+
+    --accent: #F0EEE6;
+    /* Light surface color */
+    --accent-foreground: #141413;
+    --destructive: #DC2626;
+    /* Red for destructive actions */
+    --destructive-foreground: #FFFFFF;
+    --border: #1F1E1D;
+    /* Dark subtle border from input */
+    --input: #FFFFFF;
+    /* White input background */
+    --ring: #CC785C;
+    /* Match primary */
+    --radius: 1.5rem;
+    /* Claude uses quite round corners */
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    /* Very subtle shadow */
+
+    --primary-gradient: linear-gradient(135deg, #D68977, #CC785C);
+  }
+
+  /* MARKDOWN COLOR OVERRIDES - CRITICAL FIX */
+  /* Force prose to use the container's text color (which we successfully set to white/contrast) */
+  /* This overrides the default grey text from @tailwindcss/typography */
+  .message-bubble .prose,
+  .message-bubble .prose * {
+    color: inherit !important;
+  }
+
+  /* Ensure links and code blocks still look distinct if needed, or inherit */
+  .message-bubble .prose a {
+    color: inherit;
+    text-decoration: underline;
+  }
+
+  .message-bubble .prose code {
+    color: inherit;
+    background-color: rgba(0, 0, 0, 0.2);
+    /* Slight dim for code bg inside colored bubbles */
+  }
+
+  /* Specific handling for user/bot bubbles if needed */
+  [data-theme="messenger"] .message-user .prose,
+  [data-theme="whatsapp"] .message-user .prose,
+  [data-theme="dark"] .message-user .prose,
+  [data-theme="claude"] .message-user .prose {
+    --tw-prose-body: #ffffff;
+    --tw-prose-headings: #ffffff;
+    --tw-prose-bold: #ffffff;
+    color: #ffffff !important;
   }
 
   * {
@@ -56,36 +280,39 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+    transition: background-color 0.3s ease, color 0.3s ease;
+    /* Smooth theming */
   }
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar - now using variables if needed, or keeping standard muted look */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-muted;
+  background: var(--muted);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-muted-foreground/30;
+  background-color: var(--muted-foreground);
+  opacity: 0.3;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-muted-foreground/50;
+  opacity: 0.5;
 }
 
-/* Message styling */
+/* Message styling - now relying on tokens implicitly for colors */
 .message-user {
-  @apply bg-primary/5 text-foreground;
+  /* No overrides needed if we use secondary/primary correctly in component */
 }
 
 .message-assistant {
-  @apply bg-background text-foreground;
+  /* No overrides needed */
 }
 
 /* Code highlighting */
@@ -94,6 +321,8 @@ pre {
   padding: 1rem;
   border-radius: 0.5rem;
   margin: 1rem 0;
+  border: 1px solid var(--border);
+  /* Ensure border visibility */
 }
 
 code {
@@ -103,9 +332,17 @@ code {
 
 /* Animation for streaming text */
 @keyframes blinking-cursor {
-  0% { opacity: 0; }
-  50% { opacity: 1; }
-  100% { opacity: 0; }
+  0% {
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
 }
 
 .blinking-cursor::after {
@@ -114,6 +351,8 @@ code {
   font-weight: normal;
   display: inline-block;
   margin-left: 2px;
+  color: var(--primary);
+  /* Theme aware cursor */
 }
 
 /* Toast notifications */
@@ -130,7 +369,10 @@ code {
 .toast {
   padding: 1rem;
   border-radius: var(--radius);
-  @apply bg-popover text-popover-foreground shadow-lg;
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -139,17 +381,17 @@ code {
 }
 
 .toast-success {
-  border-left: 4px solid hsl(142.1, 76.2%, 36.3%);
+  border-left: 4px solid #22c55e;
 }
 
 .toast-error {
-  border-left: 4px solid hsl(var(--destructive));
+  border-left: 4px solid var(--destructive);
 }
 
 .toast-info {
-  border-left: 4px solid hsl(221.2, 83.2%, 53.3%);
+  border-left: 4px solid #3b82f6;
 }
 
 .toast-warning {
-  border-left: 4px solid hsl(38, 92%, 50%);
+  border-left: 4px solid #eab308;
 }

@@ -41,19 +41,14 @@ const ThemeProvider = ({
 
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return; // Do nothing on the server
-    }
+    if (typeof window === 'undefined') return;
 
     const root = window.document.documentElement;
+    root.dataset.theme = theme;
 
-    // Remove previous theme classes (important for switching)
-    root.classList.remove('light', 'dark');
+    // Legacy cleanup (ensure classes are gone so they don't fight tokens)
+    root.classList.remove('light', 'dark', 'messenger', 'whatsapp');
 
-    // Add the new theme class
-    root.classList.add(theme);
-
-    // Store theme in localStorage, handle potential errors.
     try {
       localStorage.setItem(storageKey, theme);
     } catch (error) {
@@ -63,9 +58,9 @@ const ThemeProvider = ({
 
   // Use useMemo to avoid unnecessary re-renders
   const value = useMemo(() => ({
-       theme,
-       setTheme,
-    }), [theme, setTheme]
+    theme,
+    setTheme,
+  }), [theme, setTheme]
   );
 
   return (
