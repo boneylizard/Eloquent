@@ -22,12 +22,17 @@ import ForensicLinguistics from './components/ForensicLinguistics';
 import CodeEditorOverlay from './components/CodeEditorOverlay';
 
 
+import LoginOverlay from './components/LoginOverlay';
+import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
+
 // Inner component to access theme context easily
 function AppContent() {
   const { theme, setTheme } = useTheme(); // Use the theme hook here
   const { activeTab, setActiveTab } = useApp(); // Get active tab from AppContext
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  
+  // Default to closed on mobile (< 768px), open on desktop
+  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768);
+  const [showLogin, setShowLogin] = useState(false);
+
   // Apply the layout mode as a class to the document body
   const [layoutMode, setLayoutMode] = useState('default'); // Default layout mode
   useEffect(() => {
@@ -37,6 +42,35 @@ function AppContent() {
       document.body.classList.remove(layoutMode);
     };
   }, [layoutMode]);
+
+  // Listen for Login trigger event from global interceptor
+  useEffect(() => {
+    const handleTriggerLogin = () => {
+      console.log("🔒 Login overlay event received");
+      setShowLogin(true);
+    };
+
+    window.addEventListener(TRIGGER_LOGIN_EVENT, handleTriggerLogin);
+    return () => {
+      window.removeEventListener(TRIGGER_LOGIN_EVENT, handleTriggerLogin);
+    };
+  }, []);
+
+  const handleLogin = (password) => {
+    // Save to settings
+    try {
+      const saved = localStorage.getItem('Eloquent-settings') || '{}';
+      const parsed = JSON.parse(saved);
+      parsed.admin_password = password;
+      localStorage.setItem('Eloquent-settings', JSON.stringify(parsed));
+
+      setShowLogin(false);
+      // Optional: Reload to retry requests
+      window.location.reload();
+    } catch (e) {
+      console.error("Login save failed", e);
+    }
+  };
 
   const renderActiveComponent = () => {
     switch (activeTab) {
@@ -55,10 +89,10 @@ function AppContent() {
       case 'settings':
         // Pass theme state and toggle function to Settings
         return <Settings
-                  darkMode={theme === 'dark'}
-                  toggleDarkMode={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-                  initialTab="general" // Or keep whatever default you prefer
-               />;
+          darkMode={theme === 'dark'}
+          toggleDarkMode={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          initialTab="general" // Or keep whatever default you prefer
+        />;
       case 'memory':
         return <MemoryPage />;
       case 'modeltester':
@@ -66,7 +100,7 @@ function AppContent() {
       case 'codeeditor':
         return <CodeEditorOverlay isOpen={true} onClose={() => setActiveTab('chat')} />;
       default:
-        return <Chat layoutMode={layoutMode}/>;
+        return <Chat layoutMode={layoutMode} />;
     }
   };
 
@@ -86,26 +120,27 @@ function AppContent() {
   };
 
   return (
-      <div className={`min-h-screen flex flex-col ${layoutMode}`}>
-        <Navbar
-          toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+    <div className={`min-h-screen flex flex-col ${layoutMode}`}>
+      <Navbar
+        toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        layoutMode={layoutMode}
+        setLayoutMode={setLayoutMode}
+      />
+      <div className={`flex flex-1 overflow-hidden ${getLayoutClasses()}`}>
+        <Sidebar
+          isOpen={sidebarOpen}
+          setIsOpen={setSidebarOpen}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
           layoutMode={layoutMode}
-          setLayoutMode={setLayoutMode}
         />
-        <div className={`flex flex-1 overflow-hidden ${getLayoutClasses()}`}>
-          <Sidebar
-            isOpen={sidebarOpen}
-            setIsOpen={setSidebarOpen}
-            activeTab={activeTab}
-            setActiveTab={setActiveTab}
-            layoutMode={layoutMode}
-          />
-          <main className="flex-1 overflow-y-auto p-4">
-            {renderActiveComponent()}
-          </main>
-        </div>
-       
+        <main className="flex-1 overflow-y-auto p-4">
+          {renderActiveComponent()}
+        </main>
       </div>
+
+      <LoginOverlay isOpen={showLogin} onLogin={handleLogin} />
+    </div>
   );
 }
 

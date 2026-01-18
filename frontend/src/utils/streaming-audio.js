@@ -16,36 +16,43 @@ class StreamingAudioPlayer {
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
-    
+
     // Resume context if suspended (Chrome autoplay policy)
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
     }
   }
 
-  async connectStreaming(serverUrl = 'ws://localhost:8002/tts-stream') {
+  async connectStreaming(serverUrl = null) {
     if (this.websocket) {
       this.websocket.close();
     }
 
+    // Default to current hostname but port 8002
+    if (!serverUrl) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.hostname;
+      serverUrl = `${protocol}//${host}:8002/tts-stream`;
+    }
+
     return new Promise((resolve, reject) => {
       this.websocket = new WebSocket(serverUrl);
-      
+
       this.websocket.onopen = () => {
         console.log('🔊 Connected to streaming TTS server');
         resolve();
       };
-      
+
       this.websocket.onmessage = async (event) => {
         const message = JSON.parse(event.data);
         await this.handleStreamingMessage(message);
       };
-      
+
       this.websocket.onerror = (error) => {
         console.error('🔊 WebSocket error:', error);
         reject(error);
       };
-      
+
       this.websocket.onclose = () => {
         console.log('🔊 Streaming TTS connection closed');
         this.cleanup();
@@ -59,16 +66,16 @@ class StreamingAudioPlayer {
         this.sessionId = message.session_id;
         console.log(`🔊 Streaming session started: ${this.sessionId}`);
         break;
-        
+
       case 'audio_chunk':
         await this.queueAudioChunk(message.data);
         break;
-        
+
       case 'complete':
         console.log(`🔊 Streaming complete for session: ${this.sessionId}`);
         this.sessionId = null;
         break;
-        
+
       case 'error':
         console.error('🔊 Streaming error:', message.message);
         break;
@@ -79,18 +86,18 @@ class StreamingAudioPlayer {
     try {
       // Decode base64 audio data
       const audioData = this.base64ToArrayBuffer(base64AudioData);
-      
+
       // Decode audio
       const audioBuffer = await this.audioContext.decodeAudioData(audioData);
-      
+
       // Add to queue
       this.audioQueue.push(audioBuffer);
-      
+
       // Start playback if not already playing
       if (!this.isPlaying) {
         this.startPlayback();
       }
-      
+
     } catch (error) {
       console.error('🔊 Error processing audio chunk:', error);
     }
@@ -107,7 +114,7 @@ class StreamingAudioPlayer {
 
   startPlayback() {
     if (this.isPlaying || this.audioQueue.length === 0) return;
-    
+
     this.isPlaying = true;
     this.nextPlayTime = this.audioContext.currentTime;
     this.playNextChunk();
@@ -123,22 +130,22 @@ class StreamingAudioPlayer {
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(this.audioContext.destination);
-    
+
     // Schedule playback
     source.start(this.nextPlayTime);
     this.nextPlayTime += audioBuffer.duration;
-    
+
     // Set up next chunk
     source.onended = () => {
       this.playNextChunk();
     };
-    
+
     this.currentSource = source;
   }
 
   async startStreamingTTS(prompt, options = {}) {
     await this.initialize();
-    
+
     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket not connected');
     }
@@ -159,11 +166,11 @@ class StreamingAudioPlayer {
       this.currentSource.stop();
       this.currentSource = null;
     }
-    
+
     // Clear queue
     this.audioQueue = [];
     this.isPlaying = false;
-    
+
     // Send interrupt to server
     if (this.websocket && this.sessionId) {
       this.websocket.send(JSON.stringify({
@@ -202,17 +209,17 @@ class StreamingChatHandler {
     }
 
     this.isStreaming = true;
-    
+
     try {
       // Create message element in chat
       this.currentMessageElement = this.createMessageElement();
-      
+
       // Start streaming TTS
       await this.audioPlayer.startStreamingTTS(message, {
         voiceReference: options.voiceReference,
         streamLLM: options.enableStreaming
       });
-      
+
     } catch (error) {
       console.error('🔊 Error sending streaming message:', error);
       this.isStreaming = false;
@@ -230,19 +237,19 @@ class StreamingChatHandler {
       </div>
       <button class="stop-streaming" onclick="this.stopStreaming()">Stop</button>
     `;
-    
+
     // Add to chat container (adjust selector for your UI)
     const chatContainer = document.querySelector('.chat-messages');
     chatContainer.appendChild(messageElement);
     chatContainer.scrollTop = chatContainer.scrollHeight;
-    
+
     return messageElement;
   }
 
   stopStreaming() {
     this.audioPlayer.stop();
     this.isStreaming = false;
-    
+
     if (this.currentMessageElement) {
       this.currentMessageElement.classList.remove('streaming');
       const indicator = this.currentMessageElement.querySelector('.streaming-indicator');
@@ -269,7 +276,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function sendMessageWithStreaming(message, useStreaming = true) {
   const ttsEnabled = document.getElementById('tts-enabled')?.checked || false;
   const voiceReference = document.getElementById('voice-reference-file')?.files[0];
-  
+
   if (ttsEnabled && useStreaming) {
     // Use streaming TTS
     await streamingChat.sendMessage(message, {
@@ -291,20 +298,20 @@ class EnhancedWebSocketChat {
 
   async connect() {
     await this.audioPlayer.initialize();
-    
+
     // NOTE: Chat stream endpoint moved to TTS service - this needs to be updated
     // this.websocket = new WebSocket('ws://localhost:8002/tts-stream');
     console.warn('⚠️ Chat stream endpoint not yet implemented in TTS service');
-    
+
     this.websocket.onopen = () => {
       console.log('🔊 Connected to enhanced chat stream');
     };
-    
+
     this.websocket.onmessage = async (event) => {
       const message = JSON.parse(event.data);
       await this.handleChatMessage(message);
     };
-    
+
     this.websocket.onerror = (error) => {
       console.error('🔊 Enhanced chat error:', error);
     };
@@ -315,18 +322,18 @@ class EnhancedWebSocketChat {
       case 'response_chunk':
         // Update text display
         this.updateMessageText(message.text);
-        
+
         // Play audio chunk
         if (message.audio) {
           await this.audioPlayer.queueAudioChunk(message.audio);
         }
         break;
-        
+
       case 'response_complete':
         // Handle complete text-only response
         this.displayCompleteMessage(message.text);
         break;
-        
+
       case 'interrupted':
         console.log('🔊 Response interrupted');
         break;

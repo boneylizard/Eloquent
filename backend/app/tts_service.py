@@ -658,10 +658,25 @@ async def _synthesize_with_chatterbox(
                         return _call_chatterbox_generate(model, c, audio_prompt_path, **generation_kwargs)
                 
                 # Generate this chunk
-                chunk_audio = await loop.run_in_executor(executor, _generate_chunk)
-                all_audio_chunks.append(chunk_audio)
-                
-                logger.info(f"✅ Chunk {i+1}/{len(text_chunks)} complete")
+                try:
+                    # Check for cancellation before starting next chunk
+                    if asyncio.current_task() and asyncio.current_task().cancelled():
+                        logger.warning("🛑 [Chatterbox] Synthesis cancelled before chunk generation.")
+                        raise asyncio.CancelledError()
+
+                    chunk_audio = await loop.run_in_executor(executor, _generate_chunk)
+                    all_audio_chunks.append(chunk_audio)
+                    
+                    logger.info(f"✅ Chunk {i+1}/{len(text_chunks)} complete")
+
+                    # Check for cancellation after chunk generation
+                    if asyncio.current_task() and asyncio.current_task().cancelled():
+                        logger.warning("🛑 [Chatterbox] Synthesis cancelled after chunk generation.")
+                        raise asyncio.CancelledError()
+
+                except asyncio.CancelledError:
+                    logger.warning("🛑 [Chatterbox] Synthesis loop cancelled.")
+                    raise # Re-raise to stop the loop
             
             # Concatenate all audio chunks
             audio_tensor = torch.cat(all_audio_chunks, dim=-1)
@@ -1075,10 +1090,17 @@ class TTSStreamer:
                     logger.info("🛑 [Streamer] Sentinel received. Synthesis loop is shutting down.")
                     break
 
+                # Check active status just before expensive synthesis
+                if not self._is_active:
+                     logger.critical("🛑 [Streamer] Streamer is inactive. Skipping synthesis.")
+                     self._clear_synthesis_queue()
+                     break
+
                 logger.info(f"🎤 [Streamer] Synthesizing: '{sentence[:60]}...'")
                 
                 start_time = time.perf_counter()
 
+                # Pass a check function? No, just rely on task cancellation or check after.
                 audio_bytes = await synthesize_speech(
                     text=sentence, 
                     voice=self._tts_settings['voice'],

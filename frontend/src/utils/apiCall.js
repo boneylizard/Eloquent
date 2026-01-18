@@ -1013,8 +1013,8 @@ class TTSWebSocketClient {
     if (this.socket && this.socket.readyState === 1) {
       console.log("🛑 [WebSocket] Sending [INTERRUPT] signal to backend");
       try {
-        this.socket.send(JSON.stringify({ interrupt: true }));
-        this.socket.send("[INTERRUPT]"); // Send both formats just in case
+        this.socket.send(JSON.stringify({ type: 'interrupt' })); // Send standard format
+        // this.socket.send("[INTERRUPT]"); // Legacy format - removed
       } catch (e) {
         console.warn("⚠️ [WebSocket] Failed to send interrupt signal:", e);
       }

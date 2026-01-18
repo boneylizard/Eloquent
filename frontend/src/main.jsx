@@ -4,6 +4,10 @@ import App from './App';
 import { AppProvider } from './contexts/AppContext'; // Named import!
 import { ThemeProvider } from "./components/ThemeProvider"; // Named import!
 import { BrowserRouter } from 'react-router-dom'; // Import
+import { setupFetchInterceptor } from './utils/auth-interceptor';
+
+// Initialize interceptor immediately
+setupFetchInterceptor();
 
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
@@ -12,7 +16,7 @@ root.render(
     <BrowserRouter> {/* Wrap your App */}
       <AppProvider>
         <ThemeProvider>
-            <App />
+          <App />
         </ThemeProvider>
       </AppProvider>
     </BrowserRouter>

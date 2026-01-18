@@ -265,6 +265,7 @@ const AppProvider = ({ children }) => {
   const isTtsInterruptedRef = useRef(false);
   const callModeMediaRecorderRef = useRef(null);
   const callModeAudioChunksRef = useRef([]);
+  const activeAudioPlayersRef = useRef(new Set()); // Track ALL active audio sources
   const callModeSilenceTimerRef = useRef(null);
   const callModeStreamRef = useRef(null);
   const audioChunksRef = useRef([]); // Updated to match previous edit
@@ -455,6 +456,7 @@ const AppProvider = ({ children }) => {
     ttsAutoPlay: false,  // Simply set a default value
     userAvatarSize: null, // Default size for user avatar
     characterAvatarSize: null, // Default size for character avatar
+    admin_password: "", // <-- Password for remote access
   });
 
   // Backend detects single_gpu_mode, frontend stores as singleGpuMode
@@ -531,41 +533,75 @@ const AppProvider = ({ children }) => {
   // ===== Debugging and Testing the Lore Functionality =====
   // --- TTS Implementation (REORDERED) ---
   const stopTTS = useCallback(() => {
-    // We still use the audioPlayerRef for one-off TTS playback, so we keep this logic.
-    // The new useEffect handles the streaming queue playback.
-    if (audioPlayerRef.current) {
-      const ref = audioPlayerRef.current;
-      if (ref instanceof Audio || typeof ref.pause === 'function') {
-        ref.pause();
-        ref.currentTime = 0;
-        if (ref.src && ref.src.startsWith('blob:')) {
-          URL.revokeObjectURL(ref.src);
-        }
-      } else if (ref.source && ref.ctx) {
+    console.log('🛑 [stopTTS] Initiating stop sequence...');
+
+    // 1. IMMEDIATE: Set interrupt flag to prevent any new chunks from processing
+    isTtsInterruptedRef.current = true;
+    isFirstTextChunk.current = true; // Reset text chunk flag
+    streamingTtsMessageIdRef.current = null; // Clear active message ID
+
+    // 2. CRITICAL: Send interrupt signal to backend FIRST (before any cleanup)
+    if (ttsClient && ttsClient.socket && ttsClient.socket.readyState === 1) {
+      console.log('🛑 [stopTTS] Sending interrupt signal to backend');
+      ttsClient.interrupt();
+      ttsClient.clearPending();
+    }
+
+    // 3. Always cancel native browser TTS
+    if ('speechSynthesis' in window) {
+      console.log('🛑 [stopTTS] Cancelling native speech synthesis');
+      window.speechSynthesis.cancel();
+    }
+
+    // 4. STOP ALL REGISTERED AUDIO PLAYERS
+    const playersToStop = Array.from(activeAudioPlayersRef.current);
+    if (playersToStop.length > 0) {
+      console.log(`🛑 [stopTTS] Stopping ${playersToStop.length} active audio sources.`);
+      playersToStop.forEach(player => {
         try {
-          ref.source.stop();
-          ref.ctx.close();
-        } catch (e) { /* Ignore errors */ }
-        if (ref.audioUrl && ref.audioUrl.startsWith('blob:')) {
-          URL.revokeObjectURL(ref.audioUrl);
+          if (player instanceof Audio) {
+            console.log('🛑 [stopTTS] Pausing Audio object:', player.src);
+            player.pause();
+            player.currentTime = 0;
+            player.src = '';
+            // Don't revoke URL immediately to avoid errors if play() is pending
+          } else if (player.ctx) {
+            try { player.source?.stop(); } catch (e) { }
+            try { player.ctx.close(); } catch (e) { }
+          }
+        } catch (err) {
+          console.error("🛑 [stopTTS] Error stopping player:", err);
         }
-      }
+      });
+      activeAudioPlayersRef.current.clear();
+    }
+
+    // Legacy cleanup / Fallback
+    if (audioPlayerRef.current) {
+      console.log('🛑 [stopTTS] stopping legacy audioPlayerRef');
+      try {
+        audioPlayerRef.current.pause();
+        audioPlayerRef.current.currentTime = 0;
+      } catch (e) { }
       audioPlayerRef.current = null;
     }
 
-    // If we manually stop, we MUST also kill the streaming queue and state.
-    console.log('🛑 Manually stopping TTS. Signaling backend interrupt.');
-    isTtsInterruptedRef.current = true;
-    ttsClient.interrupt();
-    ttsClient.clearPending();
-    if (ttsClient.socket) ttsClient.socket.close(); // Soft close: triggers auto-reconnect if enabled
+    // 5. Clear local queues and state
+    console.log('🛑 [stopTTS] Clearing local audio queues and state');
+    if (ttsClient && ttsClient.audioQueue) {
+      console.log(`🛑 [stopTTS] dumped ${ttsClient.audioQueue.length} items from audioQueue`);
+      ttsClient.audioQueue.length = 0;
+    }
 
-    setAudioQueue([]);      // Clear any buffered audio
-    setIsAutoplaying(false); // Stop the autoplay loop
+    setAudioQueue([]);
+    setIsAutoplaying(false);
     setIsPlayingAudio(null);
     window.streamingAudioPlaying = false;
-    ttsClient.audioQueue.length = 0; // Clear the queue
-    streamingTtsMessageIdRef.current = null; // KILL the current stream identification
+
+    // Explicitly update state to trigger UI changes
+    setManuallyStoppedAudio(true);
+    setTimeout(() => setManuallyStoppedAudio(false), 500);
+
   }, [ttsClient, setAudioQueue, setIsAutoplaying]);
 
   const handleStopGeneration = useCallback(() => {
@@ -576,13 +612,13 @@ const AppProvider = ({ children }) => {
       setAbortController(null);
     }
 
-    // 2. Stop TTS explicitly (will also soft-close socket and trigger auto-reconnect)
+    // 2. Stop TTS explicitly
     stopTTS();
 
     // Reset the main "isGenerating" flag for the UI
     setIsGenerating(false);
 
-    // This flag is for UI feedback, you can keep it
+    // This flag is for UI feedback
     setIsStreamingStopped(true);
     setTimeout(() => setIsStreamingStopped(false), 1000);
 
@@ -614,9 +650,19 @@ const AppProvider = ({ children }) => {
     ttsClient.send(streamingTtsSettings);
 
     ttsClient.onAudioQueueUpdate = async () => {
+      // SAFETY CHECK: If we've been interrupted/stopped, ignore this update entirely
+      if (isTtsInterruptedRef.current) {
+        if (ttsClient.audioQueue.length > 0) {
+          console.log("🛡️ [TTS] Ignoring audio update due to interrupt flag. Dumping " + ttsClient.audioQueue.length + " items.");
+          ttsClient.audioQueue.length = 0; // Dump data
+        }
+        return;
+      }
+
       setAudioQueue([...ttsClient.audioQueue]);
 
       if (ttsClient.audioQueue.length > 0 && !window.streamingAudioPlaying) {
+        console.log("🎵 [TTS] Starting playback loop. Queue length:", ttsClient.audioQueue.length);
         window.streamingAudioPlaying = true;
         setIsPlayingAudio(messageId);
 
@@ -642,34 +688,89 @@ const AppProvider = ({ children }) => {
         try {
           while (ttsClient.audioQueue.length > 0) {
             // Check for manual interruption before playing each chunk
-            if (isTtsInterruptedRef.current) break;
+            if (isTtsInterruptedRef.current) {
+              console.log("🛑 [TTS] Loop broken by interrupt flag (Pre-Shift).");
+              ttsClient.audioQueue.length = 0; // Clear remaining
+              break;
+            }
 
             const arrayBuffer = ttsClient.audioQueue.shift();
+            // Double check queue empty/undefined
+            if (!arrayBuffer) break;
+
             const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
             const audioUrl = URL.createObjectURL(blob);
             const audio = new Audio(audioUrl);
             audioPlayerRef.current = audio;
+            activeAudioPlayersRef.current.add(audio); // Register for mass cleanup
+
             audio.playbackRate = settings.ttsSpeed || 1.0;
 
+            console.log(`🎵 [TTS] Playing chunk. Queue remaining: ${ttsClient.audioQueue.length}`);
+
             await new Promise((resolve, reject) => {
-              audio.onended = () => {
-                URL.revokeObjectURL(audioUrl);
-                if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
+              const handleEnd = () => {
+                cleanup();
                 resolve();
               };
-              audio.onerror = (e) => {
-                URL.revokeObjectURL(audioUrl);
-                if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
+              const handleError = (e) => {
+                console.error("🎵 [TTS] Audio error", e);
+                cleanup();
                 reject(e);
               };
-              audio.play().catch(reject);
+              const handleStop = () => {
+                console.log("🎵 [TTS] Audio paused/stopped via event.");
+                cleanup();
+                resolve(); // Resolve so we can loop and see interrupt flag
+              };
+
+              const cleanup = () => {
+                // Remove from registry
+                activeAudioPlayersRef.current.delete(audio);
+                URL.revokeObjectURL(audioUrl);
+                if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
+
+                audio.removeEventListener('ended', handleEnd);
+                audio.removeEventListener('error', handleError);
+                audio.removeEventListener('pause', handleStop);
+                audio.removeEventListener('abort', handleStop);
+                audio.removeEventListener('emptied', handleStop);
+              };
+
+              audio.addEventListener('ended', handleEnd);
+              audio.addEventListener('error', handleError);
+              // Crucial: resolving on these events breaks the deadlock when stopTTS is called
+              audio.addEventListener('pause', handleStop);
+              audio.addEventListener('abort', handleStop);
+              audio.addEventListener('emptied', handleStop);
+
+              // Only play if not interrupted during the microtask setup
+              if (!isTtsInterruptedRef.current) {
+                audio.play().catch(e => {
+                  if (e.name !== 'AbortError') console.error("🎵 [TTS] Play failed:", e);
+                  handleError(e);
+                });
+              } else {
+                console.log("🛑 [TTS] Play skipped due to interrupt flag.");
+                resolve(); // Skip playback
+              }
             });
+
+            // Post-playback interrupt check
+            if (isTtsInterruptedRef.current) {
+              console.log("🛑 [TTS] Loop broken by interrupt flag (Post-Play).");
+              break;
+            }
           }
         } catch (err) {
           console.error("🎵 [TTS Playback Error]", err);
         } finally {
+          console.log("🎵 [TTS] Playback loop finished/exited.");
           window.streamingAudioPlaying = false;
           setIsPlayingAudio(null);
+          if (isTtsInterruptedRef.current) {
+            setAudioQueue([]); // Ensure cleared
+          }
         }
       }
     };
@@ -972,6 +1073,11 @@ const AppProvider = ({ children }) => {
     }
 
     try {
+      // Check for browser support
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Browser API not supported. If on mobile LAN, you may need HTTPS or specific flags.");
+      }
+
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -1004,7 +1110,16 @@ const AppProvider = ({ children }) => {
 
     } catch (err) {
       console.error("🎤 Error accessing microphone:", err);
-      setAudioError(`Microphone access denied or error: ${err.message}`);
+
+      let errorMessage = `Microphone error: ${err.message}`;
+
+      // Detailed guidance for mobile LAN users
+      if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        errorMessage = `⚠️ Microphone blocked due to insecure connection (HTTP).\n\nTo fix on Mobile/LAN:\n1. Open chrome://flags (or edge://flags)\n2. Search "Insecure origins treated as secure"\n3. Enable it and add: ${window.location.origin}\n4. Restart browser.`;
+        alert(errorMessage);
+      }
+
+      setAudioError(errorMessage);
       setIsRecording(false); // Ensure state is reset
     }
   }, [isRecording, isTranscribing]); // Dependencies
@@ -1083,12 +1198,18 @@ const AppProvider = ({ children }) => {
     if (isRecording) {
       await stopRecording(() => { });
     }
-  }, [isRecording, stopRecording]);
+
+    // Stop any active TTS
+    stopTTS();
+  }, [isRecording, stopRecording, stopTTS]);
 
 
   // --- playTTS (Modified to prevent auto-replay) ---
   const playTTS = useCallback(async (messageId, text, optionsOverrides = null) => {
     console.log(`🗣️ [TTS] Attempting to play message ${messageId}: "${text.substring(0, 40)}..."`);
+
+    // Reset interrupt flag for this new playback session
+    isTtsInterruptedRef.current = false;
 
     // Check if this is the same message that was just played
     if (lastPlayedMessageRef.current === messageId && !optionsOverrides) {
@@ -1120,6 +1241,13 @@ const AppProvider = ({ children }) => {
     let audioUrl = null;
 
     try {
+      // CRITICAL: Check if TTS has been interrupted before starting playback
+      if (isTtsInterruptedRef.current) {
+        console.log(`🛑 [TTS] Playback blocked for message ${messageId} - interrupt flag is set`);
+        setIsPlayingAudio(null);
+        return;
+      }
+
       // 1. Synthesize Speech -> Blob URL
       console.log(`🗣️ [TTS] Calling synthesizeSpeech API for message ${messageId}...`);
 
@@ -1148,6 +1276,14 @@ const AppProvider = ({ children }) => {
       // Pass options object to synthesizeSpeech
       audioUrl = await synthesizeSpeech(text, ttsOptions);
 
+      // CHECK AGAIN after await - stop may have been pressed during synthesis
+      if (isTtsInterruptedRef.current) {
+        console.log(`🛑 [TTS] Playback blocked for message ${messageId} - interrupted during synthesis`);
+        if (audioUrl) URL.revokeObjectURL(audioUrl);
+        setIsPlayingAudio(null);
+        return;
+      }
+
       // UNCHANGED: Everything after this stays exactly the same
       if (!audioUrl) throw new Error("SynthesizeSpeech returned an invalid URL.");
       console.log(`🗣️ [TTS] Received audio URL for message ${messageId}: ${audioUrl.substring(0, 50)}...`);
@@ -1158,9 +1294,12 @@ const AppProvider = ({ children }) => {
         const audio = new Audio(audioUrl);
         audio.playbackRate = currentTtsSpeed;
         audioPlayerRef.current = audio;
+        activeAudioPlayersRef.current.add(audio); // Register for mass cleanup
 
         const handleEnd = () => {
           console.log(`🗣️ [TTS] Playback ended for message ${messageId}`);
+          activeAudioPlayersRef.current.delete(audio); // Cleanup registry
+
           setIsPlayingAudio(null);
           URL.revokeObjectURL(audioUrl);
           audioPlayerRef.current = null;
@@ -1171,6 +1310,8 @@ const AppProvider = ({ children }) => {
         };
         const handleError = (e) => {
           console.error(`🗣️ [TTS] Audio error for message ${messageId}:`, e);
+          activeAudioPlayersRef.current.delete(audio); // Cleanup registry
+
           setAudioError("Failed to play synthesized audio.");
           setIsPlayingAudio(null);
           URL.revokeObjectURL(audioUrl);
@@ -1182,57 +1323,47 @@ const AppProvider = ({ children }) => {
 
         audio.addEventListener('ended', handleEnd);
         audio.addEventListener('error', handleError);
-
         await audio.play();
-        console.log(`🗣️ [TTS] Started HTML5 Audio playback for message ${messageId}`);
+
       } else {
-        // --- Web Audio API path (speed + pitch) ---
+        // --- Web Audio API path (pitch shift) ---
+        console.log(`🗣️ [TTS] Using Web Audio API for pitch-shifted playback...`);
         const resp = await fetch(audioUrl);
         const arrayBuf = await resp.arrayBuffer();
         const ctx = new AudioContext();
-        const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+        const buf = await ctx.decodeAudioData(arrayBuf);
 
         const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
+        source.buffer = buf;
         source.playbackRate.value = currentTtsSpeed;
-        source.detune.value = currentTtsPitch * 100; // semitones → cents
+        source.detune.value = currentTtsPitch * 100; // Semitones -> cents
+
         source.connect(ctx.destination);
 
-        // store so stopTTS can reach it if needed
+        // Store for cleanup
         audioPlayerRef.current = { ctx, source, audioUrl };
+        activeAudioPlayersRef.current.add({ ctx, source }); // Register
 
         source.onended = () => {
           console.log(`🗣️ [TTS] Web Audio playback ended for message ${messageId}`);
+          activeAudioPlayersRef.current.delete({ ctx, source }); // Cleanup
           setIsPlayingAudio(null);
+          try { ctx.close(); } catch (e) { }
           URL.revokeObjectURL(audioUrl);
           audioPlayerRef.current = null;
-          ctx.close();
-          // Store this message ID as the last one played
           lastPlayedMessageRef.current = messageId;
         };
 
         source.start();
-        console.log(`🗣️ [TTS] Started Web Audio playback for message ${messageId}`);
       }
+
     } catch (error) {
-      console.error(`🗣️ [TTS] Error in playTTS for message ${messageId}:`, error);
-      setAudioError(error.message || "Failed to synthesize or play audio");
+      console.error("🗣️ [TTS] Error:", error);
+      setAudioError(error?.message || "Unknown TTS error");
       setIsPlayingAudio(null);
-      if (audioUrl) {
-        try { URL.revokeObjectURL(audioUrl); }
-        catch (e) { console.error("🗣️ [TTS] Error revoking URL:", e); }
-      }
-      audioPlayerRef.current = null;
-      lastPlayedMessageRef.current = null; // Reset on error
     }
-  }, [isPlayingAudio, stopTTS, settings.ttsSpeed, settings.ttsPitch, settings.ttsVoice, messages]);
 
-
-
-
-
-
-
+  }, [settings, messages, stopTTS, isPlayingAudio]);
 
   // Memory agent integration functions
   // Memory Agent Integration
@@ -2221,6 +2352,18 @@ const AppProvider = ({ children }) => {
 
     // 3. play
     src.connect(ctx.destination);
+
+    // Store reference so stopTTS can kill it
+    audioPlayerRef.current = { ctx, source, audioUrl };
+
+    src.onended = () => {
+      // Cleanup
+      if (audioPlayerRef.current && audioPlayerRef.current.ctx === ctx) {
+        audioPlayerRef.current = null;
+      }
+      try { ctx.close(); } catch (e) { }
+    };
+
     src.start();
   }
   // Start an agent-to-agent conversation
@@ -2868,5 +3011,6 @@ const AppProvider = ({ children }) => {
   );
 };
 
-const useApp = () => React.useContext(AppContext); // Remove 'export' here
-export { AppProvider, useApp }; // <-- This should be at the end
+const useApp = () => React.useContext(AppContext);
+
+export { AppProvider, useApp };
