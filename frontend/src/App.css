@@ -4,38 +4,49 @@
 
 @layer base {
   :root {
-    /* Base Token Schema (Defaults to Light) */
-    --background: #ffffff;
-    --foreground: #0f172a;
-    /* Slate 900 */
-    --card: #ffffff;
-    --card-foreground: #0f172a;
-    --popover: #ffffff;
-    --popover-foreground: #0f172a;
-    --primary: #0f172a;
-    --primary-foreground: #f8fafc;
-    --secondary: #f1f5f9;
-    /* Slate 100 */
-    --secondary-foreground: #0f172a;
-    --muted: #ffffff;
-    /* White for Bot Bubble (Distinct from User) */
-    --muted-foreground: #64748b;
-    /* Slate 500 */
-    --accent: #f1f5f9;
-    --accent-foreground: #0f172a;
-    --destructive: #ef4444;
-    --destructive-foreground: #f8fafc;
-    --border: #e2e8f0;
-    /* Slate 200 */
-    --input: #e2e8f0;
-    --ring: #0f172a;
-    --radius: 0.5rem;
+    /* ChatGPT Theme - Light Mode (Actual colors from chatgpt.com) */
+    --background: #FFFFFF;
+    /* Pure white */
+    --foreground: #0D0D0D;
+    /* Near-black text - ChatGPT's actual text color */
+    --card: #F9F9F9;
+    /* Very subtle grey for cards */
+    --card-foreground: #0D0D0D;
+    --popover: #FFFFFF;
+    --popover-foreground: #0D0D0D;
+
+    --primary: #10A37F;
+    /* ChatGPT brand green (from their branding) */
+    --primary-foreground: #FFFFFF;
+
+    /* User Bubble - semi-transparent grey */
+    --secondary: rgba(233, 233, 233, 0.5);
+    /* Actual extracted color - translucent grey */
+    --secondary-foreground: #0D0D0D;
+
+    /* Bot Bubble - ChatGPT doesn't use bubbles */
+    --muted: #FFFFFF;
+    /* Same as background */
+    --muted-foreground: #0D0D0D;
+
+    --accent: rgba(0, 0, 0, 0.06);
+    /* Subtle grey for sidebar items */
+    --accent-foreground: #0D0D0D;
+    --destructive: #EF4444;
+    --destructive-foreground: #FFFFFF;
+    --border: rgba(13, 13, 13, 0.05);
+    /* Very subtle border */
+    --input: #FFFFFF;
+    --ring: #10A37F;
+    --radius: 1.125rem;
+    /* 18px - ChatGPT's message bubble radius */
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+
+    --primary-gradient: linear-gradient(135deg, #19C37D, #10A37F);
 
     /* Extended Tokens */
     --input-bg: transparent;
     --focus-ring: 2px solid var(--ring);
-    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
-    /* Standard easy shadow */
 
     /* Global Font Family Variable (optional to override per theme) */
     --font-heading: 'Poppins', sans-serif;
