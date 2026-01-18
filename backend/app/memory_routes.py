@@ -660,7 +660,7 @@ async def get_all_backend_memories(
     Intended for frontend synchronization based on the active user profile.
     Requires user_id as a query parameter.
     """
-    logger.info(f"Request received for /get_all backend memories for user '{user_id}'.") # Log user_id
+    # logger.info(f"Request received for /get_all backend memories for user '{user_id}'.") # Log user_id
 
     # Basic validation (FastAPI's Query(...) already makes it required)
     if not user_id:
@@ -671,7 +671,7 @@ async def get_all_backend_memories(
     try:
         # Use the existing function from memory_intelligence, passing the user_id
         all_memories = memory_intelligence.get_memory_store(user_id=user_id) # <-- PASS user_id
-        logger.info(f"Returning {len(all_memories)} memories from backend store for user '{user_id}'.") # Log user_id
+        # logger.info(f"Returning {len(all_memories)} memories from backend store for user '{user_id}'.") # Log user_id
         return {"status": "success", "memories": all_memories}
 
     except ValueError as ve: # Catch potential errors from get_memory_store if user_id is invalid

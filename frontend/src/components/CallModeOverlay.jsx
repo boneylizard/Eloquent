@@ -300,8 +300,8 @@ const CallModeOverlay = ({
             </div>
           </button>
 
-          {/* Stop Speaking Button */}
-          {(isSpeaking || window.streamingAudioPlaying) && (
+          {/* Stop Speaking Button - Visible during speaking OR generation */}
+          {(isSpeaking || window.streamingAudioPlaying || isGenerating) && (
             <button
               onClick={() => {
                 stopTTS();

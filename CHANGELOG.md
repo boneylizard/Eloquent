@@ -15,6 +15,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
     * **Claude**: A warm, authentic light theme featuring cream backgrounds (`#FAF9F5`) and coral accents (`#CC785C`) for a calm, professional vibe.
     * **Messenger**: Premium dark theme with pill-shaped bubbles, gradient accents, and glossy shadows.
     * **WhatsApp**: Authentic dark mode with distinct flat bubbles and teal accents.
+* **Improved Light Theme**: Replaced the generic light theme with an authentic **ChatGPT Light** design (Pure white, Green accents, 18px radius).
 * **Theme Selector Visibility**: Enhanced the Navbar dropdown to ensure theme names are always visible (Standardized Light Mode styling) regardless of the active theme's contrast settings.
 
 ### Fixed
@@ -23,7 +24,6 @@ This log is intentionally simple, human-readable, and focused on real user-facin
     * **"Grey on Grey" Fix**: Implemented CSS overrides (`.message-bubble .prose`) to force Markdown content to inherit high-contrast text colors from its container.
     * **Bot Message Contrast**: Updated Dark and WhatsApp themes to use **Pure White** text for AI responses, resolving low-contrast slate-on-slate issues.
 * **Visual Hierarchy**: Established clear visual separation between User and AI message bubbles in both Light and Dark modes.
-* **Legacy Cleanup**: Removed "Nord" and "Dracula" themes to streamline the selection.
 
 ## 2026-01-17
 

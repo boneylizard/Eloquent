@@ -5,19 +5,19 @@ import { Loader2, Send, ArrowLeft } from 'lucide-react';
 import SimpleChatImageButton from './SimpleChatImageButton';
 import ChatImageUploadButton from './ChatImageUploadButton';
 
-const ChatInputForm = ({ 
-    onSubmit, 
-    isGenerating, 
-    isModelLoading, 
-    isRecording, 
-    isTranscribing,
-    agentConversationActive, 
-    primaryModel,
-    webSearchEnabled,
-    inputValue,
-    setInputValue,
-    onBack,
-    canGoBack
+const ChatInputForm = ({
+  onSubmit,
+  isGenerating,
+  isModelLoading,
+  isRecording,
+  isTranscribing,
+  agentConversationActive,
+  primaryModel,
+  webSearchEnabled,
+  inputValue,
+  setInputValue,
+  onBack,
+  canGoBack
 }) => {
   const inputRef = useRef(null);
 
@@ -36,69 +36,66 @@ const ChatInputForm = ({
       setInputValue('');
     }
   };
-  
-  // Auto-focus logic moved here
+
   useEffect(() => {
     if (!isGenerating && !isRecording && !isTranscribing) {
       inputRef.current?.focus({ preventScroll: true });
     }
   }, [isGenerating, isRecording, isTranscribing]);
-useEffect(() => {
-  const textarea = inputRef.current;
-  if (!textarea) return;
-  
-  // Reset height to get accurate scrollHeight
-  textarea.style.height = 'auto';
-  
-  // Calculate line height dynamically
-  const computedStyle = window.getComputedStyle(textarea);
-  const lineHeight = parseInt(computedStyle.lineHeight) || 24; // fallback to 24px
-  
-  const minHeight = lineHeight; // 1 line
-  const maxHeight = lineHeight * 16; // 16 lines exactly
-  
-  const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
-  textarea.style.height = newHeight + 'px';
-  
-  // Show scrollbar only when we hit 16 lines
-  if (textarea.scrollHeight > maxHeight) {
-    textarea.style.overflowY = 'auto';
-  } else {
-    textarea.style.overflowY = 'hidden';
-  }
-}, [inputValue]);
+
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = 'auto';
+    const computedStyle = window.getComputedStyle(textarea);
+    const lineHeight = parseInt(computedStyle.lineHeight) || 24;
+    const minHeight = lineHeight;
+    const maxHeight = lineHeight * 16;
+    const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+    textarea.style.height = newHeight + 'px';
+
+    if (textarea.scrollHeight > maxHeight) {
+      textarea.style.overflowY = 'auto';
+    } else {
+      textarea.style.overflowY = 'hidden';
+    }
+  }, [inputValue]);
+
   const isDisabled = !primaryModel || isGenerating || isModelLoading || agentConversationActive || isRecording || isTranscribing;
-  const placeholderText = 
-      !primaryModel ? "Load a model first" :
-      isRecording ? "Recording... Click mic to stop" :
-      isTranscribing ? "Transcribing..." :
-      isGenerating ? "Generating response..." :
-      webSearchEnabled ? "Type a message (web search enabled)..." :
-      "Type a message or click mic...";
+  const placeholderText =
+    !primaryModel ? "Load a model first" :
+      isRecording ? "Recording..." :
+        isTranscribing ? "Transcribing..." :
+          isGenerating ? "Generating..." :
+            webSearchEnabled ? "Message (Web)..." :
+              "Message...";
 
   return (
-    <form className="border-t border-border p-4 pb-12 flex items-center gap-2 bg-background" onSubmit={handleSubmit}>
+    // Adjusted padding: p-2 on mobile, p-4 on desktop. Reduced bottom padding.
+    <form className="border-t border-border p-2 pb-6 md:p-4 md:pb-8 flex items-end gap-2 bg-background transition-all duration-200" onSubmit={handleSubmit}>
       <div className="relative flex-1">
-<Textarea
-  ref={inputRef}
-  value={inputValue}
-  onChange={(e) => setInputValue(e.target.value)}
-  onKeyDown={handleKeyDown}
-  placeholder={placeholderText}
-  disabled={isDisabled}
-  className="flex-1 resize-none border-input bg-background pr-20"
-  rows={1}
-  style={{ 
-    minHeight: '24px', 
-    overflowY: 'hidden',
-    transition: 'height 0.1s ease'
-  }}
-/>
-        <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex gap-1">
+        <Textarea
+          ref={inputRef}
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholderText}
+          disabled={isDisabled}
+          className="flex-1 resize-none border-input bg-background pr-16 md:pr-20 text-base py-3"
+          rows={1}
+          style={{
+            minHeight: '44px', // Taller touch target
+            overflowY: 'hidden',
+            transition: 'height 0.1s ease'
+          }}
+        />
+        <div className="absolute right-1 bottom-1.5 flex gap-1">
           <SimpleChatImageButton />
           <ChatImageUploadButton />
         </div>
       </div>
+
       {canGoBack && (
         <Button
           type="button"
@@ -106,19 +103,20 @@ useEffect(() => {
           onClick={onBack}
           disabled={isGenerating || isRecording || isTranscribing}
           size="icon"
-          className="h-10 w-10"
-          title="Remove last message and response"
+          className="h-11 w-11 flex-shrink-0"
+          title="Undo"
         >
-          <ArrowLeft size={18}/>
+          <ArrowLeft size={20} />
         </Button>
       )}
+
       <Button
         type="submit"
         disabled={!inputValue.trim() || isDisabled}
         size="icon"
-        className="h-10 w-10"
+        className="h-11 w-11 flex-shrink-0"
       >
-        {isGenerating ? <Loader2 className="animate-spin" size={18}/> : <Send size={18}/>}
+        {isGenerating ? <Loader2 className="animate-spin" size={20} /> : <Send size={20} />}
       </Button>
     </form>
   );

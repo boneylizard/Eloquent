@@ -64,6 +64,52 @@ def get_port_config():
     }
 
 
+def get_local_ip():
+    """Get the best candidate for local LAN IP, but print all options."""
+    try:
+        # Get all IPs via hostname resolution
+        hostname = socket.gethostname()
+        try:
+            _, _, all_ips = socket.gethostbyname_ex(hostname)
+            all_ips = [ip for ip in all_ips if not ip.startswith("127.")]
+        except:
+            all_ips = []
+        
+        # Also try the socket method to see what the OS thinks is the default route
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                default_ip = s.getsockname()[0]
+                if default_ip not in all_ips and not default_ip.startswith("127."):
+                    all_ips.append(default_ip)
+        except:
+            pass
+
+        if not all_ips:
+            return "localhost"
+
+        # Sort by preference: 192.168.x > 10.x > 172.x > others > 100.x (often VPN/CGNAT)
+        def sort_key(ip):
+            if ip.startswith("192.168."): return 0
+            if ip.startswith("10."): return 1
+            if ip.startswith("172."): return 2
+            if ip.startswith("100."): return 10 # Low priority (Tailscale/CGNAT)
+            return 5
+            
+        all_ips.sort(key=sort_key)
+        best_ip = all_ips[0]
+        
+        if len(all_ips) > 1:
+            print(f"🌍 Multiple Network IPs detected: {', '.join(all_ips)}")
+            print(f"👉 Selected {best_ip} for configuration")
+            
+        return best_ip
+            
+    except Exception as e:
+        print(f"⚠️ IP Detection failed: {e}")
+        return "localhost"
+
+
 def write_ports_for_frontend(ports, project_root):
     """Write the active ports to a file the frontend can read."""
     ports_file = Path(project_root) / "frontend" / "public" / "ports.json"
@@ -282,10 +328,15 @@ def main():
     print(f"📌 Using ports: backend={backend_port}, secondary={secondary_port}, tts={tts_port}")
     
     # Write ports to frontend config
+    # Get local IP for remote access
+    local_ip = get_local_ip()
+    print(f"🌍 Local Network IP: {local_ip} (Use this on mobile: http://{local_ip}:5173)")
+    
+    # Write ports to frontend config - use IP instead of localhost so mobile connects correctly
     write_ports_for_frontend({
-        "backend": f"http://localhost:{backend_port}",
-        "secondary": f"http://localhost:{secondary_port}",
-        "tts": f"http://localhost:{tts_port}"
+        "backend": f"http://{local_ip}:{backend_port}",
+        "secondary": f"http://{local_ip}:{secondary_port}",
+        "tts": f"http://{local_ip}:{tts_port}"
     }, project_root)
     
     # Start browser launch timer in background thread

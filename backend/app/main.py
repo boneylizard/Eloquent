@@ -289,11 +289,71 @@ app = FastAPI(title="LLM Frontend API") # Example instantiation
 # --- CORS Configuration ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"], # Ensure your frontend origin is listed
+    allow_origins=["*"], # Allow all origins for local network access
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Authentication Middleware ---
+@app.middleware("http")
+async def check_authentication(request: Request, call_next):
+    # Allow OPTIONS requests (CORS preflight) pass through
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    # List of paths that don't need auth (static files, health checks, etc.)
+    # Note: websocket connections are handled separately or assume trusted for now if upgraded
+    public_paths = ["/static", "/favicon.ico", "/docs", "/openapi.json"]
+    if any(request.url.path.startswith(path) for path in public_paths):
+        return await call_next(request)
+
+    # 1. Get client IP
+    # client_host = request.client.host
+    # 2. Check if local (optional)
+    
+    # 3. Read settings to get the password
+    settings_path = Path.home() / ".LiangLocal" / "settings.json"
+    admin_password = ""
+    try:
+        if settings_path.exists():
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                 data = json.load(f)
+                 admin_password = data.get("admin_password", "")
+    except Exception:
+        pass 
+
+    # 4. If password is set, check it
+    if admin_password:
+        auth_header = request.headers.get("Authorization")
+        expected_scheme = "Basic"
+        is_authenticated = False
+        
+        # Method A: Basic Auth (Standard)
+        if auth_header and auth_header.startswith("Basic "):
+             try:
+                 encoded = auth_header.split(" ")[1]
+                 decoded = base64.b64decode(encoded).decode("utf-8")
+                 # format is "username:password"
+                 _, password = decoded.split(":", 1)
+                 if password == admin_password:
+                     is_authenticated = True
+             except:
+                 pass
+        
+        # Method B: Bearer Token (Simpler for some clients)
+        elif auth_header and auth_header.strip() == f"Bearer {admin_password}":
+            is_authenticated = True
+            
+        if not is_authenticated:
+            # Return 401 with standard Basic Auth challenge
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required"},
+                headers={"WWW-Authenticate": "Basic realm='Eloquent Remote Access'"}
+            )
+
+    return await call_next(request)
 
 router = APIRouter(tags=["generate"])
 router = APIRouter()   # Re-initialize router to avoid conflicts
@@ -6828,6 +6888,38 @@ async def get_settings():
         
     except Exception as e:
         logger.error(f"❌ Error getting settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/models/update-settings")
+async def update_settings(data: dict = Body(...)):
+    """Update general settings in settings.json"""
+    try:
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        
+        # Load existing
+        if settings_path.exists():
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+            
+        # Merge new settings
+        # We only update keys that are present in the request
+        for key, value in data.items():
+            settings[key] = value
+            
+        # Save back
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f, indent=2)
+            
+        return {
+            "status": "success",
+            "message": "Settings updated",
+            "settings": settings
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
 # These endpoints are now handled in document_routes.py

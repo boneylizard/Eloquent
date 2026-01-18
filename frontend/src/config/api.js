@@ -19,11 +19,33 @@ const DEFAULTS = {
  */
 export async function loadPortConfig() {
   if (configLoaded) return portConfig;
-  
+
   try {
     const response = await fetch('/ports.json');
     if (response.ok) {
       portConfig = await response.json();
+
+      // Smart Hostname Override:
+      // If we are accessing via a network IP/Hostname (not localhost),
+      // force the API URLs to use that same hostname.
+      // This solves issues where ports.json has a different IP (like a VPN IP 100.x)
+      // than the one the user is actually using (like Wi-Fi 192.168.x).
+      const currentHost = window.location.hostname;
+      if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+        const replaceHost = (url) => {
+          try {
+            const u = new URL(url);
+            u.hostname = currentHost;
+            return u.toString().replace(/\/$/, "");
+          } catch (e) { return url; }
+        };
+
+        if (portConfig.backend) portConfig.backend = replaceHost(portConfig.backend);
+        if (portConfig.secondary) portConfig.secondary = replaceHost(portConfig.secondary);
+        if (portConfig.tts) portConfig.tts = replaceHost(portConfig.tts);
+        console.log('🌍 Adapted API URLs to current host:', currentHost);
+      }
+
       console.log('📌 Loaded port config:', portConfig);
     } else {
       console.log('📌 No ports.json found, using defaults');
@@ -33,7 +55,7 @@ export async function loadPortConfig() {
     console.log('📌 Could not load ports.json, using defaults');
     portConfig = DEFAULTS;
   }
-  
+
   configLoaded = true;
   return portConfig;
 }

@@ -489,7 +489,25 @@ async def websocket_streaming_tts(websocket: WebSocket):
     await websocket.accept()
     logger.info("✅ [WebSocket] Connection accepted. Ready for multiple message streams.")
     streamer = None
-    
+    active_streamers = set() # Track all active streamers for this connection
+    prefetched_message = None # buffer for message read during wait
+
+    async def cancel_all_streamers():
+        """Helper to forcefully cancel all known active streamers"""
+        if not active_streamers:
+            logger.info("🛑 [WebSocket] No active streamers in registry to cancel.")
+            return
+            
+        logger.critical(f"🛑 [WebSocket] Force cancelling {len(active_streamers)} active streamers...")
+        # Iterate over copy
+        for s in list(active_streamers):
+            try:
+                if hasattr(s, 'cancel'):
+                    await s.cancel() # This should be awaited!
+            except Exception as e:
+                logger.error(f"Error cancelling streamer: {e}")
+        active_streamers.clear()
+        
     try:
         # Primary loop - handles multiple message streams over single connection
         while True:
@@ -497,7 +515,12 @@ async def websocket_streaming_tts(websocket: WebSocket):
             logger.info("👂 [WebSocket] Waiting for new message stream (expecting settings)...")
             
             try:
-                settings_data = await websocket.receive_text()
+                if prefetched_message:
+                    logger.info("📦 [WebSocket] Using prefetched message.")
+                    settings_data = prefetched_message
+                    prefetched_message = None
+                else:
+                    settings_data = await websocket.receive_text()
             except WebSocketDisconnect:
                 logger.info("🔌 [WebSocket] Client disconnected.")
                 break
@@ -505,6 +528,21 @@ async def websocket_streaming_tts(websocket: WebSocket):
             # Parse settings
             try:
                 data = json.loads(settings_data)
+                
+                # CHECK FOR INTERRUPT FIRST - before treating as settings!
+                if isinstance(data, dict) and data.get('type') == 'interrupt':
+                    logger.critical(f"🛑 [WebSocket] INTERRUPT RECEIVED (Global Stop) - Data: {data}")
+                    
+                    # Cancel CURRENT streamer if any
+                    if streamer: await streamer.cancel()
+                    streamer = None
+                    
+                    # Cancel ALL tracked streamers (Zombies)
+                    await cancel_all_streamers()
+                    
+                    # Don't start a new stream, just continue waiting
+                    continue
+                
                 # Check if this is settings or a text chunk
                 if isinstance(data, dict) and not data.get('text'):
                     tts_settings = data
@@ -516,15 +554,17 @@ async def websocket_streaming_tts(websocket: WebSocket):
                 logger.error(f"❌ [WebSocket] Invalid JSON: {settings_data[:100]}")
                 continue
             
-            # 2. Clean up any previous streamer
-            if streamer and hasattr(streamer, '_synthesis_task'):
-                if streamer._synthesis_task and not streamer._synthesis_task.done():
-                    await streamer.cancel()
-                    
+            # 2. Clean up any previous streamer ref (redundant safety)
+            if streamer:
+                await streamer.cancel()
+            
             # 3. Create new streamer for this message
             session_id = str(uuid.uuid4())
             streamer = TTSStreamer(websocket, tts_settings)
-            logger.info(f"✅ [WebSocket] Created streamer for message {session_id}")
+            
+            # CRITICAL: Add to registry immediately
+            active_streamers.add(streamer) 
+            logger.info(f"✅ [WebSocket] Created streamer for message {session_id} (Registry size: {len(active_streamers)})")
             
             # 4. Process text chunks for this message
             while True:
@@ -532,34 +572,135 @@ async def websocket_streaming_tts(websocket: WebSocket):
                     text = await websocket.receive_text()
                 except WebSocketDisconnect:
                     logger.info("🔌 [WebSocket] Client disconnected during message.")
-                    if streamer:
-                        await streamer.cancel()
+                    await cancel_all_streamers()
                     return
+                
+                # Check for control messages (JSON)
+                try:
+                    if text.startswith('{'):
+                        control_msg = json.loads(text)
+                        if control_msg.get('type') == 'interrupt':
+                            logger.critical(f"🛑 [WebSocket] INTERRUPT RECEIVED inside message {session_id}")
+                            await cancel_all_streamers()
+                            streamer = None
+                            break # Return to outer loop for next message
+                except json.JSONDecodeError:
+                    pass # Not JSON, treat as text
                     
                 if text == "--END--":
                     logger.info(f"🏁 [WebSocket] End signal received for message {session_id}")
-                    streamer.finish()
+                    if streamer:
+                        streamer.finish()
                     
-                    # Wait for synthesis to complete
-                    if hasattr(streamer, '_synthesis_task') and streamer._synthesis_task:
-                        await streamer._synthesis_task
+                    # Wait for synthesis to complete BUT keep listening for interrupts/next messages
+                    if streamer and hasattr(streamer, '_synthesis_task') and streamer._synthesis_task:
+                        logger.info(f"⏳ [WebSocket] Waiting for synthesis completion or new message...")
                         
-                    logger.info(f"✅ [WebSocket] Message {session_id} completed. Ready for next message.")
+                        synthesis_task = streamer._synthesis_task
+                        # Create receive task to listen for Interrupts/Settings while synthesizing
+                        recv_task = asyncio.create_task(websocket.receive_text())
+                        
+                        try:
+                            done, pending = await asyncio.wait(
+                                [synthesis_task, recv_task], 
+                                return_when=asyncio.FIRST_COMPLETED
+                            )
+                            
+                            if recv_task in done:
+                                # We received a message WHILE synthesizing
+                                try:
+                                    res_text = recv_task.result()
+                                    
+                                    # Check for interrupt
+                                    try:
+                                        msg_data = json.loads(res_text)
+                                        if isinstance(msg_data, dict) and msg_data.get('type') == 'interrupt':
+                                            logger.critical("🛑 [WebSocket] INTERRUPT received during synthesis wait!")
+                                            await cancel_all_streamers()
+                                            streamer = None
+                                            break # Break inner loop
+                                    except json.JSONDecodeError:
+                                        pass
+                                        
+                                    # If not interrupt, it's the next message (Settings or Text? Protocol says Settings next)
+                                    logger.info(f"⚡ [WebSocket] Received next message early: {res_text[:50]}...")
+                                    
+                                    # We must buffer this message for the start of the next outer loop
+                                    # Hack: Push it back? Or use a standard variable.
+                                    # We can't push back to websocket. Creates 'prefetched_message'
+                                    prefetched_message = res_text
+                                    
+                                    # Since new message arrived, we assume we should Finish/Cancel current?
+                                    # Standard behavior: If next message starts, current one finishes naturally? 
+                                    # Or do we enforce sequentiality?
+                                    # If we want to process next message, we must break inner loop.
+                                    
+                                    # BUT, if synthesis task is still running, do we cancel it?
+                                    # If it's a new message, usually we want to finish speaking the old one?
+                                    # But we are here because 'first_completed' returned recv_task. 
+                                    # So synthesis is NOT done.
+                                    
+                                    # If it is NOT an interrupt, we probably should wait for synthesis to finish?
+                                    # But then we turn into blocking wait.
+                                    # Unless we check if it IS an interrupt.
+                                    
+                                    # Re-eval: Only INTERRUPT commands should stop us. 
+                                    # Settings (new message) should probably wait?
+                                    # But we can't un-read the socket.
+                                    
+                                    # Decision: If it's settings, we CANCEL current synthesis (fast switching) or Queue it?
+                                    # Fast switching seems better for a chat app. "I changed my mind."
+                                    # BUT usually user expects full answer.
+                                    # Let's assume Cancel allows for "Interruption by new prompt".
+                                    
+                                    # However, simpler: Just break, and let outer loop handle 'prefetched_message'.
+                                    # And ensure we cancel previous streamer if it's still running.
+                                    
+                                    # For now, just break.
+                                    logger.info("⚡ [WebSocket] Breaking wait to process new message.")
+                                    break
+                                    
+                                except Exception as e:
+                                    logger.error(f"Error processing early message: {e}")
+                                    break
+                                    
+                            if synthesis_task in done:
+                                # Synthesis finished naturally.
+                                # Check potential errors
+                                try:
+                                    synthesis_task.result() # Will raise if failed
+                                except asyncio.CancelledError:
+                                    logger.info("Synthesis task was cancelled.")
+                                except Exception as e:
+                                    logger.error(f"Synthesis task failed: {e}")
+                                    
+                                # Cancel the unused recv_task
+                                recv_task.cancel()
+                                try:
+                                    await recv_task
+                                except asyncio.CancelledError:
+                                    pass
+                        
+                        except Exception as e:
+                             logger.error(f"Error in dual-wait: {e}")
+
+                    logger.info(f"✅ [WebSocket] Message {session_id} completed.")
+                    # DO NOT REMOVE from active_streamers here. Let it fade or be removed by cancel_all.
+                    # Or remove safely.
+                    if streamer in active_streamers: active_streamers.remove(streamer)
                     streamer = None
                     break  # Break inner loop, continue outer loop for next message
                 else:
                     # Process text chunk
-                    await streamer.add_text(text)
+                    if streamer:
+                        await streamer.add_text(text)
                     
     except WebSocketDisconnect:
         logger.info("🔌 [WebSocket] Client disconnected.")
     except Exception as e:
         logger.error(f"❌ [WebSocket] Error in connection handler: {e}", exc_info=True)
     finally:
-        # Clean up any active streamer
-        if streamer and hasattr(streamer, '_synthesis_task'):
-            if streamer._synthesis_task and not streamer._synthesis_task.done():
-                await streamer.cancel()
+        await cancel_all_streamers()
         logger.info("👋 [WebSocket] Connection handler exiting.")
 
 @app.post("/tts/upload-voice-reference")

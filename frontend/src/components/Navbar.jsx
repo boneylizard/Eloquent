@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 const Navbar = ({ toggleSidebar }) => {
+  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   // Get necessary values from AppContext
   const {
     loadedModels,
@@ -45,7 +46,7 @@ const Navbar = ({ toggleSidebar }) => {
     <header className="border-b bg-card">
       <div className="container flex items-center h-16 px-4">
         {/* Brand/Logo - with more space */}
-        <div className="flex items-center gap-3 mr-8">
+        <div className="flex items-center gap-3 mr-2 md:mr-8">
           <img
             src="/eloquent-logo.png"
             alt="Eloquent"
@@ -54,8 +55,8 @@ const Navbar = ({ toggleSidebar }) => {
           <span className="font-bold text-xl" style={{ fontFamily: 'Poppins, sans-serif' }}>Eloquent</span>
         </div>
 
-        {/* Desktop Navigation */}
-        <nav className="flex items-center gap-2 flex-1">
+        {/* Desktop Navigation - Hidden on Mobile */}
+        <nav className="hidden md:flex items-center gap-2 flex-1">
           {sidebarNavItems.map((item) => (
             <Button
               key={item.id}
@@ -107,7 +108,40 @@ const Navbar = ({ toggleSidebar }) => {
             </Badge>
           )}
         </div>
+        {/* Mobile Menu Button - Visible on Mobile */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="md:hidden ml-2"
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+        </Button>
       </div>
+
+      {/* Mobile Menu Dropdown */}
+      {mobileMenuOpen && (
+        <div className="md:hidden border-t bg-card p-4 space-y-2 absolute top-16 left-0 right-0 z-50 shadow-lg">
+          {sidebarNavItems.map((item) => (
+            <Button
+              key={item.id}
+              variant={activeTab === item.id ? 'secondary' : 'ghost'}
+              className="w-full justify-start"
+              onClick={() => {
+                setActiveTab(item.id);
+                setMobileMenuOpen(false);
+              }}
+            >
+              {item.icon}
+              <span className="ml-2">{item.label}</span>
+            </Button>
+          ))}
+        </div>
+      )}
     </header>
   );
 };
