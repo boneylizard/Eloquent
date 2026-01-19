@@ -101,6 +101,32 @@ Runs fully local. No subscriptions. No cloud dependency. APIs optional. Just you
 
 ---
 
+## 📱 Mobile Support
+
+Eloquent is fully optimized for mobile devices with a responsive design, touch-friendly UI, and dedicated audio handling.
+
+- **Responsive**: Full adaptation for phones and tablets.
+- **Universal Access**: Automatic host binding (`0.0.0.0`) and IP discovery for easy local network connection.
+- **Native Feel**: Specialized audio handling for reliable TTS playback on iOS and Android.
+
+For detailed setup and architecture, see [Mobile Support Integration](MOBILE_SUPPORT.md).
+
+### Themes & Mobile UI
+
+#### Messenger Theme
+![Messenger Theme](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/messengerchat.png?raw=true)
+*Premium mobile-first chat experience.*
+
+#### WhatsApp Theme
+![WhatsApp Theme](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/Whatsapplinemenu.png?raw=true)
+*Adaptive navigation and menus.*
+
+#### Cyberpunk Theme
+![Cyberpunk Theme](https://github.com/boneylizard/Eloquent/blob/main/eloquent%20launch/cyberpunkllmsettings.png?raw=true)
+*Full control over LLM settings on any device.*
+
+---
+
 ## 🔥 Flagship Features
 
 ### 🎨 In-House Stable Diffusion (No API, No External UI)
