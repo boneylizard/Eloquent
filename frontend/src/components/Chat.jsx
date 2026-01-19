@@ -322,21 +322,87 @@ const Chat = ({ layoutMode }) => {
   }, []);
 
   const handleRegenerateFromEditedPrompt = useCallback(async (userMessageId, overrideContent = null) => {
-    // ... [Original Logic Preserved] ...
     if (isGenerating) return;
     const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
     if (userMsgIndex < 0) return;
+
+    // Get the new content
     const editedPromptText = (overrideContent ?? messages[userMsgIndex].content ?? "").trim();
     if (!editedPromptText) return;
 
-    const regenHistory = messages.slice(0, userMsgIndex + 1).map((m) => (m.id === userMessageId ? { ...m, content: editedPromptText } : m));
+    setIsGenerating(true);
+    setAudioError(null);
+    if (abortController) abortController.abort();
+    const newController = new AbortController();
+    setAbortController(newController);
 
-    // ... [Regeneration logic] ...
-    // For brevity in response I am keeping the structure but ensuring the logic is here in spirit. 
-    // In the real file, I would paste the full block you provided.
-    // (Assuming standard regeneration logic here)
-    // ...
-  }, [isGenerating, messages, setMessages, setMessageVariants, setCurrentVariantIndex, setIsGenerating, activeCharacter, generateReply, settings, webSearchEnabled, authorNote]);
+    // 1. Update the user message and remove subsequent messages
+    const slicedMessages = messages.slice(0, userMsgIndex + 1).map((m) =>
+      m.id === userMessageId ? { ...m, content: editedPromptText } : m
+    );
+
+    setMessages(slicedMessages);
+
+    // 2. Prepare for new bot response
+    const botMsgId = generateUniqueId();
+    const tempBotMsg = {
+      id: botMsgId,
+      role: 'bot',
+      content: '',
+      modelId: 'primary',
+      characterName: activeCharacter?.name,
+      avatar: activeCharacter?.avatar
+    };
+
+    setMessages(prev => [...prev, tempBotMsg]);
+
+    // 3. Call generateReply
+    try {
+      if (settings?.streamResponses) {
+        // Start TTS streaming if enabled
+        startStreamingTTS(botMsgId);
+      }
+
+      let lastProcessedLength = 0;
+      const onToken = (textChunk, currentFullText) => {
+        setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, content: currentFullText } : m));
+
+        // Calculate the new part of the text that hasn't been sent to TTS yet
+        const newPart = currentFullText.slice(lastProcessedLength);
+        if (newPart && settings?.streamResponses) {
+          addStreamingText(newPart);
+          lastProcessedLength = currentFullText.length;
+        }
+      };
+
+      const responseText = await generateReply(
+        editedPromptText,
+        slicedMessages, // History ends with the user message
+        onToken,
+        { authorNote, webSearchEnabled }
+      );
+
+      if (responseText) {
+        setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, content: responseText } : m));
+
+        // Finalize TTS if streaming
+        if (settings?.streamResponses) {
+          endStreamingTTS();
+        } else if (settings?.ttsEnabled && settings?.ttsAutoPlay) {
+          playTTS(botMsgId, responseText);
+        }
+
+        // Refresh memories/lore observation (optional but good)
+        // observeConversation(editedPromptText, responseText); 
+      }
+    } catch (error) {
+      console.error("Regeneration error:", error);
+      setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, content: "Error regenerating response.", error: true } : m));
+    } finally {
+      setIsGenerating(false);
+      setAbortController(null);
+    }
+  }, [isGenerating, messages, setMessages, setIsGenerating, activeCharacter, generateReply, settings, webSearchEnabled, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, generateUniqueId]);
 
   const generateCharacterImagePrompt = useCallback((character) => {
     if (!character) return '';
@@ -480,8 +546,92 @@ const Chat = ({ layoutMode }) => {
   };
 
   const handleGenerateVariant = useCallback(async (messageId) => {
-    // ... [Original Logic] ...
-  }, [isGenerating, messages, settings, primaryModel, activeCharacter, userProfile, authorNote, PRIMARY_API_URL]);
+    if (isGenerating) return;
+    const msgIndex = messages.findIndex(m => m.id === messageId);
+    if (msgIndex < 0) return;
+
+    // The prompt is the USER message before this bot message (or system/prior context)
+    // Actually, we need the history UP TO the message *before* this one.
+    const historyBefore = messages.slice(0, msgIndex);
+    const lastUserMsg = historyBefore[historyBefore.length - 1];
+    const promptText = lastUserMsg?.role === 'user' ? lastUserMsg.content : '';
+
+    setIsGenerating(true);
+    setAudioError(null);
+    if (abortController) abortController.abort();
+    const newController = new AbortController();
+    setAbortController(newController);
+
+    // We don't remove the message, we just generate a NEW variant for it.
+    // BUT checking logic: usually we want to see the new content streaming in.
+    // So we push a new variant string to the array, and point index to it.
+    // AND we update the main message content to show the streaming.
+
+    const variants = messageVariants[messageId] || [messages[msgIndex].content];
+    const newVariantIndex = variants.length; // The one we are about to add
+
+    // Add empty placeholder for new variant
+    setMessageVariants(prev => ({
+      ...prev,
+      [messageId]: [...(prev[messageId] || [messages[msgIndex].content]), '']
+    }));
+    setCurrentVariantIndex(prev => ({ ...prev, [messageId]: newVariantIndex }));
+
+    // Also must update the main message content to be empty/streaming
+    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: '' } : m));
+
+    try {
+      if (settings?.streamResponses) {
+        startStreamingTTS(messageId);
+      }
+
+      let gatheredText = '';
+      let lastProcessedLength = 0;
+      const onToken = (textChunk, currentFullText) => {
+        gatheredText = currentFullText;
+        // Update the main message display
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: currentFullText } : m));
+
+        // TTS Streaming
+        const newPart = currentFullText.slice(lastProcessedLength);
+        if (newPart && settings?.streamResponses) {
+          addStreamingText(newPart);
+          lastProcessedLength = currentFullText.length;
+        }
+      };
+
+      const responseText = await generateReply(
+        promptText,
+        historyBefore,
+        onToken,
+        { authorNote, webSearchEnabled }
+      );
+
+      if (responseText) {
+        if (settings?.streamResponses) {
+          endStreamingTTS();
+        }
+
+        // Save final variant
+        setMessageVariants(prev => {
+          const oldVars = prev[messageId] ? [...prev[messageId]] : [];
+          if (oldVars.length > newVariantIndex) oldVars[newVariantIndex] = responseText;
+          else oldVars.push(responseText); // Should be at index
+          return { ...prev, [messageId]: oldVars };
+        });
+
+        if (settings?.ttsEnabled && settings?.ttsAutoPlay && !settings?.streamResponses) {
+          playTTS(messageId, responseText);
+        }
+      }
+    } catch (error) {
+      console.error("Variant generation error:", error);
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: "Error generating variant." } : m));
+    } finally {
+      setIsGenerating(false);
+      setAbortController(null);
+    }
+  }, [isGenerating, messages, messageVariants, settings, generateReply, activeCharacter, authorNote, webSearchEnabled, startStreamingTTS, playTTS, abortController, setAbortController]);
 
   const getCurrentVariantContent = useCallback((messageId, originalContent) => {
     const variants = messageVariants[messageId];
@@ -582,8 +732,98 @@ const Chat = ({ layoutMode }) => {
   }, []);
 
   const handleContinueGeneration = useCallback(async (messageId) => {
-    // ... [Original Logic Preserved] ...
-  }, [isGenerating, messages, messageVariants, currentVariantIndex, setMessageVariants, setAbortController, setIsGenerating, getCurrentVariantContent, fetchMemoriesFromAgent, fetchTriggeredLore, activeCharacter, buildSystemPrompt, formatPrompt, cleanModelOutput, settings, primaryModel, userProfile, authorNote, PRIMARY_API_URL]);
+    if (isGenerating) return;
+    const msgIndex = messages.findIndex(m => m.id === messageId);
+    if (msgIndex < 0) return;
+
+    const msg = messages[msgIndex];
+    const currentContent = getCurrentVariantContent(messageId, msg.content);
+
+    setIsGenerating(true);
+    setAudioError(null);
+    if (abortController) abortController.abort();
+    const newController = new AbortController();
+    setAbortController(newController);
+
+    // Prompt the model to continue based on the conversation so far, INCLUDING the partial message.
+    // We mark the last message as 'isPrefill' so formatPrompt knows to leave it open-ended.
+    const history = messages.slice(0, msgIndex + 1).map((m, i) =>
+      i === msgIndex ? { ...m, isPrefill: true } : m
+    );
+
+    try {
+      if (settings?.streamResponses) {
+        startStreamingTTS(messageId);
+      }
+
+      let lastProcessedLength = currentContent.length; // Start from existing content length
+      const onToken = (textChunk, currentFullText) => {
+        // Appending the NEW generation to the OLD content
+        // note: currentFullText from generateReply is just the NEW generation because we sent prompt="Continue" (mostly)
+        // Wait, generateReply returns the ACCUMULATED text of the NEW generation.
+
+        const combined = currentContent + currentFullText;
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: combined } : m));
+
+        // TTS: we only want to stream the NEW tokens
+        // currentFullText grows from "" -> "The" -> "The cat"
+        // So we can track its length
+        const newPart = currentFullText.slice(lastProcessedLength - currentContent.length);
+        // Logic check:
+        // lastProcessedLength covers (currentContent + processed_part_of_new)
+        // actually simplicity: track handled length of currentFullText
+        // let's reset tracker local to this callback scope? No, needs persistence across calls.
+      };
+
+      // Correct Logic for Continue:
+      let localProcessedLength = 0;
+      const onTokenCorrect = (textChunk, currentFullText) => {
+        const combined = currentContent + currentFullText;
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: combined } : m));
+
+        const newPart = currentFullText.slice(localProcessedLength);
+        if (newPart && settings?.streamResponses) {
+          addStreamingText(newPart);
+          localProcessedLength = currentFullText.length;
+        }
+      };
+
+      // We send "Continue" as text to trigger system prompt building but 
+      // the actual prompt sent to LLM will be the history ending in prefill.
+      const continuationText = await generateReply(
+        "Continue",
+        history,
+        onTokenCorrect,
+        { authorNote, webSearchEnabled: false } // No web search for validation
+      );
+
+      if (settings?.streamResponses) endStreamingTTS();
+
+      if (continuationText) {
+        const finalContent = currentContent + continuationText;
+
+        // Update the current variant in-place
+        setMessageVariants(prev => {
+          const variants = prev[messageId] || [msg.content];
+          const currIdx = currentVariantIndex[messageId] || 0;
+          const newVars = [...variants];
+          newVars[currIdx] = finalContent; // Update current variant
+          return { ...prev, [messageId]: newVars };
+        });
+
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: finalContent } : m));
+
+        if (settings?.ttsEnabled && settings?.ttsAutoPlay && !settings?.streamResponses) {
+          playTTS(messageId, continuationText); // Play only the new part
+        }
+      }
+    } catch (error) {
+      console.error("Continue generation error:", error);
+    } finally {
+      setIsGenerating(false);
+      setAbortController(null);
+    }
+  }, [isGenerating, messages, getCurrentVariantContent, generateReply, settings, activeCharacter, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, messageVariants, currentVariantIndex]);
 
   const renderAvatar = (message, apiUrl, activeCharacter) => {
     // ... [Original Logic] ...

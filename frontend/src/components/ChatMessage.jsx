@@ -212,11 +212,11 @@ const ChatMessage = memo(({
                         <div className="relative group">
                             <div className="flex items-center justify-between mb-1">
                                 <span className="text-xs text-muted-foreground font-medium">You</span>
-                                <div className="flex gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="flex gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10 relative">
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6"
+                                        className="h-9 w-9 md:h-6 md:w-6"
                                         onClick={() => onEditUserMessage(msg.id, msg.content)}
                                         title="Edit message"
                                     >
@@ -228,7 +228,7 @@ const ChatMessage = memo(({
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6"
+                                        className="h-9 w-9 md:h-6 md:w-6"
                                         onClick={() => onRegenerateFromEditedPrompt(msg.id)}
                                         disabled={isGenerating}
                                         title="Regenerate from this message"
@@ -238,7 +238,7 @@ const ChatMessage = memo(({
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                        className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
                                         onClick={() => onDeleteMessage(msg.id)}
                                         disabled={isGenerating}
                                         title="Delete message"
@@ -266,13 +266,13 @@ const ChatMessage = memo(({
                             <div className="text-xs text-muted-foreground mb-1 font-medium flex items-center justify-between flex-wrap gap-2">
                                 <span>{msg.characterName || (msg.modelName ? formatModelName(msg.modelName) : "Assistant")}</span>
 
-                                <div className="flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10 relative">
                                     {/* Per-message TTS button for non-user messages */}
                                     {ttsEnabled && msg.role !== 'user' && msg.role !== 'system' && (
                                         <Button
                                             variant={isPlayingAudio === msg.id ? "destructive" : "ghost"}
                                             size="icon"
-                                            className="h-6 w-6"
+                                            className="h-9 w-9 md:h-6 md:w-6"
                                             onClick={() => onSpeakerClick(msg.id, content)}
                                             disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== msg.id)}
                                         >
@@ -288,7 +288,7 @@ const ChatMessage = memo(({
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6"
+                                        className="h-9 w-9 md:h-6 md:w-6"
                                         onClick={() => onEditBotMessage(msg.id)}
                                         disabled={isGenerating || editingBotMessageId === msg.id}
                                         title="Edit AI response"
@@ -303,7 +303,7 @@ const ChatMessage = memo(({
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6"
+                                        className="h-9 w-9 md:h-6 md:w-6"
                                         onClick={() => onGenerateVariant(msg.id)}
                                         disabled={isGenerating || isTranscribing}
                                         title="Generate variant"
@@ -315,7 +315,7 @@ const ChatMessage = memo(({
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6"
+                                        className="h-9 w-9 md:h-6 md:w-6"
                                         onClick={() => onContinueGeneration(msg.id)}
                                         disabled={isGenerating || isTranscribing}
                                         title="Continue response"
@@ -328,7 +328,7 @@ const ChatMessage = memo(({
                                     <Button
                                         variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
+                                        className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
                                         onClick={() => onDeleteMessage(msg.id)}
                                         disabled={isGenerating}
                                         title="Delete message"
