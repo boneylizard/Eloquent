@@ -535,7 +535,7 @@ const AppProvider = ({ children }) => {
   // --- TTS Implementation (REORDERED) ---
   const stopTTS = useCallback(() => {
     console.log('🛑 [stopTTS] Initiating stop sequence...');
-
+    // console.trace('🛑 [stopTTS] Caller Trace');
     // 1. IMMEDIATE: Set interrupt flag to prevent any new chunks from processing
     isTtsInterruptedRef.current = true;
     isFirstTextChunk.current = true; // Reset text chunk flag
@@ -656,10 +656,18 @@ const AppProvider = ({ children }) => {
 
     if (!settings.ttsAutoPlay || !settings.ttsEnabled) return;
 
+    console.log(`▶️ [startStreamingTTS] Starting stream for ${messageId} (Resetting interrupt flag)`);
     isFirstTextChunk.current = true;
     isTtsInterruptedRef.current = false;
     streamingTtsMessageIdRef.current = messageId;
     setIsAutoplaying(true);
+
+    // Safety: If socket is closed/closing, prompt a reconnect so pending settings send
+    // Safety: If socket is closed/closing (or null), prompt a reconnect so pending settings send
+    if (!ttsClient.socket || ttsClient.socket.readyState > 1) {
+      console.warn("⚠️ [TTS] Socket closed/closing/null, triggering reconnect...");
+      ttsClient.connect();
+    }
 
     // Local flag to track if this is the first audio chunk for this specific message
     let firstAudioPlayed = false;
@@ -677,12 +685,17 @@ const AppProvider = ({ children }) => {
     ttsClient.send(streamingTtsSettings);
 
     ttsClient.onAudioQueueUpdate = async () => {
-      // SAFETY CHECK: If we've been interrupted/stopped, ignore this update entirely
+      // 1. Check if we've been interrupted
       if (isTtsInterruptedRef.current) {
-        if (ttsClient.audioQueue.length > 0) {
-          console.log("🛡️ [TTS] Ignoring audio update due to interrupt flag. Dumping " + ttsClient.audioQueue.length + " items.");
-          ttsClient.audioQueue.length = 0; // Dump data
-        }
+        console.log("🛡️ [TTS] Ignoring audio update due to interrupt flag. Dumping " + ttsClient.audioQueue.length + " items.");
+        ttsClient.audioQueue.length = 0;
+        return;
+      }
+
+      // 2. Check if we are still the active message (Fix for zombie loops)
+      // Allow if ref is null (generation finished) but block if it's a NEW message ID
+      if (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId) {
+        console.log(`🛡️ [TTS] Ignoring update for stale message ID ${messageId} (Current: ${streamingTtsMessageIdRef.current})`);
         return;
       }
 
@@ -714,10 +727,15 @@ const AppProvider = ({ children }) => {
 
         try {
           while (ttsClient.audioQueue.length > 0) {
-            // Check for manual interruption before playing each chunk
+            // Check flags again inside loop
             if (isTtsInterruptedRef.current) {
               console.log("🛑 [TTS] Loop broken by interrupt flag (Pre-Shift).");
-              ttsClient.audioQueue.length = 0; // Clear remaining
+              ttsClient.audioQueue.length = 0;
+              break;
+            }
+            // Allow if null, break if DIFFERENT
+            if (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId) {
+              console.log("🛑 [TTS] Loop broken by stale message ID (Pre-Shift).");
               break;
             }
 
@@ -745,8 +763,14 @@ const AppProvider = ({ children }) => {
                 cleanup();
                 reject(e);
               };
-              const handleStop = () => {
-                console.log("🎵 [TTS] Audio paused/stopped via event.");
+              const handleStop = (e) => {
+                // Common behavior: browsers might fire 'pause' or 'emptied' efficiently.
+                // We log it for debugging but differentiate manual stops vs events.
+                if (isTtsInterruptedRef.current) {
+                  console.log(`⏹️ [TTS] Audio stopped via interrupt (${e.type})`);
+                } else {
+                  // console.log(`ℹ️ [TTS] Audio event '${e.type}' triggered move to next chunk.`);
+                }
                 cleanup();
                 resolve(); // Resolve so we can loop and see interrupt flag
               };
@@ -771,21 +795,24 @@ const AppProvider = ({ children }) => {
               audio.addEventListener('abort', handleStop);
               audio.addEventListener('emptied', handleStop);
 
-              // Only play if not interrupted during the microtask setup
-              if (!isTtsInterruptedRef.current) {
+              // Only play if not interrupted and still active (or finished generating)
+              const isStale = streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId;
+
+              if (activeAudioPlayersRef.current.has(audio) && !isTtsInterruptedRef.current && !isStale) {
                 audio.play().catch(e => {
                   if (e.name !== 'AbortError') console.error("🎵 [TTS] Play failed:", e);
                   handleError(e);
                 });
               } else {
-                console.log("🛑 [TTS] Play skipped due to interrupt flag.");
+                console.log("🛑 [TTS] Play skipped due to interrupt flag or stale ID.");
                 resolve(); // Skip playback
               }
             });
 
             // Post-playback interrupt check
-            if (isTtsInterruptedRef.current) {
-              console.log("🛑 [TTS] Loop broken by interrupt flag (Post-Play).");
+            // Allow if null, break if DIFFERENT
+            if (isTtsInterruptedRef.current || (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId)) {
+              console.log("🛑 [TTS] Loop broken by interrupt flag or stale ID (Post-Play).");
               break;
             }
           }
@@ -793,8 +820,14 @@ const AppProvider = ({ children }) => {
           console.error("🎵 [TTS Playback Error]", err);
         } finally {
           console.log("🎵 [TTS] Playback loop finished/exited.");
-          window.streamingAudioPlaying = false;
-          setIsPlayingAudio(null);
+          // Only clear state if WE are still the active message (or it finished) OR interrupted
+          // If a NEW message took over (streamingTtsMessageIdRef IS set and != messageId), don't clear global state
+          const isStale = streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId;
+
+          if (!isStale || isTtsInterruptedRef.current) {
+            window.streamingAudioPlaying = false;
+            setIsPlayingAudio(null);
+          }
           if (isTtsInterruptedRef.current) {
             setAudioQueue([]); // Ensure cleared
           }

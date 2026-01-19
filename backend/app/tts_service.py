@@ -1278,8 +1278,8 @@ class TTSStreamer:
         logger.info("🏁 [Streamer] Queuing sentinel to gracefully stop the synthesis loop.")
         self._synthesis_queue.put_nowait(None) 
         
-        # Mark the streamer as inactive
-        self._is_active = False
+        # DO NOT mark inactive here! Wait for sentinel to stop loop.
+        # self._is_active = False
     
     async def cancel(self):
         self._is_active = False
