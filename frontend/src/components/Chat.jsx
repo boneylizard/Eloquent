@@ -968,17 +968,17 @@ const Chat = ({ layoutMode }) => {
 
         {/* Current model info with API indicators */}
         <div className="flex flex-wrap gap-2 text-sm">
-          <div className={`px-2 py-1 rounded flex items-center gap-1 ${primaryModel ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-muted'}`}>
-            {primaryIsAPI ? <Globe className="w-3 h-3 text-blue-500" /> : <Cpu className="w-3 h-3 text-green-500" />}
+          <div className={`px-2 py-1 rounded flex items-center gap-1 border ${primaryModel ? 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-950 dark:text-blue-100 dark:border-blue-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
+            {primaryIsAPI ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" /> : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />}
             <span className="font-medium">Primary:</span>
             <span>{formatModelName(primaryModel)}</span>
-            {primaryIsAPI && <span className="text-xs text-blue-600 dark:text-blue-400">(API)</span>}
+            {primaryIsAPI && <span className="text-xs opacity-75">(API)</span>}
           </div>
-          <div className={`px-2 py-1 rounded flex items-center gap-1 ${secondaryModel ? 'bg-purple-100 dark:bg-purple-900/30' : 'bg-muted'}`}>
-            {secondaryIsAPI ? <Globe className="w-3 h-3 text-blue-500" /> : <Cpu className="w-3 h-3 text-green-500" />}
+          <div className={`px-2 py-1 rounded flex items-center gap-1 border ${secondaryModel ? 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-950 dark:text-purple-100 dark:border-purple-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
+            {secondaryIsAPI ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" /> : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />}
             <span className="font-medium">Secondary:</span>
             <span>{formatModelName(secondaryModel)}</span>
-            {secondaryIsAPI && <span className="text-xs text-blue-600 dark:text-blue-400">(API)</span>}
+            {secondaryIsAPI && <span className="text-xs opacity-75">(API)</span>}
           </div>
         </div>
 
