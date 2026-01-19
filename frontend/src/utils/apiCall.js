@@ -2,7 +2,7 @@
 // apiCall.js
 import { getTemplateForModel } from './chat_templates';
 import { retrieveRelevantMemories, formatMemoriesForPrompt } from './memoryUtils';
-import { getBackendUrl, getSecondaryUrl } from '../config/api';
+import { getBackendUrl, getSecondaryUrl, getTtsUrl } from '../config/api';
 
 // Function to retrieve the currently active user profile object from localStorage
 function getUserProfile() {
@@ -906,7 +906,12 @@ class TTSWebSocketClient {
     }
 
     // Connect to the TTS service on port 8002
-    this.socket = new WebSocket('ws://localhost:8002/tts-stream');
+    // Use dynamic URL from config to handle mobile/LAN access
+    const ttsUrl = getTtsUrl();
+    const wsUrl = ttsUrl.replace(/^http/, 'ws') + '/tts-stream';
+    console.log(`🔌 [TTS] Connecting to WebSocket at: ${wsUrl}`);
+
+    this.socket = new WebSocket(wsUrl);
 
     // Track connection state
     this.isConnecting = true;
