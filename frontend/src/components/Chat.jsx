@@ -71,7 +71,8 @@ const Chat = ({ layoutMode }) => {
     settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode, setIsCallModeActive,
     backgroundImage, // Add backgroundImage from context
     generateConversationSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
-    capturePromptSubmissionTime // Latency monitoring
+    capturePromptSubmissionTime, // Latency monitoring
+    unlockAudioContext // Unlocker
   } = useApp();
 
   // Local state for the input field
@@ -411,6 +412,9 @@ const Chat = ({ layoutMode }) => {
   }, [activeConversation, messageVariants, currentVariantIndex]);
 
   const handleSubmit = async (text) => {
+    // UNLOCK AUDIO ON INTERACTION
+    if (unlockAudioContext) unlockAudioContext();
+
     if (text && !isGenerating) {
       const shouldUseDual = dualModeEnabled && primaryModel && secondaryModel;
       if (shouldUseDual) await sendDualMessage(text, webSearchEnabled);

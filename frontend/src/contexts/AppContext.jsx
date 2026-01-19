@@ -270,6 +270,7 @@ const AppProvider = ({ children }) => {
   const callModeStreamRef = useRef(null);
   const audioChunksRef = useRef([]); // Updated to match previous edit
   const audioPlayerRef = useRef(null); // Ref to store the current Audio object for TTS
+  const audioPlaybackRef = useRef({ context: null }); // Ref for persistent AudioContext (mobile unlock)
   const [inputTranscript, setInputTranscript] = useState(''); // State for input transcript
   const [agentMemories, setAgentMemories] = useState([]);
   const lastPlayedMessageRef = useRef(null);
@@ -623,6 +624,32 @@ const AppProvider = ({ children }) => {
     setTimeout(() => setIsStreamingStopped(false), 1000);
 
   }, [abortController, stopTTS, setIsGenerating]);
+  // NEW: Silent audio unlocker for mobile browsers
+  const unlockAudioContext = useCallback(() => {
+    // 1. Create context if missing
+    if (!audioPlaybackRef.current.context) {
+      audioPlaybackRef.current.context = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const ctx = audioPlaybackRef.current.context;
+
+    // 2. Resume if suspended (common on mobile)
+    if (ctx.state === 'suspended') {
+      ctx.resume().then(() => console.log('🔊 [Audio] Context resumed via silent unlock'));
+    }
+
+    // 3. Play silent buffer to force "active" state
+    try {
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      console.log('🔊 [Audio] Silent unlock played');
+    } catch (e) {
+      console.warn('🔊 [Audio] Unlock failed', e);
+    }
+  }, []);
+
   const startStreamingTTS = useCallback((messageId) => {
     window.streamingAudioPlaying = false;
     ttsClient.audioQueue = [];
@@ -775,6 +802,11 @@ const AppProvider = ({ children }) => {
       }
     };
   }, [settings, ttsClient, setAudioQueue, setIsAutoplaying]);
+
+  const stopStreamingTTS = useCallback(() => {
+    console.log("🛑 [stopStreamingTTS] Called, delegating to stopTTS");
+    stopTTS();
+  }, [stopTTS]);
   const playNextChunk = async () => {
     if (ttsClient.audioQueue.length === 0 || isChunkPlaying) return;
 
@@ -2999,9 +3031,10 @@ const AppProvider = ({ children }) => {
     clearError: () => setApiError(null),
     generateConversationSummary,
     activeContextSummary,
-    setActiveContextSummary
+    setActiveContextSummary,
+    unlockAudioContext
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
   ]);
 
   return (
