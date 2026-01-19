@@ -200,6 +200,14 @@ const CallModeOverlay = ({
         </svg>
       </button>
 
+      {/* Control Panel Backdrop (Close on click outside) */}
+      {showControlPanel && (
+        <div
+          className="absolute inset-0 bg-black/50 z-10 backdrop-blur-sm transition-opacity duration-300"
+          onClick={() => setShowControlPanel(false)}
+        />
+      )}
+
       {/* Control Panel Slide-out */}
       <div
         className={`absolute left-0 top-0 bottom-0 w-72 bg-gradient-to-r from-gray-900/95 to-gray-900/90 backdrop-blur-lg
@@ -207,14 +215,25 @@ const CallModeOverlay = ({
                     ${showControlPanel ? 'translate-x-0' : '-translate-x-full'}`}
       >
         <div className="p-6 pt-20 space-y-4">
-          <h3 className="text-white text-lg font-semibold mb-4 flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="3" y1="9" x2="21" y2="9" />
-              <line x1="9" y1="21" x2="9" y2="9" />
-            </svg>
-            Control Panel
-          </h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-white text-lg font-semibold flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <line x1="3" y1="9" x2="21" y2="9" />
+                <line x1="9" y1="21" x2="9" y2="9" />
+              </svg>
+              Control Panel
+            </h3>
+            <button
+              onClick={() => setShowControlPanel(false)}
+              className="p-1 rounded-full hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
 
           {/* Story Tracker Button */}
           <button

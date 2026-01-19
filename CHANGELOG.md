@@ -7,10 +7,27 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 ---
 
 
+## 2026-01-19
+
+### Fixed
+
+* **TTS Autoplay Reliability**: Fixed a critical backend race condition (`streamer.finish()` vs `synthesis_loop`) that caused audio stream to be cut off prematurely. TTS audio now plays to completion for every message.
+* **Backend Streamer Stability**: Hardened `TTSStreamer` to correctly handle queue "sentinels", preventing "inactive streamer" errors and zombie synthesis loops.
+* **Mobile Call Mode Control Panel**:
+    * **Touch Usability**: Added a "Close" (X) button to the panel header for explicit dismissal.
+    * **Backdrop Interaction**: Added a clickable backdrop that allows users to close the slide-out panel by tapping outside of it.
+* **Mobile Control Panel Buttons**: Fixed issue where UI control panel buttons weren't responding.
+* **Mobile Autoplay**: Fixed an issue where TTS Autoplay would not trigger on mobile devices due to browser policies. Implemented handling to unlock the AudioContext on user interaction (sending a message).
+* **Log Cleanup**: Silenced verbose frontend audio event logs (e.g., "pause triggered move to next chunk") to keep the console clean for debugging.
+
 ## 2026-01-18
 
 ### Added
 
+### Added
+
+* **Beta Mobile Support**: Added beta mobile support.
+* **Mobile UI**: Optimised UI for mobile.
 * **New Authentic Themes**:
     * **Claude**: A warm, authentic light theme featuring cream backgrounds (`#FAF9F5`) and coral accents (`#CC785C`) for a calm, professional vibe.
     * **Messenger**: Premium dark theme with pill-shaped bubbles, gradient accents, and glossy shadows.
