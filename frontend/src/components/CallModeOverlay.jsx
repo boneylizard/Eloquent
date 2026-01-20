@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApp } from '../contexts/AppContext';
 
 const CallModeOverlay = ({
@@ -13,8 +13,10 @@ const CallModeOverlay = ({
   onOpenStoryTracker,
   onOpenChoiceGenerator,
   messages,
-  onRegenerate
+  onRegenerate,
+  ttsSubtitleCue // ✅ USE PROP instead of context
 }) => {
+  // ✅ REMOVED ttsSubtitleCue from useApp() - using prop instead
   const { startRecording, stopRecording, sendMessage, stopTTS, handleStopGeneration, isGenerating } = useApp();
   const [isPulsing, setIsPulsing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -22,6 +24,44 @@ const CallModeOverlay = ({
   const [speechIntensity, setSpeechIntensity] = useState(0.5);
   const [rippleDelays, setRippleDelays] = useState([0, 0.2, 0.4, 0.6]);
   const [showControlPanel, setShowControlPanel] = useState(false);
+  const [showSubtitles, setShowSubtitles] = useState(true);
+  const [subtitleVisible, setSubtitleVisible] = useState(false);
+
+  // 🔧 WORKAROUND: Read from window object since React context is broken
+  const [currentCue, setCurrentCue] = useState(null);
+
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      if (window.__ttsSubtitleCue) {
+        setCurrentCue({ ...window.__ttsSubtitleCue }); // Copy to trigger re-render
+      }
+    }, 50); // Poll every 50ms
+    return () => clearInterval(pollInterval);
+  }, []);
+
+  const subtitleText = useMemo(() => {
+    return (currentCue?.text || '').trim();
+  }, [currentCue]);
+
+  const subtitleSnippet = useMemo(() => {
+    const text = subtitleText.replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    if (text.length <= 220) return text;
+    return `...${text.slice(-220)}`;
+  }, [subtitleText]);
+
+  useEffect(() => {
+    if (!showSubtitles || !subtitleSnippet) {
+      setSubtitleVisible(false);
+      return;
+    }
+    setSubtitleVisible(true);
+    const durationMs = Math.max(900, Math.min(4000, ttsSubtitleCue?.durationMs || 1500));
+    const timer = setTimeout(() => {
+      setSubtitleVisible(false);
+    }, durationMs);
+    return () => clearTimeout(timer);
+  }, [showSubtitles, subtitleSnippet, currentCue]);
 
   // Handle Reroll (Regenerate last bot message)
   const handleReroll = useCallback(() => {
@@ -319,6 +359,29 @@ const CallModeOverlay = ({
             </div>
           </button>
 
+          {/* Subtitles Toggle */}
+          <button
+            onClick={() => setShowSubtitles(prev => !prev)}
+            className="w-full p-4 rounded-xl bg-gradient-to-r from-slate-500/20 to-slate-400/20 
+                       border border-slate-400/30 hover:border-slate-300/50 
+                       text-white text-left transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] group"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-slate-500/30 flex items-center justify-center group-hover:bg-slate-500/40 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="4" width="18" height="14" rx="2" ry="2" />
+                  <path d="M7 16h.01" />
+                  <path d="M11 16h.01" />
+                  <path d="M15 16h.01" />
+                </svg>
+              </div>
+              <div>
+                <div className="font-medium">{showSubtitles ? 'Hide Subtitles' : 'Show Subtitles'}</div>
+                <div className="text-xs text-white/60">On-screen AI text while speaking</div>
+              </div>
+            </div>
+          </button>
+
           {/* Stop Speaking Button - Visible during speaking OR generation */}
           {(isSpeaking || window.streamingAudioPlaying || isGenerating) && (
             <button
@@ -530,6 +593,7 @@ const CallModeOverlay = ({
             <p className="text-xl font-medium">Ready for conversation</p>
           )}
         </div>
+
         {/* Record Button - UNCHANGED but with new styles */}
         <button
           onClick={handleRecord}
@@ -578,6 +642,25 @@ const CallModeOverlay = ({
           </p>
         </div>
       </div>
+
+      {/* Subtitles Overlay */}
+      {showSubtitles && subtitleSnippet && (
+        <div
+          className={`absolute bottom-24 left-1/2 w-full max-w-3xl -translate-x-1/2 px-6 py-4 rounded-2xl
+                      bg-black/60 border border-white/10 backdrop-blur-sm text-center text-white/90 text-lg
+                      leading-snug shadow-lg transition-opacity duration-300 pointer-events-none
+                      ${subtitleVisible ? 'opacity-100' : 'opacity-0'}`}
+          aria-live="polite"
+          style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden'
+          }}
+        >
+          {subtitleSnippet}
+        </div>
+      )}
     </div>
   );
 };

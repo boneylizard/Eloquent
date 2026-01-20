@@ -61,7 +61,7 @@ const Chat = ({ layoutMode }) => {
     getGenerationSystemPrompt,
     // Audio / STT / TTS flags & functions
     sttEnabled, ttsEnabled, isRecording, isTranscribing, primaryIsAPI, secondaryIsAPI,
-    isPlayingAudio, playTTS, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS,
+    isPlayingAudio, playTTS, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, ttsSubtitleCue,
     startRecording, stopRecording, MEMORY_API_URL, ttsClient, setAudioQueue, setIsAutoplaying,
     // Avatar sizes
     userAvatarSize, characterAvatarSize, speechDetected, audioQueue, isAutoplaying, callModeRecording,
@@ -1359,6 +1359,7 @@ const Chat = ({ layoutMode }) => {
           isActive={isCallModeActive}
           onExit={stopCallMode}
           activeCharacter={activeCharacter}
+          isPlayingAudio={isPlayingAudio}
           isRecording={isRecording}
           isTranscribing={isTranscribing}
           onStartRecording={startRecording}
@@ -1368,6 +1369,7 @@ const Chat = ({ layoutMode }) => {
           onOpenChoiceGenerator={() => setShowChoiceGenerator(true)}
           messages={messages}
           onRegenerate={handleGenerateVariant}
+          ttsSubtitleCue={ttsSubtitleCue}
         />
       )}
       {showForensicLinguistics && (

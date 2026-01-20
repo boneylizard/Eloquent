@@ -876,6 +876,7 @@ class TTSWebSocketClient {
     this.audioQueue = [];
     this.isPlaying = false;
     this.onAudioQueueUpdate = null;
+    this.onSubtitleCue = null; // Callback for subtitle cues from backend
     this.settingsSent = false;
     this.pendingSettings = null;
     this.isConnecting = false;
@@ -932,10 +933,34 @@ class TTSWebSocketClient {
     };
 
     this.socket.onmessage = async (event) => {
+      // Handle JSON subtitle cues from backend
+      if (typeof event.data === 'string') {
+        try {
+          const data = JSON.parse(event.data);
+          if (data && data.type === 'tts_chunk' && this.onSubtitleCue) {
+            // Store cue temporarily to pair with next audio chunk
+            this._pendingCue = {
+              text: data.text || '',
+              durationMs: data.duration_ms
+            };
+          }
+        } catch (e) {
+          // Ignore non-JSON messages
+        }
+        return;
+      }
+
       // The backend will send audio as binary data (a Blob)
       if (event.data instanceof Blob) {
         const arrayBuffer = await event.data.arrayBuffer();
-        this.audioQueue.push(arrayBuffer);
+
+        // Pair audio with its subtitle cue
+        this.audioQueue.push({
+          audio: arrayBuffer,
+          subtitle: this._pendingCue || null
+        });
+        this._pendingCue = null; // Clear for next chunk
+
         // Notify the AppContext that new audio is available
         if (this.onAudioQueueUpdate) this.onAudioQueueUpdate();
       }
