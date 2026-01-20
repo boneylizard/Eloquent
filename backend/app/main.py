@@ -1749,7 +1749,10 @@ async def lifespan(app: FastAPI):
 
     # Single GPU mode (allow override via settings, but force true for single-GPU machines)
     configured_single_gpu = settings.get('singleGpuMode')
-    if gpu_count == 1:
+    if gpu_count <= 0:
+        logger.warning("GPU detection failed or returned 0. Forcing single GPU mode as a safe fallback.")
+        SINGLE_GPU_MODE = True
+    elif gpu_count == 1:
         SINGLE_GPU_MODE = True
     elif isinstance(configured_single_gpu, bool):
         SINGLE_GPU_MODE = configured_single_gpu
@@ -6924,7 +6927,11 @@ async def update_settings(data: dict = Body(...)):
             global SINGLE_GPU_MODE
             requested_mode = bool(data.get("singleGpuMode"))
             gpu_count = check_gpu_count()
-            SINGLE_GPU_MODE = True if gpu_count == 1 else requested_mode
+            if gpu_count <= 0:
+                logger.warning("GPU detection failed or returned 0. Forcing single GPU mode as a safe fallback.")
+                SINGLE_GPU_MODE = True
+            else:
+                SINGLE_GPU_MODE = True if gpu_count == 1 else requested_mode
             if hasattr(app.state, "single_gpu_mode"):
                 app.state.single_gpu_mode = SINGLE_GPU_MODE
             logger.info(

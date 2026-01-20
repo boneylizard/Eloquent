@@ -26,12 +26,20 @@ echo.
 
 REM --- 3. Detect GPU mode for the Frontend ---
 echo Detecting GPU configuration for frontend...
-python -c "import torch; print('SINGLE' if torch.cuda.device_count() <= 1 else 'DUAL')" > gpu_mode.tmp
-set /p GPU_MODE=<gpu_mode.tmp
-del gpu_mode.tmp
-if "%GPU_MODE%"=="SINGLE" (
+set "GPU_COUNT="
+for /f %%A in ('powershell -NoProfile -Command "if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { (nvidia-smi --query-gpu=index --format=csv,noheader 2>$null | Measure-Object).Count } else { 0 }"') do set "GPU_COUNT=%%A"
+
+if not defined GPU_COUNT (
+    set "GPU_COUNT=0"
+)
+
+if %GPU_COUNT% LEQ 1 (
     set VITE_SINGLE_GPU_MODE=true
-    echo Single GPU mode detected.
+    if %GPU_COUNT%==0 (
+        echo GPU detection failed. Defaulting to single GPU mode.
+    ) else (
+        echo Single GPU mode detected.
+    )
 ) else (
     set VITE_SINGLE_GPU_MODE=false
     echo Dual GPU mode detected.
