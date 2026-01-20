@@ -60,6 +60,7 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
+  cursor: pointer;
 }
 
 .character-card:focus-visible {
@@ -68,11 +69,19 @@
 }
 
 .character-avatar {
-  height: 120px;
+  aspect-ratio: 1 / 1;
+  height: auto;
   background-color: hsl(var(--muted));
   display: flex;
   justify-content: center;
   align-items: center;
+}
+
+.character-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .avatar-placeholder {
@@ -91,10 +100,20 @@
 .character-info {
   padding: 16px;
   flex-grow: 1;
+  text-align: center;
+  background-color: #000;
+}
+
+.character-info h3 {
+  font-family: "Georgia", "Times New Roman", serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0;
+  color: #f8f8f8;
 }
 
 .character-actions {
-  display: flex;
+  display: none;
   border-top: 1px solid hsl(var(--border));
 }
 
@@ -160,49 +179,36 @@
 }
 
 .character-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: none;
 }
 
 .main-actions {
-  display: flex;
-  gap: 4px;
+  display: none;
 }
 
 .export-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding-top: 4px;
-  border-top: 1px solid #eee;
+  display: none;
 }
 
 .export-label {
-  font-size: 12px;
-  color: #666;
-  margin-right: 4px;
+  display: none;
 }
 
 .export-btn {
-  font-size: 11px;
-  padding: 2px 6px;
-  background: #f8f9fa;
-  border: 1px solid #dee2e6;
-  border-radius: 3px;
-  cursor: pointer;
-  color: #333; /* ADD THIS LINE - dark text */
+  display: none;
 }
 
 .export-btn:hover {
-  background: #e9ecef;
-  color: #000; /* ADD THIS LINE - ensure text stays dark on hover */
+  display: none;
 }
 
 .export-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: #666; /* ADD THIS LINE - gray text when disabled */
+  display: none;
+}
+
+.character-desc,
+.character-tags {
+  display: none;
 }
 
 @media (max-width: 640px) {
@@ -256,11 +262,12 @@
   .character-info {
     padding: 10px 12px 12px;
     text-align: center;
+    width: 100%;
+    background-color: #000;
   }
 
   .character-info h3 {
     font-size: 14px;
-    margin: 0;
   }
 
   .character-desc,
