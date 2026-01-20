@@ -24,7 +24,7 @@ os.environ["GGML_CUDA_NO_PINNED"] = "0"
 from pyexpat.errors import messages
 from fastapi import FastAPI, HTTPException, Depends, APIRouter, File, UploadFile, BackgroundTasks, Request, Query, Body, WebSocket, WebSocketDisconnect, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Tuple
 import os
@@ -80,6 +80,28 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# File logging for backend logs (one file per port)
+try:
+    log_dir = Path.home() / ".LiangLocal" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path_env = os.environ.get("BACKEND_LOG_PATH")
+    if log_path_env:
+        log_path = Path(log_path_env)
+    else:
+        port_label = os.environ.get("PORT", "unknown")
+        log_path = log_dir / f"backend_{port_label}.log"
+    root_logger = logging.getLogger()
+    if not any(
+        isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == str(log_path)
+        for handler in root_logger.handlers
+    ):
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        root_logger.addHandler(file_handler)
+except Exception as e:
+    logger.warning(f"Could not initialize file logging: {e}")
 
 from .sd_manager import SDManager
 from .upscale_manager import UpscaleManager
@@ -499,6 +521,38 @@ async def get_gpu_info(request: Request):
         "gpu_count": check_gpu_count(),
         "single_gpu_mode": getattr(request.app.state, 'single_gpu_mode', False)
     }
+
+
+@router.get("/system/export-logs")
+async def export_backend_logs():
+    """Export backend log files as a single text response."""
+    log_dir = Path.home() / ".LiangLocal" / "logs"
+    if not log_dir.exists():
+        raise HTTPException(status_code=404, detail="Log directory not found")
+
+    log_files = sorted(list(log_dir.glob("backend_*.log")) + list(log_dir.glob("tts_*.log")))
+    if not log_files:
+        default_log = log_dir / "backend.log"
+        if default_log.exists():
+            log_files = [default_log]
+
+    if not log_files:
+        raise HTTPException(status_code=404, detail="No backend logs found")
+
+    sections = []
+    for log_file in log_files:
+        try:
+            content = log_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            content = "[Could not read log file]"
+        sections.append(f"===== {log_file.name} =====\n{content}")
+
+    combined = "\n\n".join(sections)
+    return Response(
+        combined,
+        media_type="text/plain",
+        headers={"Content-Disposition": "attachment; filename=backend_logs.txt"}
+    )
 @router.post("/models/update-gpu-mode")
 async def update_gpu_mode(
     data: dict = Body(...),

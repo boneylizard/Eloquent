@@ -211,6 +211,27 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     }
   }, [checkSdStatus, sdStatus]);
 
+  const handleExportBackendLogs = useCallback(async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/system/export-logs`);
+      if (!response.ok) {
+        throw new Error(`Export failed: ${response.status}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `backend-logs-${new Date().toISOString().split('T')[0]}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Failed to export backend logs:", error);
+      alert("Failed to export backend logs.");
+    }
+  }, [PRIMARY_API_URL]);
+
   const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
 
   return (
@@ -373,6 +394,16 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     </Button>
                   </div>
                 </div>
+              </div>
+              <Separator />
+
+              {/* Backend Logs Export */}
+              <div className="space-y-2">
+                <Label className="text-base font-medium">Backend Logs</Label>
+                <p className="text-xs text-muted-foreground">Export backend logs for bug reports.</p>
+                <Button variant="outline" onClick={handleExportBackendLogs}>
+                  Export Backend Logs
+                </Button>
               </div>
               <Separator />
 

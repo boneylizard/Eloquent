@@ -54,6 +54,7 @@ def main():
             host=tts_host,
             port=tts_port,
             log_level="info",
+            access_log=False,
             reload=False
         )
     except KeyboardInterrupt:
