@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import {
   X, Code, FileText, Loader2, FolderTree, Folder, FolderOpen,
   ChevronRight, ChevronDown, File, Search, RefreshCw, Settings,
-  Send, Terminal, Image, Trash2, Plus, Zap
+  Send, Terminal, Image, Trash2, Plus, Zap, History, Menu
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -160,7 +160,7 @@ const FileTreeItem = ({ item, level = 0, onFileSelect, onToggleFolder }) => {
 // MAIN CODE EDITOR OVERLAY COMPONENT
 // ============================================================================
 const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
-  const { activeModel, primaryIsAPI, primaryModel } = useApp(); // Get globally selected model
+  const { activeModel, primaryIsAPI, primaryModel } = useApp();
   const [input, setInput] = useState('');
   const [codeMessages, setCodeMessages] = useState([]);
   const [draggedFiles, setDraggedFiles] = useState([]);
@@ -174,6 +174,10 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  
+  // Mobile View State: 'chat' | 'explorer' | 'sessions'
+  const [mobileView, setMobileView] = useState('chat');
+  
   const scrollAreaRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -201,7 +205,6 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   // DEVSTRAL STATUS CHECK
   // ============================================================================
   const checkDevstralStatus = async () => {
-    // If using an API model (endpoint-...), assume it's ready
     const modelId = (primaryIsAPI && primaryModel) ? primaryModel : (typeof activeModel === 'string' ? activeModel : activeModel?.id);
 
     if (modelId && modelId.startsWith('endpoint-')) {
@@ -255,6 +258,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         timestamp: Date.now(),
         tools_used: ['read_file']
       }]);
+      
+      // Auto-switch to chat on mobile when a file is selected
+      setMobileView('chat');
     } catch (error) {
       console.error('Error reading file:', error);
     }
@@ -300,13 +306,12 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   };
 
   // ============================================================================
-  // CHAT SUBMISSION - THE CORE DEVSTRAL 2 INTEGRATION
+  // CHAT SUBMISSION
   // ============================================================================
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim() || isCodeGenerating) return;
 
-    // Ensure session exists
     let sessionId = activeSessionId;
     if (!sessionId) {
       sessionId = createNewSession(input);
@@ -332,7 +337,6 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
     setIsCodeGenerating(true);
 
     try {
-      // Build conversation history for Devstral
       const conversationMessages = newMessages.map(msg => ({
         role: msg.role,
         content: msg.files
@@ -340,7 +344,6 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
           : msg.content
       }));
 
-      // Call the new Devstral 2 endpoint
       const response = await apiCall('/devstral/chat', {
         method: 'POST',
         body: JSON.stringify({
@@ -350,16 +353,12 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
           max_tokens: 4096,
           image_base64: currentImage,
           auto_execute: true,
-          // Model ID handling: 
-          // 1. Check if activeModel is a string (legacy behavior) or object
-          // 2. Fallback to primaryModel if primaryIsAPI is true (most reliable for API)
           model: (primaryIsAPI && primaryModel)
             ? primaryModel
             : ((typeof activeModel === 'string' ? activeModel : activeModel?.id) || 'devstral-small')
         })
       });
 
-      // Process response
       let assistantContent = '';
       let toolsUsed = [];
 
@@ -367,13 +366,11 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         const message = response.choices[0].message;
         assistantContent = message.content || '';
 
-        // Check for tool calls
         if (message.tool_calls && message.tool_calls.length > 0) {
           toolsUsed = message.tool_calls.map(tc => tc.function?.name).filter(Boolean);
         }
       }
 
-      // Check for auto-executed tool results
       if (response.tool_results && response.tool_results.length > 0) {
         const toolResultsText = response.tool_results.map(tr => {
           const icon = tr.success ? '✅' : '❌';
@@ -402,14 +399,12 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
     } catch (error) {
       console.error('❌ Devstral chat error:', error);
-
       const errorMessage = {
         role: 'assistant',
         content: `❌ Error: ${error.message}\n\nMake sure Devstral Small 2 24B is loaded.`,
         timestamp: Date.now(),
         tools_used: []
       };
-
       setCodeMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsCodeGenerating(false);
@@ -417,7 +412,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   };
 
   // ============================================================================
-  // IMAGE HANDLING FOR VISION
+  // IMAGE HANDLING
   // ============================================================================
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
@@ -449,9 +444,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   const handleDrop = (e) => {
     e.preventDefault();
     e.stopPropagation();
-
     const droppedJSON = e.dataTransfer.getData('application/json');
-
     if (droppedJSON) {
       try {
         const fileData = JSON.parse(droppedJSON);
@@ -516,6 +509,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
     if (!found) return;
     setActiveSessionId(id);
     setCodeMessages(found.messages || []);
+    setMobileView('chat'); // Auto-switch on mobile
   };
 
   const deleteSession = (id) => {
@@ -538,7 +532,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         scrollElement.scrollTop = scrollElement.scrollHeight;
       }
     }
-  }, [codeMessages]);
+  }, [codeMessages, mobileView]); // Added mobileView dependency for re-layout
 
   useEffect(() => {
     if (isOpen) {
@@ -557,7 +551,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   }, []);
 
   useEffect(() => {
-    if (isOpen && inputRef.current) {
+    if (isOpen && inputRef.current && window.innerWidth > 768) {
       setTimeout(() => inputRef.current.focus(), 100);
     }
   }, [isOpen]);
@@ -586,30 +580,30 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   // RENDER
   // ============================================================================
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-      <div className="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl w-[95vw] h-[90vh] flex flex-col max-w-7xl">
+    <div className="fixed inset-0 bg-black/80 flex items-end md:items-center justify-center z-50">
+      <div className="bg-zinc-900 border border-zinc-700 md:rounded-lg shadow-2xl w-full h-[100dvh] md:w-[95vw] md:h-[90vh] flex flex-col max-w-7xl">
 
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-zinc-700 bg-zinc-800/50 rounded-t-lg">
+        <div className="flex items-center justify-between p-4 border-b border-zinc-700 bg-zinc-800/50 md:rounded-t-lg shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-gradient-to-br from-emerald-500 to-cyan-500 rounded-lg">
               <Terminal className="h-5 w-5 text-white" />
             </div>
             <div>
               <h2 className="text-lg font-semibold text-zinc-100">Eloquent Vibe</h2>
-              <p className="text-xs text-zinc-400">
+              <p className="text-xs text-zinc-400 hidden sm:block">
                 Powered by {(primaryIsAPI && primaryModel) ? primaryModel : (activeModel?.name || "Devstral Small 2 24B")}
               </p>
             </div>
             {devstralStatus && (
               <div className={cn(
-                "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs",
+                "hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-full text-xs",
                 devstralStatus.devstral_loaded
                   ? "bg-emerald-500/20 text-emerald-400"
                   : "bg-red-500/20 text-red-400"
               )}>
                 <Zap className="h-3 w-3" />
-                {devstralStatus.devstral_loaded ? 'Model Ready' : 'No Model'}
+                {devstralStatus.devstral_loaded ? 'Ready' : 'No Model'}
               </div>
             )}
           </div>
@@ -619,11 +613,16 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         </div>
 
         {/* Main Content */}
-        <div className="flex-1 flex min-h-0">
+        <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden relative">
 
           {/* File Explorer */}
-          <div className="w-72 border-r border-zinc-700 bg-zinc-800/30 flex flex-col">
-            <div className="p-3 border-b border-zinc-700">
+          <div className={cn(
+            "border-r border-zinc-700 bg-zinc-800/30 flex-col",
+            // Mobile: Full width if active, hidden otherwise
+            // Desktop: Always flex, fixed width
+            mobileView === 'explorer' ? 'flex w-full h-full' : 'hidden md:flex md:w-72'
+          )}>
+            <div className="p-3 border-b border-zinc-700 shrink-0">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-medium text-zinc-300">Explorer</h3>
                 <div className="flex gap-1">
@@ -652,7 +651,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             </div>
 
             <ScrollArea className="flex-1">
-              <div className="p-1">
+              <div className="p-1 pb-16 md:pb-1">
                 {isLoadingTree ? (
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin text-zinc-500" />
@@ -682,14 +681,22 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
           </div>
 
           {/* Sessions Sidebar */}
-          <div className="w-56 border-r border-zinc-700 bg-zinc-800/20 flex flex-col">
-            <div className="p-3 border-b border-zinc-700">
+          <div className={cn(
+            "border-r border-zinc-700 bg-zinc-800/20 flex-col",
+            // Mobile: Full width if active, hidden otherwise
+            // Desktop: Always flex, fixed width
+            mobileView === 'sessions' ? 'flex w-full h-full' : 'hidden md:flex md:w-56'
+          )}>
+            <div className="p-3 border-b border-zinc-700 shrink-0">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium text-zinc-300">Sessions</h3>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => createNewSession('')}
+                  onClick={() => {
+                    createNewSession('');
+                    setMobileView('chat');
+                  }}
                   className="h-7 text-xs gap-1 border-zinc-600 bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
                 >
                   <Plus className="h-3 w-3" />
@@ -698,7 +705,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
               </div>
             </div>
             <ScrollArea className="flex-1">
-              <div className="p-1 space-y-1">
+              <div className="p-1 space-y-1 pb-16 md:pb-1">
                 {sessions.map((session) => (
                   <div
                     key={session.id}
@@ -735,22 +742,27 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
           </div>
 
           {/* Chat Area */}
-          <div className="flex-1 flex flex-col min-w-0 bg-zinc-900">
+          <div className={cn(
+            "flex-col min-w-0 bg-zinc-900",
+            // Mobile: Full width if active, hidden otherwise
+            // Desktop: Always flex, take remaining space
+            mobileView === 'chat' ? 'flex flex-1 w-full' : 'hidden md:flex md:flex-1'
+          )}>
 
             {/* Messages */}
-            <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
-              <div className="space-y-4 max-w-4xl mx-auto">
+            <ScrollArea className="flex-1 p-2 md:p-4" ref={scrollAreaRef}>
+              <div className="space-y-4 max-w-4xl mx-auto pb-4">
                 {codeMessages.length === 0 ? (
-                  <div className="text-center py-16 text-zinc-500">
-                    <div className="p-4 bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 rounded-2xl w-20 h-20 mx-auto mb-6 flex items-center justify-center">
-                      <Terminal className="h-10 w-10 text-emerald-400" />
+                  <div className="text-center py-8 md:py-16 text-zinc-500">
+                    <div className="p-4 bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 rounded-2xl w-16 h-16 md:w-20 md:h-20 mx-auto mb-6 flex items-center justify-center">
+                      <Terminal className="h-8 w-8 md:h-10 md:w-10 text-emerald-400" />
                     </div>
-                    <h3 className="text-xl font-semibold mb-2 text-zinc-300">Welcome to Eloquent Vibe</h3>
-                    <p className="text-sm max-w-md mx-auto text-zinc-500">
-                      Your local AI coding assistant powered by Devstral Small 2.
+                    <h3 className="text-lg md:text-xl font-semibold mb-2 text-zinc-300">Welcome to Eloquent Vibe</h3>
+                    <p className="text-xs md:text-sm max-w-md mx-auto text-zinc-500 px-4">
+                      Your local AI coding assistant.
                       Ask me to read files, write code, search your codebase, or run commands.
                     </p>
-                    <div className="mt-6 flex flex-wrap gap-2 justify-center">
+                    <div className="mt-6 flex flex-wrap gap-2 justify-center px-4">
                       {['List files in this directory', 'Search for TODO comments', 'Help me refactor this code'].map((suggestion) => (
                         <button
                           key={suggestion}
@@ -765,16 +777,16 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                 ) : (
                   codeMessages.map((message, index) => (
                     <div key={index} className={cn(
-                      "flex gap-3",
+                      "flex gap-2 md:gap-3",
                       message.role === 'user' ? 'justify-end' : 'justify-start'
                     )}>
                       <div className={cn(
-                        "max-w-[85%] rounded-xl p-4",
+                        "max-w-[95%] md:max-w-[85%] rounded-xl p-3 md:p-4",
                         message.role === 'user'
-                          ? 'bg-emerald-600/30 text-zinc-100 ml-12'
-                          : 'bg-zinc-800 text-zinc-200 mr-12'
+                          ? 'bg-emerald-600/30 text-zinc-100 ml-8'
+                          : 'bg-zinc-800 text-zinc-200 mr-8'
                       )}>
-                        <div className="prose prose-sm max-w-none prose-invert">
+                        <div className="prose prose-sm max-w-none prose-invert text-xs md:text-sm">
                           <ReactMarkdown
                             components={{
                               code({ node, inline, className, children, ...props }) {
@@ -795,7 +807,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                           </ReactMarkdown>
                         </div>
                         {message.tools_used && message.tools_used.length > 0 && (
-                          <div className="mt-3 pt-2 border-t border-zinc-700/50 text-xs text-zinc-500 flex items-center gap-1">
+                          <div className="mt-2 pt-2 border-t border-zinc-700/50 text-[10px] md:text-xs text-zinc-500 flex items-center gap-1">
                             <Terminal className="h-3 w-3" />
                             {message.tools_used.join(', ')}
                           </div>
@@ -817,11 +829,11 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             </ScrollArea>
 
             {/* Input Area */}
-            <div className="border-t border-zinc-700 p-4 bg-zinc-800/30">
-
+            <div className="border-t border-zinc-700 p-2 md:p-4 bg-zinc-800/30 shrink-0 mb-14 md:mb-0">
+              
               {/* Attached Files/Image Preview */}
               {(draggedFiles.length > 0 || imagePreview) && (
-                <div className="mb-3 flex flex-wrap gap-2">
+                <div className="mb-2 flex flex-wrap gap-2">
                   {draggedFiles.map((file, index) => (
                     <div
                       key={index}
@@ -839,7 +851,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                       <img
                         src={`data:image/png;base64,${imagePreview}`}
                         alt="Preview"
-                        className="h-16 w-16 object-cover rounded border border-zinc-600"
+                        className="h-12 w-12 md:h-16 md:w-16 object-cover rounded border border-zinc-600"
                       />
                       <button
                         onClick={removeImage}
@@ -862,8 +874,8 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     ref={inputRef}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    placeholder="Ask Devstral to help with your code..."
-                    className="resize-none min-h-[80px] max-h-32 bg-zinc-800 border-zinc-600 text-zinc-100 placeholder:text-zinc-500"
+                    placeholder="Ask Devstral..."
+                    className="resize-none min-h-[50px] md:min-h-[80px] max-h-32 bg-zinc-800 border-zinc-600 text-zinc-100 placeholder:text-zinc-500 text-sm"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
@@ -886,7 +898,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     variant="outline"
                     size="sm"
                     onClick={() => fileInputRef.current?.click()}
-                    className="border-zinc-600 text-zinc-400 hover:text-zinc-100"
+                    className="flex-1 border-zinc-600 text-zinc-400 hover:text-zinc-100 px-2 md:px-4"
                     title="Upload image for vision"
                   >
                     <Image className="h-4 w-4" />
@@ -895,7 +907,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   <Button
                     type="submit"
                     disabled={!input.trim() || isCodeGenerating}
-                    className="flex-1 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-700 hover:to-cyan-700"
+                    className="flex-1 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-700 hover:to-cyan-700 px-2 md:px-4"
                   >
                     {isCodeGenerating ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -905,12 +917,44 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                   </Button>
                 </div>
               </form>
-
-              <div className="mt-2 text-xs text-zinc-500 text-center">
-                Enter to send • Shift+Enter for new line • Drag files from explorer
-              </div>
             </div>
           </div>
+        </div>
+
+        {/* Mobile Navigation Bar (Visible only on mobile) */}
+        <div className="md:hidden border-t border-zinc-800 bg-zinc-900 absolute bottom-0 left-0 right-0 h-14 flex items-center justify-around z-10 pb-safe">
+          <button
+            onClick={() => setMobileView('explorer')}
+            className={cn(
+              "flex flex-col items-center justify-center w-full h-full text-[10px] gap-1",
+              mobileView === 'explorer' ? "text-emerald-400" : "text-zinc-500"
+            )}
+          >
+            <FolderTree className="h-5 w-5" />
+            <span>Explorer</span>
+          </button>
+          
+          <button
+            onClick={() => setMobileView('chat')}
+            className={cn(
+              "flex flex-col items-center justify-center w-full h-full text-[10px] gap-1",
+              mobileView === 'chat' ? "text-emerald-400" : "text-zinc-500"
+            )}
+          >
+            <Terminal className="h-5 w-5" />
+            <span>Chat</span>
+          </button>
+          
+          <button
+            onClick={() => setMobileView('sessions')}
+            className={cn(
+              "flex flex-col items-center justify-center w-full h-full text-[10px] gap-1",
+              mobileView === 'sessions' ? "text-emerald-400" : "text-zinc-500"
+            )}
+          >
+            <FileText className="h-5 w-5" />
+            <span>Sessions</span>
+          </button>
         </div>
 
         {/* Directory Picker Modal */}

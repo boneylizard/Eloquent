@@ -1182,91 +1182,55 @@ class TTSStreamer:
             # No punctuation found after 10 words, no chunk available yet
             return None
 
-    def _extract_first_chunk_fast(self, text: str) -> dict:
+    def _extract_smart_chunk(self, text: str) -> dict:
         """
-        Extract the first chunk for immediate playback: first sentence/comma after 5 words.
-        This prioritizes getting audio out faster for the first chunk.
-        
-        Returns dict with 'text' and 'end_pos' or None if no complete chunk found.
+        Unified smart chunking logic:
+        1. Prioritize full sentences ([.!?]).
+        2. Fallback to commas ([,]) if buffer >= 16 words.
+        3. IGNORE periods if they follow common titles (Mr., Dr., etc).
         """
         if not text.strip():
             return None
             
+        import re
         words = text.split()
-        if len(words) < 5:
-            return None  # Need at least 5 words
         
-        # Find the position after the 5th word
-        word_positions = []
-        current_pos = 0
-        
-        for i, word in enumerate(words):
-            start_pos = text.find(word, current_pos)
-            end_pos = start_pos + len(word)
-            word_positions.append((start_pos, end_pos))
-            current_pos = end_pos
+        # Determine strictness based on buffer length
+        # Default: content-based (sentences)
+        pattern = r'[.!?]'
+        # Fallback: latency-based (commas) for long buffers
+        if len(words) >= 16:
+            pattern = r'[,.!?]'
             
-            if i == 4:  # After 5th word (0-indexed)
-                break
-        
-        # Now look for punctuation after the 5th word
-        search_start = word_positions[4][1]  # End of 5th word
-        remaining_text = text[search_start:]
-        
-        # Find next punctuation mark - any of [.!?,]
-        punctuation_match = re.search(r'[.!?,]', remaining_text)
-        
-        if punctuation_match:
-            # Found punctuation - extract up to and including it
-            chunk_end = search_start + punctuation_match.end()
+        for match in re.finditer(pattern, text):
+            # Exception Logic: Check for Title Abbreviations (Mr., Dr., etc.)
+            if match.group() == '.':
+                # Check what comes before this dot
+                end_pos = match.start()
+                prefix = text[:end_pos].rstrip()
+                
+                # Common abbreviations that end in dot but aren't sentence ends
+                # Case-insensitive check for common titles at the end of the prefix
+                if re.search(r'(?i)\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|Rev|Capt|Gen|Col|Lt|St)$', prefix):
+                    # It's likely a title (e.g., "Hello Mr."), skip this split point
+                    continue
+
+            # If we're here, it's a valid split point
+            chunk_end = match.end()
             chunk_text = text[:chunk_end].strip()
-            return {'text': chunk_text, 'end_pos': chunk_end}
-        else:
-            # No punctuation found after 5 words, no chunk available yet
-            return None
+            
+            if chunk_text:
+                return {'text': chunk_text, 'end_pos': chunk_end}
+            
+        return None
+
+    def _extract_first_chunk_fast(self, text: str) -> dict:
+        """Wrapper for smart chunking (logic is now unified)"""
+        return self._extract_smart_chunk(text)
 
     def _extract_fast_chunk(self, text: str) -> dict:
-        """
-        Extract chunks using fast method: minimum 5 words, then break at next punctuation.
-        This ensures consistent chunk sizes for better RTF and uninterrupted playback.
-        
-        Returns dict with 'text' and 'end_pos' or None if no complete chunk found.
-        """
-        if not text.strip():
-            return None
-            
-        words = text.split()
-        if len(words) < 5:
-            return None  # Need at least 5 words
-        
-        # Find the position after the 5th word
-        word_positions = []
-        current_pos = 0
-        
-        for i, word in enumerate(words):
-            start_pos = text.find(word, current_pos)
-            end_pos = start_pos + len(word)
-            word_positions.append((start_pos, end_pos))
-            current_pos = end_pos
-            
-            if i == 4:  # After 5th word (0-indexed)
-                break
-        
-        # Now look for punctuation after the 5th word
-        search_start = word_positions[4][1]  # End of 5th word
-        remaining_text = text[search_start:]
-        
-        # Find next punctuation mark - any of [.!?,]
-        punctuation_match = re.search(r'[.!?,]', remaining_text)
-        
-        if punctuation_match:
-            # Found punctuation - extract up to and including it
-            chunk_end = search_start + punctuation_match.end()
-            chunk_text = text[:chunk_end].strip()
-            return {'text': chunk_text, 'end_pos': chunk_end}
-        else:
-            # No punctuation found after 5 words, no chunk available yet
-            return None
+         """Wrapper for smart chunking (logic is now unified)"""
+         return self._extract_smart_chunk(text)
 
     def finish(self):
         # Check if there's any leftover text in the buffer and queue it

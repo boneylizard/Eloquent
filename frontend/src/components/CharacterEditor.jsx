@@ -338,11 +338,11 @@ const CharacterEditor = () => {
   return (
     <div className="w-full min-h-screen p-4 space-y-4">
       {/* Header with Import/Export - ALWAYS VISIBLE */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">Character Management</h2>
+      <div className="flex flex-col gap-3 mb-4 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-lg font-bold sm:text-2xl">Character Management</h2>
 
         {/* Import/Export Controls */}
-        <div className="flex items-center gap-3">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-3">
           {/* Import Section */}
           <input
             ref={importFileRef}
@@ -356,7 +356,7 @@ const CharacterEditor = () => {
             size="sm"
             onClick={() => importFileRef.current?.click()}
             disabled={isImporting}
-            className="flex items-center gap-2"
+            className="flex w-full items-center justify-center gap-2 sm:w-auto"
           >
             {isImporting ? (
               <>
@@ -374,16 +374,16 @@ const CharacterEditor = () => {
           {/* Export Buttons - Only show if there's an active character */}
 
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleExportTavernJSON}
-              disabled={isExporting}
-              className="flex items-center gap-2"
-            >
-              <FileJson className="w-4 h-4" />
-              Export TavernAI
-            </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportTavernJSON}
+            disabled={isExporting}
+            className="flex w-full items-center justify-center gap-2 sm:w-auto"
+          >
+            <FileJson className="w-4 h-4" />
+            Export TavernAI
+          </Button>
 
 
             <Button
@@ -391,14 +391,14 @@ const CharacterEditor = () => {
               size="sm"
               onClick={handleExportPNG}
               disabled={isExporting}
-              className="flex items-center gap-2"
+              className="flex w-full items-center justify-center gap-2 sm:w-auto"
             >
               <Image className="w-4 h-4" />
               PNG Card
             </Button>
           </>
 
-          <Button onClick={handleCreateNew} variant="default">
+          <Button onClick={handleCreateNew} variant="default" className="w-full sm:w-auto">
             + New Character
           </Button>
         </div>

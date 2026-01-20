@@ -53,7 +53,7 @@ class GMEModelWrapper:
             embeddings = []
             
             for text in processed_texts:
-                # This is a placeholder - replace with actual GME embedding generation
+                # TODO: Implement native GME embedding generation (currently using transformer fallback)
                 # The exact API depends on how the GME model was loaded
                 try:
                     if hasattr(model, 'create_embedding'):

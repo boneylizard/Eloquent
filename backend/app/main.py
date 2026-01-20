@@ -1732,8 +1732,6 @@ async def lifespan(app: FastAPI):
     model_name_env = os.environ.get("MODEL_NAME", "")
     # NEW CODE START - Add right here
     gpu_count = check_gpu_count()
-    SINGLE_GPU_MODE = (gpu_count == 1)
-    logger.info(f"Detected {gpu_count} GPUs. Single GPU mode: {SINGLE_GPU_MODE}")
     
     # Unified settings loader
     settings_path = Path.home() / ".LiangLocal" / "settings.json"
@@ -1748,6 +1746,19 @@ async def lifespan(app: FastAPI):
             logging.info("🔍 No settings file found.")
     except Exception as e:
         logging.warning(f"🔍 Could not read settings file: {e}")
+
+    # Single GPU mode (allow override via settings, but force true for single-GPU machines)
+    configured_single_gpu = settings.get('singleGpuMode')
+    if gpu_count == 1:
+        SINGLE_GPU_MODE = True
+    elif isinstance(configured_single_gpu, bool):
+        SINGLE_GPU_MODE = configured_single_gpu
+    else:
+        SINGLE_GPU_MODE = False
+    logger.info(
+        f"Detected {gpu_count} GPUs. Single GPU mode: {SINGLE_GPU_MODE} "
+        f"(settings override: {configured_single_gpu})"
+    )
 
     # GPU usage mode
     user_gpu_mode = settings.get('gpuUsageMode')
@@ -4968,7 +4979,7 @@ async def refresh_sd_model_directory(
     except Exception as e:
         logger.error(f"Error updating SD model directory: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-# --- Placeholder routes ---
+# --- SD / Image Gen Routes ---
 @app.get("/sd/status")
 async def sd_status():
     """Check if AUTOMATIC1111 is up by listing available SD models."""
@@ -6907,6 +6918,19 @@ async def update_settings(data: dict = Body(...)):
         # We only update keys that are present in the request
         for key, value in data.items():
             settings[key] = value
+
+        # Apply single GPU mode immediately if provided
+        if "singleGpuMode" in data:
+            global SINGLE_GPU_MODE
+            requested_mode = bool(data.get("singleGpuMode"))
+            gpu_count = check_gpu_count()
+            SINGLE_GPU_MODE = True if gpu_count == 1 else requested_mode
+            if hasattr(app.state, "single_gpu_mode"):
+                app.state.single_gpu_mode = SINGLE_GPU_MODE
+            logger.info(
+                f"Updated single_gpu_mode to {SINGLE_GPU_MODE} (requested: {requested_mode}, "
+                f"gpu_count: {gpu_count})"
+            )
             
         # Save back
         with open(settings_path, 'w') as f:

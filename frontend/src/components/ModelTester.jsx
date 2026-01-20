@@ -1889,7 +1889,7 @@ Respond with ONLY the score and reason.`;
             className="text-red-600 hover:text-red-700"
           >
             <RefreshCw className="w-4 h-4 mr-2" />
-            Reset All ELO
+            Reset ELO
           </Button>
           <Badge variant="outline" className="text-lg px-3 py-1">
             <Trophy className="w-4 h-4 mr-1" />
@@ -1899,7 +1899,7 @@ Respond with ONLY the score and reason.`;
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="flex w-full h-10">
+        <TabsList className="grid w-full grid-cols-3 h-auto md:flex md:h-10">
           <TabsTrigger value="setup" className="flex-1 text-sm">Setup</TabsTrigger>
           <TabsTrigger value="prompts" className="flex-1 text-sm">Prompts</TabsTrigger>
           <TabsTrigger value="parameters" className="flex-1 text-sm">Parameters</TabsTrigger>
@@ -1907,11 +1907,11 @@ Respond with ONLY the score and reason.`;
           <TabsTrigger value="results" className="flex-1 text-sm">Results</TabsTrigger>
           <TabsTrigger value="analysis" className="flex-1 text-sm">Analysis</TabsTrigger>
         </TabsList>
-        <div className="bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800/50 rounded-lg p-4 my-4">
+        <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-lg p-4 my-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-semibold text-base text-blue-900 dark:text-blue-200">Ready to Start Testing?</h3>
-              <div className="text-sm text-blue-700 dark:text-blue-400 mt-1">
+              <h3 className="font-semibold text-base text-blue-900 dark:text-blue-100">Ready to Start Testing?</h3>
+              <div className="text-sm text-blue-700 dark:text-blue-300 mt-1">
                 {promptCollection.length} prompts loaded
                 {parameterSweepEnabled && (
                   <span className="mx-2">•</span>
@@ -1920,7 +1920,7 @@ Respond with ONLY the score and reason.`;
                   <span>{calculateTotalCombinations()} parameter combinations</span>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground mt-2">
+              <p className="text-xs text-muted-foreground dark:text-blue-400 mt-2">
                 Total tests to run: {promptCollection.length * (parameterSweepEnabled ? calculateTotalCombinations() : 1)}
               </p>
             </div>
@@ -2039,7 +2039,7 @@ Respond with ONLY the score and reason.`;
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <div className="flex gap-2">
+                      <div className="flex flex-col sm:flex-row gap-2">
                         <Select value={selectedTestModel} onValueChange={setSelectedTestModel} className="flex-1">
                           <SelectTrigger>
                             <SelectValue placeholder="Select model to test" />
@@ -2133,7 +2133,7 @@ Respond with ONLY the score and reason.`;
                           </div>
                         </div>
                       ) : (
-                        <div className="flex gap-2">
+                        <div className="flex flex-col sm:flex-row gap-2">
                           <Select value={selectedModels[0] || ''} onValueChange={(value) => {
                             setSelectedModels(prev => [value, prev[1] || '']);
                             // Initialize GPU assignment if not set (default to GPU 1 for Model A)
@@ -2254,7 +2254,7 @@ Respond with ONLY the score and reason.`;
                           </div>
                         </div>
                       ) : (
-                        <div className="flex gap-2">
+                        <div className="flex flex-col sm:flex-row gap-2">
                           <Select value={selectedModels[1] || ''} onValueChange={(value) => {
                             setSelectedModels(prev => [prev[0] || '', value]);
                             // Initialize GPU assignment if not set (default to GPU 0 for Model B to balance load)
@@ -2388,7 +2388,7 @@ Respond with ONLY the score and reason.`;
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="flex gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                       <Select value={judgeModel} onValueChange={setJudgeModel} className="flex-1">
                         <SelectTrigger>
                           <SelectValue placeholder="Select judge model" />
@@ -2482,7 +2482,7 @@ Respond with ONLY the score and reason.`;
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="flex gap-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                       <Select value={secondaryJudgeModel} onValueChange={setSecondaryJudgeModel} className="flex-1">
                         <SelectTrigger>
                           <SelectValue placeholder="Select secondary judge (optional)" />
@@ -2808,8 +2808,8 @@ Respond with ONLY the score and reason.`;
 
                   {/* Combination Summary */}
                   <div className={`p-4 rounded border ${calculateTotalCombinations() > 200 ? 'bg-red-50 border-red-200 dark:bg-red-900/20' :
-                      calculateTotalCombinations() > 50 ? 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20' :
-                        'bg-green-50 border-green-200 dark:bg-green-900/20'
+                    calculateTotalCombinations() > 50 ? 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20' :
+                      'bg-green-50 border-green-200 dark:bg-green-900/20'
                     }`}>
                     <div className="flex items-center gap-2">
                       {calculateTotalCombinations() > 200 && <AlertTriangle className="w-5 h-5 text-red-600" />}
@@ -2894,7 +2894,7 @@ Respond with ONLY the score and reason.`;
           </div>
 
           {/* Top row: Leaderboard and Recent Comparisons side by side */}
-          <div className="grid grid-cols-2 gap-6 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -3213,7 +3213,7 @@ Respond with ONLY the score and reason.`;
                       </div>
                     </div>
 
-                    <div className="flex justify-center gap-4">
+                    <div className="flex flex-col sm:flex-row justify-center gap-4">
                       <Button
                         variant="outline"
                         onClick={() => handleHumanJudgment(result.id, 'A')}

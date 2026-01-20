@@ -225,7 +225,22 @@ const CharacterManager = ({ onSelectCharacter }) => {
           <div className="character-grid">
             {sortedCharacters.length > 0 ? (
               sortedCharacters.map(character => (
-                <div key={character.id} className="character-card">
+                <div
+                  key={character.id}
+                  className="character-card"
+                  onClick={(event) => {
+                    if (event.target.closest('button')) return;
+                    handleEditCharacter(character);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      handleEditCharacter(character);
+                    }
+                  }}
+                >
                   <div className="character-avatar">
                     {character.avatar ? (
                       <img src={character.avatar} alt={character.name} />
