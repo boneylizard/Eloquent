@@ -12,6 +12,36 @@ import webbrowser
 import threading
 import json
 from pathlib import Path
+import datetime
+
+
+class TeeStream:
+    """Write output to both console and a file."""
+    def __init__(self, stream, file_path):
+        self.stream = stream
+        self.file = open(file_path, "a", encoding="utf-8")
+
+    def write(self, message):
+        self.stream.write(message)
+        self.stream.flush()
+        try:
+            self.file.write(message)
+            self.file.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        self.stream.flush()
+        try:
+            self.file.flush()
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            self.file.close()
+        except Exception:
+            pass
 
 def get_project_root():
     """Gets the absolute path to the project's root directory (where launch.py is)."""
@@ -108,6 +138,78 @@ def get_local_ip():
     except Exception as e:
         print(f"⚠️ IP Detection failed: {e}")
         return "localhost"
+
+
+def wait_for_port(host, port, timeout=60):
+    """Wait until a TCP port is accepting connections."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except OSError:
+            time.sleep(0.5)
+    return False
+
+
+def get_startup_report_path(root_path):
+    """Create a startup report path in the project root."""
+    return os.path.join(root_path, "startup_report.txt")
+
+
+def get_backend_log_path(port):
+    """Create a per-run backend log path under ~/.LiangLocal/logs."""
+    log_dir = Path.home() / ".LiangLocal" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return log_dir / f"backend_{port}_{run_tag}.log"
+
+
+def get_tts_log_path(port):
+    """Create a per-run TTS log path under ~/.LiangLocal/logs."""
+    log_dir = Path.home() / ".LiangLocal" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return log_dir / f"tts_{port}_{run_tag}.log"
+
+
+def append_startup_report(report_path, title, content):
+    """Append a titled section to the startup report."""
+    try:
+        with open(report_path, "a", encoding="utf-8") as f:
+            f.write(f"\n===== {title} =====\n")
+            f.write(content.rstrip() + "\n")
+    except Exception as e:
+        print(f"WARNING: Failed to write startup report section: {e}")
+
+
+def append_startup_log(log_path, message):
+    """Append a line to the startup log with timestamp."""
+    try:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{timestamp} - {message}\n")
+    except Exception as e:
+        print(f"ƒsÿ‹,? Failed to write startup log: {e}")
+
+
+def extract_startup_section(log_path, markers):
+    """Extract startup section from log up to the first matching marker line."""
+    log_path = Path(log_path)
+    if not log_path.exists():
+        return ""
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    for marker in markers:
+        idx = content.find(marker)
+        if idx != -1:
+            end_line = content.find("\n", idx)
+            if end_line == -1:
+                end_line = len(content)
+            return content[:end_line].strip()
+    return content.strip()
 
 
 def write_ports_for_frontend(ports, project_root):
@@ -259,6 +361,9 @@ def start_backend(host, port, gpu_id, root_path, tts_port=8002):
         env["PORT"] = str(port)
         env["TTS_PORT"] = str(tts_port)  # Tell backend where TTS is
         env["PYTHONPATH"] = root_path
+
+        backend_log_path = get_backend_log_path(port)
+        env["BACKEND_LOG_PATH"] = str(backend_log_path)
         
         print(f"--- Environment 'CUDA_VISIBLE_DEVICES' set to '{gpu_id}' ---")
         print(f"--- Command: {' '.join(cmd)} ---")
@@ -269,14 +374,23 @@ def start_backend(host, port, gpu_id, root_path, tts_port=8002):
             env=env,
             cwd=root_path
         )
+
+        # Write a readiness line once the port is open
+        def _mark_ready():
+            if wait_for_port("127.0.0.1", port, timeout=90):
+                pass
+            else:
+                pass
+
+        threading.Thread(target=_mark_ready, daemon=True).start()
         
         print(f"✅ Backend process started (PID: {process.pid})")
-        return process
+        return process, backend_log_path
         
     except Exception as e:
         print(f"FATAL ERROR: Failed to start backend server on GPU {gpu_id}, port {port}.", file=sys.stderr)
         print(e, file=sys.stderr)
-        return None
+        return None, None
 
 def start_tts_service(root_path, port=8002):
     """Start the TTS service in a new command window"""
@@ -290,6 +404,7 @@ def start_tts_service(root_path, port=8002):
         # Set TTS port via environment variable
         env = os.environ.copy()
         env["TTS_PORT"] = str(port)
+        env["TTS_LOG_PATH"] = str(get_tts_log_path(port))
         
         print(f"--- Starting TTS Service on Port {port} ---")
         print(f"--- Command: {' '.join(cmd)} ---")
@@ -302,7 +417,7 @@ def start_tts_service(root_path, port=8002):
         )
         
         print(f"✅ TTS service launched (PID: {tts_process.pid})")
-        return tts_process
+        return tts_process, env["TTS_LOG_PATH"]
         
     except Exception as e:
         print(f"FATAL ERROR: Failed to start TTS service on port {port}.", file=sys.stderr)
@@ -314,6 +429,15 @@ def start_tts_service(root_path, port=8002):
 
 def main():
     project_root = get_project_root()
+
+    startup_report_path = get_startup_report_path(project_root)
+    try:
+        with open(startup_report_path, "w", encoding="utf-8") as f:
+            f.write("===== Launcher Output =====\n")
+        sys.stdout = TeeStream(sys.stdout, startup_report_path)
+        sys.stderr = TeeStream(sys.stderr, startup_report_path)
+    except Exception as e:
+        print(f"WARNING: Could not initialize startup report tee: {e}")
     
     # Auto-find available ports
     port_config = get_port_config()
@@ -348,19 +472,21 @@ def main():
     
     gpu_count = get_gpu_count()
     processes = []
+    backend_log_path = None
+    tts_log_path = None
     
     if model_service_process:
         processes.append(model_service_process)
     
     if gpu_count == 0:
         print("No NVIDIA GPUs detected. Starting backend on CPU and TTS service.")
-        main_backend = start_backend(host="0.0.0.0", port=backend_port, gpu_id=-1, root_path=project_root, tts_port=tts_port)
+        main_backend, backend_log_path = start_backend(host="0.0.0.0", port=backend_port, gpu_id=-1, root_path=project_root, tts_port=tts_port)
         if main_backend:
             processes.append(main_backend)
             print(f"✅ Main backend started on port {backend_port} (CPU)")
     elif gpu_count == 1:
         print(f"Found {gpu_count} NVIDIA GPU. Starting backend and TTS service on GPU 0.")
-        main_backend = start_backend(host="0.0.0.0", port=backend_port, gpu_id=0, root_path=project_root, tts_port=tts_port)
+        main_backend, backend_log_path = start_backend(host="0.0.0.0", port=backend_port, gpu_id=0, root_path=project_root, tts_port=tts_port)
         if main_backend:
             processes.append(main_backend)
             print(f"✅ Main backend started on port {backend_port} using GPU 0")
@@ -368,7 +494,7 @@ def main():
         print(f"Found {gpu_count} NVIDIA GPUs. Starting services...")
         
         # Start main backend using configured port and GPU 0
-        main_backend = start_backend("0.0.0.0", backend_port, 0, project_root, tts_port=tts_port)
+        main_backend, backend_log_path = start_backend("0.0.0.0", backend_port, 0, project_root, tts_port=tts_port)
         if main_backend:
             processes.append(main_backend)
             print(f"✅ Main backend started on port {backend_port} using GPU 0")
@@ -376,7 +502,7 @@ def main():
         # For 2 GPUs: Start secondary backend for dual-model mode
         # For 3+ GPUs: Use tensor splitting across all GPUs (no secondary backend needed)
         if gpu_count == 2:
-            secondary_backend = start_backend("0.0.0.0", secondary_port, 1, project_root, tts_port=tts_port)
+            secondary_backend, _ = start_backend("0.0.0.0", secondary_port, 1, project_root, tts_port=tts_port)
             if secondary_backend:
                 processes.append(secondary_backend)
                 print(f"✅ Secondary backend started on port {secondary_port} using GPU 1 (dual-model mode)")
@@ -385,11 +511,37 @@ def main():
             print(f"   Configure tensor_split in Settings to distribute load across GPUs 0-{gpu_count-1}")
     
     # ALWAYS start TTS service (regardless of GPU count)
-    tts_service = start_tts_service(project_root, tts_port)
+    tts_service, tts_log_path = start_tts_service(project_root, tts_port)
     if tts_service:
         processes.append(tts_service)
         print(f"✅ TTS service launched on port {tts_port}")
     
+    def _write_combined_startup_report():
+        if backend_log_path:
+            wait_for_port("127.0.0.1", backend_port, timeout=90)
+        if tts_log_path:
+            wait_for_port("127.0.0.1", tts_port, timeout=90)
+
+        if backend_log_path:
+            backend_section = extract_startup_section(
+                backend_log_path,
+                markers=["Uvicorn running on http://", "Application startup complete."]
+            )
+            if backend_section:
+                append_startup_report(startup_report_path, "Backend Startup Log", backend_section)
+
+        if tts_log_path:
+            tts_section = extract_startup_section(
+                tts_log_path,
+                markers=["Uvicorn running on http://", "TTS Backend Service ready!"]
+            )
+            if tts_section:
+                append_startup_report(startup_report_path, "TTS Startup Log", tts_section)
+
+        # Combined startup report is written to startup_report.txt only.
+
+    threading.Thread(target=_write_combined_startup_report, daemon=True).start()
+
     # Wait for all processes
     if processes:
         try:

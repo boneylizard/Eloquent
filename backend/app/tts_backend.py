@@ -52,6 +52,32 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
+
+# File logging for TTS backend
+try:
+    log_dir = Path.home() / ".LiangLocal" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path_env = os.environ.get("TTS_LOG_PATH")
+    if log_path_env:
+        log_path = Path(log_path_env)
+    else:
+        tts_port = os.environ.get("TTS_PORT", "8002")
+        log_path = log_dir / f"tts_{tts_port}.log"
+
+    root_logger = logging.getLogger()
+    if not any(
+        isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == str(log_path)
+        for handler in root_logger.handlers
+    ):
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        root_logger.addHandler(file_handler)
+except Exception as e:
+    logger.warning(f"Could not initialize TTS file logging: {e}")
 
 # Initialize FastAPI app
 app = FastAPI(title="LiangLocal TTS Service", version="1.0.0")
@@ -487,7 +513,7 @@ async def websocket_streaming_tts(websocket: WebSocket):
     5. Loop back to step 1 for next message
     """
     await websocket.accept()
-    logger.info("✅ [WebSocket] Connection accepted. Ready for multiple message streams.")
+    logger.debug("✅ [WebSocket] Connection accepted. Ready for multiple message streams.")
     streamer = None
     active_streamers = set() # Track all active streamers for this connection
     prefetched_message = None # buffer for message read during wait
@@ -512,11 +538,11 @@ async def websocket_streaming_tts(websocket: WebSocket):
         # Primary loop - handles multiple message streams over single connection
         while True:
             # 1. Wait for settings for new message stream
-            logger.info("👂 [WebSocket] Waiting for new message stream (expecting settings)...")
+            logger.debug("👂 [WebSocket] Waiting for new message stream (expecting settings)...")
             
             try:
                 if prefetched_message:
-                    logger.info("📦 [WebSocket] Using prefetched message.")
+                    logger.debug("📦 [WebSocket] Using prefetched message.")
                     settings_data = prefetched_message
                     prefetched_message = None
                 else:
