@@ -65,6 +65,7 @@ from .stt_service import transcribe_audio # Assuming this is the correct import 
 from .inference import generate_text
 from . import dual_chat_utils as dcu # Assuming this is the correct import path for your dual chat util
 import base64
+from urllib.parse import urlparse
 import threading
 from .Document_routes import document_router
 from . import rag_utils # Assuming this is the correct import path for your RAG utils
@@ -1383,26 +1384,25 @@ async def export_character_png(character_data: dict):
             try:
                 logger.info(f"Attempting to load avatar: {avatar_url}")
                 
-                if avatar_url.startswith('http://localhost:8000/static/') or avatar_url.startswith('http://127.0.0.1:8000/static/'):
-                    # Local server URL - use direct file path instead of HTTP request
-                    filename = avatar_url.split('/static/')[-1]
-                    static_path = Path(__file__).parent / "static" / filename
-                    logger.info(f"Loading local avatar from direct path: {static_path}")
-                    
-                    if static_path.exists():
-                        img = Image.open(static_path)
-                        logger.info(f"Loaded avatar from local static path: {static_path}")
+                if avatar_url.startswith('http'):
+                    parsed = urlparse(avatar_url)
+                    if parsed.path.startswith('/static/'):
+                        filename = parsed.path.split('/static/')[-1]
+                        static_path = Path(__file__).parent / "static" / filename
+                        logger.info(f"Loading local avatar from direct path: {static_path}")
+                        if static_path.exists():
+                            img = Image.open(static_path)
+                            logger.info(f"Loaded avatar from local static path: {static_path}")
+                        else:
+                            logger.warning(f"Avatar file not found at: {static_path}")
+                            raise FileNotFoundError(f"Avatar not found: {static_path}")
                     else:
-                        logger.warning(f"Avatar file not found at: {static_path}")
-                        raise FileNotFoundError(f"Avatar not found: {static_path}")
-                        
-                elif avatar_url.startswith('http'):
-                    # External URL - use HTTP request
-                    response = requests.get(avatar_url, timeout=10)
-                    response.raise_for_status()
-                    img = Image.open(BytesIO(response.content))
-                    logger.info(f"Loaded avatar from external URL: {avatar_url}")
-                    
+                        # External URL - use HTTP request
+                        response = requests.get(avatar_url, timeout=10)
+                        response.raise_for_status()
+                        img = Image.open(BytesIO(response.content))
+                        logger.info(f"Loaded avatar from external URL: {avatar_url}")
+                
                 elif avatar_url.startswith('/static/'):
                     # Path like /static/filename.png
                     filename = avatar_url.replace('/static/', '')

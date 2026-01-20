@@ -52,7 +52,11 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+access_logger = logging.getLogger("uvicorn.access")
+access_logger.setLevel(logging.ERROR)
+access_logger.disabled = True
+access_logger.propagate = False
+access_logger.handlers = []
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
