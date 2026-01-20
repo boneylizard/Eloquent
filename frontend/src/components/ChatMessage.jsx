@@ -101,6 +101,12 @@ const ChatMessage = memo(({
         const userName = userProfile?.name || 'User';
         let userDisplayUrl = null;
 
+        // Responsive avatar size logic similar to character avatar
+        const userSizeStyle = {
+            width: `${userAvatarSize}px`,
+            height: `${userAvatarSize}px`
+        };
+
         if (userAvatarSource) {
             userDisplayUrl = userAvatarSource.startsWith('/')
                 ? `${PRIMARY_API_URL || getBackendUrl()}${userAvatarSource}`
@@ -114,14 +120,16 @@ const ChatMessage = memo(({
                     alt={`${userName}'s avatar`}
                     title={userName}
                     onError={(e) => { e.target.style.display = 'none'; }}
-                    className="w-8 h-8 md:w-10 md:h-10 rounded-full object-cover border border-gray-300 dark:border-gray-600 flex-shrink-0"
+                    className="rounded-full object-cover border border-gray-300 dark:border-gray-600 flex-shrink-0"
+                    style={userSizeStyle}
                 />
             );
         } else {
             return (
                 <div
                     title={userName}
-                    className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-semibold flex-shrink-0 border border-primary/50"
+                    className="rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-semibold flex-shrink-0 border border-primary/50"
+                    style={userSizeStyle}
                 >
                     {userName ? userName.charAt(0).toUpperCase() : 'U'}
                 </div>

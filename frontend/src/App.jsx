@@ -81,7 +81,7 @@ function AppContent() {
       case 'documents':
         return <Documents />;
       case 'forensics': // ADD THIS CASE
-        return <ForensicLinguistics />;
+        return <ForensicLinguistics onClose={() => setActiveTab('chat')} />;
       case 'models':
         return <SimpleModelSelector />;
       case 'characters':

@@ -64,7 +64,7 @@
   margin-bottom: 1.5rem;
 }
 
-.filters-bar input, 
+.filters-bar input,
 .filters-bar select {
   flex: 1;
   padding: 0.5rem;
@@ -277,103 +277,177 @@
   min-width: 120px;
   color: var(--foreground);
 }
+
 /* Add these styles to your MemoryEditor.css file */
 
 /* Profile Selector Styles */
 .profile-selector {
-    margin-bottom: 2rem;
-  }
-  
-  .profiles-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 1rem;
-    margin-bottom: 1rem;
-  }
-  
-  .profile-card {
-    border: 1px solid #e0e0e0;
-    border-radius: 0.5rem;
-    padding: 1rem;
-    background-color: #f9f9f9;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  
-  .profile-card:hover {
-    border-color: #ccc;
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-  }
-  
-  .profile-card.active {
-    border-color: #4a90e2;
-    background-color: #f0f7ff;
-  }
-  
-  .profile-info {
-    margin-bottom: 0.5rem;
-  }
-  
-  .profile-info h4 {
-    margin: 0 0 0.5rem 0;
-    font-size: 1.1rem;
-  }
-  
-  .memory-count {
-    font-size: 0.8rem;
-    color: #666;
-  }
-  
-  .active-badge {
-    display: inline-block;
-    background-color: #4a90e2;
-    color: white;
-    font-size: 0.7rem;
-    padding: 0.2rem 0.5rem;
-    border-radius: 1rem;
-    margin-left: 0.5rem;
-  }
-  
-  .profile-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-  
-  .profile-rename-form {
+  margin-bottom: 2rem;
+}
+
+.profiles-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.profile-card {
+  border: 1px solid #e0e0e0;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  background-color: #f9f9f9;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.profile-card:hover {
+  border-color: #ccc;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.profile-card.active {
+  border-color: #4a90e2;
+  background-color: #f0f7ff;
+}
+
+.profile-info {
+  margin-bottom: 0.5rem;
+}
+
+.profile-info h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.1rem;
+}
+
+.memory-count {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.active-badge {
+  display: inline-block;
+  background-color: #4a90e2;
+  color: white;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 1rem;
+  margin-left: 0.5rem;
+}
+
+.profile-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.profile-rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.rename-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.add-profile-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.add-profile-form input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 0.25rem;
+}
+
+.add-profile-form button {
+  padding: 0.5rem 1rem;
+  background-color: #4a90e2;
+  color: white;
+  border: none;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.add-profile-form button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+/* Mobile Optimizations */
+@media (max-width: 768px) {
+  .memory-editor {
+    border-radius: 0;
+    height: 100vh;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
   }
-  
-  .rename-actions {
-    display: flex;
-    gap: 0.5rem;
+
+  .memory-editor-header {
+    flex-direction: column;
+    gap: 1rem;
+    align-items: stretch;
+    padding: 1rem;
   }
-  
-  .add-profile-form {
-    display: flex;
-    gap: 0.5rem;
-    margin-top: 1rem;
+
+  .memory-editor-header h2 {
+    text-align: center;
+    font-size: 1.25rem;
   }
-  
-  .add-profile-form input {
+
+  .view-switcher {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .view-switcher button {
     flex: 1;
+    text-align: center;
     padding: 0.5rem;
-    border: 1px solid #ddd;
-    border-radius: 0.25rem;
+    font-size: 0.9rem;
   }
-  
-  .add-profile-form button {
-    padding: 0.5rem 1rem;
-    background-color: #4a90e2;
-    color: white;
-    border: none;
-    border-radius: 0.25rem;
-    cursor: pointer;
+
+  .close-button {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
   }
-  
-  .add-profile-form button:disabled {
-    background-color: #ccc;
-    cursor: not-allowed;
+
+  .filters-bar {
+    flex-direction: column;
+    gap: 0.75rem;
   }
+
+  .filters-bar input,
+  .filters-bar select,
+  .filters-bar button {
+    width: 100%;
+    flex: none;
+    /* Prevent flex shrinking/growing weirdness */
+  }
+
+  .memories-list {
+    grid-template-columns: 1fr;
+    /* Single column on mobile */
+  }
+
+  .memories-view {
+    padding: 1rem;
+    overflow-y: auto;
+    /* Allow scrolling within the view */
+  }
+
+  /* Make form actions stack on mobile */
+  .form-actions {
+    flex-direction: column;
+  }
+
+  .form-actions button {
+    width: 100%;
+  }
+}

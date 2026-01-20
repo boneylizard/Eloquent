@@ -43,3 +43,15 @@ Even if Parakeet previously reported that installation failed, it may function c
 ---
 
 Additional issues and workarounds will be documented here as they are discovered.
+
+## AMD GPU Support Limitations on Windows
+
+Eloquent officially supports **NVIDIA GPUs** (via CUDA) and **CPU** inference on Windows.
+
+**AMD GPUs** are not currently supported for local inference due to the lack of pre-built Windows binaries (wheels) for the underlying inference libraries (`llama-cpp-python` and `stable-diffusion-cpp-python` with ROCm support).
+
+### Workaround for AMD Users
+
+AMD users have two options:
+1.  **CPU Mode**: Run the application in default CPU mode. Eloquent uses capable quantized models that offer reasonable performance on modern CPUs.
+2.  **External APIs**: Use the **OpenAI-Compatible** settings to connect Eloquent to an external inference server (like **Ollama** or **LM Studio**) running on your machine. These third-party tools maintain their own AMD-optimized builds and can provide GPU acceleration that Eloquent connects to as a client.

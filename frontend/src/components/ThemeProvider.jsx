@@ -49,6 +49,11 @@ const ThemeProvider = ({
     // Legacy cleanup (ensure classes are gone so they don't fight tokens)
     root.classList.remove('light', 'dark', 'messenger', 'whatsapp');
 
+    // Add 'dark' class if the theme is dark so Tailwind dark: modifiers work
+    if (theme === 'dark' || theme === 'whatsapp' || theme === 'messenger' || theme === 'cyberpunk') {
+      root.classList.add('dark');
+    }
+
     try {
       localStorage.setItem(storageKey, theme);
     } catch (error) {

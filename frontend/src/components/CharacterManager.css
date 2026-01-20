@@ -62,6 +62,11 @@
   flex-direction: column;
 }
 
+.character-card:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+}
+
 .character-avatar {
   height: 120px;
   background-color: hsl(var(--muted));
@@ -198,4 +203,69 @@
   opacity: 0.6;
   cursor: not-allowed;
   color: #666; /* ADD THIS LINE - gray text when disabled */
+}
+
+@media (max-width: 640px) {
+  .character-manager {
+    padding: 12px;
+  }
+
+  .character-list-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .header-buttons {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .create-btn,
+  .import-btn {
+    flex: 1 1 auto;
+  }
+
+  .character-filters {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .character-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+    gap: 12px;
+  }
+
+  .character-card {
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .character-avatar {
+    height: 96px;
+    width: 100%;
+  }
+
+  .avatar-placeholder {
+    width: 56px;
+    height: 56px;
+    font-size: 24px;
+  }
+
+  .character-info {
+    padding: 10px 12px 12px;
+    text-align: center;
+  }
+
+  .character-info h3 {
+    font-size: 14px;
+    margin: 0;
+  }
+
+  .character-desc,
+  .character-tags,
+  .character-actions {
+    display: none;
+  }
 }

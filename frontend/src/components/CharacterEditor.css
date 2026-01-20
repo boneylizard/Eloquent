@@ -229,3 +229,39 @@
 .save-btn:hover {
   background-color: #74c7ec;
 }
+
+@media (max-width: 640px) {
+  .character-editor {
+    padding: 12px;
+    border-radius: 6px;
+  }
+
+  .form-section {
+    padding: 12px;
+  }
+
+  .dialogue-entry {
+    flex-direction: column;
+  }
+
+  .dialogue-role {
+    width: 100%;
+  }
+
+  .tags-input {
+    flex-direction: column;
+  }
+
+  .tags-input button {
+    width: 100%;
+    padding: 8px 12px;
+  }
+
+  .form-actions {
+    justify-content: stretch;
+  }
+
+  .save-btn {
+    width: 100%;
+  }
+}
