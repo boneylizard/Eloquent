@@ -15,6 +15,7 @@ import subprocess
 import re
 import json
 import inspect
+import wave
 # --- FastAPI and WebSocket Imports ---
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
@@ -1117,6 +1118,25 @@ class TTSStreamer:
                 if audio_bytes:
                     # Check if WebSocket is still connected before sending
                     if self._websocket.client_state.value == 1:  # CONNECTED state
+                        chunk_duration_ms = None
+                        try:
+                            with wave.open(io.BytesIO(audio_bytes), 'rb') as wf:
+                                frames = wf.getnframes()
+                                rate = wf.getframerate() or 1
+                                chunk_duration_ms = (frames / rate) * 1000
+                        except Exception:
+                            chunk_duration_ms = None
+
+                        try:
+                            await self._websocket.send_text(json.dumps({
+                                "type": "tts_chunk",
+                                "text": sentence,
+                                "duration_ms": chunk_duration_ms
+                            }))
+                            logger.info(f"🎛️ [Subtitle Cue] Sent chunk cue ({chunk_duration_ms}ms): '{sentence[:60]}...'")
+                        except Exception:
+                            pass
+
                         await self._websocket.send_bytes(audio_bytes)
                         logger.info(f"✅ [Streamer] Sent audio chunk of {len(audio_bytes)} bytes.")
                     else:

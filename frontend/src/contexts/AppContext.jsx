@@ -299,6 +299,14 @@ const AppProvider = ({ children }) => {
   const [isStreamingStopped, setIsStreamingStopped] = useState(false);
   const [audioQueue, setAudioQueue] = useState([]);
   const [isAutoplaying, setIsAutoplaying] = useState(false);
+  const [ttsSubtitleCue, setTtsSubtitleCue] = useState(null);
+  const ttsSubtitleCueRef = useRef(null); // ✅ Ref for direct access, bypassing re-render issues
+
+  // Debug: Monitor state changes
+  useEffect(() => {
+    ttsSubtitleCueRef.current = ttsSubtitleCue; // ✅ Keep ref in sync
+  }, [ttsSubtitleCue]);
+
   const audioContextRef = useRef(null); // To manage the Web Audio API context
   const [primaryIsAPI, setPrimaryIsAPI] = useState(false);
   const [secondaryIsAPI, setSecondaryIsAPI] = useState(false);
@@ -507,6 +515,27 @@ const AppProvider = ({ children }) => {
   }, [settings.ttsAutoPlay]);
 
   useEffect(() => {
+    if (!ttsClient) return;
+    const handleSubtitleCue = (cue) => {
+      setTtsSubtitleCue({
+        text: cue?.text || '',
+        durationMs: cue?.durationMs ?? null
+      });
+      window.__ttsSubtitleCue = {
+        text: cue?.text || '',
+        durationMs: cue?.durationMs ?? null,
+        timestamp: Date.now()
+      };
+    };
+    ttsClient.onSubtitleCue = handleSubtitleCue;
+    return () => {
+      if (ttsClient.onSubtitleCue === handleSubtitleCue) {
+        ttsClient.onSubtitleCue = null;
+      }
+    };
+  }, [ttsClient, setTtsSubtitleCue]);
+
+  useEffect(() => {
     const loadSavedConversations = () => {
       try {
         const savedConversations = localStorage.getItem('Eloquent-conversations');
@@ -534,6 +563,7 @@ const AppProvider = ({ children }) => {
   // ===== Debugging and Testing the Lore Functionality =====
   // --- TTS Implementation (REORDERED) ---
   const stopTTS = useCallback(() => {
+    // Note: Don't clear ttsSubtitleCue here - let it expire naturally via the timeout in CallModeOverlay
     console.log('🛑 [stopTTS] Initiating stop sequence...');
     // console.trace('🛑 [stopTTS] Caller Trace');
     // 1. IMMEDIATE: Set interrupt flag to prevent any new chunks from processing
@@ -739,9 +769,13 @@ const AppProvider = ({ children }) => {
               break;
             }
 
-            const arrayBuffer = ttsClient.audioQueue.shift();
+            const chunk = ttsClient.audioQueue.shift();
             // Double check queue empty/undefined
-            if (!arrayBuffer) break;
+            if (!chunk) break;
+
+            // Extract audio and subtitle (support both old format and new paired format)
+            const arrayBuffer = chunk.audio || chunk;
+            const subtitle = chunk.subtitle;
 
             const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
             const audioUrl = URL.createObjectURL(blob);
@@ -750,6 +784,15 @@ const AppProvider = ({ children }) => {
             activeAudioPlayersRef.current.add(audio); // Register for mass cleanup
 
             audio.playbackRate = settings.ttsSpeed || 1.0;
+
+            // ✅ Display subtitle RIGHT when audio plays (not when synthesized)
+            if (subtitle) {
+              window.__ttsSubtitleCue = {
+                text: subtitle.text,
+                durationMs: subtitle.durationMs,
+                timestamp: Date.now()
+              };
+            }
 
             console.log(`🎵 [TTS] Playing chunk. Queue remaining: ${ttsClient.audioQueue.length}`);
 
@@ -885,6 +928,7 @@ const AppProvider = ({ children }) => {
   }, [ttsClient]); // Removed isAutoplaying dependency
 
   const endStreamingTTS = useCallback(() => {
+    // Note: Don't clear ttsSubtitleCue here - let it expire naturally
     if (streamingTtsMessageIdRef.current) {
       console.log(`⏹️ [TTS Stream] Ending for message ${streamingTtsMessageIdRef.current}`);
       ttsClient.closeStream();
@@ -3013,6 +3057,8 @@ const AppProvider = ({ children }) => {
     endStreamingTTS,
     addStreamingText,
     startStreamingTTS,
+    ttsSubtitleCue,
+    ttsSubtitleCueRef, // ✅ Expose ref for direct access
     ttsClient,
     setAudioQueue,
     setIsAutoplaying,
@@ -3067,8 +3113,9 @@ const AppProvider = ({ children }) => {
     setActiveContextSummary,
     unlockAudioContext
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
   ]);
+
 
   return (
     <AppContext.Provider value={contextValue}>
