@@ -185,4 +185,4 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ### Fixed
 
-*
+* Added support for more CUDA architectures in llama_cpp_python wheels (sm_75/86/89/120), resolving model service load failures on older NVIDIA GPUs.
