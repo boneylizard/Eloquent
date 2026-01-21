@@ -13,48 +13,14 @@ REM --- 2. Detect Python version ---
 for /f %%i in ('python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set PYVER=%%i
 echo Detected Python version: %PYVER%
 
-REM --- 3. Detect NVIDIA GPU compute capability (first GPU) ---
-set GPU_CC=
-for /f "usebackq delims=" %%i in (`nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2^>nul`) do (
-    if not defined GPU_CC set GPU_CC=%%i
-)
-if defined GPU_CC (
-    set GPU_CC=!GPU_CC: =!
-    set GPU_ARCH=!GPU_CC:.=!
-    echo Detected GPU compute capability: !GPU_CC! (arch !GPU_ARCH!)
-) else (
-    echo WARNING: Could not detect NVIDIA GPU compute capability. Falling back to default wheel.
-    set GPU_ARCH=unknown
-)
-
-REM --- 4. Install precompiled LLaMA wheel based on GPU arch and Python version ---
+REM --- 3. Install precompiled LLaMA wheel from HuggingFace ---
 set LLAMA_WHEEL=
 if "%PYVER%"=="3.11" (
-    if "!GPU_ARCH!"=="75" (
-        set LLAMA_WHEEL=https://huggingface.co/boneylizardwizard/llama_cpp_python-0.3.16-cp312cp311-win_amd64/resolve/main/llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
-    ) else if "!GPU_ARCH!"=="86" (
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
-    ) else if "!GPU_ARCH!"=="89" (
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
-    ) else if "!GPU_ARCH!"=="120" (
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
-    ) else (
-        echo WARNING: Unrecognized GPU arch "!GPU_ARCH!". Using default wheel.
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
-    )
+    set LLAMA_WHEEL=https://huggingface.co/boneylizardwizard/llama_cpp_python-0.3.16-cp311cp312-win_amd64-sm75/resolve/main/llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
+    set FALLBACK_WHEEL=wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
 ) else if "%PYVER%"=="3.12" (
-    if "!GPU_ARCH!"=="75" (
-        set LLAMA_WHEEL=https://huggingface.co/boneylizardwizard/llama_cpp_python-0.3.16-cp312cp311-win_amd64/resolve/main/llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
-    ) else if "!GPU_ARCH!"=="86" (
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
-    ) else if "!GPU_ARCH!"=="89" (
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
-    ) else if "!GPU_ARCH!"=="120" (
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
-    ) else (
-        echo WARNING: Unrecognized GPU arch "!GPU_ARCH!". Using default wheel.
-        set LLAMA_WHEEL=wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
-    )
+    set LLAMA_WHEEL=https://huggingface.co/boneylizardwizard/llama_cpp_python-0.3.16-cp311cp312-win_amd64-sm75/resolve/main/llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
+    set FALLBACK_WHEEL=wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
 ) else (
     echo ERROR: Unsupported Python version: %PYVER%
     exit /b 1
@@ -62,6 +28,20 @@ if "%PYVER%"=="3.11" (
 
 echo Installing LLaMA wheel: !LLAMA_WHEEL!
 pip install !LLAMA_WHEEL!
+if errorlevel 1 (
+    echo WARNING: Failed to install from HuggingFace. Falling back to local wheel.
+    if exist "!FALLBACK_WHEEL!" (
+        echo Installing fallback LLaMA wheel: !FALLBACK_WHEEL!
+        pip install "!FALLBACK_WHEEL!"
+        if errorlevel 1 (
+            echo ERROR: Fallback wheel install failed.
+            exit /b 1
+        )
+    ) else (
+        echo ERROR: Fallback wheel not found: !FALLBACK_WHEEL!
+        exit /b 1
+    )
+)
 
 REM --- 4b. Install Stable Diffusion wheel from HuggingFace (too large for GitHub) ---
 echo Installing Stable Diffusion wheel from HuggingFace (355MB, this may take a moment)...
