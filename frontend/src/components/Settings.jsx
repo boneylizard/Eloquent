@@ -231,6 +231,22 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
       alert("Failed to export backend logs.");
     }
   }, [PRIMARY_API_URL]);
+  const handleClearBackendLogs = useCallback(async () => {
+    if (!confirm("Delete all backend logs? This cannot be undone.")) {
+      return;
+    }
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/system/clear-logs`, { method: "DELETE" });
+      if (!response.ok) {
+        throw new Error(`Clear failed: ${response.status}`);
+      }
+      const data = await response.json();
+      alert(`Deleted ${data.deleted ?? 0} log file(s).`);
+    } catch (error) {
+      console.error("Failed to clear backend logs:", error);
+      alert("Failed to clear backend logs.");
+    }
+  }, [PRIMARY_API_URL]);
 
   const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
 
@@ -401,9 +417,14 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               <div className="space-y-2">
                 <Label className="text-base font-medium">Backend Logs</Label>
                 <p className="text-xs text-muted-foreground">Export backend logs for bug reports.</p>
-                <Button variant="outline" onClick={handleExportBackendLogs}>
-                  Export Backend Logs
-                </Button>
+                <div className="flex flex-col md:flex-row gap-2">
+                  <Button variant="outline" onClick={handleExportBackendLogs}>
+                    Export Backend Logs
+                  </Button>
+                  <Button variant="outline" onClick={handleClearBackendLogs}>
+                    Delete Old Logs
+                  </Button>
+                </div>
               </div>
               <Separator />
 

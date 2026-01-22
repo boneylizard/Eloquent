@@ -60,10 +60,19 @@ access_logger.handlers = []
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
+def get_log_dir():
+    """Resolve the log directory (project-root logs/ by default)."""
+    env_dir = os.environ.get("ELOQUENT_LOG_DIR")
+    if env_dir:
+        log_dir = Path(env_dir)
+    else:
+        log_dir = Path(__file__).resolve().parents[2] / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
 # File logging for TTS backend
 try:
-    log_dir = Path.home() / ".LiangLocal" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = get_log_dir()
     log_path_env = os.environ.get("TTS_LOG_PATH")
     if log_path_env:
         log_path = Path(log_path_env)
@@ -80,6 +89,13 @@ try:
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
         root_logger.addHandler(file_handler)
+        for uvicorn_logger_name in ("uvicorn.error", "uvicorn.access"):
+            uvicorn_logger = logging.getLogger(uvicorn_logger_name)
+            if not any(
+                isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == str(log_path)
+                for handler in uvicorn_logger.handlers
+            ):
+                uvicorn_logger.addHandler(file_handler)
 except Exception as e:
     logger.warning(f"Could not initialize TTS file logging: {e}")
 

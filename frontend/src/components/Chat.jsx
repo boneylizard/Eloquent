@@ -167,6 +167,10 @@ const Chat = ({ layoutMode }) => {
       alert("Failed to create summary. Check console/logs.");
     }
   };
+  const clearSummaryContext = () => {
+    setActiveContextSummary(null);
+    localStorage.removeItem('eloquent-active-summary');
+  };
 
   const handleVisualizeScene = useCallback(async () => {
     if (messages.length === 0 || isGenerating) return;
@@ -926,7 +930,7 @@ const Chat = ({ layoutMode }) => {
 
           {/* Load Context Dropdown */}
           {availableSummaries.length > 0 && (
-            <div className="relative flex-shrink-0">
+            <div className="relative flex items-center gap-2 flex-shrink-0">
               <select
                 className="h-9 px-2 text-sm border rounded bg-background max-w-[120px] md:max-w-[150px]"
                 onChange={(e) => {
@@ -936,8 +940,7 @@ const Chat = ({ layoutMode }) => {
                     localStorage.setItem('eloquent-active-summary', summary.content);
                     alert(`Loaded context: ${summary.title}`);
                   } else {
-                    setActiveContextSummary(null);
-                    localStorage.removeItem('eloquent-active-summary');
+                    clearSummaryContext();
                   }
                 }}
                 value={activeContextSummary ? "" : ""}
@@ -947,6 +950,17 @@ const Chat = ({ layoutMode }) => {
                   <option key={s.id} value={s.id}>{s.title}</option>
                 ))}
               </select>
+              {activeContextSummary && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={clearSummaryContext}
+                  className="whitespace-nowrap"
+                  title="Clear summary context"
+                >
+                  Clear Context
+                </Button>
+              )}
               {activeContextSummary && (
                 <div className="absolute -top-2 -right-2 w-3 h-3 bg-green-500 rounded-full" title="Context Active"></div>
               )}
