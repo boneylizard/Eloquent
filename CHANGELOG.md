@@ -180,7 +180,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * API-based models are now more reliable and retry automatically if they briefly fail.
 
 ---
-
+git
 ## [Unreleased]
 
 ### Added
