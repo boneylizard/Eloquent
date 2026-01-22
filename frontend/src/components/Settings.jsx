@@ -1,7 +1,7 @@
 // Settings.jsx
 // Full Settings UI: General, Generation, SD, RAG, Characters, Audio, Memory Intent, Memory Browser, Lore, About
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getBackendUrl } from '../config/api';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -37,7 +37,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     sttEnabled,
     setSttEnabled,
     ttsEnabled,
-    setTtsEnabled,
     checkSdStatus,
     sdStatus,
     PRIMARY_API_URL,
@@ -99,6 +98,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [isUnloadingForensicModels, setIsUnloadingForensicModels] = useState(false);
   const [isShuttingDownTTS, setIsShuttingDownTTS] = useState(false);
   const [isRestartingTTS, setIsRestartingTTS] = useState(false);
+  const pendingSettingsRef = useRef({});
+  const settingsSaveTimerRef = useRef(null);
 
   // Memory intent input and detected result
   const [memoryIntentInput, setMemoryIntentInput] = useState('');
@@ -188,6 +189,33 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     }
     setHasChanges(false);
   }, [localSettings, updateSettings, PRIMARY_API_URL]);
+
+  const queueSettingsSave = useCallback((patch) => {
+    updateSettings(patch);
+    pendingSettingsRef.current = { ...pendingSettingsRef.current, ...patch };
+    if (settingsSaveTimerRef.current) {
+      clearTimeout(settingsSaveTimerRef.current);
+    }
+    settingsSaveTimerRef.current = setTimeout(async () => {
+      const payload = pendingSettingsRef.current;
+      pendingSettingsRef.current = {};
+      try {
+        await fetch(`${PRIMARY_API_URL}/models/update-settings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } catch (e) {
+        console.error("Failed to auto-save settings to backend:", e);
+      }
+    }, 300);
+  }, [PRIMARY_API_URL, updateSettings]);
+
+  useEffect(() => () => {
+    if (settingsSaveTimerRef.current) {
+      clearTimeout(settingsSaveTimerRef.current);
+    }
+  }, []);
 
   const handleReset = useCallback(() => {
     setLocalSettings({ ...contextSettings });
@@ -1225,7 +1253,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                 <Switch
                   id="tts-enabled"
                   checked={ttsEnabled}
-                  onCheckedChange={setTtsEnabled}
+                  onCheckedChange={value => queueSettingsSave({ ttsEnabled: value })}
                 />
               </div>
               <Separator />
@@ -1241,10 +1269,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       value={localSettings.ttsEngine || "kokoro"}
                       onValueChange={value => {
                         handleChange('ttsEngine', value);
-                        updateSettings({ ttsEngine: value });
+                        queueSettingsSave({ ttsEngine: value });
                         if (value === 'kokoro') {
                           handleChange('ttsVoice', 'af_heart');
-                          updateSettings({ ttsVoice: 'af_heart' });
+                          queueSettingsSave({ ttsVoice: 'af_heart' });
                         }
                       }}
                     >
@@ -1270,7 +1298,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           value={localSettings.ttsVoice || "af_heart"}
                           onValueChange={value => {
                             handleChange('ttsVoice', value);
-                            updateSettings({ ttsVoice: value });
+                            queueSettingsSave({ ttsVoice: value });
                           }}
                         >
                           <SelectTrigger className="w-full md:w-64">
@@ -1321,7 +1349,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                                   });
                                   const result = await response.json();
                                   handleChange('ttsVoice', result.voice_id);
-                                  updateSettings({ ttsVoice: result.voice_id });
+                                  queueSettingsSave({ ttsVoice: result.voice_id });
                                   await fetchAvailableVoices();
                                   alert(`Voice "${file.name}" uploaded successfully!`);
                                 } catch (error) {
@@ -1342,7 +1370,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                             value={localSettings.ttsVoice || "default"}
                             onValueChange={value => {
                               handleChange('ttsVoice', value);
-                              updateSettings({ ttsVoice: value });
+                              queueSettingsSave({ ttsVoice: value });
                               fetch(`${PRIMARY_API_URL}/tts/save-voice-preference`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
@@ -1370,7 +1398,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                               id="tts-exaggeration"
                               min={0.0} max={1.0} step={0.1}
                               value={[localSettings.ttsExaggeration || 0.5]}
-                              onValueChange={([v]) => { handleChange('ttsExaggeration', v); updateSettings({ ttsExaggeration: v }); }}
+                              onValueChange={([v]) => { handleChange('ttsExaggeration', v); queueSettingsSave({ ttsExaggeration: v }); }}
                             />
                           </div>
                           <div className="space-y-2">
@@ -1379,7 +1407,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                               id="tts-cfg"
                               min={0.1} max={1.0} step={0.1}
                               value={[localSettings.ttsCfg || 0.5]}
-                              onValueChange={([v]) => { handleChange('ttsCfg', v); updateSettings({ ttsCfg: v }); }}
+                              onValueChange={([v]) => { handleChange('ttsCfg', v); queueSettingsSave({ ttsCfg: v }); }}
                             />
                           </div>
                           <div className="space-y-2">
@@ -1388,7 +1416,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                               value={localSettings.ttsSpeedMode || "standard"}
                               onValueChange={(value) => {
                                 handleChange('ttsSpeedMode', value);
-                                updateSettings({ ttsSpeedMode: value });
+                                queueSettingsSave({ ttsSpeedMode: value });
                               }}
                             >
                               <SelectTrigger className="w-full md:w-64">
@@ -1451,7 +1479,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       checked={localSettings.ttsAutoPlay}
                       onCheckedChange={value => {
                         handleChange('ttsAutoPlay', value);
-                        updateSettings({ ttsAutoPlay: value });
+                        queueSettingsSave({ ttsAutoPlay: value });
                       }}
                     />
                   </div>
@@ -1468,7 +1496,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       value={[localSettings.ttsSpeed || 1.0]}
                       onValueChange={([v]) => {
                         handleChange('ttsSpeed', v);
-                        updateSettings({ ttsSpeed: v });
+                        queueSettingsSave({ ttsSpeed: v });
                       }}
                     />
                   </div>
@@ -1487,7 +1515,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           value={[localSettings.ttsPitch || 0]}
                           onValueChange={([v]) => {
                             handleChange('ttsPitch', v);
-                            updateSettings({ ttsPitch: v });
+                            queueSettingsSave({ ttsPitch: v });
                           }}
                         />
                       </div>
