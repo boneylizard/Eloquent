@@ -2939,7 +2939,7 @@ const AppProvider = ({ children }) => {
   // ----------------------------------
   // Summary Management
   // ----------------------------------
-  const generateConversationSummary = useCallback(async (summaryPrompt = "Summarize the following story so far, focusing on key events and character status. Keep it concise.") => {
+  const generateConversationSummary = useCallback(async (summaryPrompt = "Create a continuity summary that will be injected as context for a future chat. Write it so a model can continue the conversation immediately. Keep it concise and factual. Include: setting/timeframe, key characters and relationships, current goals, recent critical events, unresolved threads, and any constraints (tools, rules, promises). Prefer 6-12 bullet points. Do not add opinions, analysis, or extra commentary.") => {
     if (!primaryModel || messages.length === 0) return null;
 
     setIsGenerating(true);
