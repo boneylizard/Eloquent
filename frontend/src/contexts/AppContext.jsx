@@ -229,7 +229,14 @@ const AppProvider = ({ children }) => {
   const memoryContext = useMemory();
   const userProfile = memoryContext?.userProfile;
   const [activeContextSummary, setActiveContextSummary] = useState(null);
-  const buildSystemPrompt = useCallback((char) => _buildSystemPrompt(char, userProfile, activeContextSummary), [userProfile, activeContextSummary]);
+  const summaryContextForRequest = useMemo(() => {
+    const summary = (activeContextSummary || userProfile?.activeContextSummary || '').trim();
+    return summary || null;
+  }, [activeContextSummary, userProfile?.activeContextSummary]);
+  const buildSystemPrompt = useCallback(
+    (char) => _buildSystemPrompt(char, userProfile, summaryContextForRequest ? null : activeContextSummary),
+    [userProfile, activeContextSummary, summaryContextForRequest]
+  );
   const getRelevantMemories = memoryContext?.getRelevantMemories;
   const addConversationSummary = memoryContext?.addConversationSummary;
   const [sdStatus, setSdStatus] = useState({ automatic1111: false });
@@ -1843,6 +1850,7 @@ const AppProvider = ({ children }) => {
     const userMsg = { id: generateUniqueId(), role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
     setIsGenerating(true);
+    console.log(`[Summary] Attaching summaryContext to dual chat: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
     const history = [...messages, userMsg].slice(-10);
     const buildHistory = (own, other, ownChar, otherName) => [
@@ -1861,7 +1869,8 @@ const AppProvider = ({ children }) => {
             gpu_id: 0,
             userProfile,
             authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
-            use_web_search: webSearchEnabled // NEW: Add to primary
+            use_web_search: webSearchEnabled, // NEW: Add to primary
+            summaryContext: summaryContextForRequest
           })
         }).then(r => r.json()),
         fetch(`${SECONDARY_API_URL}/generate`, {
@@ -1873,7 +1882,8 @@ const AppProvider = ({ children }) => {
             gpu_id: 1,
             userProfile,
             authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
-            use_web_search: false // Usually only primary should do web search in dual mode
+            use_web_search: false, // Usually only primary should do web search in dual mode
+            summaryContext: summaryContextForRequest
           })
         }).then(r => r.json())
       ]);
@@ -1903,11 +1913,12 @@ const AppProvider = ({ children }) => {
     } finally {
       setIsGenerating(false);
     }
-  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent]);
+  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent, summaryContextForRequest]);
 
 
   // New shared helper to build the FULL generation system prompt (memories, lore, etc.)
-  const getGenerationSystemPrompt = useCallback(async (text, character, authorNote = null) => {
+  const getGenerationSystemPrompt = useCallback(async (text, character, authorNote = null, options = {}) => {
+    const { includeAuthorNote = true } = options;
     console.log('🔍 [SystemPrompt] Building for character:', character?.name, 'User:', userProfile?.name);
     console.log('🔍 [SystemPrompt] Tag replacer check. Character valid?', !!character, 'UserProfile valid?', !!userProfile);
     let systemMsg = character
@@ -1968,17 +1979,20 @@ const AppProvider = ({ children }) => {
     systemMsg += contextToAdd;
 
     const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || null;
-    if (effectiveAuthorNote) {
+    if (includeAuthorNote && effectiveAuthorNote) {
       systemMsg += `\n\n[AUTHOR'S NOTE - Writing style guidance for this response]\n${effectiveAuthorNote}`;
     }
 
+    const hasSummary = systemMsg.includes('[PREVIOUS STORY SUMMARY]');
+    console.log(`[Summary] System prompt includes summary: ${hasSummary}`);
     return systemMsg;
   }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt]);
 
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
     const { authorNote = null, webSearchEnabled = false } = options;
-    const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote);
+    const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote, { includeAuthorNote: false });
+    console.log(`[Summary] Attaching summaryContext to generateReply: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
     // --- Unified Payload Construction (Matching sendMessage exactly) ---
     const {
@@ -2004,6 +2018,7 @@ const AppProvider = ({ children }) => {
       gpu_id: 0,
       userProfile: { id: userProfile?.id ?? 'anonymous' },
       authorNote: authorNote || (settings.authorNote && settings.authorNote.trim()) || undefined,
+      summaryContext: summaryContextForRequest,
       memoryEnabled: true,
       stream: streamResponses
     };
@@ -2100,7 +2115,8 @@ const AppProvider = ({ children }) => {
     PRIMARY_API_URL,
     getGenerationSystemPrompt,
     formatPrompt,
-    cleanModelOutput
+    cleanModelOutput,
+    summaryContextForRequest
   ]);
 
   // In AppContext.jsx, replace the entire generateReplyWithOpenAI function
@@ -2268,7 +2284,8 @@ const AppProvider = ({ children }) => {
       }
 
       // 3) Build System Prompt with layered context
-      const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote);
+      const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote, { includeAuthorNote: false });
+      console.log(`[Summary] Attaching summaryContext to sendMessage: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
       // 4) Prepare payload
       const {
@@ -2296,6 +2313,7 @@ const AppProvider = ({ children }) => {
         gpu_id: 0,
         userProfile: { id: userProfile?.id ?? 'anonymous' },
         authorNote: effectiveAuthorNote,
+        summaryContext: summaryContextForRequest,
         memoryEnabled: true,
         stream: streamResponses
       };
@@ -2443,7 +2461,8 @@ const AppProvider = ({ children }) => {
     activeConversation, primaryModel, messages, conversations, settings, activeCharacter,
     userProfile?.id, PRIMARY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, MEMORY_API_URL,
     buildSystemPrompt, formatPrompt, cleanModelOutput, generateChatTitle, memoryContext,
-    observeConversationWithAgent, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext
+    observeConversationWithAgent, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext,
+    summaryContextForRequest
   ]);
 
   async function playTTSWithPitch({ audioUrl, speed = 1.0, semitones = 0 }) {
@@ -2853,6 +2872,23 @@ const AppProvider = ({ children }) => {
       console.error("Error loading settings from localStorage:", error);
     }
   }, []); // Empty dependency array: run only once on mount
+  useEffect(() => {
+    try {
+      const savedSummary = localStorage.getItem('eloquent-active-summary');
+      if (savedSummary) {
+        setActiveContextSummary(savedSummary);
+      }
+    } catch (error) {
+      console.error("Error loading active summary from localStorage:", error);
+    }
+  }, []);
+  useEffect(() => {
+    if (activeContextSummary) {
+      console.log(`[Summary] Active summary set (${activeContextSummary.length} chars)`);
+    } else {
+      console.log("[Summary] Active summary cleared");
+    }
+  }, [activeContextSummary]);
   // Near the other useEffect hooks
   useEffect(() => {
     const syncGpuMode = async () => {

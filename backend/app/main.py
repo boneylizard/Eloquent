@@ -267,6 +267,7 @@ class GenerateRequest(BaseModel):
     image_base64: Optional[str] = None  # NEW: Optional base64-encoded image for context
     image_type: Optional[str] = None  # NEW: Optional image type (e.g., "png", "jpg")
     authorNote: Optional[str] = None  # Author's note for custom session instructions
+    summaryContext: Optional[str] = None  # Optional story summary context
     # Add any other fields you need for your request
 
 class ImageRequest(BaseModel): # Keep for now
@@ -3990,7 +3991,34 @@ async def generate(
     user_query_from_split = ""
 
     # New, more robust splitting logic that handles multiple prompt formats
-    if "<start_of_turn>user" in original_client_prompt:
+    if "<|im_start|>user" in original_client_prompt:
+        # ChatML format
+        last_user_turn_start = original_client_prompt.rfind("<|im_start|>user")
+        character_persona_from_split = original_client_prompt[:last_user_turn_start].strip()
+        temp_query_block = original_client_prompt[last_user_turn_start:]
+
+        user_content_match = re.search(r"<\|im_start\|>user\s*\n(.*?)(?:<\|im_end\|>|$)", temp_query_block, re.DOTALL)
+        if user_content_match:
+            user_query_from_split = user_content_match.group(1).strip()
+        else:
+            user_query_from_split = temp_query_block.replace("<|im_start|>user", "").strip()
+
+    elif "[INST]" in original_client_prompt:
+        # Llama/Mistral style format
+        last_inst_start = original_client_prompt.rfind("[INST]")
+        character_persona_from_split = original_client_prompt[:last_inst_start].strip()
+        temp_query_block = original_client_prompt[last_inst_start:]
+
+        user_content_match = re.search(r"\[INST\](.*?)(?:\[/INST\]|$)", temp_query_block, re.DOTALL)
+        if user_content_match:
+            user_query_from_split = user_content_match.group(1).strip()
+        else:
+            user_query_from_split = temp_query_block.replace("[INST]", "").strip()
+
+        # Remove any embedded system block if present inside the query slice
+        user_query_from_split = re.sub(r"<<SYS>>.*?<</SYS>>", "", user_query_from_split, flags=re.DOTALL).strip()
+
+    elif "<start_of_turn>user" in original_client_prompt:
         # Find the last user turn marker
         last_user_turn_start = original_client_prompt.rfind("<start_of_turn>user")
         
@@ -4017,6 +4045,10 @@ async def generate(
         parts = original_client_prompt.split("User Query:", 1)
         character_persona_from_split = parts[0].strip()
         user_query_from_split = parts[1].strip()
+    elif "User:" in original_client_prompt:
+        parts = original_client_prompt.rsplit("User:", 1)
+        character_persona_from_split = parts[0].strip()
+        user_query_from_split = parts[1].strip()
     else:
         # Fallback for simple prompts (like title generation)
         user_query_from_split = original_client_prompt.strip()
@@ -4028,6 +4060,12 @@ async def generate(
     
     logger.info(f"Extracted user query (from step #3 split): '{user_query_from_split[:100]}...'")
     logger.info(f"Extracted character persona (from step #3 split): {'Present' if character_persona_from_split else 'Not explicitly separated in client_prompt'}")
+    summary_context = (body.summaryContext or "").strip()
+    if summary_context:
+        summary_preview = summary_context.replace("\n", " ")[:160]
+        logger.info(f"[Summary] summaryContext provided ({len(summary_context)} chars): '{summary_preview}...'")
+    else:
+        logger.info("[Summary] No summaryContext provided in request.")
 
     # 4) Prepare input for memory context retrieval.
     # We use 'user_query_from_split' as it's the user's most recent conversational turn.
@@ -4075,13 +4113,8 @@ async def generate(
     if memory_context_for_llm: # Prepend memory if available
         interaction_components.append("RELEVANT USER INFORMATION:\n" + memory_context_for_llm)
 
-    # Add the actual user query (ensure "User Query:" prefix if not already there or if desired)
-    # If user_query_from_split is "Generate a title...", it doesn't make sense to prefix it with "User Query:" again for the LLM
-    # For actual user chat, user_query_from_split *is* the user's query.
-    if body.request_purpose in ["title_generation", "model_testing", "model_judging"]:
-        interaction_components.append(user_query_from_split) # For titles, the query is the instruction
-    else: # For user chat
-        interaction_components.append(f"User Query: {user_query_from_split}")
+    if summary_context and body.request_purpose not in ["title_generation", "model_judging", "model_testing"]:
+        interaction_components.append("[PREVIOUS STORY SUMMARY]:\n" + summary_context + "\n[End of Summary]")
 
     # 7) Optionally integrate RAG (ONLY for user chats)
     if body.use_rag and body.request_purpose != "title_generation":
@@ -4175,6 +4208,13 @@ Each response should feel fresh and unique. Avoid:
 Vary your sentence structure and word choices naturally."""
         interaction_components.append(anti_rep_instruction)
         logger.info("🔄 Added anti-repetition instructions to prompt")
+
+    # Add the actual user query LAST.
+    # If user_query_from_split is "Generate a title...", it doesn't make sense to prefix it with "User Query:" again for the LLM.
+    if body.request_purpose in ["title_generation", "model_testing", "model_judging"]:
+        interaction_components.append(user_query_from_split)
+    else:
+        interaction_components.append(f"User Query: {user_query_from_split}")
 
     # Join all components of the interaction block with double newlines
     final_interaction_block = "\n\n".join(interaction_components)
