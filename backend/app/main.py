@@ -82,25 +82,43 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# File logging for backend logs (one file per port)
-try:
-    log_dir = Path.home() / ".LiangLocal" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path_env = os.environ.get("BACKEND_LOG_PATH")
-    if log_path_env:
-        log_path = Path(log_path_env)
+def get_log_dir():
+    """Resolve the log directory (project-root logs/ by default)."""
+    env_dir = os.environ.get("ELOQUENT_LOG_DIR")
+    if env_dir:
+        log_dir = Path(env_dir)
     else:
-        port_label = os.environ.get("PORT", "unknown")
-        log_path = log_dir / f"backend_{port_label}.log"
-    root_logger = logging.getLogger()
-    if not any(
-        isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == str(log_path)
-        for handler in root_logger.handlers
-    ):
-        file_handler = logging.FileHandler(log_path, encoding="utf-8")
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        root_logger.addHandler(file_handler)
+        log_dir = Path(__file__).resolve().parents[2] / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+# File logging for backend logs (one file per port)
+disable_backend_file_log = os.environ.get("ELOQUENT_DISABLE_BACKEND_LOG", "").lower() in ("1", "true", "yes")
+try:
+    if not disable_backend_file_log:
+        log_dir = get_log_dir()
+        log_path_env = os.environ.get("BACKEND_LOG_PATH")
+        if log_path_env:
+            log_path = Path(log_path_env)
+        else:
+            port_label = os.environ.get("PORT", "unknown")
+            log_path = log_dir / f"backend_{port_label}.log"
+        root_logger = logging.getLogger()
+        if not any(
+            isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == str(log_path)
+            for handler in root_logger.handlers
+        ):
+            file_handler = logging.FileHandler(log_path, encoding="utf-8")
+            file_handler.setLevel(logging.INFO)
+            file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+            root_logger.addHandler(file_handler)
+            for uvicorn_logger_name in ("uvicorn.error", "uvicorn.access"):
+                uvicorn_logger = logging.getLogger(uvicorn_logger_name)
+                if not any(
+                    isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == str(log_path)
+                    for handler in uvicorn_logger.handlers
+                ):
+                    uvicorn_logger.addHandler(file_handler)
 except Exception as e:
     logger.warning(f"Could not initialize file logging: {e}")
 
@@ -528,11 +546,15 @@ async def get_gpu_info(request: Request):
 @router.get("/system/export-logs")
 async def export_backend_logs():
     """Export backend log files as a single text response."""
-    log_dir = Path.home() / ".LiangLocal" / "logs"
+    log_dir = get_log_dir()
     if not log_dir.exists():
         raise HTTPException(status_code=404, detail="Log directory not found")
 
-    log_files = sorted(list(log_dir.glob("backend_*.log")) + list(log_dir.glob("tts_*.log")))
+    log_files = sorted(
+        list(log_dir.glob("backend_*.log")) +
+        list(log_dir.glob("tts_*.log")) +
+        list(log_dir.glob("startup_report_*.txt"))
+    )
     if not log_files:
         default_log = log_dir / "backend.log"
         if default_log.exists():
@@ -555,6 +577,31 @@ async def export_backend_logs():
         media_type="text/plain",
         headers={"Content-Disposition": "attachment; filename=backend_logs.txt"}
     )
+
+@router.delete("/system/clear-logs")
+async def clear_backend_logs():
+    """Delete all backend log files from the project logs folder."""
+    log_dir = get_log_dir()
+    if not log_dir.exists():
+        raise HTTPException(status_code=404, detail="Log directory not found")
+
+    deleted = 0
+    skipped = []
+    for log_file in log_dir.iterdir():
+        if not log_file.is_file():
+            continue
+        try:
+            log_file.unlink()
+            deleted += 1
+        except PermissionError as e:
+            skipped.append(f"{log_file.name}: {e}")
+        except Exception as e:
+            skipped.append(f"{log_file.name}: {e}")
+
+    if skipped:
+        logger.warning(f"Skipped deleting {len(skipped)} log files: {skipped}")
+
+    return {"status": "success", "deleted": deleted, "skipped": skipped}
 @router.post("/models/update-gpu-mode")
 async def update_gpu_mode(
     data: dict = Body(...),
