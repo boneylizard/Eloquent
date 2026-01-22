@@ -6,6 +6,13 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-22
+
+### Fixed
+
+* Added support for more CUDA architectures in llama_cpp_python wheels (sm_75/86/89/120), resolving model service load failures on older NVIDIA GPUs.
+* Startup reports now capture the full backend/TTS startup sequence into a single report and stop updating after startup completes.
+
 
 ## 2026-01-19
 
@@ -185,4 +192,4 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ### Fixed
 
-* Added support for more CUDA architectures in llama_cpp_python wheels (sm_75/86/89/120), resolving model service load failures on older NVIDIA GPUs.
+*
