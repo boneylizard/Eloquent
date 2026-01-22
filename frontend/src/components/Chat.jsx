@@ -160,6 +160,8 @@ const Chat = ({ layoutMode }) => {
     setIsSummarizing(false);
     if (result) {
       setAvailableSummaries(getSummaries()); // Refresh list
+      setActiveContextSummary(result.content);
+      localStorage.setItem('eloquent-active-summary', result.content);
       alert(`Summary saved: ${result.title}`);
     } else {
       alert("Failed to create summary. Check console/logs.");
@@ -931,9 +933,11 @@ const Chat = ({ layoutMode }) => {
                   const summary = availableSummaries.find(s => s.id === e.target.value);
                   if (summary) {
                     setActiveContextSummary(summary.content);
+                    localStorage.setItem('eloquent-active-summary', summary.content);
                     alert(`Loaded context: ${summary.title}`);
                   } else {
                     setActiveContextSummary(null);
+                    localStorage.removeItem('eloquent-active-summary');
                   }
                 }}
                 value={activeContextSummary ? "" : ""}
