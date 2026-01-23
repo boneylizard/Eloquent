@@ -29,6 +29,7 @@ const DEFAULT_CHARACTER = {
   speech_style: '', // NEW field
   personality: '', // Restored field
   background: '', // Restored field
+  chat_role: 'npc', // NEW field
 };
 
 const CharacterEditor = () => {
@@ -290,6 +291,7 @@ const CharacterEditor = () => {
     // Prepare the character data
     const characterToSave = {
       ...character,
+      chat_role: character.chat_role || 'npc',
       loreEntries: ensureArray(character.loreEntries),
       example_dialogue: ensureArray(character.example_dialogue).length > 0
         ? ensureArray(character.example_dialogue)
@@ -420,6 +422,23 @@ const CharacterEditor = () => {
               <div>
                 <Label htmlFor="name" className="block text-sm font-medium mb-1">Character Name *</Label>
                 <Input id="name" name="name" value={character.name || ''} onChange={handleChange} placeholder="e.g. Professor Eldrin" required />
+              </div>
+
+              {/* Chat Role */}
+              <div>
+                <Label htmlFor="chat_role" className="block text-sm font-medium mb-1">Chat Role</Label>
+                <select
+                  id="chat_role"
+                  name="chat_role"
+                  value={character.chat_role || 'npc'}
+                  onChange={handleChange}
+                  className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
+                >
+                  <option value="user">User</option>
+                  <option value="npc">NPC</option>
+                  <option value="narrator">Narrator</option>
+                </select>
+                <p className="text-xs text-muted-foreground mt-1">Used by Multi-Role Mode to prevent AI from speaking for the user character.</p>
               </div>
 
               {/* Persona (Description) - Large Textarea */}

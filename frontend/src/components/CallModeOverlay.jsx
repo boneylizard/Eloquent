@@ -17,7 +17,16 @@ const CallModeOverlay = ({
   ttsSubtitleCue // ✅ USE PROP instead of context
 }) => {
   // ✅ REMOVED ttsSubtitleCue from useApp() - using prop instead
-  const { startRecording, stopRecording, sendMessage, stopTTS, handleStopGeneration, isGenerating } = useApp();
+  const {
+    startRecording,
+    stopRecording,
+    sendMessage,
+    stopTTS,
+    handleStopGeneration,
+    isGenerating,
+    characters,
+    settings
+  } = useApp();
   const [isPulsing, setIsPulsing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -209,10 +218,46 @@ const CallModeOverlay = ({
 
   if (!isActive) return null;
 
-  const avatarUrl = activeCharacter?.avatar
-    ? (activeCharacter.avatar.startsWith('http')
-      ? activeCharacter.avatar
-      : `${PRIMARY_API_URL}/static/${activeCharacter.avatar}`)
+  const NARRATOR_CHARACTER_ID = '__narrator__';
+
+  const speakingMessage = useMemo(() => {
+    if (isPlayingAudio && messages?.length) {
+      const match = messages.find(m => m.id === isPlayingAudio);
+      if (match) return match;
+    }
+    return messages ? [...messages].reverse().find(m => m.role === 'bot') : null;
+  }, [isPlayingAudio, messages]);
+
+  const displayCharacter = useMemo(() => {
+    if (speakingMessage?.characterId === NARRATOR_CHARACTER_ID) {
+      return {
+        name: (settings?.narratorName || '').trim() || 'Narrator',
+        avatar: settings?.narratorAvatar || null
+      };
+    }
+    if (speakingMessage?.characterId) {
+      const byId = (characters || []).find(c => c.id === speakingMessage.characterId);
+      if (byId) return byId;
+    }
+    if (speakingMessage?.characterName) {
+      const byName = (characters || []).find(c => c.name === speakingMessage.characterName);
+      if (byName) return byName;
+      return { name: speakingMessage.characterName, avatar: speakingMessage.avatar || null };
+    }
+    return activeCharacter || null;
+  }, [speakingMessage, characters, settings?.narratorName, settings?.narratorAvatar, activeCharacter]);
+
+  const displayAvatar = useMemo(() => {
+    if (speakingMessage?.characterId === NARRATOR_CHARACTER_ID) {
+      return settings?.narratorAvatar || speakingMessage?.avatar || null;
+    }
+    return speakingMessage?.avatar || displayCharacter?.avatar || null;
+  }, [speakingMessage, displayCharacter, settings?.narratorAvatar]);
+
+  const avatarUrl = displayAvatar
+    ? (displayAvatar.startsWith('http')
+      ? displayAvatar
+      : `${PRIMARY_API_URL}/static/${displayAvatar}`)
     : null;
 
   return (
@@ -536,7 +581,7 @@ const CallModeOverlay = ({
             {avatarUrl ? (
               <img
                 src={avatarUrl}
-                alt={activeCharacter?.name || "Character"}
+                alt={displayCharacter?.name || "Character"}
                 className="w-full h-full object-cover"
                 onError={(e) => {
                   console.warn(`Avatar failed to load: ${avatarUrl}`);
@@ -552,7 +597,7 @@ const CallModeOverlay = ({
                         flex items-center justify-center text-white text-8xl font-bold"
               style={{ display: avatarUrl ? 'none' : 'flex' }}
             >
-              {activeCharacter?.name?.charAt(0)?.toUpperCase() || 'A'}
+              {displayCharacter?.name?.charAt(0)?.toUpperCase() || 'A'}
             </div>
           </div>
 
@@ -566,9 +611,9 @@ const CallModeOverlay = ({
         </div>
 
         {/* Character Name - UNCHANGED */}
-        {activeCharacter?.name && (
+        {displayCharacter?.name && (
           <h1 className="text-4xl font-bold text-white text-center tracking-wide">
-            {activeCharacter.name}
+            {displayCharacter.name}
           </h1>
         )}
 

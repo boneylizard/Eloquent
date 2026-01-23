@@ -18,6 +18,14 @@ import SimpleChatImageMessage from './SimpleChatImageMessage';
 import RAGIndicator from './RAGIndicator';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Slider } from '@/components/ui/slider';
 import ChatImageUploadButton from './ChatImageUploadButton';
@@ -31,6 +39,7 @@ import ForensicLinguistics from './ForensicLinguistics';
 import StoryTracker, { getStoryTrackerContext } from './StoryTracker';
 import ChoiceGenerator from './ChoiceGenerator';
 import { getBackendUrl } from '../config/api';
+import { useMemory } from '../contexts/MemoryContext';
 
 // CORRECT PLACEMENT: Component defined at the top level, accepting props.
 const WebSearchControl = ({ webSearchEnabled, setWebSearchEnabled, isGenerating, isRecording, isTranscribing }) => (
@@ -57,11 +66,21 @@ const Chat = ({ layoutMode }) => {
     messages, setMessages, sendMessage, sendDualMessage, isGenerating, isModelLoading,
     createNewConversation, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateReply, fetchMemoriesFromAgent, fetchTriggeredLore, isStreamingStopped, handleStopGeneration,
     // Character info
+    characters,
     activeCharacter, primaryCharacter, secondaryCharacter,
+    userCharacter,
+    setUserCharacterById,
+    activeCharacterIds,
+    activeCharacterWeights,
+    updateActiveCharacterIds,
+    updateActiveCharacterWeights,
+    multiRoleContext,
+    updateMultiRoleContext,
+    resolveSpeakerCharacter,
     getGenerationSystemPrompt,
     // Audio / STT / TTS flags & functions
     sttEnabled, ttsEnabled, isRecording, isTranscribing, primaryIsAPI, secondaryIsAPI,
-    isPlayingAudio, playTTS, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, ttsSubtitleCue,
+    isPlayingAudio, playTTS, getTtsOverridesForCharacterId, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, ttsSubtitleCue,
     startRecording, stopRecording, MEMORY_API_URL, ttsClient, setAudioQueue, setIsAutoplaying,
     // Avatar sizes
     userAvatarSize, characterAvatarSize, speechDetected, audioQueue, isAutoplaying, callModeRecording,
@@ -74,6 +93,7 @@ const Chat = ({ layoutMode }) => {
     capturePromptSubmissionTime, // Latency monitoring
     unlockAudioContext // Unlocker
   } = useApp();
+  const { profiles, activeProfileId, switchProfile } = useMemory();
 
   // Local state for the input field
   const [messageVariants, setMessageVariants] = useState({}); // Store variants by message ID
@@ -128,6 +148,8 @@ const Chat = ({ layoutMode }) => {
     model: ''
   });
   const [availableModels, setAvailableModels] = useState([]);
+  const [availableVoices, setAvailableVoices] = useState({ chatterbox_voices: [], kokoro_voices: [] });
+  const [isFetchingVoices, setIsFetchingVoices] = useState(false);
   const [autoAnalyzeImages, setAutoAnalyzeImages] = useState(false);
   // Author's Note state - persist to localStorage
   const [authorNoteEnabled, setAuthorNoteEnabled] = useState(false);
@@ -135,6 +157,8 @@ const Chat = ({ layoutMode }) => {
     return localStorage.getItem('eloquent-author-note') || '';
   });
   const [showAuthorNote, setShowAuthorNote] = useState(false);
+  const [showGroupContext, setShowGroupContext] = useState(false);
+  const [showRosterDialog, setShowRosterDialog] = useState(false);
 
   // Story Tracker and Choice Generator state
   const [showStoryTracker, setShowStoryTracker] = useState(false);
@@ -148,10 +172,130 @@ const Chat = ({ layoutMode }) => {
   // Summarizer State
   const [availableSummaries, setAvailableSummaries] = useState([]);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const handleNarratorAvatarUpload = useCallback(async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const allowedTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+    if (!allowedTypes.includes(file.type)) {
+      alert(`Invalid file type. Please select: ${allowedTypes.join(', ')}`);
+      return;
+    }
+
+    const maxSizeMB = 5;
+    if (file.size > maxSizeMB * 1024 * 1024) {
+      alert(`File is too large. Maximum size is ${maxSizeMB}MB.`);
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const uploadUrl = `${PRIMARY_API_URL || getBackendUrl()}/upload_avatar`;
+      const response = await fetch(uploadUrl, { method: 'POST', body: formData });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown server error' }));
+        throw new Error(`Avatar upload failed: ${response.status} - ${errorData.detail || response.statusText}`);
+      }
+
+      const result = await response.json();
+      if (result.status === 'success' && result.file_url) {
+        updateSettings({ narratorAvatar: result.file_url });
+        alert("Narrator avatar uploaded successfully!");
+      } else {
+        throw new Error(result.detail || "Backend indicated upload failure.");
+      }
+    } catch (error) {
+      console.error("Error uploading narrator avatar:", error);
+      alert(`Narrator avatar upload failed: ${error.message}`);
+    } finally {
+      e.target.value = null;
+    }
+  }, [PRIMARY_API_URL, updateSettings]);
+  const rosterCandidates = useMemo(() => {
+    return characters.filter(c => (c?.chat_role || 'npc') !== 'user');
+  }, [characters]);
+  const kokoroVoiceFallback = useMemo(() => ([
+    { id: 'af_heart', name: 'Am. English Female (Heart)' },
+    { id: 'af_alloy', name: 'Am. English Female (Alloy)' },
+    { id: 'af_aoede', name: 'Am. English Female (Aoede)' },
+    { id: 'af_bella', name: 'Am. English Female (Bella)' },
+    { id: 'af_jessica', name: 'Am. English Female (Jessica)' },
+    { id: 'af_kore', name: 'Am. English Female (Kore)' },
+    { id: 'af_nicole', name: 'Am. English Female (Nicole)' },
+    { id: 'af_nova', name: 'Am. English Female (Nova)' },
+    { id: 'af_river', name: 'Am. English Female (River)' },
+    { id: 'af_sarah', name: 'Am. English Female (Sarah)' },
+    { id: 'af_sky', name: 'Am. English Female (Sky)' },
+    { id: 'am_adam', name: 'Am. English Male (Adam)' },
+    { id: 'am_echo', name: 'Am. English Male (Echo)' }
+  ]), []);
+  const kokoroVoiceOptions = useMemo(() => {
+    if (availableVoices?.kokoro_voices?.length) return availableVoices.kokoro_voices;
+    return kokoroVoiceFallback;
+  }, [availableVoices, kokoroVoiceFallback]);
+  const effectiveActiveRosterIds = useMemo(() => {
+    if (!settings.multiRoleMode) return [];
+    const candidateIds = rosterCandidates.map(c => c.id);
+    const candidateSet = new Set(candidateIds);
+    const base = Array.isArray(activeCharacterIds) && activeCharacterIds.length
+      ? activeCharacterIds
+      : candidateIds;
+    return base.filter(id => candidateSet.has(id));
+  }, [activeCharacterIds, rosterCandidates, settings.multiRoleMode]);
+  const activeRosterSet = useMemo(() => new Set(effectiveActiveRosterIds), [effectiveActiveRosterIds]);
+  const rosterActiveCount = useMemo(
+    () => rosterCandidates.filter(c => activeRosterSet.has(c.id)).length,
+    [rosterCandidates, activeRosterSet]
+  );
+  const rosterTotalCount = rosterCandidates.length;
+  const ttsEngine = settings.ttsEngine || 'kokoro';
+  const isChatterboxEngine = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo';
+  const isKokoroEngine = ttsEngine === 'kokoro';
+  const formatRosterRole = useCallback((role) => {
+    if (role === 'narrator') return 'Narrator';
+    return 'Character';
+  }, []);
+  const toggleRosterCharacter = useCallback((id, checked) => {
+    const next = new Set(effectiveActiveRosterIds);
+    if (checked) next.add(id);
+    else next.delete(id);
+    if (next.size === 0 && rosterCandidates.length) return;
+    updateActiveCharacterIds(Array.from(next));
+  }, [effectiveActiveRosterIds, rosterCandidates, updateActiveCharacterIds]);
+  const handleSelectAllRoster = useCallback(() => {
+    if (!rosterCandidates.length) return;
+    updateActiveCharacterIds(rosterCandidates.map(c => c.id));
+  }, [rosterCandidates, updateActiveCharacterIds]);
 
   useEffect(() => {
     setAvailableSummaries(getSummaries());
   }, []);
+
+  const fetchAvailableVoices = useCallback(async () => {
+    if (isFetchingVoices) return;
+    setIsFetchingVoices(true);
+    try {
+      const baseUrl = PRIMARY_API_URL || getBackendUrl();
+      const response = await fetch(`${baseUrl}/tts/voices`);
+      if (!response.ok) throw new Error('Failed to fetch voices');
+      const data = await response.json();
+      setAvailableVoices(data || { chatterbox_voices: [], kokoro_voices: [] });
+    } catch (error) {
+      console.error("Error fetching available voices:", error);
+      setAvailableVoices({ chatterbox_voices: [], kokoro_voices: [] });
+    } finally {
+      setIsFetchingVoices(false);
+    }
+  }, [PRIMARY_API_URL, isFetchingVoices]);
+
+  useEffect(() => {
+    if (!showRosterDialog) return;
+    if (settings.ttsEngine !== 'chatterbox' && settings.ttsEngine !== 'chatterbox_turbo' && settings.ttsEngine !== 'kokoro') return;
+    fetchAvailableVoices();
+  }, [showRosterDialog, settings.ttsEngine, fetchAvailableVoices]);
 
   const handleCreateSummary = async () => {
     if (isSummarizing) return;
@@ -350,14 +494,17 @@ const Chat = ({ layoutMode }) => {
     setMessages(slicedMessages);
 
     // 2. Prepare for new bot response
+    const speakerCharacter = await resolveSpeakerCharacter(editedPromptText, slicedMessages);
     const botMsgId = generateUniqueId();
+    const ttsOverrides = getTtsOverridesForCharacterId(speakerCharacter?.id);
     const tempBotMsg = {
       id: botMsgId,
       role: 'bot',
       content: '',
       modelId: 'primary',
-      characterName: activeCharacter?.name,
-      avatar: activeCharacter?.avatar
+      characterId: speakerCharacter?.id,
+      characterName: speakerCharacter?.name,
+      avatar: speakerCharacter?.avatar
     };
 
     setMessages(prev => [...prev, tempBotMsg]);
@@ -366,7 +513,7 @@ const Chat = ({ layoutMode }) => {
     try {
       if (settings?.streamResponses) {
         // Start TTS streaming if enabled
-        startStreamingTTS(botMsgId);
+        startStreamingTTS(botMsgId, ttsOverrides);
       }
 
       let lastProcessedLength = 0;
@@ -385,7 +532,7 @@ const Chat = ({ layoutMode }) => {
         editedPromptText,
         slicedMessages, // History ends with the user message
         onToken,
-        { authorNote, webSearchEnabled }
+        { authorNote, webSearchEnabled, speakerCharacterId: speakerCharacter?.id }
       );
 
       if (responseText) {
@@ -395,7 +542,7 @@ const Chat = ({ layoutMode }) => {
         if (settings?.streamResponses) {
           endStreamingTTS();
         } else if (settings?.ttsEnabled && settings?.ttsAutoPlay) {
-          playTTS(botMsgId, responseText);
+          playTTS(botMsgId, responseText, ttsOverrides);
         }
 
         // Refresh memories/lore observation (optional but good)
@@ -408,7 +555,7 @@ const Chat = ({ layoutMode }) => {
       setIsGenerating(false);
       setAbortController(null);
     }
-  }, [isGenerating, messages, setMessages, setIsGenerating, activeCharacter, generateReply, settings, webSearchEnabled, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, generateUniqueId]);
+  }, [isGenerating, messages, setMessages, setIsGenerating, resolveSpeakerCharacter, generateReply, settings, webSearchEnabled, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, generateUniqueId, getTtsOverridesForCharacterId]);
 
   const generateCharacterImagePrompt = useCallback((character) => {
     if (!character) return '';
@@ -433,15 +580,21 @@ const Chat = ({ layoutMode }) => {
     }
   }, [generatedCharacter, characterImagePrompt, customImagePrompt, generateCharacterImagePrompt, generateImage, isGeneratingCharacterImage, characterImageSettings]);
 
+  const getTtsOverridesForMessageId = useCallback((messageId, characterId = null) => {
+    if (characterId) return getTtsOverridesForCharacterId(characterId);
+    const msg = messages.find(m => m.id === messageId);
+    return getTtsOverridesForCharacterId(msg?.characterId);
+  }, [messages, getTtsOverridesForCharacterId]);
+
   const handleSpeakerClick = useCallback((messageId, text) => {
     if (audioError) setAudioError(null);
     if (isPlayingAudio === messageId) {
       stopTTS();
       setSkippedMessageIds(prev => { const newSet = new Set(prev); newSet.add(messageId); return newSet; });
     } else if (!isPlayingAudio) {
-      playTTS(messageId, text);
+      playTTS(messageId, text, getTtsOverridesForMessageId(messageId));
     }
-  }, [audioError, isPlayingAudio, stopTTS, playTTS]);
+  }, [audioError, isPlayingAudio, stopTTS, playTTS, getTtsOverridesForMessageId]);
 
   const handleAutoPlayToggle = (value) => {
     updateSettings({ ttsAutoPlay: value });
@@ -586,9 +739,11 @@ const Chat = ({ layoutMode }) => {
     // Also must update the main message content to be empty/streaming
     setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: '' } : m));
 
+    const ttsOverrides = getTtsOverridesForMessageId(messageId, messages[msgIndex]?.characterId);
+
     try {
       if (settings?.streamResponses) {
-        startStreamingTTS(messageId);
+        startStreamingTTS(messageId, ttsOverrides);
       }
 
       let gatheredText = '';
@@ -606,11 +761,12 @@ const Chat = ({ layoutMode }) => {
         }
       };
 
+      const targetCharacterId = messages[msgIndex]?.characterId || null;
       const responseText = await generateReply(
         promptText,
         historyBefore,
         onToken,
-        { authorNote, webSearchEnabled }
+        { authorNote, webSearchEnabled, speakerCharacterId: targetCharacterId }
       );
 
       if (responseText) {
@@ -627,7 +783,7 @@ const Chat = ({ layoutMode }) => {
         });
 
         if (settings?.ttsEnabled && settings?.ttsAutoPlay && !settings?.streamResponses) {
-          playTTS(messageId, responseText);
+          playTTS(messageId, responseText, ttsOverrides);
         }
       }
     } catch (error) {
@@ -637,7 +793,7 @@ const Chat = ({ layoutMode }) => {
       setIsGenerating(false);
       setAbortController(null);
     }
-  }, [isGenerating, messages, messageVariants, settings, generateReply, activeCharacter, authorNote, webSearchEnabled, startStreamingTTS, playTTS, abortController, setAbortController]);
+  }, [isGenerating, messages, messageVariants, settings, generateReply, authorNote, webSearchEnabled, startStreamingTTS, playTTS, abortController, setAbortController, getTtsOverridesForMessageId]);
 
   const getCurrentVariantContent = useCallback((messageId, originalContent) => {
     const variants = messageVariants[messageId];
@@ -760,8 +916,9 @@ const Chat = ({ layoutMode }) => {
     );
 
     try {
+      const ttsOverrides = getTtsOverridesForMessageId(messageId, msg.characterId);
       if (settings?.streamResponses) {
-        startStreamingTTS(messageId);
+        startStreamingTTS(messageId, ttsOverrides);
       }
 
       let lastProcessedLength = currentContent.length; // Start from existing content length
@@ -798,11 +955,12 @@ const Chat = ({ layoutMode }) => {
 
       // We send "Continue" as text to trigger system prompt building but 
       // the actual prompt sent to LLM will be the history ending in prefill.
+      const targetCharacterId = msg.characterId || null;
       const continuationText = await generateReply(
         "Continue",
         history,
         onTokenCorrect,
-        { authorNote, webSearchEnabled: false } // No web search for validation
+        { authorNote, webSearchEnabled: false, speakerCharacterId: targetCharacterId } // No web search for validation
       );
 
       if (settings?.streamResponses) endStreamingTTS();
@@ -822,7 +980,7 @@ const Chat = ({ layoutMode }) => {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: finalContent } : m));
 
         if (settings?.ttsEnabled && settings?.ttsAutoPlay && !settings?.streamResponses) {
-          playTTS(messageId, continuationText); // Play only the new part
+          playTTS(messageId, continuationText, ttsOverrides); // Play only the new part
         }
       }
     } catch (error) {
@@ -831,7 +989,7 @@ const Chat = ({ layoutMode }) => {
       setIsGenerating(false);
       setAbortController(null);
     }
-  }, [isGenerating, messages, getCurrentVariantContent, generateReply, settings, activeCharacter, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, messageVariants, currentVariantIndex]);
+  }, [isGenerating, messages, getCurrentVariantContent, generateReply, settings, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, messageVariants, currentVariantIndex, getTtsOverridesForMessageId]);
 
   const renderAvatar = (message, apiUrl, activeCharacter) => {
     // ... [Original Logic] ...
@@ -860,8 +1018,42 @@ const Chat = ({ layoutMode }) => {
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 overflow-hidden">
             <h2 className="text-xl font-semibold whitespace-nowrap">Chat</h2>
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 flex items-center gap-2">
               <CharacterSelector layoutMode={layoutMode} />
+              {settings.multiRoleMode && (
+                <Select
+                  value={userCharacter?.id ? `character:${userCharacter.id}` : (activeProfileId ? `profile:${activeProfileId}` : '')}
+                  onValueChange={(value) => {
+                    if (!value) return;
+                    if (value.startsWith('character:')) {
+                      const id = value.replace('character:', '');
+                      setUserCharacterById(id);
+                      return;
+                    }
+                    if (value.startsWith('profile:')) {
+                      const id = value.replace('profile:', '');
+                      setUserCharacterById(null);
+                      if (id && id !== activeProfileId) switchProfile(id);
+                    }
+                  }}
+                >
+                  <SelectTrigger className="w-[220px]">
+                    <SelectValue placeholder="User Character" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(profiles || []).map(profile => (
+                      <SelectItem key={profile.id} value={`profile:${profile.id}`}>
+                        User Profile: {profile.name || 'User'}
+                      </SelectItem>
+                    ))}
+                    {characters.map(c => (
+                      <SelectItem key={c.id} value={`character:${c.id}`}>
+                        Character: {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
 
@@ -905,6 +1097,34 @@ const Chat = ({ layoutMode }) => {
             </Button>
           )}
 
+          {settings.multiRoleMode && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowRosterDialog(true)}
+              title="Choose which characters are active"
+              className="whitespace-nowrap flex-shrink-0"
+            >
+              <Users size={16} />
+              <span className="ml-1 hidden md:inline">
+                {rosterTotalCount ? `Roster ${rosterActiveCount}/${rosterTotalCount}` : 'Roster'}
+              </span>
+            </Button>
+          )}
+
+          {settings.multiRoleMode && (
+            <Button
+              variant={showGroupContext ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setShowGroupContext(!showGroupContext)}
+              title="Shared scene context for this chat"
+              className="whitespace-nowrap flex-shrink-0"
+            >
+              <BookOpen size={16} />
+              <span className="ml-1 hidden md:inline">Group Context</span>
+            </Button>
+          )}
+
           {/* Toggle for floating controls */}
           <Button
             variant="outline"
@@ -918,17 +1138,7 @@ const Chat = ({ layoutMode }) => {
           </Button>
 
           {/* Summarize Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCreateSummary}
-            disabled={isSummarizing || messages.length < 2}
-            title="Summarize current conversation"
-            className="whitespace-nowrap flex-shrink-0"
-          >
-            {isSummarizing ? <Loader2 className="animate-spin w-4 h-4" /> : <Save size={16} />}
-            <span className="ml-1 hidden md:inline">Summarize</span>
-          </Button>
+          {/* Summarize button moved to control panel */}
 
           {/* Load Context Dropdown */}
           {availableSummaries.length > 0 && (
@@ -977,6 +1187,192 @@ const Chat = ({ layoutMode }) => {
 
         {/* Model selector (Collapsible) */}
         {showModelSelector && <ModelSelector />}
+
+        {settings.multiRoleMode && (
+          <Dialog open={showRosterDialog} onOpenChange={setShowRosterDialog}>
+            <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Active Characters</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Active characters are eligible for auto speaker replies in this chat.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Use the sliders to bias how often each character is chosen.
+                </p>
+                {rosterCandidates.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No non-user characters are available. Assign roles in the Character Editor.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {rosterCandidates.map(character => {
+                      const isChecked = activeRosterSet.has(character.id);
+                      const isLastActive = isChecked && rosterActiveCount === 1;
+                      const weightValue = activeCharacterWeights?.[character.id] ?? 50;
+                      return (
+                        <div key={character.id} className="rounded border border-border px-3 py-2 space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{character.name || 'Unnamed'}</p>
+                              <p className="text-xs text-muted-foreground">{formatRosterRole(character.chat_role)}</p>
+                            </div>
+                            <Checkbox
+                              checked={isChecked}
+                              onCheckedChange={(checked) => toggleRosterCharacter(character.id, Boolean(checked))}
+                              disabled={isLastActive}
+                            />
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs text-muted-foreground">Rare</span>
+                            <Slider
+                              value={[weightValue]}
+                              min={1}
+                              max={100}
+                              step={1}
+                              disabled={!isChecked}
+                              onValueChange={(value) => {
+                                const next = value?.[0];
+                                updateActiveCharacterWeights({ [character.id]: next });
+                              }}
+                              className="flex-1"
+                            />
+                            <span className="text-xs text-muted-foreground">Often</span>
+                            <span className="text-xs text-muted-foreground w-8 text-right">{weightValue}</span>
+                          </div>
+                          {(isChatterboxEngine || isKokoroEngine) && (
+                            <div className="space-y-1">
+                              <Label className="text-xs">{isChatterboxEngine ? 'Voice Clone' : 'Voice'}</Label>
+                              <Select
+                                value={character.ttsVoice || 'default'}
+                                onValueChange={async (value) => {
+                                  saveCharacter({ ...character, ttsVoice: value });
+                                  if (isChatterboxEngine && value && value !== 'default') {
+                                    try {
+                                      await fetch(`${PRIMARY_API_URL}/tts/save-voice-preference`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ voice_id: value, engine: settings.ttsEngine })
+                                      });
+                                    } catch (error) {
+                                      console.warn("Failed to cache voice preference:", error);
+                                    }
+                                  }
+                                }}
+                              >
+                                <SelectTrigger className="w-full">
+                                  <SelectValue placeholder="Default Voice" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="default">Default Voice</SelectItem>
+                                  {(isChatterboxEngine ? availableVoices?.chatterbox_voices : kokoroVoiceOptions)?.map(voice => (
+                                    <SelectItem key={voice.id} value={voice.id}>{voice.name}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="border-t border-border pt-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">Narrator (optional)</p>
+                      <p className="text-xs text-muted-foreground">
+                        Interjects every N AI turns and never twice in a row.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={settings.narratorEnabled || false}
+                      onCheckedChange={(value) => updateSettings({ narratorEnabled: value })}
+                    />
+                  </div>
+                  {settings.narratorEnabled && (
+                    <div className="space-y-2">
+                      <div className="space-y-1">
+                        <Label htmlFor="narrator-name" className="text-xs">Narrator Name</Label>
+                        <Input
+                          id="narrator-name"
+                          value={settings.narratorName || ''}
+                          onChange={(e) => updateSettings({ narratorName: e.target.value })}
+                          placeholder="Narrator"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="narrator-interval" className="text-xs">Narrator Frequency (AI turns)</Label>
+                        <Input
+                          id="narrator-interval"
+                          type="number"
+                          min="1"
+                          max="20"
+                          value={settings.narratorInterval ?? 6}
+                          onChange={(e) => {
+                            const next = Number.parseInt(e.target.value, 10);
+                            updateSettings({ narratorInterval: Number.isFinite(next) && next > 0 ? next : 1 });
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="narrator-instructions" className="text-xs">Narrator Prompt</Label>
+                        <Textarea
+                          id="narrator-instructions"
+                          value={settings.narratorInstructions || ''}
+                          onChange={(e) => updateSettings({ narratorInstructions: e.target.value })}
+                          placeholder="Describe the scene in a concise, atmospheric style..."
+                          rows={4}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="narrator-avatar" className="text-xs">Narrator Avatar (optional)</Label>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Input
+                            id="narrator-avatar"
+                            type="file"
+                            accept="image/*"
+                            onChange={handleNarratorAvatarUpload}
+                            className="flex-1"
+                          />
+                          {settings.narratorAvatar && (
+                            <div className="flex items-center gap-2">
+                              <img
+                                src={settings.narratorAvatar}
+                                alt="Narrator avatar"
+                                className="h-12 w-12 rounded-full object-cover border border-border"
+                                onError={(e) => { e.target.style.display = 'none'; }}
+                              />
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => updateSettings({ narratorAvatar: null })}
+                              >
+                                Clear
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSelectAllRoster}
+                  disabled={!rosterCandidates.length}
+                >
+                  Select All
+                </Button>
+                <Button size="sm" onClick={() => setShowRosterDialog(false)}>Done</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
 
         {/* Display Audio Error */}
         {audioError && (
@@ -1122,7 +1518,7 @@ const Chat = ({ layoutMode }) => {
                 {ttsEnabled && (
                   <div className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded" title="Toggle Text-to-Speech Autoplay">
                     <Switch id="floating-autoplay" checked={settings?.ttsAutoPlay || false} onCheckedChange={handleAutoPlayToggle} />
-                    <Label htmlFor="floating-autoplay" className="text-xs">Auto</Label>
+                    <Label htmlFor="floating-autoplay" className="text-xs">autoTTS</Label>
                   </div>
                 )}
 
@@ -1134,6 +1530,46 @@ const Chat = ({ layoutMode }) => {
                   className="flex-shrink-0 h-10 w-10"
                 >
                   <Focus size={18} />
+                </Button>
+
+                <div
+                  className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded"
+                  title={settings.multiRoleMode ? "Roles On" : "Roles Off"}
+                >
+                  <Switch
+                    id="floating-roles"
+                    checked={settings.multiRoleMode || false}
+                    onCheckedChange={(checked) => {
+                      const nextMode = Boolean(checked);
+                      updateSettings({
+                        multiRoleMode: nextMode,
+                        autoSelectSpeaker: nextMode ? settings.autoSelectSpeaker : false
+                      });
+                    }}
+                  />
+                  <Label htmlFor="floating-roles" className="text-xs">Roles</Label>
+                </div>
+
+                {settings.multiRoleMode && (
+                  <div className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded" title="Toggle Auto Speaker">
+                    <Switch
+                      id="floating-autospeak"
+                      checked={settings.autoSelectSpeaker || false}
+                      onCheckedChange={(checked) => updateSettings({ autoSelectSpeaker: checked })}
+                    />
+                    <Label htmlFor="floating-autospeak" className="text-xs">Autospeak</Label>
+                  </div>
+                )}
+
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleCreateSummary}
+                  disabled={isSummarizing || messages.length < 2}
+                  title="Summarize current conversation"
+                  className="flex-shrink-0 h-10 w-10"
+                >
+                  {isSummarizing ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />}
                 </Button>
 
                 {(() => {
@@ -1223,6 +1659,8 @@ const Chat = ({ layoutMode }) => {
                   primaryCharacter={primaryCharacter}
                   secondaryCharacter={secondaryCharacter}
                   userProfile={userProfile}
+                  userCharacter={userCharacter}
+                  isMultiRoleMode={settings.multiRoleMode}
                   characterAvatarSize={characterAvatarSize}
                   userAvatarSize={userAvatarSize}
                   variantCount={getVariantCount(msg.id)}
@@ -1255,6 +1693,35 @@ const Chat = ({ layoutMode }) => {
           </div>
         </ScrollArea>
       </div>
+
+      {/* Group Context Panel (Multi-Role) */}
+      {settings.multiRoleMode && showGroupContext && (
+        <div className="border-t border-border bg-blue-50 dark:bg-blue-950/20">
+          <div className="max-w-4xl mx-auto px-4 py-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-bold text-sm text-blue-600">Group Scene Context</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  updateMultiRoleContext('');
+                }}
+                className="text-xs"
+              >
+                Clear
+              </Button>
+            </div>
+            <Textarea
+              value={multiRoleContext || ''}
+              onChange={(e) => updateMultiRoleContext(e.target.value)}
+              placeholder="Shared context for this multi-character chat..."
+              className="w-full resize-none bg-background text-sm"
+              rows={3}
+            />
+            <Button size="sm" variant="ghost" onClick={() => setShowGroupContext(false)} className="w-full mt-1 text-xs">Close Context</Button>
+          </div>
+        </div>
+      )}
 
       {/* Author's Note Panel (Existing) */}
       {showAuthorNote && (

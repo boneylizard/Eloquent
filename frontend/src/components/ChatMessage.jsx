@@ -22,6 +22,8 @@ const ChatMessage = memo(({
     primaryCharacter,
     secondaryCharacter,
     userProfile,
+    userCharacter,
+    isMultiRoleMode,
     characterAvatarSize,
     userAvatarSize,
     variantCount,
@@ -53,7 +55,7 @@ const ChatMessage = memo(({
 
     // --- Avatar Rendering Logic ---
     const renderAvatar = (message, apiUrl, activeCharacter) => {
-        const avatarSource = message.avatar || (message.role === 'bot' && activeCharacter?.avatar);
+        const avatarSource = message.avatar || (message.role === 'bot' && !message.characterId && activeCharacter?.avatar);
         const characterName = message.characterName
             || (message.role === 'bot' && activeCharacter?.name)
             || 'activeCharacter';
@@ -96,9 +98,14 @@ const ChatMessage = memo(({
         }
     };
 
-    const renderUserAvatar = () => {
-        const userAvatarSource = userProfile?.avatar;
-        const userName = userProfile?.name || 'User';
+    const renderUserAvatar = (message) => {
+        const roleplayAvatar = isMultiRoleMode && message?.characterId
+            ? message?.avatar || userCharacter?.avatar
+            : null;
+        const userAvatarSource = roleplayAvatar || userProfile?.avatar;
+        const userName = isMultiRoleMode && message?.characterId
+            ? (message?.characterName || userCharacter?.name || 'User')
+            : (userProfile?.name || userProfile?.username || 'User');
         let userDisplayUrl = null;
 
         // Responsive avatar size logic similar to character avatar
@@ -152,7 +159,7 @@ const ChatMessage = memo(({
                     <SimpleChatImageMessage message={msg} onRegenerate={onRegenerateImage} regenerationQueue={regenerationQueue} />
                 </div>
 
-                {msg.role === 'user' && renderUserAvatar()}
+                {msg.role === 'user' && renderUserAvatar(msg)}
             </div >
         );
     }
@@ -443,7 +450,7 @@ const ChatMessage = memo(({
                 </button>
             )}
 
-            {msg.role === 'user' && renderUserAvatar()}
+            {msg.role === 'user' && renderUserAvatar(msg)}
         </div>
     );
 });
