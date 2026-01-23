@@ -2245,7 +2245,7 @@ ${guidance}${groupContext}${summaryBlock}${storyContext}`;
       ? `\nNarrator Characters: ${narratorNames.join(', ')}`
       : '';
 
-    return `\n\n[ROLEPLAY MODE]\nUser Character: ${userName}\nCharacters: ${npcNames.length ? npcNames.join(', ') : 'None'}${narratorListLine}${narratorLine}\nRules: Never write dialogue or actions for ${userName}.`;
+    return `\n\n[ROLEPLAY MODE]\nUser Character: ${userName}\nCharacters: ${npcNames.length ? npcNames.join(', ') : 'None'}${narratorListLine}${narratorLine}\nRules: Never write dialogue or actions for ${userName}. Only one character speaks per response. Do not include other characters' dialogue.`;
   }, [characters, activeCharacterIds, getRoleplayUserName, settings.multiRoleMode, settings.narratorEnabled, settings.narratorName]);
 
   const buildSpeakerSelectionPrompt = useCallback((recentMessages, candidates, userName, lastSpeakerName, weightMap, lastUserText) => {
@@ -2345,7 +2345,7 @@ Return ONLY valid JSON:
   }, [PRIMARY_API_URL, primaryModel, formatPrompt, cleanModelOutput, buildSpeakerSelectionPrompt]);
 
   const resolveSpeakerCharacter = useCallback(async (text, recentMessages, options = {}) => {
-    const { speakerCharacterId = null } = options;
+    const { speakerCharacterId = null, forceAutoSelectSpeaker = false, ignoreMentionedCandidates = false } = options;
     if (speakerCharacterId === NARRATOR_CHARACTER_ID) {
       return getNarratorCharacter();
     }
@@ -2356,10 +2356,11 @@ Return ONLY valid JSON:
     if (!settings.multiRoleMode) return activeCharacterRef.current || null;
 
     const narrator = getNarratorCharacter();
+    const allowAutoSelect = forceAutoSelectSpeaker || settings.autoSelectSpeaker;
     const narratorInterval = Number.parseInt(settings.narratorInterval, 10);
     const shouldUseNarrator = () => {
       if (!narrator) return false;
-      if (!settings.autoSelectSpeaker) return false;
+      if (!allowAutoSelect) return false;
       if (!Number.isFinite(narratorInterval) || narratorInterval <= 0) return false;
       let botSince = 0;
       for (let i = recentMessages.length - 1; i >= 0; i -= 1) {
@@ -2424,12 +2425,12 @@ Return ONLY valid JSON:
       return pool[0];
     };
 
-    const mentioned = findMentionedCandidate();
+    const mentioned = ignoreMentionedCandidates ? null : findMentionedCandidate();
     if (mentioned) return mentioned;
 
     if (shouldUseNarrator()) return narrator;
 
-    if (!settings.autoSelectSpeaker) {
+    if (!allowAutoSelect) {
       const current = activeCharacterRef.current;
       const currentRole = current ? normalizeChatRole(current.chat_role) : 'npc';
       const inRoster = !rosterSet || (current && rosterSet.has(current.id));
@@ -2494,6 +2495,11 @@ Return ONLY valid JSON:
     if (settings.multiRoleMode) {
       systemMsg += getMultiRoleContextBlock();
       systemMsg += buildRoleplayRosterBlock();
+    }
+
+    if (settings.multiRoleMode && character) {
+      const activeName = character.name || 'Character';
+      systemMsg += `\n\n[ACTIVE SPEAKER]\nYou are speaking ONLY as ${activeName}.\n- Do not write dialogue for any other character.\n- Do not include multiple speakers in one response.\n- Do not prefix lines with character names or labels.\n- If you reference other characters, do so briefly in third-person without quoted speech.`;
     }
 
     let contextToAdd = '';
@@ -3047,6 +3053,104 @@ Return ONLY valid JSON:
     formatPrompt, cleanModelOutput, generateChatTitle, memoryContext, resolveSpeakerCharacter,
     observeConversationWithAgent, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext,
     summaryContextForRequest, getTtsOverridesForCharacter
+  ]);
+
+  const generateCallModeFollowUp = useCallback(async (options = {}) => {
+    if (isGenerating) return;
+
+    const { prompt = null } = options;
+    const lastBot = [...(messages || [])].reverse().find(m => m.role === 'bot');
+    if (!lastBot) return;
+
+    const followUpPrompt = (prompt || 'Continue the conversation by responding to the last message.').trim();
+    if (!followUpPrompt) return;
+
+    const syntheticUserName = getRoleplayUserName();
+    const syntheticUserMessage = {
+      role: 'user',
+      content: followUpPrompt,
+      characterName: syntheticUserName
+    };
+
+    const recentMessages = [...messages, syntheticUserMessage];
+    const botId = generateUniqueId();
+
+    setIsGenerating(true);
+
+    const speakerCharacter = await resolveSpeakerCharacter(
+      followUpPrompt,
+      recentMessages,
+      {
+        forceAutoSelectSpeaker: settings.multiRoleMode,
+        ignoreMentionedCandidates: settings.multiRoleMode
+      }
+    );
+    const placeholderBotMessage = {
+      id: botId,
+      role: 'bot',
+      content: '',
+      modelId: 'primary',
+      characterId: speakerCharacter?.id,
+      characterName: speakerCharacter?.name,
+      avatar: speakerCharacter?.avatar,
+      isStreaming: settings.streamResponses
+    };
+
+    setMessages(prev => [...prev, placeholderBotMessage]);
+
+    let lastSentContent = '';
+    const handleToken = settings.streamResponses
+      ? (rawChunk, currentFull) => {
+        const nextChunk = currentFull.slice(lastSentContent.length);
+        if (nextChunk) addStreamingText(nextChunk);
+        lastSentContent = currentFull;
+        setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: currentFull, isStreaming: true } : m));
+      }
+      : null;
+
+    if (settings.streamResponses) {
+      startStreamingTTS(botId, getTtsOverridesForCharacter(speakerCharacter));
+    }
+
+    try {
+      const response = await generateReply(
+        followUpPrompt,
+        recentMessages,
+        handleToken,
+        { speakerCharacterId: speakerCharacter?.id || null }
+      );
+
+      const finalText = response || '';
+      setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: finalText, isStreaming: false } : m));
+
+      if (settings.streamResponses) {
+        endStreamingTTS();
+      } else if (settings.ttsAutoPlay && settings.ttsEnabled) {
+        playTTS(botId, finalText, getTtsOverridesForCharacter(speakerCharacter));
+      }
+    } catch (error) {
+      console.error("Call mode follow-up error:", error);
+      setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: `[Error: ${error.message}]`, isStreaming: false } : m));
+      if (settings.streamResponses) endStreamingTTS();
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [
+    addStreamingText,
+    endStreamingTTS,
+    generateReply,
+    generateUniqueId,
+    getRoleplayUserName,
+    getTtsOverridesForCharacter,
+    isGenerating,
+    messages,
+    playTTS,
+    resolveSpeakerCharacter,
+    settings.streamResponses,
+    settings.multiRoleMode,
+    settings.ttsAutoPlay,
+    settings.ttsEnabled,
+    startStreamingTTS
   ]);
 
   async function playTTSWithPitch({ audioUrl, speed = 1.0, semitones = 0 }) {
@@ -3674,6 +3778,7 @@ Return ONLY valid JSON:
     generateUniqueId,
     userProfile,
     sendMessage,
+    generateCallModeFollowUp,
     settings,
     updateSettings,
     inputTranscript,
@@ -3765,7 +3870,7 @@ Return ONLY valid JSON:
     setActiveContextSummary,
     unlockAudioContext
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, generateCallModeFollowUp, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
   ]);
 
 

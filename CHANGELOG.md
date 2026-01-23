@@ -24,6 +24,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 * **Edited Message Persistence**: Fixed a bug where edited AI responses would revert to their original text after navigating away from the chat. Edits are now correctly persisted to the global conversation history, ensuring they are saved to browser storage.
 * **Auto Speaker Variety**: Avoids repeating the same character when multiple active NPCs/narrators are available.
+* **Multi-Role Speaker Isolation**: Tightened prompts so only the active speaker responds, reducing mixed-character replies.
 
 ## 2026-01-22
 
