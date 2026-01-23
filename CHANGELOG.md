@@ -8,9 +8,22 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ## 2026-01-23
 
+### Added
+
+* **Multi-Role Chat (Experimental)**: Added optional character roles (user/NPC/narrator), a user-character selector, and auto speaker selection for AI responses.
+* **Active Chat Roster**: Added per-chat character selection to limit multi-role conversations to chosen characters.
+* **Optional Narrator Interjections**: Added an opt-in narrator that can interject every N AI turns with user-configurable prompt guidance.
+* **Narrator Avatar Upload**: Added an optional avatar upload for the narrator in the roster dialog.
+* **Character Talkativeness Sliders**: Added per-character weights in the roster dialog to bias auto speaker selection.
+* **User Profile Picker**: Added user profile entries to the user character selector for easier switching and clearing.
+* **Group Scene Context**: Added per-chat context for multi-character conversations to ground shared scenes.
+* **Per-Character TTS Voices**: Added roster-level voice selection for Kokoro and voice clone selection for Chatterbox engines to drive autoTTS.
+* **Call Mode Speaker Avatars**: Call mode now tracks the active speaker (or narrator) avatar instead of sticking to the chat starter.
+
 ### Fixed
 
 * **Edited Message Persistence**: Fixed a bug where edited AI responses would revert to their original text after navigating away from the chat. Edits are now correctly persisted to the global conversation history, ensuring they are saved to browser storage.
+* **Auto Speaker Variety**: Avoids repeating the same character when multiple active NPCs/narrators are available.
 
 ## 2026-01-22
 

@@ -16,6 +16,8 @@ const {
   primaryModel,
   PRIMARY_API_URL,
   activeCharacter,
+  settings,
+  userCharacter,
 } = useApp();
 
   // Component state
@@ -123,6 +125,11 @@ const handleSendWithImage = useCallback(async () => {
         role: 'user',
         content: messageText.trim()
       };
+      if (settings.multiRoleMode && userCharacter) {
+        userMsg.characterId = userCharacter.id;
+        userMsg.characterName = userCharacter.name;
+        userMsg.avatar = userCharacter.avatar;
+      }
       setMessages(prev => [...prev, userMsg]);
     }
 
@@ -181,7 +188,7 @@ const handleSendWithImage = useCallback(async () => {
     console.error('Error processing image:', error);
     alert(`Error processing image: ${error.message}`);
   }
-}, [selectedImage, messageText, isGenerating, generateUniqueId, setMessages, primaryModel, userProfile, PRIMARY_API_URL]);
+}, [selectedImage, messageText, isGenerating, generateUniqueId, setMessages, primaryModel, userProfile, PRIMARY_API_URL, settings, userCharacter]);
 
   // Handle closing the dialog and cleanup
   const handleCloseDialog = useCallback(() => {

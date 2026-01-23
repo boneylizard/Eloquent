@@ -82,6 +82,42 @@ async function generateAndShowImage(promptText) {
 //generateAndShowImage("a sexy woman");
 // Helper function to generate truly unique IDs
 const generateUniqueId = () => `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+const NARRATOR_CHARACTER_ID = '__narrator__';
+
+const normalizeChatRole = (role) => {
+  if (role === 'user' || role === 'narrator') return role;
+  return 'npc';
+};
+
+const normalizeCharacter = (character) => ({
+  ...character,
+  chat_role: normalizeChatRole(character?.chat_role)
+});
+
+const buildDefaultCharacterWeights = (characterList) => {
+  const weights = {};
+  (characterList || [])
+    .map(normalizeCharacter)
+    .filter(c => normalizeChatRole(c.chat_role) !== 'user')
+    .forEach(c => {
+      weights[c.id] = 50;
+    });
+  return weights;
+};
+
+const extractFirstJson = (text) => {
+  if (!text) return null;
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === '{') depth += 1;
+    if (char === '}') depth -= 1;
+    if (depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+};
 
 // Helper function to get story tracker context for injection into prompts
 const getStoryTrackerContext = () => {
@@ -139,7 +175,7 @@ const getStoryTrackerContext = () => {
 };
 
 // Helper function to build system prompt from character data
-const _buildSystemPrompt = (character, userProfile = null, summaryContextOverride = null) => {
+const _buildSystemPrompt = (character, userProfile = null, summaryContextOverride = null, userCharacter = null) => {
   if (!character) return null;
 
   // Get active summary context if selected
@@ -154,7 +190,7 @@ const _buildSystemPrompt = (character, userProfile = null, summaryContextOverrid
 
   // Tag substitution variables
   const charName = character.name || 'Character';
-  const userName = userProfile?.name || userProfile?.username || 'User';
+  const userName = userCharacter?.name || userProfile?.name || userProfile?.username || 'User';
 
   // Helper to replace tags in a string
   const replaceTags = (text) => {
@@ -229,12 +265,19 @@ const AppProvider = ({ children }) => {
   const memoryContext = useMemory();
   const userProfile = memoryContext?.userProfile;
   const [activeContextSummary, setActiveContextSummary] = useState(null);
+  const roleplayEnabledRef = useRef(false);
+  const userCharacterRef = useRef(null);
   const summaryContextForRequest = useMemo(() => {
     const summary = (activeContextSummary || userProfile?.activeContextSummary || '').trim();
     return summary || null;
   }, [activeContextSummary, userProfile?.activeContextSummary]);
   const buildSystemPrompt = useCallback(
-    (char) => _buildSystemPrompt(char, userProfile, summaryContextForRequest ? null : activeContextSummary),
+    (char) => _buildSystemPrompt(
+      char,
+      userProfile,
+      summaryContextForRequest ? null : activeContextSummary,
+      roleplayEnabledRef.current ? userCharacterRef.current : null
+    ),
     [userProfile, activeContextSummary, summaryContextForRequest]
   );
   const getRelevantMemories = memoryContext?.getRelevantMemories;
@@ -331,6 +374,14 @@ const AppProvider = ({ children }) => {
   // Character management states
   const [characters, setCharacters] = useState([]);
   const [activeCharacter, setActiveCharacter] = useState(null);
+  const [userCharacterId, setUserCharacterId] = useState(null);
+  const userCharacter = useMemo(() => {
+    if (!characters || characters.length === 0) return null;
+    return userCharacterId ? characters.find(c => c.id === userCharacterId) || null : null;
+  }, [characters, userCharacterId]);
+  useEffect(() => {
+    userCharacterRef.current = userCharacter;
+  }, [userCharacter]);
   const activeCharacterRef = useRef(null);
   useEffect(() => {
     activeCharacterRef.current = activeCharacter;
@@ -342,6 +393,9 @@ const AppProvider = ({ children }) => {
   const secondaryAvatarRef = useRef(null);
   const [conversations, setConversations] = useState([]);
   const [activeConversation, setActiveConversation] = useState(null);
+  const [activeCharacterIds, setActiveCharacterIds] = useState([]);
+  const [activeCharacterWeights, setActiveCharacterWeights] = useState({});
+  const [multiRoleContext, setMultiRoleContext] = useState('');
 
   const [messages, setMessages] = useState([]);
   const [taskProgress, setTaskProgress] = useState({ progress: 0, status: '', active: false });
@@ -463,6 +517,13 @@ const AppProvider = ({ children }) => {
     useLoreAgentForMemory: false,
     useLoreAgentForMemoryRetrieval: false,
     useLoreAgentForMemoryObservation: false,
+    multiRoleMode: false,
+    autoSelectSpeaker: false,
+    narratorEnabled: false,
+    narratorInterval: 6,
+    narratorName: 'Narrator',
+    narratorInstructions: 'Describe scene transitions and world details briefly. Keep narration concise and avoid speaking for the user.',
+    narratorAvatar: null,
     sttEnabled: false,
     streamResponses: true,
     sttEngine: "whisper",
@@ -474,6 +535,9 @@ const AppProvider = ({ children }) => {
     characterAvatarSize: null, // Default size for character avatar
     admin_password: "", // <-- Password for remote access
   });
+  useEffect(() => {
+    roleplayEnabledRef.current = settings.multiRoleMode === true;
+  }, [settings.multiRoleMode]);
 
   // Backend detects single_gpu_mode, frontend stores as singleGpuMode
   const isSingleGpuMode = settings?.singleGpuMode === true;
@@ -687,7 +751,22 @@ const AppProvider = ({ children }) => {
     }
   }, []);
 
-  const startStreamingTTS = useCallback((messageId) => {
+  const getTtsOverridesForCharacter = useCallback((character) => {
+    if (!character) return null;
+    const engine = settings.ttsEngine || 'kokoro';
+    if (engine !== 'chatterbox' && engine !== 'chatterbox_turbo' && engine !== 'kokoro') return null;
+    const voice = character.ttsVoice || character.tts_voice || null;
+    if (!voice || voice === 'default') return null;
+    return { ttsVoice: voice };
+  }, [settings.ttsEngine]);
+
+  const getTtsOverridesForCharacterId = useCallback((characterId) => {
+    if (!characterId) return null;
+    const character = characters.find((item) => item.id === characterId);
+    return getTtsOverridesForCharacter(character);
+  }, [characters, getTtsOverridesForCharacter]);
+
+  const startStreamingTTS = useCallback((messageId, optionsOverrides = null) => {
     window.streamingAudioPlaying = false;
     ttsClient.audioQueue = [];
 
@@ -709,13 +788,16 @@ const AppProvider = ({ children }) => {
     // Local flag to track if this is the first audio chunk for this specific message
     let firstAudioPlayed = false;
 
+    const ttsEngine = optionsOverrides?.ttsEngine || settings.ttsEngine || 'kokoro';
+    const ttsVoice = optionsOverrides?.ttsVoice || settings.ttsVoice || 'af_heart';
+
     const streamingTtsSettings = {
-      engine: settings.ttsEngine || 'kokoro',
-      voice: settings.ttsVoice || 'af_heart',
+      engine: ttsEngine,
+      voice: ttsVoice,
       exaggeration: settings.ttsExaggeration || 0.5,
       cfg: settings.ttsCfg || 0.5,
-      audio_prompt_path: (settings.ttsEngine === 'chatterbox' && settings.ttsVoice !== 'default')
-        ? settings.ttsVoice
+      audio_prompt_path: ((ttsEngine === 'chatterbox') || (ttsEngine === 'chatterbox_turbo')) && ttsVoice !== 'default'
+        ? ttsVoice
         : null
     };
 
@@ -1380,7 +1462,7 @@ const AppProvider = ({ children }) => {
       };
 
       // Add Chatterbox-specific parameters if using Chatterbox
-      if (currentTtsEngine === 'chatterbox') {
+      if (currentTtsEngine === 'chatterbox' || currentTtsEngine === 'chatterbox_turbo') {
         ttsOptions.exaggeration = optionsOverrides?.ttsExaggeration ?? settings.ttsExaggeration ?? 0.5;
         ttsOptions.cfg = optionsOverrides?.ttsCfg ?? settings.ttsCfg ?? 0.5;
 
@@ -1675,25 +1757,60 @@ const AppProvider = ({ children }) => {
     };
 
     const charName = primaryCharacter?.name || 'Character';
-    const userName = userProfile?.name || userProfile?.username || 'User';
+    const userName = settings.multiRoleMode && userCharacter?.name
+      ? userCharacter.name
+      : (userProfile?.name || userProfile?.username || 'User');
     const firstMessage = primaryCharacter?.first_message
       ? replaceTags(primaryCharacter.first_message, charName, userName)
       : null;
 
+    const defaultUserCharacter = userCharacter || null;
+
     const initial = firstMessage
-      ? [{ id: generateUniqueId(), role: 'bot', content: firstMessage, modelId: 'primary', characterName: charName, avatar: primaryCharacter?.avatar }]
+      ? [{
+        id: generateUniqueId(),
+        role: 'bot',
+        content: firstMessage,
+        modelId: 'primary',
+        characterName: charName,
+        characterId: primaryCharacter?.id,
+        avatar: primaryCharacter?.avatar
+      }]
       : [];
 
-    const conv = { id, name: 'New Chat', messages: initial, characterIds: { primary: primaryCharacter?.id, secondary: secondaryCharacter?.id }, created: new Date().toISOString(), requiresTitle: true };
+    const defaultActiveIds = characters
+      .map(normalizeCharacter)
+      .filter(c => normalizeChatRole(c.chat_role) !== 'user')
+      .map(c => c.id);
+    const defaultActiveWeights = buildDefaultCharacterWeights(characters);
+    const conv = {
+      id,
+      name: 'New Chat',
+      messages: initial,
+      characterIds: {
+        primary: primaryCharacter?.id,
+        secondary: secondaryCharacter?.id,
+        user: defaultUserCharacter?.id || null
+      },
+      activeCharacterIds: defaultActiveIds,
+      activeCharacterWeights: defaultActiveWeights,
+      multiRoleContext: '',
+      created: new Date().toISOString(),
+      requiresTitle: true
+    };
     console.log('🔍 [DEBUG] New conversation has requiresTitle flag:', conv.requiresTitle);
     setConversations(prev => [...prev, conv]);
     setActiveConversation(id);
     setMessages(initial);
     setDualModeEnabled(false);
     setActiveCharacter(primaryCharacter || null);
+    setUserCharacterId(defaultUserCharacter?.id || null);
+    setActiveCharacterIds(defaultActiveIds);
+    setActiveCharacterWeights(defaultActiveWeights);
+    setMultiRoleContext('');
     generateChatTitle(id, initial, primaryCharacter?.name || '', secondaryCharacter?.name || '')
     return conv;
-  }, [primaryCharacter, secondaryCharacter, setConversations, setActiveConversation, setMessages, setDualModeEnabled, setActiveCharacter, generateChatTitle]);
+  }, [primaryCharacter, secondaryCharacter, userCharacter, characters, settings.multiRoleMode, userProfile, setConversations, setActiveConversation, setMessages, setDualModeEnabled, setActiveCharacter, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights, generateChatTitle]);
 
   const handleConversationClick = useCallback((id) => {
     if (activeConversation) {
@@ -1703,13 +1820,26 @@ const AppProvider = ({ children }) => {
     const sel = conversations.find(c => c.id === id) || {};
     setMessages(Array.isArray(sel.messages) ? sel.messages : []);
 
-    const { primary, secondary } = sel.characterIds || {};
+    const { primary, secondary, user } = sel.characterIds || {};
     const primChar = characters.find(c => c.id === primary) || null;
     const secChar = characters.find(c => c.id === secondary) || null;
     setPrimaryCharacter(primChar);
     setSecondaryCharacter(secChar);
     setActiveCharacter(primChar);
-  }, [activeConversation, conversations, messages, characters, setConversations, setActiveConversation, setMessages, setPrimaryCharacter, setSecondaryCharacter, setActiveCharacter]);
+    setUserCharacterId(user || null);
+    const defaultActiveIds = characters
+      .map(normalizeCharacter)
+      .filter(c => normalizeChatRole(c.chat_role) !== 'user')
+      .map(c => c.id);
+    setActiveCharacterIds(Array.isArray(sel.activeCharacterIds) ? sel.activeCharacterIds : defaultActiveIds);
+    const defaultWeights = buildDefaultCharacterWeights(characters);
+    setActiveCharacterWeights(
+      sel.activeCharacterWeights && typeof sel.activeCharacterWeights === 'object'
+        ? sel.activeCharacterWeights
+        : defaultWeights
+    );
+    setMultiRoleContext(typeof sel.multiRoleContext === 'string' ? sel.multiRoleContext : '');
+  }, [activeConversation, conversations, messages, characters, setConversations, setActiveConversation, setMessages, setPrimaryCharacter, setSecondaryCharacter, setActiveCharacter, setActiveCharacterIds, setActiveCharacterWeights, setMultiRoleContext]);
 
   // ----------------------------------
   // Character Management
@@ -1718,11 +1848,13 @@ const AppProvider = ({ children }) => {
     try {
       const saved = localStorage.getItem('llm-characters');
       if (saved) {
-        const parsed = JSON.parse(saved);
+        const parsed = JSON.parse(saved).map(normalizeCharacter);
         setCharacters(parsed);
         const conv = conversations.find(c => c.id === activeConversation);
         const charId = conv?.characterIds?.primary;
         if (charId) setActiveCharacter(parsed.find(c => c.id === charId) || null);
+        const userId = conv?.characterIds?.user;
+        if (userId) setUserCharacterId(userId);
       }
     } catch (err) {
       console.error('Load chars error:', err);
@@ -1730,7 +1862,7 @@ const AppProvider = ({ children }) => {
   }, [activeConversation, conversations]);
 
   const saveCharacter = useCallback((data) => {
-    let savedCharacter = data;
+    let savedCharacter = { ...data, chat_role: normalizeChatRole(data?.chat_role) };
 
     setCharacters(prev => {
       const list = prev.slice();
@@ -1738,7 +1870,7 @@ const AppProvider = ({ children }) => {
       if (!data.id) {
         // Create new character
         savedCharacter = {
-          ...data,
+          ...savedCharacter,
           id: `char_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
           created_at: new Date().toISOString().split('T')[0]
         };
@@ -1748,13 +1880,13 @@ const AppProvider = ({ children }) => {
         // Update existing character
         const idx = list.findIndex(c => c.id === data.id);
         if (idx > -1) {
-          savedCharacter = { ...data };
+          savedCharacter = { ...savedCharacter };
           list[idx] = savedCharacter;
           console.log('Updating existing character:', savedCharacter.name, 'with ID:', savedCharacter.id);
         } else {
           // ID provided but character not found, treat as new
           savedCharacter = {
-            ...data,
+            ...savedCharacter,
             id: `char_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
             created_at: new Date().toISOString().split('T')[0]
           };
@@ -1764,13 +1896,22 @@ const AppProvider = ({ children }) => {
       }
 
       try {
-        localStorage.setItem('llm-characters', JSON.stringify(list));
-        console.log('Characters saved to localStorage:', list.length, 'total characters');
+        let normalizedList = list.map(normalizeCharacter);
+        if (savedCharacter.chat_role === 'user') {
+          normalizedList = normalizedList.map(char => {
+            if (char.id === savedCharacter.id) return { ...char, chat_role: 'user' };
+            if (normalizeChatRole(char.chat_role) === 'user') return { ...char, chat_role: 'npc' };
+            return char;
+          });
+        }
+        localStorage.setItem('llm-characters', JSON.stringify(normalizedList));
+        console.log('Characters saved to localStorage:', normalizedList.length, 'total characters');
+        return normalizedList;
       } catch (error) {
         console.error('Failed to save characters to localStorage:', error);
       }
 
-      return list;
+      return list.map(normalizeCharacter);
     });
 
     return savedCharacter; // Return the character with its final ID
@@ -1783,7 +1924,8 @@ const AppProvider = ({ children }) => {
       return filtered;
     });
     if (activeCharacter?.id === id) setActiveCharacter(null);
-  }, [activeCharacter]);
+    if (userCharacterId === id) setUserCharacterId(null);
+  }, [activeCharacter, userCharacterId]);
 
   const duplicateCharacter = useCallback((id) => {
     const orig = characters.find(c => c.id === id);
@@ -1804,16 +1946,120 @@ const AppProvider = ({ children }) => {
     saveCharacter(duplicatedData);
   }, [characters, saveCharacter]);
 
+  const setCharacterChatRole = useCallback((id, role) => {
+    const normalizedRole = normalizeChatRole(role);
+    setCharacters(prev => {
+      const updated = prev.map(char => {
+        if (char.id === id) return { ...char, chat_role: normalizedRole };
+        if (normalizedRole === 'user' && normalizeChatRole(char.chat_role) === 'user') {
+          return { ...char, chat_role: 'npc' };
+        }
+        return normalizeCharacter(char);
+      });
+      localStorage.setItem('llm-characters', JSON.stringify(updated));
+      return updated;
+    });
+    if (normalizedRole === 'user') setUserCharacterId(id);
+  }, []);
+
+  const setUserCharacterById = useCallback((id) => {
+    const nextId = id || null;
+    setUserCharacterId(nextId);
+    if (settings.multiRoleMode && nextId) {
+      setCharacterChatRole(nextId, 'user');
+    }
+    if (activeConversation) {
+      setConversations(prev =>
+        prev.map(c => (
+          c.id === activeConversation
+            ? { ...c, characterIds: { ...c.characterIds, user: nextId } }
+            : c
+        ))
+      );
+    }
+  }, [activeConversation, setConversations, setCharacterChatRole, settings.multiRoleMode]);
+
+  const updateActiveCharacterIds = useCallback((ids) => {
+    const unique = Array.from(new Set(ids || [])).filter(Boolean);
+    const nextWeights = { ...(activeCharacterWeights || {}) };
+    unique.forEach(id => {
+      if (nextWeights[id] == null) nextWeights[id] = 50;
+    });
+    setActiveCharacterIds(unique);
+    setActiveCharacterWeights(nextWeights);
+    if (activeConversation) {
+      setConversations(prev =>
+        prev.map(c => (
+          c.id === activeConversation
+            ? { ...c, activeCharacterIds: unique, activeCharacterWeights: nextWeights }
+            : c
+        ))
+      );
+    }
+  }, [activeConversation, activeCharacterWeights, setConversations]);
+
+  const updateActiveCharacterWeights = useCallback((updates) => {
+    const updateMap = updates && typeof updates === 'object' ? updates : {};
+    setActiveCharacterWeights(prev => {
+      const next = { ...(prev || {}) };
+      Object.keys(updateMap).forEach((id) => {
+        const raw = updateMap[id];
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isFinite(parsed)) return;
+        next[id] = Math.max(1, Math.min(100, parsed));
+      });
+      if (activeConversation) {
+        setConversations(cs =>
+          cs.map(c =>
+            c.id === activeConversation
+              ? { ...c, activeCharacterWeights: next }
+              : c
+          )
+        );
+      }
+      return next;
+    });
+  }, [activeConversation, setConversations]);
+
+  const updateMultiRoleContext = useCallback((value) => {
+    const nextValue = typeof value === 'string' ? value : '';
+    setMultiRoleContext(nextValue);
+    if (activeConversation) {
+      setConversations(prev =>
+        prev.map(c =>
+          c.id === activeConversation
+            ? { ...c, multiRoleContext: nextValue }
+            : c
+        )
+      );
+    }
+  }, [activeConversation, setConversations]);
+
   const applyCharacter = useCallback((id) => {
-    const char = characters.find(c => c.id === id) || null;
+    const requested = characters.find(c => c.id === id) || null;
+    const requestedRole = requested ? normalizeChatRole(requested.chat_role) : 'npc';
+    const char = settings.multiRoleMode && requestedRole === 'user'
+      ? (characters.find(c => normalizeChatRole(c.chat_role) !== 'user') || null)
+      : requested;
     setActiveCharacter(char);
     if (activeConversation) {
-      setConversations(prev => prev.map(c => (c.id === activeConversation ? { ...c, characterIds: { ...c.characterIds, primary: id } } : c)));
+      setConversations(prev => prev.map(c => (
+        c.id === activeConversation
+          ? { ...c, characterIds: { ...c.characterIds, primary: char?.id || null } }
+          : c
+      )));
     }
     if (char?.first_message && messages.length === 0) {
-      setMessages([{ id: generateUniqueId(), role: 'bot', content: char.first_message, avatar: char.avatar, characterName: char.name }]);
+      setMessages([{
+        id: generateUniqueId(),
+        role: 'bot',
+        content: char.first_message,
+        avatar: char.avatar,
+        characterName: char.name,
+        characterId: char.id
+      }]);
     }
-  }, [characters, activeConversation, messages, setConversations]);
+  }, [characters, activeConversation, messages, setConversations, settings.multiRoleMode]);
 
   // ----------------------------------
   // Dual-Mode Logic
@@ -1894,8 +2140,8 @@ const AppProvider = ({ children }) => {
       const sText = cleanModelOutput(sRes.text);
 
       setMessages(prev => [...prev,
-      { id: pId, role: 'bot', content: pText, modelId: 'primary', characterName: primaryCharacter?.name, avatar: primaryCharacter?.avatar },
-      { id: sId, role: 'bot', content: sText, modelId: 'secondary', characterName: secondaryCharacter?.name, avatar: secondaryCharacter?.avatar }
+      { id: pId, role: 'bot', content: pText, modelId: 'primary', characterName: primaryCharacter?.name, characterId: primaryCharacter?.id, avatar: primaryCharacter?.avatar },
+      { id: sId, role: 'bot', content: sText, modelId: 'secondary', characterName: secondaryCharacter?.name, characterId: secondaryCharacter?.id, avatar: secondaryCharacter?.avatar }
       ]);
 
       await observeConversationWithAgent(text, `${pRes.text}\n\n${sRes.text}`);
@@ -1906,14 +2152,332 @@ const AppProvider = ({ children }) => {
         // For now let's play primary, then secondary might overlap or we'd need a queue.
         // Actually playTTS stops current audio, so primary then secondary would just play secondary.
         // Let's just play primary for now to avoid complexity, or the characters will talk over each other.
-        playTTS(pId, pText);
+        playTTS(pId, pText, getTtsOverridesForCharacter(primaryCharacter));
       }
     } catch (err) {
       console.error('Dual chat error:', err);
     } finally {
       setIsGenerating(false);
     }
-  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent, summaryContextForRequest]);
+  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent, summaryContextForRequest, getTtsOverridesForCharacter]);
+
+  const getRoleplayUserName = useCallback(() => {
+    if (settings.multiRoleMode && userCharacter?.name) return userCharacter.name;
+    return userProfile?.name || userProfile?.username || 'User';
+  }, [settings.multiRoleMode, userCharacter, userProfile]);
+
+  const getMultiRoleContextBlock = useCallback(() => {
+    if (!settings.multiRoleMode) return '';
+    const trimmed = (multiRoleContext || '').trim();
+    if (!trimmed) return '';
+    return `\n\n[GROUP SCENE CONTEXT]\n${trimmed}`;
+  }, [settings.multiRoleMode, multiRoleContext]);
+
+  const getNarratorCharacter = useCallback(() => {
+    if (!settings.narratorEnabled) return null;
+    const name = (settings.narratorName || '').trim() || 'Narrator';
+    return {
+      id: NARRATOR_CHARACTER_ID,
+      name,
+      description: 'A narrator who describes the scene and transitions.',
+      personality: '',
+      background: '',
+      speech_style: 'Narrative, concise, scene-setting.',
+      chat_role: 'narrator',
+      avatar: settings.narratorAvatar || null,
+      isNarratorSystem: true
+    };
+  }, [settings.narratorEnabled, settings.narratorName, settings.narratorAvatar]);
+
+  const buildNarratorSystemPrompt = useCallback(() => {
+    const narratorName = (settings.narratorName || '').trim() || 'Narrator';
+    const userName = getRoleplayUserName();
+    const charName = activeCharacterRef.current?.name || primaryCharacter?.name || 'Character';
+    const rawInstructions = settings.narratorInstructions || '';
+    const narratorInstructions = rawInstructions
+      .replace(/{{user}}/gi, userName)
+      .replace(/{{char}}/gi, charName)
+      .trim();
+
+    const summaryContext = activeContextSummary || userProfile?.activeContextSummary || '';
+    const summaryBlock = summaryContext
+      ? `\n\n[PREVIOUS STORY SUMMARY]:\n${summaryContext}\n[End of Summary]\n`
+      : '';
+    const storyContext = getStoryTrackerContext();
+    const groupContext = getMultiRoleContextBlock();
+    const guidance = narratorInstructions ? `\n\nNARRATION GUIDANCE:\n${narratorInstructions}` : '';
+
+    return `You are ${narratorName}, the narrator of this roleplay.
+
+Purpose:
+- Describe scene transitions, atmosphere, and world context.
+- Keep narration concise (2-5 sentences) unless the user asks for more.
+- Do not speak for ${userName} or write dialogue on behalf of characters.
+- Avoid labeling lines with character names or using speaker tags.
+
+If you must mention character actions, do so briefly in third-person prose.
+${guidance}${groupContext}${summaryBlock}${storyContext}`;
+  }, [activeCharacterRef, primaryCharacter, settings.narratorInstructions, settings.narratorName, activeContextSummary, userProfile, getRoleplayUserName, getMultiRoleContextBlock]);
+
+  const buildRoleplayRosterBlock = useCallback(() => {
+    if (!settings.multiRoleMode) return '';
+    const normalized = (characters || []).map(normalizeCharacter);
+    const rosterIds = Array.isArray(activeCharacterIds) ? activeCharacterIds : [];
+    const rosterSet = rosterIds.length ? new Set(rosterIds) : null;
+    const rosterFiltered = rosterSet ? normalized.filter(c => rosterSet.has(c.id)) : normalized;
+    const userName = getRoleplayUserName();
+    const narratorName = settings.narratorEnabled
+      ? ((settings.narratorName || '').trim() || 'Narrator')
+      : null;
+    const npcNames = rosterFiltered
+      .filter(c => normalizeChatRole(c.chat_role) === 'npc')
+      .map(c => c.name)
+      .filter(Boolean);
+    const narratorNames = rosterFiltered
+      .filter(c => normalizeChatRole(c.chat_role) === 'narrator')
+      .map(c => c.name)
+      .filter(Boolean);
+
+    const narratorLine = narratorName
+      ? `\nNarrator: ${narratorName}`
+      : '';
+    const narratorListLine = narratorNames.length
+      ? `\nNarrator Characters: ${narratorNames.join(', ')}`
+      : '';
+
+    return `\n\n[ROLEPLAY MODE]\nUser Character: ${userName}\nCharacters: ${npcNames.length ? npcNames.join(', ') : 'None'}${narratorListLine}${narratorLine}\nRules: Never write dialogue or actions for ${userName}.`;
+  }, [characters, activeCharacterIds, getRoleplayUserName, settings.multiRoleMode, settings.narratorEnabled, settings.narratorName]);
+
+  const buildSpeakerSelectionPrompt = useCallback((recentMessages, candidates, userName, lastSpeakerName, weightMap, lastUserText) => {
+    const candidateList = candidates
+      .map(c => `- ${c.name} (${normalizeChatRole(c.chat_role)})`)
+      .join('\n');
+    const weightList = candidates
+      .map(c => {
+        const raw = weightMap?.[c.id];
+        const parsed = Number.parseInt(raw, 10);
+        const weight = Number.isFinite(parsed) ? parsed : 50;
+        return `- ${c.name}: ${weight}`;
+      })
+      .join('\n');
+    const recentHistory = recentMessages
+      .filter(m => m.role !== 'system')
+      .slice(-10)
+      .map(m => {
+        if (m.role === 'user') {
+          return `${m.characterName || userName}: ${m.content}`;
+        }
+        if (m.role === 'bot') {
+          return `${m.characterName || 'Assistant'}: ${m.content}`;
+        }
+        return `System: ${m.content}`;
+      })
+      .join('\n');
+
+    const lastSpeakerLine = lastSpeakerName ? `Last speaker: ${lastSpeakerName} (avoid repeating if possible)` : 'Last speaker: None';
+    const userLine = lastUserText ? `Latest user message:\n${lastUserText}` : 'Latest user message: None';
+    return `You are a scriptwriter selecting the next speaker in a roleplay.
+
+Candidates:
+${candidateList || 'None'}
+
+Selection weights (higher = more likely):
+${weightList || 'None'}
+
+User Character: ${userName} (never select)
+${lastSpeakerLine}
+${userLine}
+
+Rules:
+- Prefer characters explicitly addressed by the user.
+- Prefer higher-weight characters when multiple are plausible.
+
+Recent conversation:
+${recentHistory}
+
+Return ONLY valid JSON:
+{"selection": "Character Name"}`;
+  }, []);
+
+  const selectNextSpeaker = useCallback(async (recentMessages, candidates, userName, lastSpeakerName, weightMap, lastUserText) => {
+    if (!primaryModel || !PRIMARY_API_URL) return null;
+    if (!candidates.length) return null;
+
+    const selectionSystem = "You are a careful assistant that returns only valid JSON.";
+    const selectionPrompt = buildSpeakerSelectionPrompt(recentMessages, candidates, userName, lastSpeakerName, weightMap, lastUserText);
+    const prompt = formatPrompt([{ role: 'user', content: selectionPrompt }], primaryModel, selectionSystem);
+
+    try {
+      const res = await fetch(`${PRIMARY_API_URL}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          model_name: primaryModel,
+          directProfileInjection: true,
+          temperature: 0.2,
+          top_p: 0.9,
+          top_k: 40,
+          repetition_penalty: 1.05,
+          max_tokens: 120,
+          gpu_id: 0,
+          stream: false,
+          request_purpose: 'speaker_selection'
+        })
+      });
+
+      if (!res.ok) return null;
+      const data = await res.json();
+      const rawText = cleanModelOutput(data.text || '');
+      const jsonText = extractFirstJson(rawText) || extractFirstJson(data.text || '');
+      if (!jsonText) return null;
+
+      const parsed = JSON.parse(jsonText);
+      const selectionName = parsed?.selection ? String(parsed.selection).trim() : '';
+      if (!selectionName) return null;
+
+      const normalizedSelection = selectionName.toLowerCase();
+      return candidates.find(c => (c.name || '').toLowerCase() === normalizedSelection) || null;
+    } catch (error) {
+      console.warn('Speaker selection failed:', error);
+      return null;
+    }
+  }, [PRIMARY_API_URL, primaryModel, formatPrompt, cleanModelOutput, buildSpeakerSelectionPrompt]);
+
+  const resolveSpeakerCharacter = useCallback(async (text, recentMessages, options = {}) => {
+    const { speakerCharacterId = null } = options;
+    if (speakerCharacterId === NARRATOR_CHARACTER_ID) {
+      return getNarratorCharacter();
+    }
+    if (speakerCharacterId) {
+      return characters.find(c => c.id === speakerCharacterId) || null;
+    }
+
+    if (!settings.multiRoleMode) return activeCharacterRef.current || null;
+
+    const narrator = getNarratorCharacter();
+    const narratorInterval = Number.parseInt(settings.narratorInterval, 10);
+    const shouldUseNarrator = () => {
+      if (!narrator) return false;
+      if (!settings.autoSelectSpeaker) return false;
+      if (!Number.isFinite(narratorInterval) || narratorInterval <= 0) return false;
+      let botSince = 0;
+      for (let i = recentMessages.length - 1; i >= 0; i -= 1) {
+        const msg = recentMessages[i];
+        if (msg?.role !== 'bot') continue;
+        if (msg.characterId === NARRATOR_CHARACTER_ID) {
+          if (botSince === 0) return false;
+          return botSince >= narratorInterval;
+        }
+        botSince += 1;
+      }
+      return botSince >= narratorInterval;
+    };
+
+    const normalized = (characters || []).map(normalizeCharacter);
+    const rosterIds = Array.isArray(activeCharacterIds) ? activeCharacterIds : [];
+    const rosterSet = rosterIds.length ? new Set(rosterIds) : null;
+    const rosterFiltered = rosterSet ? normalized.filter(c => rosterSet.has(c.id)) : normalized;
+    const candidates = rosterFiltered.filter(c => normalizeChatRole(c.chat_role) !== 'user');
+    if (!candidates.length) return activeCharacterRef.current || null;
+
+    const getWeight = (id) => {
+      const raw = activeCharacterWeights?.[id];
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsed)) return 50;
+      return Math.max(1, Math.min(100, parsed));
+    };
+
+    const normalizeMatch = (value) => String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+
+    const findMentionedCandidate = () => {
+      const textMatch = normalizeMatch(text);
+      if (!textMatch) return null;
+      let best = null;
+      let bestWeight = -1;
+      for (const candidate of candidates) {
+        const nameMatch = normalizeMatch(candidate.name);
+        if (!nameMatch) continue;
+        if (!textMatch.includes(nameMatch)) continue;
+        const weight = getWeight(candidate.id);
+        if (weight > bestWeight) {
+          best = candidate;
+          bestWeight = weight;
+        }
+      }
+      return best;
+    };
+
+    const pickWeighted = (excludeId = null) => {
+      const pool = candidates.filter(c => c.id !== excludeId);
+      if (!pool.length) return candidates[0];
+      const total = pool.reduce((sum, c) => sum + getWeight(c.id), 0);
+      const roll = Math.random() * total;
+      let running = 0;
+      for (const candidate of pool) {
+        running += getWeight(candidate.id);
+        if (roll <= running) return candidate;
+      }
+      return pool[0];
+    };
+
+    const mentioned = findMentionedCandidate();
+    if (mentioned) return mentioned;
+
+    if (shouldUseNarrator()) return narrator;
+
+    if (!settings.autoSelectSpeaker) {
+      const current = activeCharacterRef.current;
+      const currentRole = current ? normalizeChatRole(current.chat_role) : 'npc';
+      const inRoster = !rosterSet || (current && rosterSet.has(current.id));
+      if (current && currentRole !== 'user' && inRoster) return current;
+      return pickWeighted();
+    }
+
+    if (candidates.length === 1) return candidates[0];
+
+    const findLastSpeaker = () => {
+      for (let i = recentMessages.length - 1; i >= 0; i -= 1) {
+        const msg = recentMessages[i];
+        if (msg?.role !== 'bot') continue;
+        if (msg.characterId) {
+          const byId = candidates.find(c => c.id === msg.characterId);
+          if (byId) return byId;
+        }
+        if (msg.characterName) {
+          const byName = candidates.find(c => (c.name || '').toLowerCase() === String(msg.characterName).toLowerCase());
+          if (byName) return byName;
+        }
+      }
+      return null;
+    };
+    const lastSpeaker = findLastSpeaker();
+    const lastSpeakerName = lastSpeaker?.name || null;
+    const nextByRotation = () => {
+      if (!lastSpeaker) return candidates[0];
+      const idx = candidates.findIndex(c => c.id === lastSpeaker.id);
+      if (idx === -1) return candidates[0];
+      return candidates[(idx + 1) % candidates.length];
+    };
+
+    const userName = getRoleplayUserName();
+    const selected = await selectNextSpeaker(
+      recentMessages,
+      candidates,
+      userName,
+      lastSpeakerName,
+      activeCharacterWeights,
+      text
+    );
+    if (!selected) return pickWeighted(lastSpeaker?.id || null);
+    if (lastSpeaker && selected.id === lastSpeaker.id && candidates.length > 1) {
+      return pickWeighted(lastSpeaker.id);
+    }
+    return selected;
+  }, [activeCharacterRef, characters, activeCharacterIds, activeCharacterWeights, getRoleplayUserName, getNarratorCharacter, selectNextSpeaker, settings.autoSelectSpeaker, settings.multiRoleMode, settings.narratorInterval]);
 
 
   // New shared helper to build the FULL generation system prompt (memories, lore, etc.)
@@ -1921,9 +2485,16 @@ const AppProvider = ({ children }) => {
     const { includeAuthorNote = true } = options;
     console.log('🔍 [SystemPrompt] Building for character:', character?.name, 'User:', userProfile?.name);
     console.log('🔍 [SystemPrompt] Tag replacer check. Character valid?', !!character, 'UserProfile valid?', !!userProfile);
-    let systemMsg = character
-      ? buildSystemPrompt(character)
-      : ('You are a helpful assistant.' + getStoryTrackerContext());
+    let systemMsg = character?.id === NARRATOR_CHARACTER_ID && settings.narratorEnabled
+      ? buildNarratorSystemPrompt()
+      : (character
+        ? buildSystemPrompt(character)
+        : ('You are a helpful assistant.' + getStoryTrackerContext()));
+
+    if (settings.multiRoleMode) {
+      systemMsg += getMultiRoleContextBlock();
+      systemMsg += buildRoleplayRosterBlock();
+    }
 
     let contextToAdd = '';
 
@@ -1931,7 +2502,7 @@ const AppProvider = ({ children }) => {
     const replaceTags = (content) => {
       if (!content || !character) return content;
       const charName = character.name || 'Character';
-      const userName = userProfile?.name || userProfile?.username || 'User';
+      const userName = getRoleplayUserName();
       return content.replace(/{{char}}/gi, charName).replace(/{{user}}/gi, userName);
     };
 
@@ -1986,12 +2557,13 @@ const AppProvider = ({ children }) => {
     const hasSummary = systemMsg.includes('[PREVIOUS STORY SUMMARY]');
     console.log(`[Summary] System prompt includes summary: ${hasSummary}`);
     return systemMsg;
-  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt]);
+  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt, buildNarratorSystemPrompt, buildRoleplayRosterBlock, getRoleplayUserName, getMultiRoleContextBlock]);
 
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
-    const { authorNote = null, webSearchEnabled = false } = options;
-    const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote, { includeAuthorNote: false });
+    const { authorNote = null, webSearchEnabled = false, speakerCharacterId = null } = options;
+    const speakerCharacter = await resolveSpeakerCharacter(text, recentMessages, { speakerCharacterId });
+    const systemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, { includeAuthorNote: false });
     console.log(`[Summary] Attaching summaryContext to generateReply: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
     // --- Unified Payload Construction (Matching sendMessage exactly) ---
@@ -2110,9 +2682,9 @@ const AppProvider = ({ children }) => {
     primaryIsAPI,
     primaryModel,
     settings,
-    activeCharacter,
     userProfile?.id,
     PRIMARY_API_URL,
+    resolveSpeakerCharacter,
     getGenerationSystemPrompt,
     formatPrompt,
     cleanModelOutput,
@@ -2248,6 +2820,11 @@ const AppProvider = ({ children }) => {
       role: 'user',
       content: text
     };
+    if (settings.multiRoleMode && userCharacter) {
+      userMsg.characterId = userCharacter.id;
+      userMsg.characterName = userCharacter.name;
+      userMsg.avatar = userCharacter.avatar;
+    }
     const postUserHistory = [...messages, userMsg];
     setMessages(() => postUserHistory);
     setIsGenerating(true);
@@ -2284,7 +2861,8 @@ const AppProvider = ({ children }) => {
       }
 
       // 3) Build System Prompt with layered context
-      const systemMsg = await getGenerationSystemPrompt(text, activeCharacterRef.current, authorNote, { includeAuthorNote: false });
+      const speakerCharacter = await resolveSpeakerCharacter(text, postUserHistory);
+      const systemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, { includeAuthorNote: false });
       console.log(`[Summary] Attaching summaryContext to sendMessage: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
       // 4) Prepare payload
@@ -2327,8 +2905,14 @@ const AppProvider = ({ children }) => {
         attempts++;
         const botId = generateUniqueId();
         const placeholderBotMessage = {
-          id: botId, role: 'bot', content: '', modelId: 'primary',
-          characterName: activeCharacter?.name, avatar: activeCharacter?.avatar, isStreaming: streamResponses,
+          id: botId,
+          role: 'bot',
+          content: '',
+          modelId: 'primary',
+          characterId: speakerCharacter?.id,
+          characterName: speakerCharacter?.name,
+          avatar: speakerCharacter?.avatar,
+          isStreaming: streamResponses,
         };
 
         if (attempts > 1) {
@@ -2345,7 +2929,7 @@ const AppProvider = ({ children }) => {
           setMessages(prev => [...postUserHistory, placeholderBotMessage]);
         }
 
-        if (streamResponses) startStreamingTTS(botId);
+        if (streamResponses) startStreamingTTS(botId, getTtsOverridesForCharacter(speakerCharacter));
 
         try {
           const controller = new AbortController();
@@ -2429,7 +3013,7 @@ const AppProvider = ({ children }) => {
 
             // Trigger TTS if autoplay is on
             if (settings.ttsAutoPlay && settings.ttsEnabled) {
-              playTTS(botId, cleanedText);
+              playTTS(botId, cleanedText, getTtsOverridesForCharacter(speakerCharacter));
             }
           }
         } catch (err) {
@@ -2458,11 +3042,11 @@ const AppProvider = ({ children }) => {
       setIsGenerating(false);
     }
   }, [
-    activeConversation, primaryModel, messages, conversations, settings, activeCharacter,
+    activeConversation, primaryModel, messages, conversations, settings, userCharacter,
     userProfile?.id, PRIMARY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, MEMORY_API_URL,
-    buildSystemPrompt, formatPrompt, cleanModelOutput, generateChatTitle, memoryContext,
+    formatPrompt, cleanModelOutput, generateChatTitle, memoryContext, resolveSpeakerCharacter,
     observeConversationWithAgent, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext,
-    summaryContextForRequest
+    summaryContextForRequest, getTtsOverridesForCharacter
   ]);
 
   async function playTTSWithPitch({ audioUrl, speed = 1.0, semitones = 0 }) {
@@ -2855,7 +3439,28 @@ const AppProvider = ({ children }) => {
     } else {
       setMessages([]);
     }
-  }, [conversations, setActiveConversation, setMessages]);
+    const userId = conversation?.characterIds?.user;
+    if (userId) {
+      setUserCharacterId(userId);
+    } else {
+      setUserCharacterId(null);
+    }
+    const defaultActiveIds = characters
+      .map(normalizeCharacter)
+      .filter(c => normalizeChatRole(c.chat_role) !== 'user')
+      .map(c => c.id);
+    if (Array.isArray(conversation?.activeCharacterIds)) {
+      setActiveCharacterIds(conversation.activeCharacterIds);
+    } else {
+      setActiveCharacterIds(defaultActiveIds);
+    }
+    if (conversation?.activeCharacterWeights && typeof conversation.activeCharacterWeights === 'object') {
+      setActiveCharacterWeights(conversation.activeCharacterWeights);
+    } else {
+      setActiveCharacterWeights(buildDefaultCharacterWeights(characters));
+    }
+    setMultiRoleContext(typeof conversation?.multiRoleContext === 'string' ? conversation.multiRoleContext : '');
+  }, [conversations, characters, setActiveConversation, setMessages, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights, setMultiRoleContext]);
   // Add this effect after your other useEffect blocks in AppContext.jsx
   useEffect(() => {
     // Load settings from localStorage on component mount
@@ -3025,6 +3630,7 @@ const AppProvider = ({ children }) => {
     isRecording,
     fetchTriggeredLore,
     getGenerationSystemPrompt,
+    resolveSpeakerCharacter,
     generateChatTitle,
     setIsRecording,
     isPlayingAudio,
@@ -3043,6 +3649,7 @@ const AppProvider = ({ children }) => {
     startRecording,
     stopRecording,
     playTTS,
+    getTtsOverridesForCharacterId,
     isCallModeActive,
     callModeRecording,
     startCallMode,
@@ -3100,12 +3707,21 @@ const AppProvider = ({ children }) => {
     setIsAutoplaying,
     characters,
     activeCharacter,
+    userCharacter,
+    activeCharacterIds,
+    activeCharacterWeights,
+    multiRoleContext,
     setActiveCharacter,
+    setUserCharacterById,
+    updateActiveCharacterIds,
+    updateActiveCharacterWeights,
+    updateMultiRoleContext,
     loadCharacters,
     saveCharacter,
     deleteCharacter,
     duplicateCharacter,
     applyCharacter,
+    setCharacterChatRole,
     primaryCharacter,
     speechDetected,
     secondaryCharacter,
@@ -3149,7 +3765,7 @@ const AppProvider = ({ children }) => {
     setActiveContextSummary,
     unlockAudioContext
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
   ]);
 
 
