@@ -4,7 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save, Plus } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward } from 'lucide-react';
 import { getSummaries, deleteSummary } from '../utils/summaryUtils';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -91,7 +91,8 @@ const Chat = ({ layoutMode }) => {
     backgroundImage, // Add backgroundImage from context
     generateConversationSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
     capturePromptSubmissionTime, // Latency monitoring
-    unlockAudioContext // Unlocker
+    unlockAudioContext, // Unlocker
+    generateCallModeFollowUp
   } = useApp();
   const { profiles, activeProfileId, switchProfile } = useMemory();
 
@@ -425,6 +426,13 @@ const Chat = ({ layoutMode }) => {
     else if (type === 'direct') messageToSend = `*${choice}*`;
     await sendMessage(messageToSend);
   };
+
+  const handleAiContinue = useCallback(() => {
+    if (isGenerating || isTranscribing) return;
+    stopTTS();
+    handleStopGeneration();
+    generateCallModeFollowUp?.();
+  }, [generateCallModeFollowUp, handleStopGeneration, isGenerating, isTranscribing, stopTTS]);
 
   const handleMicClick = () => {
     if (audioError) setAudioError(null);
@@ -1469,6 +1477,17 @@ const Chat = ({ layoutMode }) => {
                   className="flex-shrink-0 h-10 w-10"
                 >
                   <Eye size={18} />
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleAiContinue}
+                  disabled={isGenerating || isTranscribing || !messages.some(m => m.role === 'bot')}
+                  title="Continue AI response"
+                  className="flex-shrink-0 h-10 w-10"
+                >
+                  <FastForward size={18} />
                 </Button>
 
                 {sttEnabled && (

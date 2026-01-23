@@ -21,6 +21,7 @@ const CallModeOverlay = ({
     startRecording,
     stopRecording,
     sendMessage,
+    generateCallModeFollowUp,
     stopTTS,
     handleStopGeneration,
     isGenerating,
@@ -152,6 +153,13 @@ const CallModeOverlay = ({
 
     randomInterval();
   }, [isSpeaking]);
+
+  const handleAiContinue = useCallback(() => {
+    if (isGenerating || isRecording || isTranscribing) return;
+    stopTTS();
+    handleStopGeneration();
+    generateCallModeFollowUp?.();
+  }, [generateCallModeFollowUp, handleStopGeneration, isGenerating, isRecording, isTranscribing, stopTTS]);
 
   // Handle recording with auto-send
   const handleRecord = useCallback(async () => {
@@ -675,6 +683,17 @@ const CallModeOverlay = ({
               <line x1="8" y1="23" x2="16" y2="23" />
             </svg>
           )}
+        </button>
+
+        <button
+          onClick={handleAiContinue}
+          disabled={isGenerating || isRecording || isTranscribing}
+          className="px-6 py-2 rounded-full border border-white/30 text-white/90 text-sm tracking-wide
+                     transition-all duration-200 hover:border-white/60 hover:text-white hover:scale-[1.02]
+                     disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Continue with the next AI response"
+        >
+          Continue AI
         </button>
 
         {/* Instructions - UPDATED */}

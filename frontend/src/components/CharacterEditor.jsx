@@ -289,9 +289,10 @@ const CharacterEditor = () => {
     }
 
     // Prepare the character data
+    const normalizedChatRole = character.chat_role === 'user' ? 'user' : 'npc';
     const characterToSave = {
       ...character,
-      chat_role: character.chat_role || 'npc',
+      chat_role: normalizedChatRole,
       loreEntries: ensureArray(character.loreEntries),
       example_dialogue: ensureArray(character.example_dialogue).length > 0
         ? ensureArray(character.example_dialogue)
@@ -430,13 +431,12 @@ const CharacterEditor = () => {
                 <select
                   id="chat_role"
                   name="chat_role"
-                  value={character.chat_role || 'npc'}
+                  value={character.chat_role === 'user' ? 'user' : 'npc'}
                   onChange={handleChange}
                   className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
                 >
                   <option value="user">User</option>
                   <option value="npc">NPC</option>
-                  <option value="narrator">Narrator</option>
                 </select>
                 <p className="text-xs text-muted-foreground mt-1">Used by Multi-Role Mode to prevent AI from speaking for the user character.</p>
               </div>
