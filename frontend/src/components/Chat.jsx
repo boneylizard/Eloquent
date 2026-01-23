@@ -728,9 +728,11 @@ const Chat = ({ layoutMode }) => {
       updatedVariants[currentIndex] = newContent.trim();
       return { ...prev, [messageId]: updatedVariants };
     });
+    // Update global message state
+    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: newContent.trim() } : m));
     setEditingBotMessageId(null);
     setEditingBotMessageContent('');
-  }, [currentVariantIndex]);
+  }, [currentVariantIndex, setMessages]);
 
   const handleCancelBotEdit = useCallback(() => {
     setEditingBotMessageId(null);
