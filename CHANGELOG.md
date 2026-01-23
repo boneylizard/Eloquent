@@ -6,6 +6,12 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-23
+
+### Fixed
+
+* **Edited Message Persistence**: Fixed a bug where edited AI responses would revert to their original text after navigating away from the chat. Edits are now correctly persisted to the global conversation history, ensuring they are saved to browser storage.
+
 ## 2026-01-22
 
 ### Fixed
