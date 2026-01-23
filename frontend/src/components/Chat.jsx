@@ -1082,6 +1082,7 @@ const Chat = ({ layoutMode }) => {
                     className="flex-shrink-0 h-10 w-10"
                     onClick={handleMicClick}
                     disabled={isTranscribing}
+                    title={isRecording ? "Stop Recording" : "Start Voice Input"}
                   >
                     {isTranscribing ? <Loader2 className="animate-spin" size={18} /> : isRecording ? <MicOff size={18} /> : <Mic size={18} />}
                   </Button>
@@ -1100,6 +1101,7 @@ const Chat = ({ layoutMode }) => {
                     className="flex-shrink-0 h-10 w-10"
                     onClick={() => handleSpeakerClick(messages[messages.length - 1].id, messages[messages.length - 1].content)}
                     disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== messages[messages.length - 1].id)}
+                    title={isPlayingAudio === messages[messages.length - 1].id ? "Stop Audio" : "Play Response"}
                   >
                     {isPlayingAudio === messages[messages.length - 1].id ? <Loader2 className="animate-spin" size={18} /> : <PlayIcon size={18} />}
                   </Button>
@@ -1118,7 +1120,7 @@ const Chat = ({ layoutMode }) => {
                 )}
 
                 {ttsEnabled && (
-                  <div className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded">
+                  <div className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded" title="Toggle Text-to-Speech Autoplay">
                     <Switch id="floating-autoplay" checked={settings?.ttsAutoPlay || false} onCheckedChange={handleAutoPlayToggle} />
                     <Label htmlFor="floating-autoplay" className="text-xs">Auto</Label>
                   </div>
