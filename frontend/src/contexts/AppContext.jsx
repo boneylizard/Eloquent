@@ -2086,6 +2086,18 @@ const AppProvider = ({ children }) => {
   // ----------------------------------
   // Messaging Functions
   // ----------------------------------
+  const getRoleplayUserName = useCallback(() => {
+    if (settings.multiRoleMode && userCharacter?.name) return userCharacter.name;
+    return userProfile?.name || userProfile?.username || 'User';
+  }, [settings.multiRoleMode, userCharacter, userProfile]);
+
+  const applyAuthorNoteTags = useCallback((note, character) => {
+    if (!note) return '';
+    const charName = character?.name || activeCharacterRef.current?.name || 'Character';
+    const userName = getRoleplayUserName();
+    return note.replace(/{{char}}/gi, charName).replace(/{{user}}/gi, userName).trim();
+  }, [activeCharacterRef, getRoleplayUserName]);
+
   const sendDualMessage = useCallback(async (text, webSearchEnabled = false) => {
     if (!activeConversation || !primaryModel || !secondaryModel) return;
     console.log("📩 [DUAL] Processing message:", text.substring(0, 30), "…", webSearchEnabled ? "(with web search)" : "");
@@ -2114,7 +2126,7 @@ const AppProvider = ({ children }) => {
             messages: buildHistory('primary', 'secondary', primaryCharacter, secondaryModel),
             gpu_id: 0,
             userProfile,
-            authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
+            authorNote: applyAuthorNoteTags(settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : null, primaryCharacter) || undefined,
             use_web_search: webSearchEnabled, // NEW: Add to primary
             summaryContext: summaryContextForRequest
           })
@@ -2127,7 +2139,7 @@ const AppProvider = ({ children }) => {
             messages: buildHistory('secondary', 'primary', secondaryCharacter, primaryModel),
             gpu_id: 1,
             userProfile,
-            authorNote: settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : undefined,
+            authorNote: applyAuthorNoteTags(settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : null, secondaryCharacter) || undefined,
             use_web_search: false, // Usually only primary should do web search in dual mode
             summaryContext: summaryContextForRequest
           })
@@ -2159,12 +2171,7 @@ const AppProvider = ({ children }) => {
     } finally {
       setIsGenerating(false);
     }
-  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent, summaryContextForRequest, getTtsOverridesForCharacter]);
-
-  const getRoleplayUserName = useCallback(() => {
-    if (settings.multiRoleMode && userCharacter?.name) return userCharacter.name;
-    return userProfile?.name || userProfile?.username || 'User';
-  }, [settings.multiRoleMode, userCharacter, userProfile]);
+  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent, summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags]);
 
   const getMultiRoleContextBlock = useCallback(() => {
     if (!settings.multiRoleMode) return '';
@@ -2557,13 +2564,16 @@ Return ONLY valid JSON:
 
     const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || null;
     if (includeAuthorNote && effectiveAuthorNote) {
-      systemMsg += `\n\n[AUTHOR'S NOTE - Writing style guidance for this response]\n${effectiveAuthorNote}`;
+      const resolvedAuthorNote = applyAuthorNoteTags(effectiveAuthorNote, character);
+      if (resolvedAuthorNote) {
+        systemMsg += `\n\n[AUTHOR'S NOTE - Writing style guidance for this response]\n${resolvedAuthorNote}`;
+      }
     }
 
     const hasSummary = systemMsg.includes('[PREVIOUS STORY SUMMARY]');
     console.log(`[Summary] System prompt includes summary: ${hasSummary}`);
     return systemMsg;
-  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt, buildNarratorSystemPrompt, buildRoleplayRosterBlock, getRoleplayUserName, getMultiRoleContextBlock]);
+  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt, buildNarratorSystemPrompt, buildRoleplayRosterBlock, getRoleplayUserName, getMultiRoleContextBlock, applyAuthorNoteTags]);
 
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
@@ -2595,7 +2605,7 @@ Return ONLY valid JSON:
       use_web_search: webSearchEnabled,
       gpu_id: 0,
       userProfile: { id: userProfile?.id ?? 'anonymous' },
-      authorNote: authorNote || (settings.authorNote && settings.authorNote.trim()) || undefined,
+      authorNote: applyAuthorNoteTags(authorNote || (settings.authorNote && settings.authorNote.trim()) || null, speakerCharacter) || undefined,
       summaryContext: summaryContextForRequest,
       memoryEnabled: true,
       stream: streamResponses
@@ -2694,7 +2704,8 @@ Return ONLY valid JSON:
     getGenerationSystemPrompt,
     formatPrompt,
     cleanModelOutput,
-    summaryContextForRequest
+    summaryContextForRequest,
+    applyAuthorNoteTags
   ]);
 
   // In AppContext.jsx, replace the entire generateReplyWithOpenAI function
@@ -2877,7 +2888,7 @@ Return ONLY valid JSON:
         antiRepetitionMode = false, use_rag, selectedDocuments = [], streamResponses
       } = settings;
 
-      const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || undefined;
+      const effectiveAuthorNote = applyAuthorNoteTags(authorNote || (settings.authorNote && settings.authorNote.trim()) || null, speakerCharacter) || undefined;
 
       const historyLimitLocal = 15;
       const historyLimitAPI = 12; // Reduced for stability
@@ -3052,7 +3063,7 @@ Return ONLY valid JSON:
     userProfile?.id, PRIMARY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, MEMORY_API_URL,
     formatPrompt, cleanModelOutput, generateChatTitle, memoryContext, resolveSpeakerCharacter,
     observeConversationWithAgent, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext,
-    summaryContextForRequest, getTtsOverridesForCharacter
+    summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags
   ]);
 
   const generateCallModeFollowUp = useCallback(async (options = {}) => {
@@ -3507,6 +3518,16 @@ Return ONLY valid JSON:
             const activeConv = parsedConversations.find(c => c.id === lastActiveId);
             if (activeConv?.messages && Array.isArray(activeConv.messages)) {
               setMessages(activeConv.messages);
+            }
+
+            if (Array.isArray(activeConv?.activeCharacterIds)) {
+              setActiveCharacterIds(activeConv.activeCharacterIds);
+            }
+            if (activeConv?.activeCharacterWeights && typeof activeConv.activeCharacterWeights === 'object') {
+              setActiveCharacterWeights(activeConv.activeCharacterWeights);
+            }
+            if (typeof activeConv?.multiRoleContext === 'string') {
+              setMultiRoleContext(activeConv.multiRoleContext);
             }
 
             // Load character if applicable (character loading happens in loadCharacters)
