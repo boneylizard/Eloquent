@@ -6,7 +6,6 @@ import {
   Badge,
   Settings,
   MessageSquare,
-  Image,
   FileText,
   UserCircle,
   BookOpen,
@@ -32,7 +31,6 @@ const Navbar = ({ toggleSidebar }) => {
   // Define the navigation items that mirror the sidebar
   const sidebarNavItems = [
     { id: 'chat', label: 'Chat', icon: <MessageSquare className="mr-2 h-4 w-4" /> },
-    { id: 'image', label: 'Image Gen', icon: <Image className="mr-2 h-4 w-4" /> },
     { id: 'documents', label: 'Documents', icon: <FileText className="mr-2 h-4 w-4" /> },
     { id: 'characters', label: 'Characters', icon: <UserCircle className="mr-2 h-4 w-4" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="mr-2 h-4 w-4" /> },

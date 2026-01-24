@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useApp } from '../contexts/AppContext';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { Slider } from './ui/slider';
 import { Label } from './ui/label';
+import { Progress } from './ui/progress';
 import { AlertTriangle, Image, Loader2, X, Sparkles, Info } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import * as Path from 'path-browserify';
@@ -85,6 +86,50 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
 });
 
     // Determine which engine and availability
+
+    const [imageProgress, setImageProgress] = useState(null);
+    const progressTimerRef = useRef(null);
+    const progressTaskRef = useRef(null);
+
+    const clearProgressPolling = useCallback(() => {
+        if (progressTimerRef.current) {
+            clearInterval(progressTimerRef.current);
+            progressTimerRef.current = null;
+        }
+        progressTaskRef.current = null;
+    }, []);
+
+    const startProgressPolling = useCallback((taskId, apiUrl) => {
+        clearProgressPolling();
+        progressTaskRef.current = taskId;
+        progressTimerRef.current = setInterval(async () => {
+            try {
+                const res = await fetch(`${apiUrl}/sd-local/progress/${taskId}`);
+                if (!res.ok) {
+                    return;
+                }
+                const data = await res.json();
+                if (progressTaskRef.current !== taskId || data.status !== 'success') {
+                    return;
+                }
+                setImageProgress({
+                    progress: data.progress ?? 0,
+                    state: data.state || 'Generating...',
+                    step: data.step,
+                    steps: data.steps
+                });
+                if (data.progress >= 100 || data.state === 'complete') {
+                    clearProgressPolling();
+                }
+            } catch (err) {
+                // Silent: keep polling while generation is active
+            }
+        }, 600);
+    }, [clearProgressPolling]);
+
+    useEffect(() => () => {
+        clearProgressPolling();
+    }, [clearProgressPolling]);
 
 
     // Existing functions...
@@ -281,6 +326,7 @@ const handleLoadLocalModel = useCallback(async (modelFilename) => {
         }
     }, [isDialogOpen, checkSdStatus, checkLocalSdStatus, fetchLocalModels, checkAdetailerStatus, fetchAdetailerModels]);
 const imageEngine = settings?.imageEngine || 'auto1111';
+const isLocalEngine = imageEngine === 'EloDiffusion';
 const isAvailable = imageEngine === 'EloDiffusion' 
     ? localSdStatus?.available 
     : imageEngine === 'comfyui'
@@ -308,6 +354,25 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
 
         clearError();
         try {
+            const taskId = isLocalEngine ? `img-${generateUniqueId()}` : null;
+            if (isLocalEngine) {
+                const progressApiUrl = selectedGpuId === 1 ? MEMORY_API_URL : PRIMARY_API_URL;
+                setImageProgress({
+                    progress: 0,
+                    state: 'Starting...',
+                    step: 0,
+                    steps: steps
+                });
+                startProgressPolling(taskId, progressApiUrl);
+            } else {
+                setImageProgress({
+                    progress: 0,
+                    state: 'Generating...',
+                    step: null,
+                    steps: null
+                });
+            }
+
             console.log("DEBUGGING - sampler:", selectedSampler, "scheduler:", selectedScheduler, "model:", selectedModel);
             const responseData = await generateImage(prompt, {
                 negative_prompt: negativePrompt,
@@ -319,6 +384,7 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                 scheduler: selectedScheduler, // ComfyUI scheduler
                 seed: seed,
                 model: selectedModel,
+                task_id: taskId,
                 checkpoint: selectedModel // ComfyUI uses 'checkpoint'
             }, selectedGpuId);
 
@@ -376,6 +442,9 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                     error: true
                 }
             ]);
+        } finally {
+            clearProgressPolling();
+            setImageProgress(null);
         }
     };
 
@@ -412,6 +481,18 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                 <div className="text-xs bg-red-100 dark:bg-red-900/30 p-2 rounded flex items-start gap-2">
                                     <AlertTriangle className="h-4 w-4 text-red-700 dark:text-red-500" />
                                     <span>{apiError}</span>
+                                </div>
+                            )}
+                            {imageEngine === 'EloDiffusion' && (
+                                <div className="p-3 border rounded-md bg-muted/20 text-xs text-muted-foreground">
+                                    <div className="font-medium text-foreground">Local SD (Built-in)</div>
+                                    <ul className="mt-1 list-disc pl-5 space-y-1">
+                                        <li>Supported files: .safetensors, .ckpt, .gguf</li>
+                                        <li>Model type is auto-detected by filename (flux, sdxl/xl)</li>
+                                        <li>FLUX needs clip_l.safetensors, t5xxl_fp16.safetensors, ae.safetensors in the same folder</li>
+                                        <li>SDXL uses more VRAM; lower resolution or steps if you hit limits</li>
+                                        <li>Use Settings &gt; Image Generation to refresh the model list</li>
+                                    </ul>
                                 </div>
                             )}
 
@@ -773,28 +854,44 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                 <Slider min={1} max={15} step={0.1} value={[guidanceScale]} onValueChange={val => setGuidanceScale(val[0])} disabled={isImageGenerating} />
                             </div>
 
-<Button 
-    className={`w-full ${autoEnhanceEnabled && adetailerAvailable ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700' : ''}`}
-    onClick={handleGenerateImage} 
-    disabled={isImageGenerating || !prompt.trim() || !isModelLoadedForSelectedGpu}
->
-                                {isImageGenerating ? 
-                                    <>
-                                        <Loader2 className="animate-spin mr-2 h-4 w-4" />
-                                        Generating...
-                                    </> : 
-                                    <>
-                                        <Image className="mr-2 h-4 w-4" />
-                                        Generate Image
-                                        {autoEnhanceEnabled && adetailerAvailable && (
-                                            <>
-                                                <Sparkles className="ml-2 h-4 w-4" />
-                                                <span className="ml-1 text-xs">+ Auto-Enhance</span>
-                                            </>
-                                        )}
-                                    </>
-                                }
-                            </Button>
+    {isImageGenerating ? (
+    <div className="w-full space-y-2">
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>{imageProgress?.state || 'Generating...'}</span>
+            {imageProgress?.steps ? (
+                <span>
+                    {Math.min((imageProgress.step || 0) + 1, imageProgress.steps)}/{imageProgress.steps}
+                    {typeof imageProgress?.progress === 'number' ? ` \u2022 ${Math.round(imageProgress.progress)}%` : ''}
+                </span>
+            ) : (
+                typeof imageProgress?.progress === 'number' ? <span>{Math.round(imageProgress.progress)}%</span> : null
+            )}
+        </div>
+        <Progress value={imageProgress?.progress ?? 0} />
+        {!isLocalEngine && (
+            <p className="text-[11px] text-muted-foreground">
+                External engines do not report step progress.
+            </p>
+        )}
+    </div>
+) : (
+    <Button 
+        className={`w-full ${autoEnhanceEnabled && adetailerAvailable ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700' : ''}`}
+        onClick={handleGenerateImage} 
+        disabled={isImageGenerating || !prompt.trim() || !isModelLoadedForSelectedGpu}
+    >
+        <>
+            <Image className="mr-2 h-4 w-4" />
+            Generate Image
+            {autoEnhanceEnabled && adetailerAvailable && (
+                <>
+                    <Sparkles className="ml-2 h-4 w-4" />
+                    <span className="ml-1 text-xs">+ Auto-Enhance</span>
+                </>
+            )}
+        </>
+    </Button>
+)}
                         </div>
                     </div>
                 </div>,

@@ -5783,6 +5783,7 @@ async def sd_local_txt2img(body: dict, request: Request):
 
         # Get GPU ID from the request, default to 0
         gpu_id = body.get("gpu_id", 0)
+        task_id = body.get("task_id")
 
         # Check for seed and randomize if it's -1
         seed = body.get("seed", -1)
@@ -5791,9 +5792,11 @@ async def sd_local_txt2img(body: dict, request: Request):
             logger.info(f"Local SD: No seed provided, generated random seed: {seed}")
 
         # This returns the raw image bytes
-        image_data = sd_manager.generate_image(
+        image_data = await asyncio.to_thread(
+            sd_manager.generate_image,
             prompt=prompt,
             gpu_id=gpu_id, # Pass the GPU ID to the manager
+            task_id=task_id,
             negative_prompt=body.get("negative_prompt", ""),
             width=body.get("width", 768), # Changed from 512 to 768 to match user's working aspect ratio
             height=body.get("height", 512),
@@ -5818,6 +5821,19 @@ async def sd_local_txt2img(body: dict, request: Request):
     except Exception as e:
         logger.error(f"Local SD generation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sd-local/progress/{task_id}")
+async def sd_local_progress(task_id: str, request: Request):
+    """Return progress for a local SD generation task."""
+    sd_manager = getattr(request.app.state, 'sd_manager', None)
+    if not sd_manager:
+        raise HTTPException(status_code=500, detail="SD Manager not available")
+
+    progress = sd_manager.get_progress(task_id)
+    if not progress:
+        return {"status": "not_found"}
+
+    return {"status": "success", **progress}
 
 @app.post("/models/update-upscaler-dir")
 async def update_upscaler_dir(body: dict):

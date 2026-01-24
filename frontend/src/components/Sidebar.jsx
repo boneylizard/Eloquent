@@ -4,7 +4,6 @@ import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
 import {
   MessageSquare,
-  Image,
   FileText,
   Settings,
   ChevronLeft,
@@ -75,7 +74,6 @@ useEffect(() => {
   // Removed the Models entry from navItems
   const navItems = [
     { id: 'chat', label: 'Chat', icon: <MessageSquare className="w-5 h-5" /> },
-    { id: 'image', label: 'Image Generation', icon: <Image className="w-5 h-5" /> },
     { id: 'documents', label: 'Documents', icon: <FileText className="w-5 h-5" /> },
     { id: 'characters', label: 'Characters', icon: <UserCircle className="w-5 h-5" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> },
