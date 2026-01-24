@@ -7,7 +7,6 @@ import { ThemeProvider, useTheme } from './components/ThemeProvider';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 import Chat from './components/Chat';
-import ImageGen from './components/ImageGen';
 import Documents from './components/Documents';
 import Settings from './components/Settings';
 import { MemoryProvider } from './contexts/MemoryContext';
@@ -76,8 +75,6 @@ function AppContent() {
     switch (activeTab) {
       case 'chat':
         return <Chat layoutMode={layoutMode} />;
-      case 'image':
-        return <ImageGen />;
       case 'documents':
         return <Documents />;
       case 'forensics': // ADD THIS CASE

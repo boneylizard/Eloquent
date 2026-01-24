@@ -78,7 +78,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     sdSteps: contextSettings.sdSteps ?? 20,
     sdSampler: contextSettings.sdSampler ?? 'Euler a',
     sdCfgScale: contextSettings.sdCfgScale ?? 7.0,
-    imageEngine: contextSettings.imageEngine ?? 'automatic1111',
+    imageEngine: contextSettings.imageEngine ?? 'auto1111',
     enableSdStatus: contextSettings.enableSdStatus ?? true,
     adetailerModelDirectory: contextSettings.adetailerModelDirectory ?? '',
     useOpenAIAPI: contextSettings.useOpenAIAPI ?? false,
@@ -286,7 +286,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
           <TabsList className="flex w-full flex-wrap justify-start gap-1 h-auto min-h-[40px]">
             <TabsTrigger value="general" className="flex-shrink-0">General</TabsTrigger>
             <TabsTrigger value="generation" className="flex-shrink-0">LLM Settings</TabsTrigger>
-            <TabsTrigger value="sd" className="flex-shrink-0">Stable Diffusion</TabsTrigger>
+            <TabsTrigger value="image-generation" className="flex-shrink-0">Image Generation</TabsTrigger>
             <TabsTrigger value="rag" className="flex-shrink-0">Document Context</TabsTrigger>
             <TabsTrigger value="characters" className="flex-shrink-0">Characters</TabsTrigger>
             <TabsTrigger value="audio" className="flex-shrink-0">Audio</TabsTrigger>
@@ -296,7 +296,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
             <TabsTrigger value="about" className="flex-shrink-0">About</TabsTrigger>
             <TabsTrigger value="tokens" className="flex-shrink-0">Tokens</TabsTrigger>
             <TabsTrigger value="profiles" className="flex-shrink-0">User Profiles</TabsTrigger>
-            <TabsTrigger value="EloDiffusion" className="flex-shrink-0">Local SD</TabsTrigger>
           </TabsList>
         </div>
 
@@ -1043,103 +1042,276 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
           </Card>
         </TabsContent>
 
-        {/* Stable Diffusion Settings */}
-        <TabsContent value="sd">
+        {/* Image Generation */}
+        <TabsContent value="image-generation">
           <Card>
             <CardHeader>
-              <CardTitle>Stable Diffusion Settings</CardTitle>
-              <CardDescription>Configure connection to Automatic1111 WebUI</CardDescription>
+              <CardTitle>Image Generation</CardTitle>
+              <CardDescription>Built-in Local SD with optional external engines.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="flex flex-row items-center justify-between">
-                <div>
-                  <Label htmlFor="enable-sd-status">Enable AUTOMATIC1111 Status Checks</Label>
-                </div>
-                <Switch
-                  id="enable-sd-status"
-                  checked={localSettings.enableSdStatus ?? true}
-                  onCheckedChange={(value) => handleChange('enableSdStatus', value)}
-                />
+              <CardContent className="space-y-6">
+                <div className="space-y-2">
+                  <Label>Image Engine Priority</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Local SD uses the built-in stable-diffusion.cpp engine. External engines require their own servers.
+                  </p>
+                  <Select
+                    value={localSettings.imageEngine || 'auto1111'}
+                    onValueChange={(value) => handleChange('imageEngine', value)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select image engine" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="EloDiffusion">Local SD (Built-in)</SelectItem>
+                    <SelectItem value="auto1111">AUTOMATIC1111 (External)</SelectItem>
+                    <SelectItem value="comfyui">ComfyUI (External)</SelectItem>
+                    <SelectItem value="both">Show Both Options</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <Separator />
 
-              {localSettings.enableSdStatus && (
                 <div className="space-y-4">
-                  {apiError && (
-                    <Alert variant="destructive">
-                      <AlertTitle>Error</AlertTitle>
-                      <AlertDescription className="flex justify-between items-center">
-                        <span>{apiError}</span>
-                        <Button variant="ghost" size="sm" onClick={clearError}>Dismiss</Button>
-                      </AlertDescription>
-                    </Alert>
-                  )}
+                  <div>
+                    <h3 className="text-md font-medium">Local SD (Built-in)</h3>
+                    <p className="text-xs text-muted-foreground">Built-in image generation using stable-diffusion.cpp.</p>
+                  </div>
+                  <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                    <div className="text-xs text-muted-foreground">
+                      <div className="font-medium text-foreground">Supported local models</div>
+                      <ul className="mt-2 list-disc pl-5 space-y-1">
+                        <li>Files: .safetensors, .ckpt, .gguf</li>
+                        <li>Families: SD 1.x, SDXL (filename contains sdxl/xl), FLUX (filename contains flux)</li>
+                        <li>FLUX needs extra files in the same folder: clip_l.safetensors, t5xxl_fp16.safetensors, ae.safetensors</li>
+                        <li>SDXL is heavier; reduce resolution or steps if you hit VRAM limits</li>
+                      </ul>
+                    </div>
+                  </div>
 
-                  {sdStatus?.automatic1111 ? (
-                    <Alert><AlertTitle className="text-green-600">Connected</AlertTitle></Alert>
-                  ) : (
-                    <Alert variant="destructive"><AlertTitle>Not Connected</AlertTitle></Alert>
-                  )}
-
-                  <Button
-                    variant="outline"
-                    className="mt-2 w-full md:w-auto"
-                    onClick={handleCheckSdStatus}
-                    disabled={isCheckingStatus}
-                  >
-                    {isCheckingStatus ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                    Check Connection
-                  </Button>
+                {/* Model Directory */}
+                <div className="space-y-2">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                    <Label htmlFor="sd-model-directory">Local SD Models Directory</Label>
+                    <div className="flex w-full md:w-auto items-center gap-2">
+                      <Input
+                        id="sd-model-directory"
+                        value={localSettings.sdModelDirectory || ''}
+                        className="flex-1 md:w-64"
+                        onChange={(e) => handleChange('sdModelDirectory', e.target.value)}
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          if (localSettings.sdModelDirectory) {
+                            fetch(`${PRIMARY_API_URL}/sd-local/refresh-directory`, {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ directory: localSettings.sdModelDirectory })
+                            }).then(r => r.json()).then(d => alert(d.status === 'success' ? 'Updated!' : d.message));
+                          }
+                        }}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-              )}
-              <Separator />
+                {/* ADetailer Models Directory */}
+                <Separator />
+                <div className="space-y-2">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                    <Label htmlFor="adetailer-model-directory">ADetailer Models Directory</Label>
+                    <div className="flex w-full md:w-auto items-center gap-2">
+                      <Input
+                        id="adetailer-model-directory"
+                        value={localSettings.adetailerModelDirectory || ''}
+                        className="flex-1 md:w-64"
+                        onChange={(e) => handleChange('adetailerModelDirectory', e.target.value)}
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          if (localSettings.adetailerModelDirectory) {
+                            fetch(`${PRIMARY_API_URL}/sd-local/set-adetailer-directory`, {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ directory: localSettings.adetailerModelDirectory })
+                            }).then(r => r.json()).then(d => alert(d.status === 'success' ? 'Updated!' : d.message));
+                          }
+                        }}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+                <Separator />
 
-              <div className="space-y-2">
-                <Label>Available Models</Label>
-                <div className="max-h-48 overflow-y-auto border rounded p-2">
-                  {sdStatus?.models?.map((model, index) => (
-                    <div key={index} className="text-sm">{model.model_name || "Unnamed"}</div>
-                  ))}
+                {/* Upscaler Configuration */}
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                      <Label htmlFor="upscaler-directory">Upscaler Models Directory</Label>
+                      <div className="flex w-full md:w-auto items-center gap-2">
+                        <Input
+                          id="upscaler-directory"
+                          value={localSettings.upscalerModelDirectory || ''}
+                          className="flex-1 md:w-64"
+                          onChange={(e) => handleChange('upscalerModelDirectory', e.target.value)}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            // Save upscaler logic
+                            fetch(`${PRIMARY_API_URL}/models/update-upscaler-dir`, {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ directory: localSettings.upscalerModelDirectory })
+                            }).then(r => r.json()).then(d => alert('Updated!'));
+                          }}
+                        >
+                          <Save className="mr-1 h-4 w-4" />Save
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <Separator />
+
+                {/* Default Generation Settings */}
+                <div className="space-y-4">
+                  <h3 className="text-md font-medium">Default Generation Settings</h3>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Default Steps: {localSettings.sdSteps || 20}</Label>
+                      <Slider
+                        min={10} max={50} step={1}
+                        value={[localSettings.sdSteps || 20]}
+                        onValueChange={([v]) => handleChange('sdSteps', v)}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Default CFG Scale: {(localSettings.sdCfgScale || 7.0).toFixed(1)}</Label>
+                      <Slider
+                        min={1.0} max={20.0} step={0.5}
+                        value={[localSettings.sdCfgScale || 7.0]}
+                        onValueChange={([v]) => handleChange('sdCfgScale', v)}
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
-              <Separator />
 
-              <div className="space-y-4">
-                <h3 className="text-md font-medium">Default Generation Settings</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="default-width">Default Width</Label>
-                    <Select defaultValue="512">
-                      <SelectTrigger id="default-width"><SelectValue /></SelectTrigger>
-                      <SelectContent><SelectItem value="512">512px</SelectItem></SelectContent>
-                    </Select>
+              {(localSettings.imageEngine === 'auto1111' || localSettings.imageEngine === 'automatic1111') && (
+                <>
+                  <Separator />
+                  <div className="space-y-4">
+                    <div>
+                      <h3 className="text-md font-medium">AUTOMATIC1111 (External)</h3>
+                      <p className="text-xs text-muted-foreground">Configure connection to Automatic1111 WebUI.</p>
+                    </div>
+
+                    <div className="flex flex-row items-center justify-between">
+                      <div>
+                        <Label htmlFor="enable-sd-status">Enable AUTOMATIC1111 Status Checks</Label>
+                      </div>
+                      <Switch
+                        id="enable-sd-status"
+                        checked={localSettings.enableSdStatus ?? true}
+                        onCheckedChange={(value) => handleChange('enableSdStatus', value)}
+                      />
+                    </div>
+                    <Separator />
+
+                    {localSettings.enableSdStatus && (
+                      <div className="space-y-4">
+                        {apiError && (
+                          <Alert variant="destructive">
+                            <AlertTitle>Error</AlertTitle>
+                            <AlertDescription className="flex justify-between items-center">
+                              <span>{apiError}</span>
+                              <Button variant="ghost" size="sm" onClick={clearError}>Dismiss</Button>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+
+                        {sdStatus?.automatic1111 ? (
+                          <Alert><AlertTitle className="text-green-600">Connected</AlertTitle></Alert>
+                        ) : (
+                          <Alert variant="destructive"><AlertTitle>Not Connected</AlertTitle></Alert>
+                        )}
+
+                        <Button
+                          variant="outline"
+                          className="mt-2 w-full md:w-auto"
+                          onClick={handleCheckSdStatus}
+                          disabled={isCheckingStatus}
+                        >
+                          {isCheckingStatus ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                          Check Connection
+                        </Button>
+                      </div>
+                    )}
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <Label>Available Models</Label>
+                      <div className="max-h-48 overflow-y-auto border rounded p-2">
+                        {sdStatus?.models?.map((model, index) => (
+                          <div key={index} className="text-sm">{model.model_name || "Unnamed"}</div>
+                        ))}
+                      </div>
+                    </div>
+                    <Separator />
+
+                    <div className="space-y-4">
+                      <h3 className="text-md font-medium">Default Generation Settings</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="default-width">Default Width</Label>
+                          <Select defaultValue="512">
+                            <SelectTrigger id="default-width"><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="512">512px</SelectItem></SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="default-height">Default Height</Label>
+                          <Select defaultValue="512">
+                            <SelectTrigger id="default-height"><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="512">512px</SelectItem></SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Default Sampler</Label>
+                        <Select defaultValue="Euler a">
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent><SelectItem value="Euler a">Euler a</SelectItem></SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Default Steps: 30</Label>
+                        <Slider min={10} max={150} step={1} defaultValue={[30]} />
+                      </div>
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="default-height">Default Height</Label>
-                    <Select defaultValue="512">
-                      <SelectTrigger id="default-height"><SelectValue /></SelectTrigger>
-                      <SelectContent><SelectItem value="512">512px</SelectItem></SelectContent>
-                    </Select>
-                  </div>
-                </div>
+                </>
+              )}
 
-                <div className="space-y-2">
-                  <Label>Default Sampler</Label>
-                  <Select defaultValue="Euler a">
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent><SelectItem value="Euler a">Euler a</SelectItem></SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Default Steps: 30</Label>
-                  <Slider min={10} max={150} step={1} defaultValue={[30]} />
-                </div>
+              {/* Save/Reset buttons */}
+              <div className="flex justify-end space-x-2 pt-4">
+                <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
+                  <Save className="mr-1 h-4 w-4" />Save
+                </Button>
+                <Button variant="outline" onClick={handleReset} className="w-full md:w-auto">
+                  Reset
+                </Button>
               </div>
             </CardContent>
           </Card>
         </TabsContent>
-
 
         {/* Characters */}
         <TabsContent value="characters" className="w-full max-w-none">
@@ -1584,157 +1756,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
           </Card>
         </TabsContent>
         {/*local sd*/}
-        <TabsContent value="EloDiffusion">
-          <Card>
-            <CardHeader>
-              <CardTitle>EloDiffusion</CardTitle>
-              <CardDescription>Built-in image generation using stable-diffusion.cpp</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Model Directory */}
-              <div className="space-y-2">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
-                  <Label htmlFor="sd-model-directory">Local SD Models Directory</Label>
-                  <div className="flex w-full md:w-auto items-center gap-2">
-                    <Input
-                      id="sd-model-directory"
-                      value={localSettings.sdModelDirectory || ''}
-                      className="flex-1 md:w-64"
-                      onChange={(e) => handleChange('sdModelDirectory', e.target.value)}
-                    />
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        if (localSettings.sdModelDirectory) {
-                          fetch(`${PRIMARY_API_URL}/sd-local/refresh-directory`, {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ directory: localSettings.sdModelDirectory })
-                          }).then(r => r.json()).then(d => alert(d.status === 'success' ? 'Updated!' : d.message));
-                        }
-                      }}
-                    >
-                      Save
-                    </Button>
-                  </div>
-                </div>
-              </div>
-              {/* ADetailer Models Directory */}
-              <Separator />
-              <div className="space-y-2">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
-                  <Label htmlFor="adetailer-model-directory">ADetailer Models Directory</Label>
-                  <div className="flex w-full md:w-auto items-center gap-2">
-                    <Input
-                      id="adetailer-model-directory"
-                      value={localSettings.adetailerModelDirectory || ''}
-                      className="flex-1 md:w-64"
-                      onChange={(e) => handleChange('adetailerModelDirectory', e.target.value)}
-                    />
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        if (localSettings.adetailerModelDirectory) {
-                          fetch(`${PRIMARY_API_URL}/sd-local/set-adetailer-directory`, {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ directory: localSettings.adetailerModelDirectory })
-                          }).then(r => r.json()).then(d => alert(d.status === 'success' ? 'Updated!' : d.message));
-                        }
-                      }}
-                    >
-                      Save
-                    </Button>
-                  </div>
-                </div>
-              </div>
-              <Separator />
-
-              {/* Upscaler Configuration */}
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
-                    <Label htmlFor="upscaler-directory">Upscaler Models Directory</Label>
-                    <div className="flex w-full md:w-auto items-center gap-2">
-                      <Input
-                        id="upscaler-directory"
-                        value={localSettings.upscalerModelDirectory || ''}
-                        className="flex-1 md:w-64"
-                        onChange={(e) => handleChange('upscalerModelDirectory', e.target.value)}
-                      />
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          // Save upscaler logic
-                          fetch(`${PRIMARY_API_URL}/models/update-upscaler-dir`, {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ directory: localSettings.upscalerModelDirectory })
-                          }).then(r => r.json()).then(d => alert('Updated!'));
-                        }}
-                      >
-                        <Save className="mr-1 h-4 w-4" />Save
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <Separator />
-
-              {/* Default Generation Settings */}
-              <div className="space-y-4">
-                <h3 className="text-md font-medium">Default Generation Settings</h3>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Default Steps: {localSettings.sdSteps || 20}</Label>
-                    <Slider
-                      min={10} max={50} step={1}
-                      value={[localSettings.sdSteps || 20]}
-                      onValueChange={([v]) => handleChange('sdSteps', v)}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Default CFG Scale: {(localSettings.sdCfgScale || 7.0).toFixed(1)}</Label>
-                    <Slider
-                      min={1.0} max={20.0} step={0.5}
-                      value={[localSettings.sdCfgScale || 7.0]}
-                      onValueChange={([v]) => handleChange('sdCfgScale', v)}
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Image Engine Priority</Label>
-                  <Select
-                    value={localSettings.imageEngine || 'auto1111'}
-                    onValueChange={(value) => handleChange('imageEngine', value)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select image engine" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="EloDiffusion">Local SD (Built-in) ⭐</SelectItem>
-                      <SelectItem value="auto1111">AUTOMATIC1111 (External)</SelectItem>
-                      <SelectItem value="comfyui">ComfyUI (External)</SelectItem>
-                      <SelectItem value="both">Show Both Options</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {/* Save/Reset buttons */}
-              <div className="flex justify-end space-x-2 pt-4">
-                <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
-                  <Save className="mr-1 h-4 w-4" />Save
-                </Button>
-                <Button variant="outline" onClick={handleReset} className="w-full md:w-auto">
-                  Reset
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* About */}
+{/* About */}
         <TabsContent value="about">
           <Card>
             <CardHeader>
@@ -1953,3 +1975,4 @@ const MemoryEditorTab = () => {
 };
 
 export default Settings;
+

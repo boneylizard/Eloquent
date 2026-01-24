@@ -1174,16 +1174,17 @@ const AppProvider = ({ children }) => {
           denoise: opts.denoise || 1.0,
           timeout: 300
         };
-      } else if (imageEngine === 'EloDiffusion') {
-        // Local SD payload
-        payload = {
-          prompt,
-          gpu_id: gpuId,
-          negative_prompt: opts.negative_prompt || "",
-          width: opts.width || 512,
-          height: opts.height || 512,
-          steps: opts.steps || 20,
-          guidance_scale: opts.guidance_scale || 7.0,
+        } else if (imageEngine === 'EloDiffusion') {
+          // Local SD payload
+          payload = {
+            prompt,
+            gpu_id: gpuId,
+            task_id: opts.task_id,
+            negative_prompt: opts.negative_prompt || "",
+            width: opts.width || 512,
+            height: opts.height || 512,
+            steps: opts.steps || 20,
+            guidance_scale: opts.guidance_scale || 7.0,
           sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
           seed: opts.seed || -1,
         };

@@ -1,6 +1,9 @@
 import logging
 import json  # ADDED
 import os    # ADDED
+import threading
+import time
+import inspect
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 import asyncio
@@ -114,6 +117,8 @@ class SDManager:
         self.current_model_paths: Dict[int, str] = {}
         self.model_info: Dict[int, Dict[str, bool]] = {}
         self.adetailer_processor = ADetailerProcessor()
+        self.progress_cache: Dict[str, Dict[str, Any]] = {}
+        self.progress_lock = threading.Lock()
 
         # Set ADetailer model directory from settings
         settings_path = Path.home() / ".LiangLocal" / "settings.json"
@@ -133,6 +138,60 @@ class SDManager:
     def adetailer(self):
         """Backward compatibility property"""
         return self.adetailer_processor
+
+    def init_progress(self, task_id: str, steps: Optional[int] = None, state: str = "starting") -> None:
+        now = time.time()
+        with self.progress_lock:
+            self.progress_cache[task_id] = {
+                "progress": 0.0,
+                "state": state,
+                "step": 0,
+                "steps": steps,
+                "started_at": now,
+                "updated_at": now,
+            }
+
+    def update_progress(
+        self,
+        task_id: str,
+        progress: Optional[float] = None,
+        step: Optional[int] = None,
+        steps: Optional[int] = None,
+        state: Optional[str] = None,
+    ) -> None:
+        now = time.time()
+        with self.progress_lock:
+            entry = self.progress_cache.get(task_id)
+            if not entry:
+                entry = {
+                    "progress": 0.0,
+                    "state": "starting",
+                    "step": 0,
+                    "steps": steps,
+                    "started_at": now,
+                    "updated_at": now,
+                }
+                self.progress_cache[task_id] = entry
+
+            if steps is not None:
+                entry["steps"] = steps
+            if step is not None:
+                entry["step"] = int(step)
+            if progress is None and step is not None and entry.get("steps"):
+                progress = ((step + 1) / float(entry["steps"])) * 100.0
+            if progress is not None:
+                entry["progress"] = max(0.0, min(100.0, float(progress)))
+            if state:
+                entry["state"] = state
+            entry["updated_at"] = now
+
+    def finish_progress(self, task_id: str, state: str = "complete") -> None:
+        self.update_progress(task_id, progress=100.0, state=state)
+
+    def get_progress(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self.progress_lock:
+            entry = self.progress_cache.get(task_id)
+            return dict(entry) if entry else None
 
     def upscale_image(self, image_bytes: bytes, prompt: str = "", scale_factor: float = 2.0, strength: float = 0.2, gpu_id: int = 0) -> bytes:
         """
@@ -569,7 +628,7 @@ class SDManager:
         """Check if a model is currently loaded"""
         return self.loaded_model is not None
     
-    def generate_image(self, prompt: str, gpu_id: int = 0, **kwargs) -> bytes:
+    def generate_image(self, prompt: str, gpu_id: int = 0, task_id: Optional[str] = None, **kwargs) -> bytes:
         """Generate image from prompt on a specific GPU and return as bytes."""
         logger.info(f"Generating image with prompt: {prompt[:50]}... on GPU {gpu_id}")
         
@@ -613,6 +672,33 @@ class SDManager:
 
         # Generate image using the appropriate parameters
         try:
+            progress_callback = None
+            if task_id:
+                self.init_progress(task_id, steps=steps, state="starting")
+
+                def progress_callback(*args, **callback_kwargs):
+                    step = callback_kwargs.get("step")
+                    step_count = callback_kwargs.get("step_count")
+                    progress = callback_kwargs.get("progress")
+
+                    if len(args) >= 2 and step is None and step_count is None:
+                        step = args[0]
+                        step_count = args[1]
+                    elif len(args) >= 1 and progress is None and step is None:
+                        progress = args[0]
+
+                    if progress is not None and 0.0 <= float(progress) <= 1.0:
+                        progress = float(progress) * 100.0
+
+                    state = "sampling"
+                    if step_count:
+                        state = f"Sampling {int(step) + 1}/{int(step_count)}" if step is not None else state
+
+                    self.update_progress(task_id, progress=progress, step=step, steps=step_count, state=state)
+                    if step is not None and step_count:
+                        logger.info(f"SD progress: {int(step) + 1}/{int(step_count)}")
+                    return True
+
             # Clean up PyTorch CUDA state before ggml generation
             # This prevents CUDA context conflicts between PyTorch (TTS) and ggml (SD)
             try:
@@ -627,42 +713,61 @@ class SDManager:
             
             # Handle different API versions of stable-diffusion-cpp-python
             # Latest versions use generate_image, older use txt2img or txt_to_img
+            def call_with_progress(method, **call_kwargs):
+                if progress_callback:
+                    call_kwargs["progress_callback"] = progress_callback
+                try:
+                    return method(**call_kwargs)
+                except TypeError as e:
+                    if progress_callback and "progress_callback" in str(e):
+                        call_kwargs.pop("progress_callback", None)
+                        return method(**call_kwargs)
+                    raise
+
+            def supports_progress(method):
+                try:
+                    return "progress_callback" in inspect.signature(method).parameters
+                except (TypeError, ValueError):
+                    return False
+
+            candidates = []
+            if hasattr(model_instance, 'txt_to_img'):
+                candidates.append(("txt_to_img", model_instance.txt_to_img))
+            if hasattr(model_instance, 'txt2img'):
+                candidates.append(("txt2img", model_instance.txt2img))
             if hasattr(model_instance, 'generate_image'):
-                images_list = model_instance.generate_image(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    width=width,
-                    height=height,
-                    cfg_scale=cfg_scale,
-                    sample_steps=steps,
-                    sample_method=sample_method,
-                    seed=seed
-                )
-            elif hasattr(model_instance, 'txt2img'):
-                images_list = model_instance.txt2img(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    width=width,
-                    height=height,
-                    cfg_scale=cfg_scale,
-                    sample_steps=steps,
-                    sample_method=sample_method,
-                    seed=seed
-                )
-            elif hasattr(model_instance, 'txt_to_img'):
-                images_list = model_instance.txt_to_img(
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    width=width,
-                    height=height,
-                    cfg_scale=cfg_scale,
-                    sample_steps=steps,
-                    sample_method=sample_method,
-                    seed=seed
-                )
-            else:
+                candidates.append(("generate_image", model_instance.generate_image))
+
+            method_name = None
+            method = None
+
+            if task_id:
+                for name, fn in candidates:
+                    if supports_progress(fn):
+                        method_name = name
+                        method = fn
+                        break
+
+            if method is None and candidates:
+                method_name, method = candidates[0]
+
+            if not method:
                 methods = [m for m in dir(model_instance) if not m.startswith('_')]
                 raise RuntimeError(f"StableDiffusion object has no generate_image method. Available methods: {methods}")
+
+            logger.info(f"Using SD method: {method_name}")
+
+            images_list = call_with_progress(
+                method,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                cfg_scale=cfg_scale,
+                sample_steps=steps,
+                sample_method=sample_method,
+                seed=seed
+            )
             
             logger.info("Generation completed successfully")
         
@@ -670,6 +775,8 @@ class SDManager:
             logger.error(f"CRITICAL: Generation crashed - {type(generation_error).__name__}: {generation_error}")
             import traceback
             logger.error(f"Full generation traceback: {traceback.format_exc()}")
+            if task_id:
+                self.update_progress(task_id, state="error")
             
             # Try to get memory info if possible
             try:
@@ -698,4 +805,7 @@ class SDManager:
             pil_image.save(buffer, format="PNG")
             image_bytes = buffer.getvalue()
             
+        if task_id:
+            self.finish_progress(task_id, state="complete")
+
         return image_bytes
