@@ -255,41 +255,53 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
         raise RuntimeError("Parakeet model is not loaded.")
 
     temp_wav_path = None
+    temp_dir = None
     try:
-        # Workaround for FFmpeg/lhotse initialization errors on Windows
-        # If the file is not a WAV, we convert it to a temporary WAV using librosa
-        # which we know is working reliably for Whisper.
-        if not audio_file_path.lower().endswith(('.wav', '.flac')):
-            logger.info(f"🔄 Converting {audio_file_path} to temporary WAV for Parakeet...")
-            try:
-                # Load using librosa (handles .webm, etc. reliably via soundfile/audioread)
-                audio, sr = librosa.load(audio_file_path, sr=16000)
-                
-                # Create a temporary WAV file
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                    temp_wav_path = tmp.name
-                
-                # Save as WAV
-                sf.write(temp_wav_path, audio, sr)
-                audio_file_path = temp_wav_path
-                logger.info(f"✅ Conversion successful: {temp_wav_path}")
-            except Exception as conv_err:
-                logger.error(f"❌ Failed to convert audio: {conv_err}")
-                # Fallback to trying original path, but it will likely fail with the FFmpeg error
+        logger.info(f"Loading audio for Parakeet: {audio_file_path}")
+        audio, sr = librosa.load(audio_file_path, sr=16000, mono=True, duration=None)
+        audio_duration = len(audio) / sr
+        logger.info(f"Parakeet audio loaded. Sample rate: {sr}, Duration: {audio_duration:.2f}s")
 
-        logger.info(f"Transcribing with Parakeet: {audio_file_path}")
-        
-        # Parakeet uses a different API than Whisper
-        # Let's run it in a thread pool so it doesn't block
+        chunk_paths = []
+        if audio_duration > 30:
+            logger.info(f"Long audio detected ({audio_duration:.2f}s), chunking for Parakeet")
+            chunk_size = 20 * sr
+            overlap = 2 * sr
+            temp_dir = tempfile.TemporaryDirectory()
+
+            for i in range(0, len(audio), chunk_size - overlap):
+                chunk = audio[i:i + chunk_size]
+                if len(chunk) < sr * 1:
+                    continue
+                chunk_path = os.path.join(temp_dir.name, f"chunk_{i}.wav")
+                sf.write(chunk_path, chunk, sr)
+                chunk_paths.append(chunk_path)
+        else:
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                temp_wav_path = tmp.name
+            sf.write(temp_wav_path, audio, sr)
+            chunk_paths.append(temp_wav_path)
+
+        logger.info(f"Transcribing with Parakeet ({len(chunk_paths)} chunk(s))")
+
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, 
-            lambda: parakeet_model.transcribe([audio_file_path])
+            None,
+            lambda: parakeet_model.transcribe(chunk_paths)
         )
-        
-        # Extract the transcript text
-        transcript_text = result[0].text
-        
+
+        transcripts = []
+        for item in result:
+            if isinstance(item, str):
+                text = item
+            else:
+                text = getattr(item, "text", None) or getattr(item, "transcript", None) or str(item)
+            text = text.strip()
+            if text:
+                transcripts.append(text)
+
+        transcript_text = " ".join(transcripts).strip()
+
         logger.info(f"Parakeet transcription complete. Output length: {len(transcript_text)}")
         return transcript_text
 
@@ -297,13 +309,17 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
         logger.error(f"Error during Parakeet transcription: {e}", exc_info=True)
         raise RuntimeError(f"Parakeet transcription failed: {str(e)}")
     finally:
-        # Clean up temporary WAV file if it was created
         if temp_wav_path and os.path.exists(temp_wav_path):
             try:
                 os.remove(temp_wav_path)
-                logger.info(f"🧹 Cleaned up temporary file: {temp_wav_path}")
+                logger.info(f"Cleaned up temporary file: {temp_wav_path}")
             except Exception as cleanup_err:
                 logger.warning(f"Could not delete temp file {temp_wav_path}: {cleanup_err}")
+        if temp_dir:
+            try:
+                temp_dir.cleanup()
+            except Exception:
+                pass
 
 def is_engine_available(engine: str) -> bool:
     """Check if the specified STT engine is available."""

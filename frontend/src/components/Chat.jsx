@@ -38,6 +38,7 @@ import CodeEditorOverlay from './CodeEditorOverlay';
 import ForensicLinguistics from './ForensicLinguistics';
 import StoryTracker, { getStoryTrackerContext } from './StoryTracker';
 import ChoiceGenerator from './ChoiceGenerator';
+import ControlPanel from './ControlPanel';
 import { getBackendUrl } from '../config/api';
 import { useMemory } from '../contexts/MemoryContext';
 
@@ -684,13 +685,151 @@ const Chat = ({ layoutMode }) => {
     // ... [Original Logic] ...
   }, [primaryModel, PRIMARY_API_URL, userProfile, generateUniqueId]);
 
-  const handleRegenerateImage = useCallback(async (imageParams) => {
-    // ... [Original Logic] ...
-  }, [generateImage, setMessages, setRegenerationQueue]);
+  const autoEnhanceRegeneratedImage = useCallback(async (imageUrl, originalPrompt, messageId, enhancementSettings, modelName, gpuId = 0) => {
+    if (!imageUrl || !messageId) {
+      return;
+    }
 
-  const autoEnhanceRegeneratedImage = useCallback(async (imageUrl, originalPrompt, messageId, settings, modelName) => {
-    // ... [Original Logic] ...
-  }, [MEMORY_API_URL, setMessages]);
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/sd-local/enhance-adetailer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_url: imageUrl,
+          original_prompt: originalPrompt,
+          face_prompt: enhancementSettings.facePrompt,
+          strength: enhancementSettings.strength,
+          confidence: enhancementSettings.confidence,
+          model_name: modelName,
+          gpu_id: gpuId
+        })
+      });
+
+      if (!response.ok) {
+        return;
+      }
+
+      const result = await response.json();
+      if (result.status === 'success' && result.enhanced_image_url) {
+        setMessages(prev => prev.map(msg =>
+          msg.id === messageId
+            ? {
+              ...msg,
+              imagePath: result.enhanced_image_url,
+              enhancement_history: [imageUrl, result.enhanced_image_url],
+              current_enhancement_level: 1,
+              enhanced: true,
+              enhancement_settings: { ...enhancementSettings, model_name: modelName }
+            }
+            : msg
+        ));
+      }
+    } catch (error) {
+      console.error('Auto-enhancement failed:', error);
+    }
+  }, [PRIMARY_API_URL, setMessages]);
+
+  const handleRegenerateImage = useCallback(async (imageParams) => {
+    if (!imageParams?.prompt?.trim()) {
+      return;
+    }
+
+    setRegenerationQueue(prev => prev + 1);
+
+    const gpuId = Number.isInteger(imageParams.gpu_id)
+      ? imageParams.gpu_id
+      : Number.isInteger(imageParams.gpuId)
+        ? imageParams.gpuId
+        : 0;
+
+    try {
+      const responseData = await generateImage(imageParams.prompt, {
+        negative_prompt: imageParams.negative_prompt || '',
+        width: imageParams.width || 512,
+        height: imageParams.height || 512,
+        steps: imageParams.steps || 20,
+        guidance_scale: imageParams.guidance_scale || 7.0,
+        sampler: imageParams.sampler || 'Euler a',
+        seed: imageParams.seed ?? -1,
+        model: imageParams.model || '',
+        checkpoint: imageParams.model || ''
+      }, gpuId);
+
+      if (responseData && Array.isArray(responseData.image_urls) && responseData.image_urls.length > 0) {
+        responseData.image_urls.forEach((imageUrl) => {
+          const messageId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}-img`;
+          const imageMessage = {
+            id: messageId,
+            role: 'bot',
+            type: 'image',
+            content: imageParams.prompt,
+            imagePath: imageUrl,
+            gpuId,
+            prompt: imageParams.prompt,
+            negative_prompt: imageParams.negative_prompt || '',
+            width: responseData.parameters?.width || imageParams.width || 512,
+            height: responseData.parameters?.height || imageParams.height || 512,
+            steps: responseData.parameters?.steps || imageParams.steps || 20,
+            guidance_scale: responseData.parameters?.cfg_scale ?? imageParams.guidance_scale ?? 7.0,
+            model: responseData.parameters?.sd_model_checkpoint || imageParams.model || '',
+            sampler: responseData.parameters?.sampler || imageParams.sampler || 'Euler a',
+            seed: responseData.parameters?.seed ?? -1,
+            timestamp: new Date().toISOString()
+          };
+
+          setMessages(prev => [...prev, imageMessage]);
+
+          if (autoEnhanceEnabled && settings?.imageEngine === 'EloDiffusion') {
+            const fallbackSettings = {
+              strength: typeof adetailerSettings.strength === 'number' ? adetailerSettings.strength : 0.35,
+              confidence: typeof adetailerSettings.confidence === 'number' ? adetailerSettings.confidence : 0.3,
+              facePrompt: adetailerSettings.facePrompt || 'detailed face, high quality, sharp focus'
+            };
+            autoEnhanceRegeneratedImage(
+              imageUrl,
+              imageParams.prompt,
+              messageId,
+              fallbackSettings,
+              selectedAdetailerModel,
+              gpuId
+            );
+          }
+        });
+      } else {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `${Date.now()}-regen-error`,
+            role: 'system',
+            content: 'Image regeneration completed, but no images were returned.',
+            error: true
+          }
+        ]);
+      }
+    } catch (err) {
+      console.error('Error regenerating image:', err);
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-regen-catch`,
+          role: 'system',
+          content: `Error regenerating image: ${err.message}.`,
+          error: true
+        }
+      ]);
+    } finally {
+      setRegenerationQueue(prev => Math.max(0, prev - 1));
+    }
+  }, [
+    generateImage,
+    setMessages,
+    setRegenerationQueue,
+    autoEnhanceEnabled,
+    adetailerSettings,
+    selectedAdetailerModel,
+    settings?.imageEngine,
+    autoEnhanceRegeneratedImage
+  ]);
 
   const handleSaveCharacter = useCallback(() => {
     if (!generatedCharacter) return;
@@ -1442,214 +1581,48 @@ const Chat = ({ layoutMode }) => {
 
       {/* Message Display Area */}
       <div className="relative flex-1">
+        <ControlPanel
+          messages={messages}
+          isGenerating={isGenerating}
+          isRecording={isRecording}
+          isTranscribing={isTranscribing}
+          isPlayingAudio={isPlayingAudio}
+          sttEnabled={sttEnabled}
+          ttsEnabled={ttsEnabled}
+          settings={settings}
+          showModelSelector={showModelSelector}
+          isSummarizing={isSummarizing}
+          isGeneratingCharacter={isGeneratingCharacter}
+          isAnalyzingCharacter={isAnalyzingCharacter}
+          showAuthorNote={showAuthorNote}
+          showStoryTracker={showStoryTracker}
+          showChoiceGenerator={showChoiceGenerator}
+          isCallModeActive={isCallModeActive}
+          setShowModelSelector={setShowModelSelector}
+          createNewConversation={createNewConversation}
+          handleVisualizeScene={handleVisualizeScene}
+          handleAiContinue={handleAiContinue}
+          handleMicClick={handleMicClick}
+          handleStopGeneration={handleStopGeneration}
+          handleSpeakerClick={handleSpeakerClick}
+          stopTTS={stopTTS}
+          handleAutoPlayToggle={handleAutoPlayToggle}
+          setIsFocusModeActive={setIsFocusModeActive}
+          updateSettings={updateSettings}
+          handleCreateSummary={handleCreateSummary}
+          handleGenerateCharacter={handleGenerateCharacter}
+          setShowAuthorNote={setShowAuthorNote}
+          setShowStoryTracker={setShowStoryTracker}
+          setShowChoiceGenerator={setShowChoiceGenerator}
+          handleCallModeToggle={handleCallModeToggle}
+          getCharacterButtonState={getCharacterButtonState}
+          skippedMessageIds={skippedMessageIds}
+          setSkippedMessageIds={setSkippedMessageIds}
+        />
         <ScrollArea className={`h-full p-2 md:p-4 ${backgroundImage ? 'bg-transparent' : 'bg-background'}`}>
           <div className="max-w-4xl mx-auto p-2 md:p-4 pb-24">
 
-            {showFloatingControls && (
-              <div className="fixed right-3 md:right-6 top-1/2 transform -translate-y-1/2 z-50 flex flex-col gap-2 bg-background/80 backdrop-blur-sm p-2 rounded-md border border-border shadow-md">
-                {/* New Chat in Floating Controls */}
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="flex-shrink-0 h-10 w-10"
-                  onClick={createNewConversation}
-                  title="New Chat"
-                >
-                  <Plus size={18} />
-                </Button>
 
-                <Button
-                  variant={showModelSelector ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => setShowModelSelector(!showModelSelector)}
-                  title={showModelSelector ? "Hide Models" : "Show Models"}
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  <Cpu size={18} />
-                </Button>
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleVisualizeScene}
-                  disabled={isGenerating || messages.length === 0}
-                  title="Visualize Scene"
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  <Eye size={18} />
-                </Button>
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleAiContinue}
-                  disabled={isGenerating || isTranscribing || !messages.some(m => m.role === 'bot')}
-                  title="Continue AI response"
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  <FastForward size={18} />
-                </Button>
-
-                {sttEnabled && (
-                  <Button
-                    variant={isRecording ? "destructive" : "outline"}
-                    size="icon"
-                    className="flex-shrink-0 h-10 w-10"
-                    onClick={handleMicClick}
-                    disabled={isTranscribing}
-                    title={isRecording ? "Stop Recording" : "Start Voice Input"}
-                  >
-                    {isTranscribing ? <Loader2 className="animate-spin" size={18} /> : isRecording ? <MicOff size={18} /> : <Mic size={18} />}
-                  </Button>
-                )}
-
-                {isGenerating && (
-                  <Button variant="destructive" size="icon" className="flex-shrink-0 h-10 w-10" onClick={handleStopGeneration}>
-                    <X size={18} />
-                  </Button>
-                )}
-
-                {messages.length > 0 && messages[messages.length - 1].role !== "user" && ttsEnabled && (
-                  <Button
-                    variant={isPlayingAudio === messages[messages.length - 1].id ? "destructive" : "outline"}
-                    size="icon"
-                    className="flex-shrink-0 h-10 w-10"
-                    onClick={() => handleSpeakerClick(messages[messages.length - 1].id, messages[messages.length - 1].content)}
-                    disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== messages[messages.length - 1].id)}
-                    title={isPlayingAudio === messages[messages.length - 1].id ? "Stop Audio" : "Play Response"}
-                  >
-                    {isPlayingAudio === messages[messages.length - 1].id ? <Loader2 className="animate-spin" size={18} /> : <PlayIcon size={18} />}
-                  </Button>
-                )}
-
-                {ttsEnabled && isPlayingAudio && (
-                  <Button
-                    variant="destructive"
-                    size="icon"
-                    className="flex-shrink-0 h-10 w-10"
-                    onClick={() => { if (isPlayingAudio) setSkippedMessageIds(prev => new Set(prev).add(isPlayingAudio)); stopTTS(); }}
-                    title="Stop All Audio"
-                  >
-                    <X size={18} />
-                  </Button>
-                )}
-
-                {ttsEnabled && (
-                  <div className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded" title="Toggle Text-to-Speech Autoplay">
-                    <Switch id="floating-autoplay" checked={settings?.ttsAutoPlay || false} onCheckedChange={handleAutoPlayToggle} />
-                    <Label htmlFor="floating-autoplay" className="text-xs">autoTTS</Label>
-                  </div>
-                )}
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => setIsFocusModeActive(true)}
-                  title="Enter Focus Mode"
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  <Focus size={18} />
-                </Button>
-
-                <div
-                  className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded"
-                  title={settings.multiRoleMode ? "Roles On" : "Roles Off"}
-                >
-                  <Switch
-                    id="floating-roles"
-                    checked={settings.multiRoleMode || false}
-                    onCheckedChange={(checked) => {
-                      const nextMode = Boolean(checked);
-                      updateSettings({
-                        multiRoleMode: nextMode,
-                        autoSelectSpeaker: nextMode ? settings.autoSelectSpeaker : false
-                      });
-                    }}
-                  />
-                  <Label htmlFor="floating-roles" className="text-xs">Roles</Label>
-                </div>
-
-                {settings.multiRoleMode && (
-                  <div className="flex flex-col items-center gap-1 bg-card/90 p-1 rounded" title="Toggle Auto Speaker">
-                    <Switch
-                      id="floating-autospeak"
-                      checked={settings.autoSelectSpeaker || false}
-                      onCheckedChange={(checked) => updateSettings({ autoSelectSpeaker: checked })}
-                    />
-                    <Label htmlFor="floating-autospeak" className="text-xs">Autospeak</Label>
-                  </div>
-                )}
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleCreateSummary}
-                  disabled={isSummarizing || messages.length < 2}
-                  title="Summarize current conversation"
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  {isSummarizing ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />}
-                </Button>
-
-                {(() => {
-                  const buttonState = getCharacterButtonState();
-                  return (
-                    <Button
-                      variant={buttonState.variant}
-                      size="icon"
-                      className={buttonState.className}
-                      onClick={handleGenerateCharacter}
-                      disabled={buttonState.disabled || isGeneratingCharacter || isAnalyzingCharacter}
-                      title={buttonState.title}
-                    >
-                      {isGeneratingCharacter ? <Loader2 className="animate-spin" size={18} /> : isAnalyzingCharacter ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Users size={18} />}
-                    </Button>
-                  );
-                })()}
-
-                <Button
-                  variant={showAuthorNote ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => setShowAuthorNote(!showAuthorNote)}
-                  title="Author's Note"
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  <BookOpen size={18} />
-                </Button>
-
-                <Button
-                  variant={showStoryTracker ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => setShowStoryTracker(!showStoryTracker)}
-                  title="Story Tracker"
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  <Copy size={18} />
-                </Button>
-
-                <Button
-                  variant={showChoiceGenerator ? "secondary" : "outline"}
-                  size="icon"
-                  onClick={() => setShowChoiceGenerator(!showChoiceGenerator)}
-                  title="Choice Generator"
-                  className="flex-shrink-0 h-10 w-10"
-                >
-                  <Layers size={18} />
-                </Button>
-
-                {sttEnabled && ttsEnabled && (
-                  <Button
-                    variant={isCallModeActive ? "destructive" : "outline"}
-                    size="icon"
-                    onClick={handleCallModeToggle}
-                    title={isCallModeActive ? "Exit Call Mode" : "Enter Call Mode"}
-                    className="h-9 w-9"
-                  >
-                    {isCallModeActive ? <PhoneOff size={18} /> : <Phone size={18} />}
-                  </Button>
-                )}
-              </div>
-            )}
 
             {/* Messages Render Loop */}
             {messages.length === 0 ? (

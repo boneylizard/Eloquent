@@ -89,24 +89,26 @@ def get_configured_endpoint(model_id: str = None):
         if model_id:
             for endpoint in custom_endpoints:
                 if endpoint.get('id') == model_id and endpoint.get('enabled', False):
-                    return {
-                        'url': endpoint.get('url', '').rstrip('/'),
-                        'api_key': endpoint.get('apiKey', ''),
-                        'name': endpoint.get('name', 'Custom Endpoint'),
-                        'model': endpoint.get('model', '')  # Model name to send to the API
-                    }
+                      return {
+                          'url': endpoint.get('url', '').rstrip('/'),
+                          'api_key': endpoint.get('apiKey', ''),
+                          'name': endpoint.get('name', 'Custom Endpoint'),
+                          'model': endpoint.get('model', ''),  # Model name to send to the API
+                          'context_window': endpoint.get('context_window') or endpoint.get('contextWindow')
+                      }
             # If the specific endpoint is not found or disabled, it's an error
             return None
 
         # Fallback for old behavior: find the first enabled endpoint
         for endpoint in custom_endpoints:
             if endpoint.get('enabled', False):
-                return {
-                    'url': endpoint.get('url', '').rstrip('/'),
-                    'api_key': endpoint.get('apiKey', ''),
-                    'name': endpoint.get('name', 'Custom Endpoint'),
-                    'model': endpoint.get('model', '')  # Model name to send to the API
-                }
+              return {
+                  'url': endpoint.get('url', '').rstrip('/'),
+                  'api_key': endpoint.get('apiKey', ''),
+                  'name': endpoint.get('name', 'Custom Endpoint'),
+                  'model': endpoint.get('model', ''),  # Model name to send to the API
+                  'context_window': endpoint.get('context_window') or endpoint.get('contextWindow')
+              }
         return None
     except Exception as e:
         logger.error(f"Error reading settings: {e}")

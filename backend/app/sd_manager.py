@@ -119,6 +119,8 @@ class SDManager:
         self.adetailer_processor = ADetailerProcessor()
         self.progress_cache: Dict[str, Dict[str, Any]] = {}
         self.progress_lock = threading.Lock()
+        self.model_locks: Dict[int, threading.Lock] = {}
+        self.model_locks_lock = threading.Lock()
 
         # Set ADetailer model directory from settings
         settings_path = Path.home() / ".LiangLocal" / "settings.json"
@@ -132,6 +134,14 @@ class SDManager:
         except Exception as e:
             logger.warning(f"Could not load ADetailer model directory: {e}")        
         logger.info("SDManager initialized with ADetailer support")
+
+    def _get_model_lock(self, gpu_id: int) -> threading.Lock:
+        with self.model_locks_lock:
+            lock = self.model_locks.get(gpu_id)
+            if lock is None:
+                lock = threading.Lock()
+                self.model_locks[gpu_id] = lock
+            return lock
 
     # Add the @property decorator to expose adetailer for backward compatibility
     @property
@@ -263,51 +273,53 @@ class SDManager:
 
             try:
                 upscaled_result = None
-                
-                # Try generate_image_from_image if available (some wrappers have this specific method)
-                if hasattr(model_instance, 'generate_image_from_image'):
-                     upscaled_result = model_instance.generate_image_from_image(
-                        prompt=prompt,
-                        image=temp_input_path,
-                        strength=strength,
-                        step_count=20, # method arg name might vary
-                        cfg_scale=7.0,
-                        sample_method="euler_a"
-                     )
-                elif hasattr(model_instance, 'img_to_img'):
-                    # Correct method name from inspection
-                    upscaled_result = model_instance.img_to_img(
-                        prompt=prompt,
-                        image=temp_input_path, # Pass path string
-                        strength=strength,
-                        width=new_width,
-                        height=new_height,
-                        sample_steps=20,
-                        cfg_scale=7.0,
-                        sample_method="euler_a"
-                    )
-                elif hasattr(model_instance, 'generate_image'):
-                    upscaled_result = model_instance.generate_image(
-                        prompt=prompt,
-                        image=temp_input_path, # Pass path string
-                        strength=strength,
-                        width=new_width,
-                        height=new_height,
-                        sample_steps=20, 
-                        cfg_scale=7.0,
-                        sample_method="euler_a"
-                    )
-                elif hasattr(model_instance, 'img2img'):
-                    upscaled_result = model_instance.img2img(
-                        prompt=prompt,
-                        image=temp_input_path, # Pass path string
-                        strength=strength,
-                        width=new_width,
-                        height=new_height,
-                        sample_steps=20,
-                        cfg_scale=7.0,
-                        sample_method="euler_a"
-                    )
+
+                model_lock = self._get_model_lock(gpu_id)
+                with model_lock:
+                    # Try generate_image_from_image if available (some wrappers have this specific method)
+                    if hasattr(model_instance, 'generate_image_from_image'):
+                        upscaled_result = model_instance.generate_image_from_image(
+                            prompt=prompt,
+                            image=temp_input_path,
+                            strength=strength,
+                            step_count=20, # method arg name might vary
+                            cfg_scale=7.0,
+                            sample_method="euler_a"
+                        )
+                    elif hasattr(model_instance, 'img_to_img'):
+                        # Correct method name from inspection
+                        upscaled_result = model_instance.img_to_img(
+                            prompt=prompt,
+                            image=temp_input_path, # Pass path string
+                            strength=strength,
+                            width=new_width,
+                            height=new_height,
+                            sample_steps=20,
+                            cfg_scale=7.0,
+                            sample_method="euler_a"
+                        )
+                    elif hasattr(model_instance, 'generate_image'):
+                        upscaled_result = model_instance.generate_image(
+                            prompt=prompt,
+                            image=temp_input_path, # Pass path string
+                            strength=strength,
+                            width=new_width,
+                            height=new_height,
+                            sample_steps=20, 
+                            cfg_scale=7.0,
+                            sample_method="euler_a"
+                        )
+                    elif hasattr(model_instance, 'img2img'):
+                        upscaled_result = model_instance.img2img(
+                            prompt=prompt,
+                            image=temp_input_path, # Pass path string
+                            strength=strength,
+                            width=new_width,
+                            height=new_height,
+                            sample_steps=20,
+                            cfg_scale=7.0,
+                            sample_method="euler_a"
+                        )
                 
                 if upscaled_result and len(upscaled_result) > 0:
                     final_image = upscaled_result[0]
@@ -365,6 +377,7 @@ class SDManager:
 
             # Process each face
             enhanced_image = original_image.copy()
+            model_lock = self._get_model_lock(gpu_id)
 
             for i, box in enumerate(face_boxes):
                 logger.info(f"Processing face {i+1}/{len(face_boxes)}: {box}")
@@ -400,44 +413,45 @@ class SDManager:
 
                 # Handle different API versions of stable-diffusion-cpp-python
                 # Latest versions use generate_image with image param for img2img
-                if hasattr(model_instance, 'generate_image'):
-                    enhanced_result = model_instance.generate_image(
-                        prompt=enhance_prompt,
-                        image=enhanced_image,
-                        strength=0.30,
-                        width=w,
-                        height=h,
-                        sample_steps=45,
-                        cfg_scale=8.5,
-                        sample_method="dpmpp2m"
-                    )
-                elif hasattr(model_instance, 'img2img'):
-                    enhanced_result = model_instance.img2img(
-                        prompt=enhance_prompt,
-                        image=enhanced_image,
-                        mask_image=mask,
-                        strength=0.30,
-                        width=w,
-                        height=h,
-                        sample_steps=45,
-                        cfg_scale=8.5,
-                        sample_method="dpmpp2m"
-                    )
-                elif hasattr(model_instance, 'img_to_img'):
-                    enhanced_result = model_instance.img_to_img(
-                        prompt=enhance_prompt,
-                        image=enhanced_image,
-                        mask_image=mask,
-                        strength=0.30,
-                        width=w,
-                        height=h,
-                        sample_steps=45,
-                        cfg_scale=8.5,
-                        sample_method="dpmpp2m"
-                    )
-                else:
-                    logger.error("StableDiffusion object has no generate_image or img2img method")
-                    enhanced_result = None
+                with model_lock:
+                    if hasattr(model_instance, 'generate_image'):
+                        enhanced_result = model_instance.generate_image(
+                            prompt=enhance_prompt,
+                            image=enhanced_image,
+                            strength=0.30,
+                            width=w,
+                            height=h,
+                            sample_steps=45,
+                            cfg_scale=8.5,
+                            sample_method="dpmpp2m"
+                        )
+                    elif hasattr(model_instance, 'img2img'):
+                        enhanced_result = model_instance.img2img(
+                            prompt=enhance_prompt,
+                            image=enhanced_image,
+                            mask_image=mask,
+                            strength=0.30,
+                            width=w,
+                            height=h,
+                            sample_steps=45,
+                            cfg_scale=8.5,
+                            sample_method="dpmpp2m"
+                        )
+                    elif hasattr(model_instance, 'img_to_img'):
+                        enhanced_result = model_instance.img_to_img(
+                            prompt=enhance_prompt,
+                            image=enhanced_image,
+                            mask_image=mask,
+                            strength=0.30,
+                            width=w,
+                            height=h,
+                            sample_steps=45,
+                            cfg_scale=8.5,
+                            sample_method="dpmpp2m"
+                        )
+                    else:
+                        logger.error("StableDiffusion object has no generate_image or img2img method")
+                        enhanced_result = None
                     
                 if enhanced_result and len(enhanced_result) > 0:
                     enhanced_image = enhanced_result[0]
@@ -731,25 +745,21 @@ class SDManager:
                     return False
 
             candidates = []
+            if hasattr(model_instance, 'generate_image'):
+                candidates.append(("generate_image", model_instance.generate_image))
             if hasattr(model_instance, 'txt_to_img'):
                 candidates.append(("txt_to_img", model_instance.txt_to_img))
             if hasattr(model_instance, 'txt2img'):
                 candidates.append(("txt2img", model_instance.txt2img))
-            if hasattr(model_instance, 'generate_image'):
-                candidates.append(("generate_image", model_instance.generate_image))
 
             method_name = None
             method = None
 
-            if task_id:
-                for name, fn in candidates:
-                    if supports_progress(fn):
-                        method_name = name
-                        method = fn
-                        break
-
-            if method is None and candidates:
+            if candidates:
                 method_name, method = candidates[0]
+
+            if task_id and method and not supports_progress(method):
+                logger.warning(f"Progress callback not supported by {method_name}; progress updates may be unavailable.")
 
             if not method:
                 methods = [m for m in dir(model_instance) if not m.startswith('_')]
@@ -757,17 +767,19 @@ class SDManager:
 
             logger.info(f"Using SD method: {method_name}")
 
-            images_list = call_with_progress(
-                method,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=width,
-                height=height,
-                cfg_scale=cfg_scale,
-                sample_steps=steps,
-                sample_method=sample_method,
-                seed=seed
-            )
+            model_lock = self._get_model_lock(gpu_id)
+            with model_lock:
+                images_list = call_with_progress(
+                    method,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=width,
+                    height=height,
+                    cfg_scale=cfg_scale,
+                    sample_steps=steps,
+                    sample_method=sample_method,
+                    seed=seed
+                )
             
             logger.info("Generation completed successfully")
         

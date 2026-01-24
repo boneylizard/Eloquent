@@ -44,7 +44,7 @@ const Navbar = ({ toggleSidebar }) => {
     <header className="border-b bg-card">
       <div className="container flex items-center h-16 px-4">
         {/* Brand/Logo - with more space */}
-        <div className="flex items-center gap-3 mr-2 md:mr-8">
+        <div className="flex items-center gap-3 mr-2 lg:mr-8 flex-shrink-0">
           <img
             src="/eloquent-logo.png"
             alt="Eloquent"
@@ -54,7 +54,7 @@ const Navbar = ({ toggleSidebar }) => {
         </div>
 
         {/* Desktop Navigation - Hidden on Mobile */}
-        <nav className="hidden md:flex items-center gap-2 flex-1">
+        <nav className="hidden lg:flex items-center gap-2 flex-1">
           {sidebarNavItems.map((item) => (
             <Button
               key={item.id}
@@ -110,7 +110,7 @@ const Navbar = ({ toggleSidebar }) => {
         <Button
           variant="ghost"
           size="icon"
-          className="md:hidden ml-2"
+          className="lg:hidden ml-2"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -123,7 +123,7 @@ const Navbar = ({ toggleSidebar }) => {
 
       {/* Mobile Menu Dropdown */}
       {mobileMenuOpen && (
-        <div className="md:hidden border-t bg-card p-4 space-y-2 absolute top-16 left-0 right-0 z-50 shadow-lg">
+        <div className="lg:hidden border-t bg-card p-4 space-y-2 absolute top-16 left-0 right-0 z-50 shadow-lg">
           {sidebarNavItems.map((item) => (
             <Button
               key={item.id}

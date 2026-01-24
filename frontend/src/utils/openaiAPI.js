@@ -90,13 +90,23 @@ export async function generateReplyOpenAI({
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
+  // Construct URL intelligently
+  const baseUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
+  let endpointUrl;
+
+  if (baseUrl.endsWith('/v1')) {
+    endpointUrl = `${baseUrl}/chat/completions`;
+  } else {
+    endpointUrl = `${baseUrl}/v1/chat/completions`;
+  }
+
   console.log("🌐 [OpenAI API] Sending request:");
-  console.log("🌐 [OpenAI API] URL:", `${apiUrl}/v1/chat/completions`);
+  console.log("🌐 [OpenAI API] URL:", endpointUrl);
   console.log("🌐 [OpenAI API] Model:", modelToUse);
   console.log("🌐 [OpenAI API] GPU ID:", targetGpuId);
   console.log("🌐 [OpenAI API] Payload GPU ID:", payload.gpu_id);
 
-  const response = await fetch(`${apiUrl}/v1/chat/completions`, {
+  const response = await fetch(endpointUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify(payload)
@@ -214,7 +224,12 @@ export async function getOpenAIModels(apiUrl, apiKey = null) {
       headers['Authorization'] = `Bearer ${apiKey}`;
     }
 
-    const response = await fetch(`${apiUrl}/v1/models`, { headers });
+    const baseUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
+    const endpointUrl = baseUrl.endsWith('/v1')
+      ? `${baseUrl}/models`
+      : `${baseUrl}/v1/models`;
+
+    const response = await fetch(endpointUrl, { headers });
     if (!response.ok) {
       throw new Error(`Failed to fetch models: ${response.status}`);
     }
@@ -237,7 +252,14 @@ export async function testOpenAIConnection(apiUrl, apiKey = null) {
       headers['Authorization'] = `Bearer ${apiKey}`;
     }
 
-    const response = await fetch(`${apiUrl}/v1/health`, { headers });
+    const baseUrl = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
+    // Try /v1/models as a health check if /health doesn't exist standardly
+    // But sticking to /models is safer for standard OpenAI
+    const endpointUrl = baseUrl.endsWith('/v1')
+      ? `${baseUrl}/models`
+      : `${baseUrl}/v1/models`;
+
+    const response = await fetch(endpointUrl, { headers });
     return response.ok;
   } catch (error) {
     console.error('OpenAI API connection test failed:', error);
