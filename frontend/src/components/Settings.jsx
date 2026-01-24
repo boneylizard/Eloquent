@@ -490,83 +490,90 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               <div className="flex flex-row items-center justify-between">
                 <div>
                   <Label htmlFor="single-gpu-mode">Single GPU Mode</Label>
-                  <p className="text-xs text-muted-foreground mt-1">Enable for single GPU setup.</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {gpuCount <= 1 ? "Automatically enabled (Single GPU detected)" : "Enable for single GPU setup."}
+                  </p>
                 </div>
                 <Switch
                   id="single-gpu-mode"
-                  checked={localSettings.singleGpuMode}
+                  checked={localSettings.singleGpuMode || gpuCount <= 1}
+                  disabled={gpuCount <= 1}
                   onCheckedChange={(value) => handleChange('singleGpuMode', value)}
                 />
               </div>
               <Separator />
 
-              {/* GPU Usage Mode */}
-              <div className="space-y-4">
-                <div>
-                  <Label htmlFor="gpu-usage-mode">GPU Usage Mode (Dual GPU)</Label>
-                </div>
-                <Select
-                  value={localSettings.gpuUsageMode || 'split_services'}
-                  onValueChange={(value) => {
-                    handleChange('gpuUsageMode', value);
-                    fetch(`${PRIMARY_API_URL}/models/update-gpu-mode`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ gpuUsageMode: value })
-                    }).then(r => r.json()).then(d => alert(d.status === 'success' ? 'Updated! Restart required.' : d.message));
-                  }}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select GPU usage mode" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="split_services">Split Services</SelectItem>
-                    <SelectItem value="unified_model">Unified Model</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Tensor Split Settings */}
-              {localSettings.gpuUsageMode === 'unified_model' && (
+              {/* GPU Usage Mode - Hidden in Single GPU Mode */}
+              {!localSettings.singleGpuMode && (
                 <>
-                  <Separator />
                   <div className="space-y-4">
-                    <Label htmlFor="tensor-split-input" className="text-base font-medium">Tensor Split Ratio</Label>
-                    <div className="flex flex-col md:flex-row gap-3">
-                      <Input
-                        id="tensor-split-input"
-                        type="text"
-                        placeholder="1,1"
-                        defaultValue={currentTensorSplit.join(',')}
-                        key={currentTensorSplit.join(',')}
-                        className="flex-1"
-                      />
-                      <Button
-                        variant="outline"
-                        className="w-full md:w-auto"
-                        onClick={(e) => {
-                          const input = document.getElementById('tensor-split-input');
-                          const value = input.value.trim();
-                          const parts = value.split(',').map(s => parseFloat(s.trim()));
-                          const total = parts.reduce((a, b) => a + b, 0);
-                          const normalized = parts.map(v => v / total);
-
-                          fetch(`${PRIMARY_API_URL}/models/update-tensor-split`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ tensor_split: normalized })
-                          }).then(r => r.json()).then(data => {
-                            if (data.status === 'success') {
-                              alert('Updated!');
-                              setCurrentTensorSplit(data.tensor_split);
-                            } else alert(data.message);
-                          });
-                        }}
-                      >
-                        <Save className="mr-2 h-4 w-4" /> Apply
-                      </Button>
+                    <div>
+                      <Label htmlFor="gpu-usage-mode">GPU Usage Mode (Dual GPU)</Label>
                     </div>
+                    <Select
+                      value={localSettings.gpuUsageMode || 'split_services'}
+                      onValueChange={(value) => {
+                        handleChange('gpuUsageMode', value);
+                        fetch(`${PRIMARY_API_URL}/models/update-gpu-mode`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ gpuUsageMode: value })
+                        }).then(r => r.json()).then(d => alert(d.status === 'success' ? 'Updated! Restart required.' : d.message));
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select GPU usage mode" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="split_services">Split Services</SelectItem>
+                        <SelectItem value="unified_model">Unified Model</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
+
+                  {/* Tensor Split Settings */}
+                  {localSettings.gpuUsageMode === 'unified_model' && (
+                    <>
+                      <Separator />
+                      <div className="space-y-4">
+                        <Label htmlFor="tensor-split-input" className="text-base font-medium">Tensor Split Ratio</Label>
+                        <div className="flex flex-col md:flex-row gap-3">
+                          <Input
+                            id="tensor-split-input"
+                            type="text"
+                            placeholder="1,1"
+                            defaultValue={currentTensorSplit.join(',')}
+                            key={currentTensorSplit.join(',')}
+                            className="flex-1"
+                          />
+                          <Button
+                            variant="outline"
+                            className="w-full md:w-auto"
+                            onClick={(e) => {
+                              const input = document.getElementById('tensor-split-input');
+                              const value = input.value.trim();
+                              const parts = value.split(',').map(s => parseFloat(s.trim()));
+                              const total = parts.reduce((a, b) => a + b, 0);
+                              const normalized = parts.map(v => v / total);
+
+                              fetch(`${PRIMARY_API_URL}/models/update-tensor-split`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ tensor_split: normalized })
+                              }).then(r => r.json()).then(data => {
+                                if (data.status === 'success') {
+                                  alert('Updated!');
+                                  setCurrentTensorSplit(data.tensor_split);
+                                } else alert(data.message);
+                              });
+                            }}
+                          >
+                            <Save className="mr-2 h-4 w-4" /> Apply
+                          </Button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
 
@@ -926,18 +933,18 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   <Button
                     size="sm"
                     variant="outline"
-                      onClick={() => {
-                        const newEndpoints = [...(localSettings.customApiEndpoints || []), {
-                          id: `endpoint-${Date.now()}`,
-                          name: 'New Endpoint',
-                          url: getBackendUrl(),
-                          apiKey: '',
-                          enabled: true,
-                          context_window: null
-                        }];
-                        handleChange('customApiEndpoints', newEndpoints);
-                      }}
-                    >
+                    onClick={() => {
+                      const newEndpoints = [...(localSettings.customApiEndpoints || []), {
+                        id: `endpoint-${Date.now()}`,
+                        name: 'New Endpoint',
+                        url: getBackendUrl(),
+                        apiKey: '',
+                        enabled: true,
+                        context_window: null
+                      }];
+                      handleChange('customApiEndpoints', newEndpoints);
+                    }}
+                  >
                     Add Endpoint
                   </Button>
                 </div>
@@ -977,11 +984,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       </Button>
                     </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                        <div>
-                          <Label className="text-xs">API URL</Label>
-                          <Input
-                            value={endpoint.url}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <div>
+                        <Label className="text-xs">API URL</Label>
+                        <Input
+                          value={endpoint.url}
                           onChange={(e) => {
                             const updated = [...localSettings.customApiEndpoints];
                             updated[index] = { ...endpoint, url: e.target.value };
@@ -990,10 +997,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         />
                       </div>
                       <div>
-                          <Label className="text-xs">Model Name</Label>
-                          <Input
-                            value={endpoint.model || ''}
-                            onChange={(e) => {
+                        <Label className="text-xs">Model Name</Label>
+                        <Input
+                          value={endpoint.model || ''}
+                          onChange={(e) => {
                             const updated = [...localSettings.customApiEndpoints];
                             updated[index] = { ...endpoint, model: e.target.value };
                             handleChange('customApiEndpoints', updated);
@@ -1001,35 +1008,35 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         />
                       </div>
                       <div>
-                          <Label className="text-xs">API Key</Label>
-                          <Input
-                            type="password"
-                            value={endpoint.apiKey}
-                            onChange={(e) => {
-                              const updated = [...localSettings.customApiEndpoints];
-                              updated[index] = { ...endpoint, apiKey: e.target.value };
-                              handleChange('customApiEndpoints', updated);
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-xs">Context Window</Label>
-                          <Input
-                            type="number"
-                            min="1024"
-                            step="256"
-                            placeholder="8192"
-                            value={endpoint.context_window ?? ''}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              const contextWindow = value === '' ? null : parseInt(value, 10);
-                              const updated = [...localSettings.customApiEndpoints];
-                              updated[index] = { ...endpoint, context_window: contextWindow };
-                              handleChange('customApiEndpoints', updated);
-                            }}
-                          />
-                        </div>
+                        <Label className="text-xs">API Key</Label>
+                        <Input
+                          type="password"
+                          value={endpoint.apiKey}
+                          onChange={(e) => {
+                            const updated = [...localSettings.customApiEndpoints];
+                            updated[index] = { ...endpoint, apiKey: e.target.value };
+                            handleChange('customApiEndpoints', updated);
+                          }}
+                        />
                       </div>
+                      <div>
+                        <Label className="text-xs">Context Window</Label>
+                        <Input
+                          type="number"
+                          min="1024"
+                          step="256"
+                          placeholder="8192"
+                          value={endpoint.context_window ?? ''}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            const contextWindow = value === '' ? null : parseInt(value, 10);
+                            const updated = [...localSettings.customApiEndpoints];
+                            updated[index] = { ...endpoint, context_window: contextWindow };
+                            handleChange('customApiEndpoints', updated);
+                          }}
+                        />
+                      </div>
+                    </div>
                   </div>
                 ))}
 
@@ -1067,15 +1074,15 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               <CardTitle>Image Generation</CardTitle>
               <CardDescription>Built-in Local SD with optional external engines.</CardDescription>
             </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-2">
-                  <Label>Image Engine Priority</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Local SD uses the built-in stable-diffusion.cpp engine. External engines require their own servers.
-                  </p>
-                  <Select
-                    value={localSettings.imageEngine || 'auto1111'}
-                    onValueChange={(value) => handleChange('imageEngine', value)}
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label>Image Engine Priority</Label>
+                <p className="text-xs text-muted-foreground">
+                  Local SD uses the built-in stable-diffusion.cpp engine. External engines require their own servers.
+                </p>
+                <Select
+                  value={localSettings.imageEngine || 'auto1111'}
+                  onValueChange={(value) => handleChange('imageEngine', value)}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="Select image engine" />
@@ -1090,22 +1097,22 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               </div>
               <Separator />
 
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-md font-medium">Local SD (Built-in)</h3>
-                    <p className="text-xs text-muted-foreground">Built-in image generation using stable-diffusion.cpp.</p>
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-md font-medium">Local SD (Built-in)</h3>
+                  <p className="text-xs text-muted-foreground">Built-in image generation using stable-diffusion.cpp.</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                  <div className="text-xs text-muted-foreground">
+                    <div className="font-medium text-foreground">Supported local models</div>
+                    <ul className="mt-2 list-disc pl-5 space-y-1">
+                      <li>Files: .safetensors, .ckpt, .gguf</li>
+                      <li>Families: SD 1.x, SDXL (filename contains sdxl/xl), FLUX (filename contains flux)</li>
+                      <li>FLUX needs extra files in the same folder: clip_l.safetensors, t5xxl_fp16.safetensors, ae.safetensors</li>
+                      <li>SDXL is heavier; reduce resolution or steps if you hit VRAM limits</li>
+                    </ul>
                   </div>
-                  <div className="rounded-md border border-border/60 bg-muted/20 p-3">
-                    <div className="text-xs text-muted-foreground">
-                      <div className="font-medium text-foreground">Supported local models</div>
-                      <ul className="mt-2 list-disc pl-5 space-y-1">
-                        <li>Files: .safetensors, .ckpt, .gguf</li>
-                        <li>Families: SD 1.x, SDXL (filename contains sdxl/xl), FLUX (filename contains flux)</li>
-                        <li>FLUX needs extra files in the same folder: clip_l.safetensors, t5xxl_fp16.safetensors, ae.safetensors</li>
-                        <li>SDXL is heavier; reduce resolution or steps if you hit VRAM limits</li>
-                      </ul>
-                    </div>
-                  </div>
+                </div>
 
                 {/* Model Directory */}
                 <div className="space-y-2">
@@ -1774,7 +1781,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
           </Card>
         </TabsContent>
         {/*local sd*/}
-{/* About */}
+        {/* About */}
         <TabsContent value="about">
           <Card>
             <CardHeader>

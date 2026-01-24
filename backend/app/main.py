@@ -5002,6 +5002,7 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
             original_prompt=data.get("original_prompt", ""),
             face_prompt=data.get("face_prompt", ""),
             strength=data.get("strength", 0.4),
+            steps=data.get("steps", 45), # Pass steps, default to 45
             confidence=data.get("confidence", 0.3),
             model_name=data.get("model_name", "face_yolov8n.pt"),
             gpu_id=gpu_id # CRITICAL FIX: Pass the GPU ID to the manager

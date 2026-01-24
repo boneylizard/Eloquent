@@ -23,6 +23,8 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [isUpscaling, setIsUpscaling] = useState(false);
   const [scaleFactor, setScaleFactor] = useState("2");
+  // Enhance mode state: 'refine' (0.35) or 'creative' (0.75)
+  const [enhanceMode, setEnhanceMode] = useState("refine");
 
   // Existing functions
   const getImageUrl = () => {
@@ -40,10 +42,18 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
     if (!imageUrl || isEnhancing) return;
 
     // Use saved settings from localStorage (same as auto-enhance)
-    const savedSettings = localStorage.getItem('adetailer-settings');
     const savedModel = localStorage.getItem('adetailer-selected-model') || 'face_yolov8n_v2.pt';
-    const settings = savedSettings ? JSON.parse(savedSettings) : {
-      strength: 0.4,
+
+    // Determine strength and steps based on mode
+    // refine = 0.35 strength, 25 steps (subtle fix, fast)
+    // creative = 0.75 strength, 45 steps (hallucinate details, slow)
+    // The user specifically requested 45 steps for creative mode to "restore" previous behavior
+    const strength = enhanceMode === 'creative' ? 0.75 : 0.35;
+    const steps = enhanceMode === 'creative' ? 45 : 25;
+
+    const settings = {
+      strength: strength,
+      steps: steps,
       confidence: 0.3,
       facePrompt: 'detailed face, high quality, sharp focus'
     };
@@ -59,6 +69,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
           original_prompt: message.prompt || '',
           face_prompt: settings.facePrompt,
           strength: settings.strength,
+          steps: settings.steps,
           confidence: settings.confidence,
           model_name: savedModel,
           gpu_id: message.gpuId || 0 // Use the GPU ID from the message or default to 0
@@ -85,7 +96,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                 : [msg.imagePath, result.enhanced_image_url],
               current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
               enhanced: true,
-              enhancement_settings: { ...settings, model_name: savedModel }
+              enhancement_settings: { ...settings, model_name: savedModel, mode: enhanceMode }
             }
             : msg
         ));
@@ -107,7 +118,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
     } finally {
       setIsEnhancing(false);
     }
-  }, [imageUrl, isEnhancing, MEMORY_API_URL, PRIMARY_API_URL, setMessages, message, generateUniqueId]);
+  }, [imageUrl, isEnhancing, MEMORY_API_URL, PRIMARY_API_URL, setMessages, message, generateUniqueId, enhanceMode]);
 
   // Add this state near your other useState declarations
   const [upscalerModels, setUpscalerModels] = useState([]);
@@ -414,26 +425,38 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
             )}
 
             {/* Enhancement controls */}
-            <Button
-              size='sm'
-              variant='secondary'
-              onClick={handleManualEnhance}
-              disabled={isEnhancing}
-              className='h-8 px-2 text-xs bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white border-0'
-              title={`${message.enhanced ? 'Enhance further' : 'Enhance faces and details'} with ADetailer`}
-            >
-              {isEnhancing ? (
-                <Loader2 className='h-3 w-3 mr-1 animate-spin' />
-              ) : (
-                <Sparkles className='h-3 w-3 mr-1' />
-              )}
-              {isEnhancing
-                ? 'Enhancing...'
-                : message.enhanced
-                  ? `Enhance Again (${(message.current_enhancement_level || 0) + 1}x)`
-                  : 'Enhance'
-              }
-            </Button>
+            <div className="flex items-center gap-1">
+              <Select value={enhanceMode} onValueChange={setEnhanceMode}>
+                <SelectTrigger className="h-8 w-[85px] text-xs px-2 bg-transparent border-input/50">
+                  <SelectValue placeholder="Mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="refine">Refine</SelectItem>
+                  <SelectItem value="creative">Creative</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Button
+                size='sm'
+                variant='secondary'
+                onClick={handleManualEnhance}
+                disabled={isEnhancing}
+                className='h-8 px-2 text-xs bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white border-0'
+                title={`${message.enhanced ? 'Enhance further' : 'Enhance faces and details'} with ADetailer`}
+              >
+                {isEnhancing ? (
+                  <Loader2 className='h-3 w-3 mr-1 animate-spin' />
+                ) : (
+                  <Sparkles className='h-3 w-3 mr-1' />
+                )}
+                {isEnhancing
+                  ? 'Enhancing...'
+                  : message.enhanced
+                    ? `Enhance Again (${(message.current_enhancement_level || 0) + 1}x)`
+                    : 'Enhance'
+                }
+              </Button>
+            </div>
 
 
 
@@ -644,18 +667,18 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                     <Button
                       size='sm'
                       variant='ghost'
-                    onClick={() => onRegenerate({
-                      prompt: message.prompt || '',
-                      negative_prompt: message.negative_prompt || '',
-                      width: message.width || 512,
-                      height: message.height || 512,
-                      steps: message.steps || 20,
-                      guidance_scale: message.guidance_scale || 7.0,
-                      sampler: message.sampler || 'Euler a',
-                      seed: -1,
-                      model: message.model || '',
-                      gpu_id: message.gpuId ?? 0
-                    })}
+                      onClick={() => onRegenerate({
+                        prompt: message.prompt || '',
+                        negative_prompt: message.negative_prompt || '',
+                        width: message.width || 512,
+                        height: message.height || 512,
+                        steps: message.steps || 20,
+                        guidance_scale: message.guidance_scale || 7.0,
+                        sampler: message.sampler || 'Euler a',
+                        seed: -1,
+                        model: message.model || '',
+                        gpu_id: message.gpuId ?? 0
+                      })}
                       className='h-8 px-2 text-xs'
                       title='Regenerate with same parameters'
                     >
