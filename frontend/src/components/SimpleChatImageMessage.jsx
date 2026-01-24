@@ -402,7 +402,8 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                   guidance_scale: message.guidance_scale || 7.0,
                   sampler: message.sampler || 'Euler a',
                   seed: -1,
-                  model: message.model || ''
+                  model: message.model || '',
+                  gpu_id: message.gpuId ?? 0
                 })}
                 className='h-8 px-2 text-xs'
                 title='Regenerate with same parameters'
@@ -643,17 +644,18 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                     <Button
                       size='sm'
                       variant='ghost'
-                      onClick={() => onRegenerate({
-                        prompt: message.prompt || '',
-                        negative_prompt: message.negative_prompt || '',
-                        width: message.width || 512,
-                        height: message.height || 512,
-                        steps: message.steps || 20,
-                        guidance_scale: message.guidance_scale || 7.0,
-                        sampler: message.sampler || 'Euler a',
-                        seed: -1,
-                        model: message.model || ''
-                      })}
+                    onClick={() => onRegenerate({
+                      prompt: message.prompt || '',
+                      negative_prompt: message.negative_prompt || '',
+                      width: message.width || 512,
+                      height: message.height || 512,
+                      steps: message.steps || 20,
+                      guidance_scale: message.guidance_scale || 7.0,
+                      sampler: message.sampler || 'Euler a',
+                      seed: -1,
+                      model: message.model || '',
+                      gpu_id: message.gpuId ?? 0
+                    })}
                       className='h-8 px-2 text-xs'
                       title='Regenerate with same parameters'
                     >

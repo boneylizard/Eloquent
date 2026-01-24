@@ -926,17 +926,18 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      const newEndpoints = [...(localSettings.customApiEndpoints || []), {
-                        id: `endpoint-${Date.now()}`,
-                        name: 'New Endpoint',
-                        url: getBackendUrl(),
-                        apiKey: '',
-                        enabled: true
-                      }];
-                      handleChange('customApiEndpoints', newEndpoints);
-                    }}
-                  >
+                      onClick={() => {
+                        const newEndpoints = [...(localSettings.customApiEndpoints || []), {
+                          id: `endpoint-${Date.now()}`,
+                          name: 'New Endpoint',
+                          url: getBackendUrl(),
+                          apiKey: '',
+                          enabled: true,
+                          context_window: null
+                        }];
+                        handleChange('customApiEndpoints', newEndpoints);
+                      }}
+                    >
                     Add Endpoint
                   </Button>
                 </div>
@@ -976,11 +977,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       </Button>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      <div>
-                        <Label className="text-xs">API URL</Label>
-                        <Input
-                          value={endpoint.url}
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                        <div>
+                          <Label className="text-xs">API URL</Label>
+                          <Input
+                            value={endpoint.url}
                           onChange={(e) => {
                             const updated = [...localSettings.customApiEndpoints];
                             updated[index] = { ...endpoint, url: e.target.value };
@@ -989,10 +990,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         />
                       </div>
                       <div>
-                        <Label className="text-xs">Model Name</Label>
-                        <Input
-                          value={endpoint.model || ''}
-                          onChange={(e) => {
+                          <Label className="text-xs">Model Name</Label>
+                          <Input
+                            value={endpoint.model || ''}
+                            onChange={(e) => {
                             const updated = [...localSettings.customApiEndpoints];
                             updated[index] = { ...endpoint, model: e.target.value };
                             handleChange('customApiEndpoints', updated);
@@ -1000,18 +1001,35 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         />
                       </div>
                       <div>
-                        <Label className="text-xs">API Key</Label>
-                        <Input
-                          type="password"
-                          value={endpoint.apiKey}
-                          onChange={(e) => {
-                            const updated = [...localSettings.customApiEndpoints];
-                            updated[index] = { ...endpoint, apiKey: e.target.value };
-                            handleChange('customApiEndpoints', updated);
-                          }}
-                        />
+                          <Label className="text-xs">API Key</Label>
+                          <Input
+                            type="password"
+                            value={endpoint.apiKey}
+                            onChange={(e) => {
+                              const updated = [...localSettings.customApiEndpoints];
+                              updated[index] = { ...endpoint, apiKey: e.target.value };
+                              handleChange('customApiEndpoints', updated);
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs">Context Window</Label>
+                          <Input
+                            type="number"
+                            min="1024"
+                            step="256"
+                            placeholder="8192"
+                            value={endpoint.context_window ?? ''}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              const contextWindow = value === '' ? null : parseInt(value, 10);
+                              const updated = [...localSettings.customApiEndpoints];
+                              updated[index] = { ...endpoint, context_window: contextWindow };
+                              handleChange('customApiEndpoints', updated);
+                            }}
+                          />
+                        </div>
                       </div>
-                    </div>
                   </div>
                 ))}
 

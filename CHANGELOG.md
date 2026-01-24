@@ -6,6 +6,22 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-24
+
+### Added
+
+* **Local SD Progress Tracking**: Added backend progress tracking for stable-diffusion.cpp generation and a frontend progress bar in the chat image dialog.
+* **Image Gen Guidance**: Added in-UI guidance for supported local model formats (safetensors/ckpt/gguf), SD/SDXL/FLUX detection, and FLUX dependency files.
+
+### Changed
+
+* **Image Generation Settings**: Consolidated Stable Diffusion + Local SD into a single Image Generation tab with engine-specific sections.
+* **Navigation Cleanup**: Removed the dedicated Image Gen page from the sidebar/navbar to focus image creation in chat.
+
+### Fixed
+
+* **Local SD Responsiveness**: Local image generation now runs off the event loop, allowing progress polling during generation.
+
 ## 2026-01-23
 
 ### Added
@@ -205,14 +221,14 @@ git
 
 ### Added
 
-* **Local SD Progress Tracking**: Added backend progress tracking for stable-diffusion.cpp generation and a frontend progress bar in the chat image dialog.
-* **Image Gen Guidance**: Added in‑UI guidance for supported local model formats (safetensors/ckpt/gguf), SD/SDXL/FLUX detection, and FLUX dependency files.
+*
 
 ### Changed
 
-* **Image Generation Settings**: Consolidated Stable Diffusion + Local SD into a single Image Generation tab with engine‑specific sections.
-* **Navigation Cleanup**: Removed the dedicated Image Gen page from the sidebar/navbar to focus image creation in chat.
+*
 
 ### Fixed
 
-* **Local SD Responsiveness**: Local image generation now runs off the event loop, allowing progress polling during generation.
+*
+
+
