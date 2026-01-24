@@ -345,7 +345,8 @@ class SDManager:
 
     def enhance_image_with_adetailer(self, image_path: str, original_prompt: str = "",
                                      face_prompt: str = "", strength: float = 0.35,
-                                     confidence: float = 0.3, model_name: str = "face_yolov8n_v2.pt", gpu_id: int = 0) -> bytes:
+                                     steps: int = 45, confidence: float = 0.3, 
+                                     model_name: str = "face_yolov8n_v2.pt", gpu_id: int = 0) -> bytes:
         """
         STABLE-DIFFUSION.CPP COMPATIBLE - Post-process image with ADetailer face enhancement on a specific GPU.
         """
@@ -411,55 +412,87 @@ class SDManager:
                 except Exception:
                     pass
 
-                # Handle different API versions of stable-diffusion-cpp-python
-                # Latest versions use generate_image with image param for img2img
-                with model_lock:
-                    if hasattr(model_instance, 'generate_image'):
-                        enhanced_result = model_instance.generate_image(
+                # Save current enhanced image to temp file for bindings that require paths
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_face_file:
+                    enhanced_image.save(temp_face_file, format="PNG")
+                    temp_face_path = temp_face_file.name
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_mask_file:
+                    mask.save(temp_mask_file, format="PNG")
+                    temp_mask_path = temp_mask_file.name
+
+                try:
+                    # Use the robust self.generate_image wrapper which handles reloading on crashes
+                    # Try 'init_image' first as it's the most common for img2img in these bindings
+                    logger.info("ADetailer: Attempting enhancement via generate_image (init_image)...")
+                    try:
+                        image_bytes = self.generate_image(
                             prompt=enhance_prompt,
-                            image=enhanced_image,
-                            strength=0.30,
+                            gpu_id=gpu_id,
+                            # Pass image-to-image params
+                            init_image=temp_face_path,
                             width=w,
                             height=h,
-                            sample_steps=45,
+                            steps=steps, # Use passed steps
+                            strength=strength, # Use passed strength parameter
                             cfg_scale=8.5,
-                            sample_method="dpmpp2m"
+                            sample_method="dpm++2m",
+                            seed=-1, 
+                            negative_prompt=""
                         )
-                    elif hasattr(model_instance, 'img2img'):
-                        enhanced_result = model_instance.img2img(
+                        
+                        # Convert bytes back to PIL
+                        if image_bytes:
+                            enhanced_image = Image.open(io.BytesIO(image_bytes))
+                            logger.info(f"Successfully enhanced face {i+1}")
+                        else:
+                            logger.warning(f"ADetailer returned no bytes for face {i+1}")
+                            # Keep current enhanced_image state (which is a copy of original or result of previous face)
+                            
+                    except TypeError:
+                        # Fallback to 'image' argument
+                        logger.warning("ADetailer: generate_image rejected 'init_image', trying 'image'...")
+                        image_bytes = self.generate_image(
                             prompt=enhance_prompt,
-                            image=enhanced_image,
-                            mask_image=mask,
-                            strength=0.30,
+                            gpu_id=gpu_id,
+                            image=temp_face_path,
                             width=w,
                             height=h,
-                            sample_steps=45,
+                            steps=steps, # Use passed steps
+                            strength=strength, # Use passed strength parameter
                             cfg_scale=8.5,
-                            sample_method="dpmpp2m"
+                            sample_method="dpm++2m",
+                            seed=-1,
+                            negative_prompt=""
                         )
-                    elif hasattr(model_instance, 'img_to_img'):
-                        enhanced_result = model_instance.img_to_img(
-                            prompt=enhance_prompt,
-                            image=enhanced_image,
-                            mask_image=mask,
-                            strength=0.30,
-                            width=w,
-                            height=h,
-                            sample_steps=45,
-                            cfg_scale=8.5,
-                            sample_method="dpmpp2m"
-                        )
-                    else:
-                        logger.error("StableDiffusion object has no generate_image or img2img method")
-                        enhanced_result = None
+                         
+                        if image_bytes:
+                            enhanced_image = Image.open(io.BytesIO(image_bytes))
+                            logger.info(f"Successfully enhanced face {i+1}")
+                        else:
+                            logger.warning(f"ADetailer returned no bytes for face {i+1} (fallback)")
+                            
+                except Exception as e:
+                    logger.error(f"ADetailer enhancement failed: {e}")
+                    # Don't set enhanced_image to None here; keep previous state so we don't crash
                     
-                if enhanced_result and len(enhanced_result) > 0:
-                    enhanced_image = enhanced_result[0]
-                    logger.info(f"Successfully enhanced face {i+1}")
-                else:
-                    logger.warning(f"No result from inpainting for face {i+1}")
+                finally:
+                    # Cleanup temp files
+                    if os.path.exists(temp_face_path):
+                        try:
+                            os.unlink(temp_face_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete temp face input: {e}")
+                    if os.path.exists(temp_mask_path):
+                        try:
+                            os.unlink(temp_mask_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete temp mask input: {e}")
 
             # Convert final image to bytes
+            if enhanced_image is None: # Should technically not be None due to initialization but safety first
+                 enhanced_image = original_image
+
             with io.BytesIO() as buffer:
                 enhanced_image.save(buffer, format="PNG")
                 return buffer.getvalue()
@@ -591,23 +624,32 @@ class SDManager:
             elif is_sdxl:
                 logger.info("Detected SDXL model, using SDXL initialization with CPU VAE")
                 try:
+                    # Aggressively clean memory before init to prevent 0xc000001d errors
+                    import gc
+                    gc.collect()
+                    
                     model_instance = StableDiffusion(
                         model_path=model_path,
                         wtype="default",
                         verbose=True,
-                        # Use keep_vae_on_cpu=True to ensure VAE is loaded on CPU
-                        keep_vae_on_cpu=True,
-                        vae_dtype="f16"  # Suggest using 16-bit float for VAE to save memory
+                        # limit VAE memory usage if supported
+                        # keep_vae_on_cpu=True, # DISABLED: Causes massive slowdown on VAE decode
                     )
                     logger.info("SDXL model initialized - checking if VAE is on CPU...")
                 except TypeError as e:
-                    logger.error(f"Parameter error (keep_vae_on_cpu may not be supported): {e}")
-                    logger.info("Falling back to standard SDXL initialization...")
-                    model_instance = StableDiffusion(
-                        model_path=model_path,
-                        wtype="default", 
-                        verbose=True,
-                    )
+                    logger.warning(f"Feature support check (keep_vae_on_cpu): {e}")
+                    # Try fallback without advanced params
+                    try:
+                        import gc
+                        gc.collect() 
+                        model_instance = StableDiffusion(
+                            model_path=model_path,
+                            wtype="default", 
+                            verbose=True,
+                        )
+                    except Exception as fallback_error:
+                         logger.error(f"SDXL fallback initialization failed: {fallback_error}")
+                         raise fallback_error
                 if not model_instance:
                     logger.error("Failed to initialize SDXL model")
                     return False
@@ -645,179 +687,228 @@ class SDManager:
     def generate_image(self, prompt: str, gpu_id: int = 0, task_id: Optional[str] = None, **kwargs) -> bytes:
         """Generate image from prompt on a specific GPU and return as bytes."""
         logger.info(f"Generating image with prompt: {prompt[:50]}... on GPU {gpu_id}")
+
+        max_retries = 1
+        retry_count = 0
         
-        # CRITICAL FIX: Select the model for the requested GPU
-        model_instance = self.loaded_models.get(gpu_id)
-        if not model_instance:
-            raise RuntimeError(f"No SD model loaded on GPU {gpu_id}")
-
-        model_info = self.model_info.get(gpu_id, {})
-        is_flux = model_info.get('is_flux', False)
-        is_sdxl = model_info.get('is_sdxl', False)
-
-        logger.info(f"Using model: {self.current_model_paths.get(gpu_id, 'N/A')}")
-        logger.info(f"Model type: {'FLUX' if is_flux else ('SDXL' if is_sdxl else 'Standard SD')}")
-        logger.info(f"Additional parameters: {kwargs}")
-        
-        # Extract parameters with FLUX-appropriate defaults
-        width = kwargs.get('width', 512)
-        height = kwargs.get('height', 512)
-        negative_prompt = kwargs.get('negative_prompt', '')
-        seed = kwargs.get('seed', random.randint(0, 2**32 - 1))
-        
-        if is_flux:
-            # FLUX-specific settings
-            steps = kwargs.get('steps', 4)
-            cfg_scale = kwargs.get('cfg_scale', 1.0)
-            sample_method = "euler"
-            logger.info(f"Generating FLUX image: {steps} steps, cfg_scale={cfg_scale}")
-        elif is_sdxl:
-            # SDXL-specific settings
-            steps = kwargs.get('steps', 20)
-            cfg_scale = kwargs.get('cfg_scale', 7.0)
-            sample_method = kwargs.get('sample_method', 'euler')
-            logger.info(f"Generating SDXL image: {steps} steps, cfg_scale={cfg_scale}")
-        else:
-            # Standard SD settings
-            steps = kwargs.get('steps', 20)
-            cfg_scale = kwargs.get('cfg_scale', 7.0)
-            sample_method = kwargs.get('sample_method', 'euler')
-            logger.info(f"Generating Standard SD image: {steps} steps, cfg_scale={cfg_scale}")
-
-        # Generate image using the appropriate parameters
-        try:
-            progress_callback = None
-            if task_id:
-                self.init_progress(task_id, steps=steps, state="starting")
-
-                def progress_callback(*args, **callback_kwargs):
-                    step = callback_kwargs.get("step")
-                    step_count = callback_kwargs.get("step_count")
-                    progress = callback_kwargs.get("progress")
-
-                    if len(args) >= 2 and step is None and step_count is None:
-                        step = args[0]
-                        step_count = args[1]
-                    elif len(args) >= 1 and progress is None and step is None:
-                        progress = args[0]
-
-                    if progress is not None and 0.0 <= float(progress) <= 1.0:
-                        progress = float(progress) * 100.0
-
-                    state = "sampling"
-                    if step_count:
-                        state = f"Sampling {int(step) + 1}/{int(step_count)}" if step is not None else state
-
-                    self.update_progress(task_id, progress=progress, step=step, steps=step_count, state=state)
-                    if step is not None and step_count:
-                        logger.info(f"SD progress: {int(step) + 1}/{int(step_count)}")
-                    return True
-
-            # Clean up PyTorch CUDA state before ggml generation
-            # This prevents CUDA context conflicts between PyTorch (TTS) and ggml (SD)
+        while retry_count <= max_retries:
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass  # Silently continue if PyTorch cleanup fails
-            
-            logger.info(f"Starting generation: {width}x{height}, {steps} steps, cfg={cfg_scale}, seed={seed}")
-            
-            # Handle different API versions of stable-diffusion-cpp-python
-            # Latest versions use generate_image, older use txt2img or txt_to_img
-            def call_with_progress(method, **call_kwargs):
-                if progress_callback:
-                    call_kwargs["progress_callback"] = progress_callback
+                # 1. Get or Reload Model
+                model_instance = self.loaded_models.get(gpu_id)
+                if not model_instance:
+                    # If retrying and model was unloaded, we need to reload it
+                     current_path = self.current_model_paths.get(gpu_id)
+                     if current_path:
+                         logger.info(f"Reloading model from {current_path} for retry...")
+                         if not self.load_model(current_path, gpu_id): # Corrected argument order
+                             raise RuntimeError("Failed to reload model capabilities during retry.")
+                         model_instance = self.loaded_models.get(gpu_id)
+                     else:
+                         raise RuntimeError(f"No SD model loaded on GPU {gpu_id}")
+
+                model_info = self.model_info.get(gpu_id, {})
+                is_flux = model_info.get('is_flux', False)
+                is_sdxl = model_info.get('is_sdxl', False)
+
+                if retry_count == 0:
+                    logger.info(f"Using model: {self.current_model_paths.get(gpu_id, 'N/A')}")
+                    logger.info(f"Model type: {'FLUX' if is_flux else ('SDXL' if is_sdxl else 'Standard SD')}")
+                    logger.info(f"Additional parameters: {kwargs}")
+                
+                # Strict type enforcement for C++ bindings
+                negative_prompt = kwargs.get('negative_prompt', '')
+                
+                # Robust seed handling
+                raw_seed = kwargs.get('seed', -1)
                 try:
+                    seed = int(raw_seed)
+                except (ValueError, TypeError):
+                    seed = -1
+                    
+                if seed < 0:
+                    seed = random.randint(0, 2**31 - 1)
+                
+                seed = seed % (2**32)
+
+                try:
+                    width = int(kwargs.get('width', 512))
+                    height = int(kwargs.get('height', 512))
+                    width = (width // 8) * 8
+                    height = (height // 8) * 8
+                    
+                    steps = int(kwargs.get('steps', 20))
+                    cfg_scale = float(kwargs.get('cfg_scale', 7.0))
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid parameter types: {e}, using defaults")
+                    width = 512
+                    height = 512
+                    steps = 20
+                    cfg_scale = 7.0
+
+                if is_flux:
+                    if 'steps' in kwargs:
+                        try: steps = int(kwargs['steps'])
+                        except: steps = 4
+                    else: steps = 4
+                        
+                    if 'cfg_scale' in kwargs:
+                        try: cfg_scale = float(kwargs['cfg_scale'])
+                        except: cfg_scale = 1.0
+                    else: cfg_scale = 1.0
+                        
+                    sample_method = "euler"
+                    logger.info(f"Generating FLUX image: {steps} steps, cfg_scale={cfg_scale}")
+                elif is_sdxl:
+                    sample_method = kwargs.get('sample_method', 'euler')
+                    logger.info(f"Generating SDXL image: {steps} steps, cfg_scale={cfg_scale}")
+                else:
+                    sample_method = kwargs.get('sample_method', 'euler')
+                    logger.info(f"Generating Standard SD image: {steps} steps, cfg_scale={cfg_scale}")
+
+                # Define internal helper for progress inside the loop to capture closure
+                def call_with_progress_internal(method, **call_kwargs):
+                    progress_callback = None
+                    if task_id:
+                        # Re-init progress closure
+                        def progress_cb(*args, **cb_kwargs):
+                            step = cb_kwargs.get("step")
+                            step_count = cb_kwargs.get("step_count")
+                            progress = cb_kwargs.get("progress")
+                            if len(args) >= 2 and step is None and step_count is None:
+                                step = args[0]
+                                step_count = args[1]
+                            elif len(args) >= 1 and progress is None and step is None:
+                                progress = args[0]
+                            
+                            if progress is not None and 0.0 <= float(progress) <= 1.0:
+                                progress = float(progress) * 100.0
+                            
+                            state = "sampling"
+                            if step_count:
+                                state = f"Sampling {int(step) + 1}/{int(step_count)}" if step is not None else state
+                            
+                            self.update_progress(task_id, progress=progress, step=step, steps=step_count, state=state)
+                            if step is not None and step_count:
+                                logger.info(f"SD progress: {int(step) + 1}/{int(step_count)}")
+                            return True
+                        progress_callback = progress_cb
+
+                    if progress_callback:
+                        call_kwargs["progress_callback"] = progress_callback
+                    
                     return method(**call_kwargs)
-                except TypeError as e:
-                    if progress_callback and "progress_callback" in str(e):
-                        call_kwargs.pop("progress_callback", None)
-                        return method(**call_kwargs)
-                    raise
 
-            def supports_progress(method):
-                try:
-                    return "progress_callback" in inspect.signature(method).parameters
-                except (TypeError, ValueError):
-                    return False
+                # Initialize progress if needed (only on first attempt)
+                if task_id and retry_count == 0:
+                     self.init_progress(task_id, steps=steps, state="starting")
 
-            candidates = []
-            if hasattr(model_instance, 'generate_image'):
-                candidates.append(("generate_image", model_instance.generate_image))
-            if hasattr(model_instance, 'txt_to_img'):
-                candidates.append(("txt_to_img", model_instance.txt_to_img))
-            if hasattr(model_instance, 'txt2img'):
-                candidates.append(("txt2img", model_instance.txt2img))
+                # Locate method
+                candidates = []
+                if hasattr(model_instance, 'generate_image'): candidates.append(("generate_image", model_instance.generate_image))
+                if hasattr(model_instance, 'txt_to_img'): candidates.append(("txt_to_img", model_instance.txt_to_img))
+                if hasattr(model_instance, 'txt2img'): candidates.append(("txt2img", model_instance.txt2img))
 
-            method_name = None
-            method = None
-
-            if candidates:
+                if not candidates:
+                     raise RuntimeError(f"No generation method found on model.")
                 method_name, method = candidates[0]
+                logger.info(f"Using SD method: {method_name}")
 
-            if task_id and method and not supports_progress(method):
-                logger.warning(f"Progress callback not supported by {method_name}; progress updates may be unavailable.")
+                # Memory cleanup before call
+                try:
+                    import torch
+                    if torch.cuda.is_available(): torch.cuda.empty_cache()
+                except: pass
 
-            if not method:
-                methods = [m for m in dir(model_instance) if not m.startswith('_')]
-                raise RuntimeError(f"StableDiffusion object has no generate_image method. Available methods: {methods}")
+                logger.info(f"Starting generation (Attempt {retry_count+1}): {width}x{height}, {steps} steps, cfg={cfg_scale}, seed={seed}")
+                
+                # Prepare arguments for the generation call
+                call_args = {
+                    'prompt': prompt,
+                    'negative_prompt': negative_prompt,
+                    'width': width,
+                    'height': height,
+                    'cfg_scale': cfg_scale,
+                    'sample_steps': steps,
+                    'sample_method': sample_method,
+                    'seed': seed
+                }
+                
+                # Explicitly pass img2img parameters if present in kwargs
+                if 'strength' in kwargs:
+                    call_args['strength'] = float(kwargs['strength'])
+                if 'init_image' in kwargs:
+                    call_args['init_image'] = kwargs['init_image']
+                if 'image' in kwargs:
+                    call_args['image'] = kwargs['image']
+                
+                logger.info(f"Calling generation with args keys: {list(call_args.keys())}")
 
-            logger.info(f"Using SD method: {method_name}")
+                model_lock = self._get_model_lock(gpu_id)
+                with model_lock:
+                    images_list = call_with_progress_internal(
+                        method,
+                        **call_args
+                    )
+                
+                if not images_list:
+                    raise RuntimeError("Image generation returned empty list.")
+                    
+                logger.info("Generation completed successfully")
+                pil_image = images_list[0]
+                
+                # Convert to bytes
+                with io.BytesIO() as output:
+                   pil_image.save(output, format="PNG")
+                   image_bytes = output.getvalue()
+                
+                if task_id:
+                    self.finish_progress(task_id, state="complete")
+                return image_bytes
 
-            model_lock = self._get_model_lock(gpu_id)
-            with model_lock:
-                images_list = call_with_progress(
-                    method,
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    width=width,
-                    height=height,
-                    cfg_scale=cfg_scale,
-                    sample_steps=steps,
-                    sample_method=sample_method,
-                    seed=seed
-                )
-            
-            logger.info("Generation completed successfully")
-        
-        except Exception as generation_error:
-            logger.error(f"CRITICAL: Generation crashed - {type(generation_error).__name__}: {generation_error}")
-            import traceback
-            logger.error(f"Full generation traceback: {traceback.format_exc()}")
-            if task_id:
-                self.update_progress(task_id, state="error")
-            
-            # Try to get memory info if possible
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,nounits,noheader'], 
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    logger.error(f"GPU memory at crash: {result.stdout.strip()}")
-            except:
-                pass
-            
-            raise RuntimeError(f"Image generation failed: {generation_error}")
+            except OSError as e:
+                err_str = str(e).lower()
+                critical_errors = ["access violation", "0xc000001d", "-1073741795", "0xc0000005", "illegal instruction"]
+                is_critical = any(err in err_str for err in critical_errors)
+                
+                if is_critical and retry_count < max_retries:
+                    logger.warning(f"CRITICAL C++ CRASH DETECTED: {e}")
+                    logger.warning("Initiating EMERGENCY MODEL RELOAD and RETRY...")
+                    
+                    # Try to get memory info if possible
+                    try:
+                        import subprocess
+                        result = subprocess.run(
+                            ['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,nounits,noheader'], 
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if result.returncode == 0:
+                            logger.warning(f"GPU memory at crash: {result.stdout.strip()}")
+                    except:
+                        pass
 
+                    # Force unload model to clear corrupt C++ state
+                    if gpu_id in self.loaded_models:
+                         del self.loaded_models[gpu_id]
+                         self.loaded_models.pop(gpu_id, None)
+                         self.model_info.pop(gpu_id, None)
+                    import gc
+                    gc.collect()
+                    
+                    retry_count += 1
+                    continue # Retry loop
+                else:
+                    # Non-recoverable or max retries reached
+                    logger.error(f"Generation failed permanently: {e}")
+                    import traceback
+                    logger.error(f"Full generation traceback: {traceback.format_exc()}")
+                    if task_id: self.update_progress(task_id, state="error")
+                    raise RuntimeError(f"Image generation failed: {e}")
 
-        
-        # Check if we got an image and take the first one
-        if not images_list:
-            raise RuntimeError("Image generation failed.")
-            
-        pil_image = images_list[0]
-        
-        # Convert the PIL Image object to raw bytes in PNG format
-        with io.BytesIO() as buffer:
-            pil_image.save(buffer, format="PNG")
-            image_bytes = buffer.getvalue()
-            
-        if task_id:
-            self.finish_progress(task_id, state="complete")
+            except Exception as e:
+                 logger.error(f"Generation failed: {e}")
+                 import traceback
+                 logger.error(f"Full generation traceback: {traceback.format_exc()}")
+                 if task_id: self.update_progress(task_id, state="error")
+                 raise RuntimeError(f"Image generation failed: {e}")
 
-        return image_bytes
+        raise RuntimeError("Max retries exceeded")
