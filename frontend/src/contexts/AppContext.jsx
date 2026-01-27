@@ -386,6 +386,24 @@ const AppProvider = ({ children }) => {
   useEffect(() => {
     activeCharacterRef.current = activeCharacter;
   }, [activeCharacter]);
+  // Fix: Keep primaryCharacter and secondaryCharacter in sync with characters list updates
+  useEffect(() => {
+    if (primaryCharacter) {
+      const updatedPrimary = characters.find(c => c.id === primaryCharacter.id);
+      if (updatedPrimary && updatedPrimary !== primaryCharacter) {
+        console.log('🔄 [AppContext] Syncing primaryCharacter with updated data');
+        setPrimaryCharacter(updatedPrimary);
+      }
+    }
+    if (secondaryCharacter) {
+      const updatedSecondary = characters.find(c => c.id === secondaryCharacter.id);
+      if (updatedSecondary && updatedSecondary !== secondaryCharacter) {
+        console.log('🔄 [AppContext] Syncing secondaryCharacter with updated data');
+        setSecondaryCharacter(updatedSecondary);
+      }
+    }
+  }, [characters, primaryCharacter, secondaryCharacter]);
+
   const [backgroundImage, setBackgroundImage] = useState(null); // New state for chat background
 
   // Refs for avatar canvases
@@ -1174,17 +1192,17 @@ const AppProvider = ({ children }) => {
           denoise: opts.denoise || 1.0,
           timeout: 300
         };
-        } else if (imageEngine === 'EloDiffusion') {
-          // Local SD payload
-          payload = {
-            prompt,
-            gpu_id: gpuId,
-            task_id: opts.task_id,
-            negative_prompt: opts.negative_prompt || "",
-            width: opts.width || 512,
-            height: opts.height || 512,
-            steps: opts.steps || 20,
-            guidance_scale: opts.guidance_scale || 7.0,
+      } else if (imageEngine === 'EloDiffusion') {
+        // Local SD payload
+        payload = {
+          prompt,
+          gpu_id: gpuId,
+          task_id: opts.task_id,
+          negative_prompt: opts.negative_prompt || "",
+          width: opts.width || 512,
+          height: opts.height || 512,
+          steps: opts.steps || 20,
+          guidance_scale: opts.guidance_scale || 7.0,
           sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
           seed: opts.seed || -1,
         };

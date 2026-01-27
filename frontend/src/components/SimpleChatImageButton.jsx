@@ -22,11 +22,10 @@ const SimpleChatImageButton = () => {
         settings,
         MEMORY_API_URL,
         PRIMARY_API_URL,
+        activeCharacter,
         generateUniqueId,
     } = useApp();
-// Determine which engine and availability
 
-    // Existing state
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [prompt, setPrompt] = useState('');
     const [negativePrompt, setNegativePrompt] = useState('');
@@ -42,12 +41,12 @@ const SimpleChatImageButton = () => {
     // AUTOMATIC1111 state
     const [selectedModel, setSelectedModel] = useState('');
     const [availableModels, setAvailableModels] = useState([]);
-    
+
     // Local SD state
-const [localSdStatus, setLocalSdStatus] = useState({ 
-    available: false, 
-    loaded_models: {} // Will store { 0: 'model_name.safetensors', 1: '...' }
-});
+    const [localSdStatus, setLocalSdStatus] = useState({
+        available: false,
+        loaded_models: {} // Will store { 0: 'model_name.safetensors', 1: '...' }
+    });
 
 
     const [localModels, setLocalModels] = useState([]);
@@ -58,32 +57,48 @@ const [localSdStatus, setLocalSdStatus] = useState({
         return localStorage.getItem('adetailer-auto-enhance') === 'true';
     });
     const [adetailerAvailable, setAdetailerAvailable] = useState(false);
-    
+
     // NEW: ADetailer models state
     const [availableAdetailerModels, setAvailableAdetailerModels] = useState([]);
     const [selectedAdetailerModel, setSelectedAdetailerModel] = useState('face_yolov8n.pt');
- const availableSamplers = [
-  "dpmpp2m",
-  "dpmpp2s_a",
-  "euler_a",
-  "euler",
-  "heun",
-  "dpm2",
-  "ipndm",
-  "ipndm_v",
-  "lcm",
-  "ddim_trailing",
-  "tcd"
-];   
-const [adetailerSettings, setAdetailerSettings] = useState(() => {
-    const saved = localStorage.getItem('adetailer-settings');
-    return saved ? JSON.parse(saved) : {
-        strength: 0.35,  // FIXED: Reduced from 0.4 (compatible with stable-diffusion.cpp)
-        confidence: 0.3, // FIXED: This was already good 
-        facePrompt: 'detailed face, high quality, sharp focus', // FIXED: Simplified prompt
-        modelName: 'face_yolov8n.pt'
-    };
-});
+    const availableSamplers = [
+        "dpmpp2m",
+        "dpmpp2s_a",
+        "euler_a",
+        "euler",
+        "heun",
+        "dpm2",
+        "ipndm",
+        "ipndm_v",
+        "lcm",
+        "ddim_trailing",
+        "tcd"
+    ];
+    const [adetailerSettings, setAdetailerSettings] = useState(() => {
+        const defaults = {
+            strength: 0.35,  // FIXED: Reduced from 0.4 (compatible with stable-diffusion.cpp)
+            confidence: 0.3, // FIXED: This was already good 
+            facePrompt: 'detailed face, high quality, sharp focus', // FIXED: Simplified prompt
+            modelName: 'face_yolov8n.pt',
+            steps: 45,
+            sampler: 'euler_a'
+        };
+        const saved = localStorage.getItem('adetailer-settings');
+        if (!saved) return defaults;
+        try {
+            const parsed = JSON.parse(saved);
+            return {
+                ...defaults,
+                ...parsed,
+                strength: Number.isFinite(Number(parsed?.strength)) ? Number(parsed.strength) : defaults.strength,
+                confidence: Number.isFinite(Number(parsed?.confidence)) ? Number(parsed.confidence) : defaults.confidence,
+                steps: Number.isFinite(Number(parsed?.steps)) ? Number(parsed.steps) : defaults.steps,
+                sampler: parsed?.sampler || defaults.sampler
+            };
+        } catch (error) {
+            return defaults;
+        }
+    });
 
     // Determine which engine and availability
 
@@ -134,39 +149,39 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
 
     // Existing functions...
     const checkLocalSdStatus = useCallback(async () => {
-    try {
-        // Query both servers for their status simultaneously
-        const [primaryRes, memoryRes] = await Promise.all([
-            fetch(`${PRIMARY_API_URL}/sd-local/status`).catch(e => null), // Use .catch to prevent one failure from killing both
-            fetch(`${MEMORY_API_URL}/sd-local/status`).catch(e => null)
-        ]);
+        try {
+            // Query both servers for their status simultaneously
+            const [primaryRes, memoryRes] = await Promise.all([
+                fetch(`${PRIMARY_API_URL}/sd-local/status`).catch(e => null), // Use .catch to prevent one failure from killing both
+                fetch(`${MEMORY_API_URL}/sd-local/status`).catch(e => null)
+            ]);
 
-        let primaryStatus = { loaded_models: {} };
-        let memoryStatus = { loaded_models: {} };
+            let primaryStatus = { loaded_models: {} };
+            let memoryStatus = { loaded_models: {} };
 
-        if (primaryRes && primaryRes.ok) {
-            primaryStatus = await primaryRes.json();
-        }
-        if (memoryRes && memoryRes.ok) {
-            memoryStatus = await memoryRes.json();
-        }
-
-        // Merge the results from both servers into a single state object
-        const mergedStatus = {
-            available: (primaryRes && primaryRes.ok) || (memoryRes && memoryRes.ok),
-            loaded_models: {
-                ...primaryStatus.loaded_models,
-                ...memoryStatus.loaded_models
+            if (primaryRes && primaryRes.ok) {
+                primaryStatus = await primaryRes.json();
             }
-        };
+            if (memoryRes && memoryRes.ok) {
+                memoryStatus = await memoryRes.json();
+            }
 
-        console.log("Merged SD Status:", mergedStatus);
-        setLocalSdStatus(mergedStatus);
+            // Merge the results from both servers into a single state object
+            const mergedStatus = {
+                available: (primaryRes && primaryRes.ok) || (memoryRes && memoryRes.ok),
+                loaded_models: {
+                    ...primaryStatus.loaded_models,
+                    ...memoryStatus.loaded_models
+                }
+            };
 
-    } catch (err) {
-        console.error('Combined local SD status check failed:', err);
-    }
-}, [PRIMARY_API_URL, MEMORY_API_URL]);
+            console.log("Merged SD Status:", mergedStatus);
+            setLocalSdStatus(mergedStatus);
+
+        } catch (err) {
+            console.error('Combined local SD status check failed:', err);
+        }
+    }, [PRIMARY_API_URL, MEMORY_API_URL]);
 
     const fetchLocalModels = useCallback(async () => {
         try {
@@ -215,50 +230,50 @@ const [adetailerSettings, setAdetailerSettings] = useState(() => {
         }
     }, [MEMORY_API_URL]);
 
-const handleLoadLocalModel = useCallback(async (modelFilename) => {
-    if (!modelFilename) {
-        console.error("Invalid filename provided to handleLoadLocalModel");
-        return;
-    }
-
-    setIsLocalModelLoading(true);
-    const targetApiUrl = selectedGpuId === 0 ? PRIMARY_API_URL : MEMORY_API_URL;
-
-    try {
-        const response = await fetch(`${targetApiUrl}/sd-local/load-model`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model_filename: modelFilename,
-                gpu_id: selectedGpuId
-            })
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Server responded with ${response.status}: ${errorText}`);
+    const handleLoadLocalModel = useCallback(async (modelFilename) => {
+        if (!modelFilename) {
+            console.error("Invalid filename provided to handleLoadLocalModel");
+            return;
         }
 
-        // DIRECT STATE UPDATE: This is the critical fix.
-        // We manually update the UI state to reflect what we know is now loaded on the backend.
-        setLocalSdStatus(prevStatus => ({
-            ...prevStatus,
-            available: true,
-            loaded_models: {
-                ...prevStatus.loaded_models,
-                [selectedGpuId]: modelFilename
+        setIsLocalModelLoading(true);
+        const targetApiUrl = selectedGpuId === 0 ? PRIMARY_API_URL : MEMORY_API_URL;
+
+        try {
+            const response = await fetch(`${targetApiUrl}/sd-local/load-model`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model_filename: modelFilename,
+                    gpu_id: selectedGpuId
+                })
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Server responded with ${response.status}: ${errorText}`);
             }
-        }));
 
-        console.log(`UI State directly updated for GPU ${selectedGpuId} with model ${modelFilename}`);
+            // DIRECT STATE UPDATE: This is the critical fix.
+            // We manually update the UI state to reflect what we know is now loaded on the backend.
+            setLocalSdStatus(prevStatus => ({
+                ...prevStatus,
+                available: true,
+                loaded_models: {
+                    ...prevStatus.loaded_models,
+                    [selectedGpuId]: modelFilename
+                }
+            }));
 
-    } catch (err) {
-        alert(`Failed to load model: ${err.message}`);
-        console.error('Model loading failed:', err);
-    } finally {
-        setIsLocalModelLoading(false);
-    }
-}, [PRIMARY_API_URL, MEMORY_API_URL, selectedGpuId, setLocalSdStatus]);
+            console.log(`UI State directly updated for GPU ${selectedGpuId} with model ${modelFilename}`);
+
+        } catch (err) {
+            alert(`Failed to load model: ${err.message}`);
+            console.error('Model loading failed:', err);
+        } finally {
+            setIsLocalModelLoading(false);
+        }
+    }, [PRIMARY_API_URL, MEMORY_API_URL, selectedGpuId, setLocalSdStatus]);
 
     // Persist auto-enhance state
     useEffect(() => {
@@ -273,7 +288,7 @@ const handleLoadLocalModel = useCallback(async (modelFilename) => {
     // FIXED: Auto-enhance function - now updates in place with history tracking
     const autoEnhanceImage = useCallback(async (imageUrl, originalPrompt, messageId) => {
         if (!autoEnhanceEnabled || !adetailerAvailable || !messageId) return;
-        
+
         try {
             const response = await fetch(`${PRIMARY_API_URL}/sd-local/enhance-adetailer`, {
                 method: 'POST',
@@ -283,6 +298,7 @@ const handleLoadLocalModel = useCallback(async (modelFilename) => {
                     original_prompt: originalPrompt,
                     face_prompt: adetailerSettings.facePrompt,
                     strength: adetailerSettings.strength,
+                    steps: adetailerSettings.steps,
                     confidence: adetailerSettings.confidence,
                     model_name: selectedAdetailerModel,
                     sampler: selectedSampler
@@ -294,17 +310,17 @@ const handleLoadLocalModel = useCallback(async (modelFilename) => {
                 if (result.status === 'success' && result.enhanced_image_url) {
                     // FIXED: Update existing message with enhancement history tracking
                     setTimeout(() => {
-                        setMessages(prev => prev.map(msg => 
-                            msg.id === messageId 
-                                ? { 
-                                    ...msg, 
+                        setMessages(prev => prev.map(msg =>
+                            msg.id === messageId
+                                ? {
+                                    ...msg,
                                     imagePath: result.enhanced_image_url,
                                     // Initialize enhancement history with original and enhanced
                                     enhancement_history: [imageUrl, result.enhanced_image_url],
                                     current_enhancement_level: 1,
                                     enhanced: true,
                                     enhancement_settings: { ...adetailerSettings, model_name: selectedAdetailerModel }
-                                  }
+                                }
                                 : msg
                         ));
                     }, 1000);
@@ -325,18 +341,18 @@ const handleLoadLocalModel = useCallback(async (modelFilename) => {
             fetchAdetailerModels(); // NEW: Fetch ADetailer models
         }
     }, [isDialogOpen, checkSdStatus, checkLocalSdStatus, fetchLocalModels, checkAdetailerStatus, fetchAdetailerModels]);
-const imageEngine = settings?.imageEngine || 'auto1111';
-const isLocalEngine = imageEngine === 'EloDiffusion';
-const isAvailable = imageEngine === 'EloDiffusion' 
-    ? localSdStatus?.available 
-    : imageEngine === 'comfyui'
-    ? sdStatus?.comfyui
-    : sdStatus?.automatic1111;
-const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion' 
-    ? Boolean(localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId])
-    : imageEngine === 'comfyui'
-    ? sdStatus?.comfyui // ComfyUI doesn't require pre-loading
-    : sdStatus?.automatic1111;
+    const imageEngine = settings?.imageEngine || 'auto1111';
+    const isLocalEngine = imageEngine === 'EloDiffusion';
+    const isAvailable = imageEngine === 'EloDiffusion'
+        ? localSdStatus?.available
+        : imageEngine === 'comfyui'
+            ? sdStatus?.comfyui
+            : sdStatus?.automatic1111;
+    const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
+        ? Boolean(localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId])
+        : imageEngine === 'comfyui'
+            ? sdStatus?.comfyui // ComfyUI doesn't require pre-loading
+            : sdStatus?.automatic1111;
     useEffect(() => {
         if (sdStatus?.models?.length) {
             setAvailableModels(sdStatus.models);
@@ -392,10 +408,14 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                 responseData.image_urls.forEach(imageUrl => {
                     // Generate message ID first
                     const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 7)}-img`;
-                    
+
                     const imageMessage = {
                         id: messageId, // Use the generated ID
                         role: 'bot',
+                        characterId: activeCharacter?.id,
+                        characterName: activeCharacter?.name,
+                        avatar: activeCharacter?.avatar,
+                        modelId: 'primary',
                         type: 'image',
                         content: prompt,
                         imagePath: imageUrl,
@@ -409,11 +429,20 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                         model: responseData.parameters?.sd_model_checkpoint || selectedModel,
                         sampler: responseData.parameters?.sampler || selectedSampler,
                         seed: responseData.parameters?.seed !== undefined ? responseData.parameters.seed : -1,
+                        original_prompt: prompt,
+                        original_negative_prompt: negativePrompt,
+                        original_width: responseData.parameters?.width || width,
+                        original_height: responseData.parameters?.height || height,
+                        original_steps: responseData.parameters?.steps || steps,
+                        original_guidance_scale: responseData.parameters?.cfg_scale || guidanceScale,
+                        original_model: responseData.parameters?.sd_model_checkpoint || selectedModel,
+                        original_sampler: responseData.parameters?.sampler || selectedSampler,
+                        original_seed: responseData.parameters?.seed !== undefined ? responseData.parameters.seed : -1,
                         timestamp: new Date().toISOString()
                     };
-                    
+
                     setMessages(prev => [...prev, imageMessage]);
-                    
+
                     // FIXED: Auto-enhance if enabled - now passes message ID
                     if (autoEnhanceEnabled && adetailerAvailable) {
                         autoEnhanceImage(imageUrl, prompt, messageId);
@@ -498,11 +527,10 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
 
                             {/* FIXED AUTO-ENHANCE SECTION WITH MODEL SELECTION */}
                             {adetailerAvailable && (
-                                <div className={`p-3 rounded-lg border-2 transition-all ${
-                                    autoEnhanceEnabled 
-                                        ? 'border-purple-500 bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/30 dark:to-pink-900/30' 
-                                        : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50'
-                                }`}>
+                                <div className={`p-3 rounded-lg border-2 transition-all ${autoEnhanceEnabled
+                                    ? 'border-purple-500 bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/30 dark:to-pink-900/30'
+                                    : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50'
+                                    }`}>
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-3">
                                             <Sparkles className={`h-5 w-5 ${autoEnhanceEnabled ? 'text-purple-500' : 'text-gray-400'}`} />
@@ -523,97 +551,97 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                             />
                                         </div>
                                     </div>
-                                    
-{autoEnhanceEnabled && (
-    <div className="mt-3 pt-3 border-t border-purple-200 dark:border-purple-700">
-        {/* Model Selection Dropdown - unchanged, this works fine */}
-        <div className="mb-3">
-            <Label className="text-xs">Enhancement Model</Label>
-            <Select
-                value={selectedAdetailerModel}
-                onValueChange={(value) => {
-                    setSelectedAdetailerModel(value);
-                    setAdetailerSettings(prev => ({...prev, modelName: value}));
-                }}
-            >
-                <SelectTrigger className="w-full mt-1 text-xs">
-                    <SelectValue placeholder="Select enhancement model" />
-                </SelectTrigger>
-                <SelectContent>
-                    {availableAdetailerModels.map((model) => (
-                        <SelectItem key={model} value={model} className="text-xs">
-                            {model}
-                        </SelectItem>
-                    ))}
-                </SelectContent>
-            </Select>
-        </div>
 
-        <div className="grid grid-cols-2 gap-3 text-xs">
-            {/* FIXED: Better strength range - compatible with stable-diffusion.cpp */}
-            <div>
-                <Label>Strength: {adetailerSettings.strength.toFixed(2)}</Label>
-                <input
-                    type="range"
-                    min="0.20"       // FIXED: Minimum raised to prevent no effect
-                    max="0.50"       // FIXED: Maximum lowered to prevent over-processing  
-                    step="0.05"      // FIXED: Finer control
-                    value={adetailerSettings.strength}
-                    onChange={(e) => setAdetailerSettings(prev => ({...prev, strength: parseFloat(e.target.value)}))}
-                    className="w-full mt-1"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                    Lower = subtle changes, Higher = dramatic changes
-                </p>
-            </div>
-            
-            {/* FIXED: Better confidence range - this is for YOLO detection, fully compatible */}
-            <div>
-                <Label>Confidence: {adetailerSettings.confidence.toFixed(2)}</Label>
-                <input
-                    type="range"
-                    min="0.20"       // FIXED: Better minimum for face detection
-                    max="0.60"       // FIXED: Research shows 0.8+ is too selective
-                    step="0.05"      // FIXED: Finer control
-                    value={adetailerSettings.confidence}
-                    onChange={(e) => setAdetailerSettings(prev => ({...prev, confidence: parseFloat(e.target.value)}))}
-                    className="w-full mt-1"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                    Lower = detect more faces, Higher = only clear faces
-                </p>
-            </div>
-        </div>
-        
-        {/* FIXED: Better face prompt guidance - fully compatible */}
-        <div className="mt-2">
-            <Label className="text-xs">Face Enhancement Prompt</Label>
-            <input
-                type="text"
-                value={adetailerSettings.facePrompt}
-                onChange={(e) => setAdetailerSettings(prev => ({...prev, facePrompt: e.target.value}))}
-                placeholder="detailed face, high quality, sharp focus"
-                className="w-full mt-1 text-xs p-2 border rounded bg-background text-foreground"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-                Keep simple. Avoid duplicating your main prompt terms.
-            </p>
-        </div>
-        
-        {/* FIXED: Add helpful tips specific to stable-diffusion.cpp limitations */}
-        <div className="mt-3 p-2 bg-blue-50 dark:bg-blue-900/20 rounded text-xs">
-            <strong>💡 Tips for stable-diffusion.cpp:</strong><br/>
-            • If faces look over-processed, lower Strength to 0.25-0.30<br/>
-            • If enhancement is too subtle, try face_yolov8s.pt model first<br/>
-            • Keep face prompts simple - complex prompts can cause conflicts
-        </div>
-        
-        {/* FIXED: Add warning about current issues */}
-        <div className="mt-2 p-2 bg-amber-50 dark:bg-amber-900/20 rounded text-xs">
-            <strong>⚠️ Note:</strong> If auto-enhance is making faces worse, this is a known issue with mask processing. Update your backend settings to fix it.
-        </div>
-    </div>
-)}
+                                    {autoEnhanceEnabled && (
+                                        <div className="mt-3 pt-3 border-t border-purple-200 dark:border-purple-700">
+                                            {/* Model Selection Dropdown - unchanged, this works fine */}
+                                            <div className="mb-3">
+                                                <Label className="text-xs">Enhancement Model</Label>
+                                                <Select
+                                                    value={selectedAdetailerModel}
+                                                    onValueChange={(value) => {
+                                                        setSelectedAdetailerModel(value);
+                                                        setAdetailerSettings(prev => ({ ...prev, modelName: value }));
+                                                    }}
+                                                >
+                                                    <SelectTrigger className="w-full mt-1 text-xs">
+                                                        <SelectValue placeholder="Select enhancement model" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {availableAdetailerModels.map((model) => (
+                                                            <SelectItem key={model} value={model} className="text-xs">
+                                                                {model}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-3 text-xs">
+                                                {/* FIXED: Better strength range - compatible with stable-diffusion.cpp */}
+                                                <div>
+                                                    <Label>Strength: {adetailerSettings.strength.toFixed(2)}</Label>
+                                                    <input
+                                                        type="range"
+                                                        min="0.20"       // FIXED: Minimum raised to prevent no effect
+                                                        max="0.50"       // FIXED: Maximum lowered to prevent over-processing  
+                                                        step="0.05"      // FIXED: Finer control
+                                                        value={adetailerSettings.strength}
+                                                        onChange={(e) => setAdetailerSettings(prev => ({ ...prev, strength: parseFloat(e.target.value) }))}
+                                                        className="w-full mt-1"
+                                                    />
+                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                        Lower = subtle changes, Higher = dramatic changes
+                                                    </p>
+                                                </div>
+
+                                                {/* FIXED: Better confidence range - this is for YOLO detection, fully compatible */}
+                                                <div>
+                                                    <Label>Confidence: {adetailerSettings.confidence.toFixed(2)}</Label>
+                                                    <input
+                                                        type="range"
+                                                        min="0.20"       // FIXED: Better minimum for face detection
+                                                        max="0.60"       // FIXED: Research shows 0.8+ is too selective
+                                                        step="0.05"      // FIXED: Finer control
+                                                        value={adetailerSettings.confidence}
+                                                        onChange={(e) => setAdetailerSettings(prev => ({ ...prev, confidence: parseFloat(e.target.value) }))}
+                                                        className="w-full mt-1"
+                                                    />
+                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                        Lower = detect more faces, Higher = only clear faces
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            {/* FIXED: Better face prompt guidance - fully compatible */}
+                                            <div className="mt-2">
+                                                <Label className="text-xs">Face Enhancement Prompt</Label>
+                                                <input
+                                                    type="text"
+                                                    value={adetailerSettings.facePrompt}
+                                                    onChange={(e) => setAdetailerSettings(prev => ({ ...prev, facePrompt: e.target.value }))}
+                                                    placeholder="detailed face, high quality, sharp focus"
+                                                    className="w-full mt-1 text-xs p-2 border rounded bg-background text-foreground"
+                                                />
+                                                <p className="text-xs text-muted-foreground mt-1">
+                                                    Keep simple. Avoid duplicating your main prompt terms.
+                                                </p>
+                                            </div>
+
+                                            {/* FIXED: Add helpful tips specific to stable-diffusion.cpp limitations */}
+                                            <div className="mt-3 p-2 bg-blue-50 dark:bg-blue-900/20 rounded text-xs">
+                                                <strong>💡 Tips for stable-diffusion.cpp:</strong><br />
+                                                • If faces look over-processed, lower Strength to 0.25-0.30<br />
+                                                • If enhancement is too subtle, try face_yolov8s.pt model first<br />
+                                                • Keep face prompts simple - complex prompts can cause conflicts
+                                            </div>
+
+                                            {/* FIXED: Add warning about current issues */}
+                                            <div className="mt-2 p-2 bg-amber-50 dark:bg-amber-900/20 rounded text-xs">
+                                                <strong>⚠️ Note:</strong> If auto-enhance is making faces worse, this is a known issue with mask processing. Update your backend settings to fix it.
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
@@ -627,16 +655,16 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                     </div>
                                 </div>
                             )}
-                            
+
                             {/* A1111 model selection */}
                             {imageEngine === 'auto1111' && sdStatus?.automatic1111 && availableModels.length > 0 && (
                                 <div className="space-y-2">
                                     <Label htmlFor="sd-model" className="text-xs">Model</Label>
-                                    <select 
-                                        id="sd-model" 
-                                        value={selectedModel} 
-                                        onChange={e => setSelectedModel(e.target.value)} 
-                                        disabled={isImageGenerating} 
+                                    <select
+                                        id="sd-model"
+                                        value={selectedModel}
+                                        onChange={e => setSelectedModel(e.target.value)}
+                                        disabled={isImageGenerating}
                                         className="w-full rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                     >
                                         {availableModels.map((m, i) => {
@@ -646,16 +674,16 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                     </select>
                                 </div>
                             )}
-                            
+
                             {/* ComfyUI checkpoint selection */}
                             {imageEngine === 'comfyui' && sdStatus?.comfyui && sdStatus?.comfyuiData?.checkpoints?.length > 0 && (
                                 <div className="space-y-2">
                                     <Label htmlFor="comfy-checkpoint" className="text-xs">Checkpoint</Label>
-                                    <select 
-                                        id="comfy-checkpoint" 
-                                        value={selectedModel} 
-                                        onChange={e => setSelectedModel(e.target.value)} 
-                                        disabled={isImageGenerating} 
+                                    <select
+                                        id="comfy-checkpoint"
+                                        value={selectedModel}
+                                        onChange={e => setSelectedModel(e.target.value)}
+                                        disabled={isImageGenerating}
                                         className="w-full rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                     >
                                         <option value="">Use ComfyUI default</option>
@@ -668,17 +696,17 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                     </p>
                                 </div>
                             )}
-                            
+
                             {/* ComfyUI sampler & scheduler */}
                             {imageEngine === 'comfyui' && sdStatus?.comfyui && (
                                 <div className="grid grid-cols-2 gap-2">
                                     <div className="space-y-1">
                                         <Label htmlFor="comfy-sampler" className="text-xs">Sampler</Label>
-                                        <select 
-                                            id="comfy-sampler" 
-                                            value={selectedSampler} 
-                                            onChange={e => setSelectedSampler(e.target.value)} 
-                                            disabled={isImageGenerating} 
+                                        <select
+                                            id="comfy-sampler"
+                                            value={selectedSampler}
+                                            onChange={e => setSelectedSampler(e.target.value)}
+                                            disabled={isImageGenerating}
                                             className="w-full rounded border border-input bg-background text-foreground px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                                         >
                                             {(sdStatus.comfyuiData?.samplers || ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_sde']).map((s, i) => (
@@ -688,11 +716,11 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                     </div>
                                     <div className="space-y-1">
                                         <Label htmlFor="comfy-scheduler" className="text-xs">Scheduler</Label>
-                                        <select 
-                                            id="comfy-scheduler" 
-                                            value={selectedScheduler} 
-                                            onChange={e => setSelectedScheduler(e.target.value)} 
-                                            disabled={isImageGenerating} 
+                                        <select
+                                            id="comfy-scheduler"
+                                            value={selectedScheduler}
+                                            onChange={e => setSelectedScheduler(e.target.value)}
+                                            disabled={isImageGenerating}
                                             className="w-full rounded border border-input bg-background text-foreground px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
                                         >
                                             {(sdStatus.comfyuiData?.schedulers || ['normal', 'karras', 'exponential', 'sgm_uniform']).map((s, i) => (
@@ -702,28 +730,28 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                     </div>
                                 </div>
                             )}
-                            
+
                             {/* ComfyUI not connected warning */}
                             {imageEngine === 'comfyui' && !sdStatus?.comfyui && (
                                 <div className="p-2 rounded bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200 text-xs">
                                     ⚠️ ComfyUI not detected. Make sure it's running on localhost:8188
                                 </div>
                             )}
-                            
+
                             {/* LOCAL SD MODEL SELECTION - RESTORED */}
                             {imageEngine === 'EloDiffusion' && localModels.length > 0 && (
                                 <div className="space-y-2">
                                     <Label htmlFor="local-model" className="text-xs">Local SD Model</Label>
                                     <div className="flex gap-2">
-                                        <select 
-                                            id="local-model" 
-                                            value={localSdStatus.current_model || ''} 
+                                        <select
+                                            id="local-model"
+                                            value={localSdStatus.current_model || ''}
                                             onChange={e => {
                                                 if (e.target.value) {
                                                     handleLoadLocalModel(e.target.value);
                                                 }
                                             }}
-                                            disabled={isImageGenerating || isLocalModelLoading} 
+                                            disabled={isImageGenerating || isLocalModelLoading}
                                             className="flex-1 rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                         >
                                             <option value="">Select a model...</option>
@@ -739,72 +767,72 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                             </div>
                                         )}
                                     </div>
-{localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId] && (
-    <p className="text-xs text-green-600 dark:text-green-400">
-        ✓ Loaded on GPU {selectedGpuId}: {localSdStatus.loaded_models[selectedGpuId]}
-    </p>
-)}
+                                    {localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId] && (
+                                        <p className="text-xs text-green-600 dark:text-green-400">
+                                            ✓ Loaded on GPU {selectedGpuId}: {localSdStatus.loaded_models[selectedGpuId]}
+                                        </p>
+                                    )}
                                 </div>
                             )}
-{/* GPU SELECTION - NEW */}
-{imageEngine === 'EloDiffusion' && (
-    <div className="space-y-2">
-        <Label htmlFor="gpu-select" className="text-xs">GPU for Image Generation</Label>
-        <select 
-            id="gpu-select"
-            value={selectedGpuId} 
-            onChange={e => setSelectedGpuId(parseInt(e.target.value))}
-            disabled={isImageGenerating || isLocalModelLoading}
-            className="w-full rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-            <option value={0}>GPU 0 (Primary)</option>
-            <option value={1}>GPU 1 (Secondary)</option>
-        </select>
-        <p className="text-xs text-muted-foreground">
-            Choose which GPU to use for image generation and ADetailer
-        </p>
-    </div>
-)}
+                            {/* GPU SELECTION - NEW */}
+                            {imageEngine === 'EloDiffusion' && (
+                                <div className="space-y-2">
+                                    <Label htmlFor="gpu-select" className="text-xs">GPU for Image Generation</Label>
+                                    <select
+                                        id="gpu-select"
+                                        value={selectedGpuId}
+                                        onChange={e => setSelectedGpuId(parseInt(e.target.value))}
+                                        disabled={isImageGenerating || isLocalModelLoading}
+                                        className="w-full rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                    >
+                                        <option value={0}>GPU 0 (Primary)</option>
+                                        <option value={1}>GPU 1 (Secondary)</option>
+                                    </select>
+                                    <p className="text-xs text-muted-foreground">
+                                        Choose which GPU to use for image generation and ADetailer
+                                    </p>
+                                </div>
+                            )}
                             {/* Prompt inputs */}
                             <div className="space-y-2">
                                 <Label htmlFor="prompt" className="text-xs">Prompt</Label>
-                                <Textarea 
-                                    id="prompt" 
-                                    placeholder="Describe the image..." 
-                                    value={prompt} 
-                                    onChange={e => setPrompt(e.target.value)} 
-                                    rows={2} 
-                                    disabled={isImageGenerating || !isAvailable} 
+                                <Textarea
+                                    id="prompt"
+                                    placeholder="Describe the image..."
+                                    value={prompt}
+                                    onChange={e => setPrompt(e.target.value)}
+                                    rows={2}
+                                    disabled={isImageGenerating || !isAvailable}
                                 />
                             </div>
-                            
+
                             <div className="space-y-2">
                                 <Label htmlFor="negativePrompt" className="text-xs">Negative Prompt</Label>
-                                <Textarea 
-                                    id="negativePrompt" 
-                                    placeholder="Elements to avoid..." 
-                                    value={negativePrompt} 
-                                    onChange={e => setNegativePrompt(e.target.value)} 
-                                    rows={1} 
-                                    disabled={isImageGenerating || !isAvailable} 
+                                <Textarea
+                                    id="negativePrompt"
+                                    placeholder="Elements to avoid..."
+                                    value={negativePrompt}
+                                    onChange={e => setNegativePrompt(e.target.value)}
+                                    rows={1}
+                                    disabled={isImageGenerating || !isAvailable}
                                 />
                             </div>
-<div className="mb-2">
-  <label className="block text-sm font-medium text-foreground">
-    Sampler
-  </label>
-  <select
-    className="mt-1 block w-full rounded-md border border-border bg-background text-foreground shadow-sm focus:border-ring focus:ring-ring sm:text-sm"
-    value={selectedSampler}
-    onChange={(e) => setSelectedSampler(e.target.value)}
-  >
-    {availableSamplers.map((sampler) => (
-      <option key={sampler} value={sampler}>
-        {sampler}
-      </option>
-    ))}
-  </select>
-</div>
+                            <div className="mb-2">
+                                <label className="block text-sm font-medium text-foreground">
+                                    Sampler
+                                </label>
+                                <select
+                                    className="mt-1 block w-full rounded-md border border-border bg-background text-foreground shadow-sm focus:border-ring focus:ring-ring sm:text-sm"
+                                    value={selectedSampler}
+                                    onChange={(e) => setSelectedSampler(e.target.value)}
+                                >
+                                    {availableSamplers.map((sampler) => (
+                                        <option key={sampler} value={sampler}>
+                                            {sampler}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
                             {/* Size Controls - RESTORED FULL VERSION */}
                             <div className="space-y-2">
                                 <div className="flex justify-between text-xs items-center">
@@ -816,7 +844,7 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                     <Button size="sm" variant={width === 768 && height === 512 ? "secondary" : "outline"} onClick={() => { setWidth(768); setHeight(512); }} disabled={isImageGenerating}>3:2</Button>
                                     <Button size="sm" variant={width === 512 && height === 768 ? "secondary" : "outline"} onClick={() => { setWidth(512); setHeight(768); }} disabled={isImageGenerating}>2:3</Button>
                                 </div>
-                                
+
                                 {/* Width Slider */}
                                 <div className="space-y-1">
                                     <Label className="text-xs">Width: {width}px</Label>
@@ -829,7 +857,7 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                         disabled={isImageGenerating}
                                     />
                                 </div>
-                                
+
                                 {/* Height Slider */}
                                 <div className="space-y-1">
                                     <Label className="text-xs">Height: {height}px</Label>
@@ -843,55 +871,55 @@ const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
                                     />
                                 </div>
                             </div>
-                            
+
                             <div className="space-y-2">
                                 <Label className="text-xs">Steps: {steps}</Label>
                                 <Slider min={4} max={50} step={1} value={[steps]} onValueChange={val => setSteps(val[0])} />
                             </div>
-                            
+
                             <div className="space-y-2">
                                 <Label className="text-xs">Guidance Scale: {guidanceScale.toFixed(1)}</Label>
                                 <Slider min={1} max={15} step={0.1} value={[guidanceScale]} onValueChange={val => setGuidanceScale(val[0])} disabled={isImageGenerating} />
                             </div>
 
-    {isImageGenerating ? (
-    <div className="w-full space-y-2">
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{imageProgress?.state || 'Generating...'}</span>
-            {imageProgress?.steps ? (
-                <span>
-                    {Math.min((imageProgress.step || 0) + 1, imageProgress.steps)}/{imageProgress.steps}
-                    {typeof imageProgress?.progress === 'number' ? ` \u2022 ${Math.round(imageProgress.progress)}%` : ''}
-                </span>
-            ) : (
-                typeof imageProgress?.progress === 'number' ? <span>{Math.round(imageProgress.progress)}%</span> : null
-            )}
-        </div>
-        <Progress value={imageProgress?.progress ?? 0} />
-        {!isLocalEngine && (
-            <p className="text-[11px] text-muted-foreground">
-                External engines do not report step progress.
-            </p>
-        )}
-    </div>
-) : (
-    <Button 
-        className={`w-full ${autoEnhanceEnabled && adetailerAvailable ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700' : ''}`}
-        onClick={handleGenerateImage} 
-        disabled={isImageGenerating || !prompt.trim() || !isModelLoadedForSelectedGpu}
-    >
-        <>
-            <Image className="mr-2 h-4 w-4" />
-            Generate Image
-            {autoEnhanceEnabled && adetailerAvailable && (
-                <>
-                    <Sparkles className="ml-2 h-4 w-4" />
-                    <span className="ml-1 text-xs">+ Auto-Enhance</span>
-                </>
-            )}
-        </>
-    </Button>
-)}
+                            {isImageGenerating ? (
+                                <div className="w-full space-y-2">
+                                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                        <span>{imageProgress?.state || 'Generating...'}</span>
+                                        {imageProgress?.steps ? (
+                                            <span>
+                                                {Math.min((imageProgress.step || 0) + 1, imageProgress.steps)}/{imageProgress.steps}
+                                                {typeof imageProgress?.progress === 'number' ? ` \u2022 ${Math.round(imageProgress.progress)}%` : ''}
+                                            </span>
+                                        ) : (
+                                            typeof imageProgress?.progress === 'number' ? <span>{Math.round(imageProgress.progress)}%</span> : null
+                                        )}
+                                    </div>
+                                    <Progress value={imageProgress?.progress ?? 0} />
+                                    {!isLocalEngine && (
+                                        <p className="text-[11px] text-muted-foreground">
+                                            External engines do not report step progress.
+                                        </p>
+                                    )}
+                                </div>
+                            ) : (
+                                <Button
+                                    className={`w-full ${autoEnhanceEnabled && adetailerAvailable ? 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700' : ''}`}
+                                    onClick={handleGenerateImage}
+                                    disabled={isImageGenerating || !prompt.trim() || !isModelLoadedForSelectedGpu}
+                                >
+                                    <>
+                                        <Image className="mr-2 h-4 w-4" />
+                                        Generate Image
+                                        {autoEnhanceEnabled && adetailerAvailable && (
+                                            <>
+                                                <Sparkles className="ml-2 h-4 w-4" />
+                                                <span className="ml-1 text-xs">+ Auto-Enhance</span>
+                                            </>
+                                        )}
+                                    </>
+                                </Button>
+                            )}
                         </div>
                     </div>
                 </div>,

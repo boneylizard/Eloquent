@@ -143,6 +143,43 @@ class SDManager:
                 self.model_locks[gpu_id] = lock
             return lock
 
+    def _normalize_sample_method(self, sample_method: Any) -> Any:
+        if not isinstance(sample_method, str):
+            return sample_method
+
+        method = sample_method.strip().lower()
+
+        try:
+            from stable_diffusion_cpp.stable_diffusion import SAMPLE_METHOD_MAP
+            if method in SAMPLE_METHOD_MAP:
+                return method
+
+            alias_map = {
+                "dpmpp2m": "dpm++2m",
+                "dpmpp2s_a": "dpm++2s_a",
+                "dpmpp2mv2": "dpm++2mv2",
+                "dpm++2m": "dpmpp2m",
+                "dpm++2s_a": "dpmpp2s_a",
+                "dpm++2mv2": "dpmpp2mv2",
+            }
+            alt = alias_map.get(method)
+            if alt and alt in SAMPLE_METHOD_MAP:
+                return alt
+
+            # Fallback to a safe default if available
+            if "euler_a" in SAMPLE_METHOD_MAP:
+                logger.warning(f"Unknown sampler '{method}', defaulting to euler_a")
+                return "euler_a"
+        except Exception:
+            alias_map = {
+                "dpmpp2m": "dpm++2m",
+                "dpmpp2s_a": "dpm++2s_a",
+                "dpmpp2mv2": "dpm++2mv2",
+            }
+            return alias_map.get(method, method)
+
+        return method
+
     # Add the @property decorator to expose adetailer for backward compatibility
     @property
     def adetailer(self):
@@ -344,9 +381,11 @@ class SDManager:
             raise
 
     def enhance_image_with_adetailer(self, image_path: str, original_prompt: str = "",
-                                     face_prompt: str = "", strength: float = 0.35,
-                                     steps: int = 45, confidence: float = 0.3, 
-                                     model_name: str = "face_yolov8n_v2.pt", gpu_id: int = 0) -> bytes:
+                                     face_prompt: str = "", negative_prompt: str = "",
+                                     strength: float = 0.35, steps: int = 45,
+                                     confidence: float = 0.3,
+                                     model_name: str = "face_yolov8n_v2.pt", gpu_id: int = 0,
+                                     sample_method: str = "euler_a") -> bytes:
         """
         STABLE-DIFFUSION.CPP COMPATIBLE - Post-process image with ADetailer face enhancement on a specific GPU.
         """
@@ -356,6 +395,27 @@ class SDManager:
             raise RuntimeError(f"No SD model loaded for ADetailer enhancement on GPU {gpu_id}")
 
         try:
+            # Normalize user inputs early (defensive against bad types)
+            try:
+                steps = int(steps)
+            except (TypeError, ValueError):
+                steps = 45
+            steps = max(1, steps)
+
+            try:
+                strength = float(strength)
+            except (TypeError, ValueError):
+                strength = 0.35
+
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.3
+
+            sample_method = self._normalize_sample_method(sample_method)
+            effective_steps = max(1, int(round(steps * strength)))
+            logger.info(f"ADetailer params: steps={steps} (effective {effective_steps}), strength={strength}, confidence={confidence}, model={model_name}, sampler={sample_method}, gpu={gpu_id}")
+
             # Check if image_path is a path or raw bytes (for internal calls like after upscale)
             if isinstance(image_path, (bytes, bytearray)):
                 original_image = Image.open(io.BytesIO(image_path))
@@ -436,9 +496,9 @@ class SDManager:
                             steps=steps, # Use passed steps
                             strength=strength, # Use passed strength parameter
                             cfg_scale=8.5,
-                            sample_method="dpm++2m",
+                            sample_method=sample_method,
                             seed=-1, 
-                            negative_prompt=""
+                            negative_prompt=negative_prompt or ""
                         )
                         
                         # Convert bytes back to PIL
@@ -461,9 +521,9 @@ class SDManager:
                             steps=steps, # Use passed steps
                             strength=strength, # Use passed strength parameter
                             cfg_scale=8.5,
-                            sample_method="dpm++2m",
+                            sample_method=sample_method,
                             seed=-1,
-                            negative_prompt=""
+                            negative_prompt=negative_prompt or ""
                         )
                          
                         if image_bytes:
@@ -622,37 +682,45 @@ class SDManager:
                     raise flux_init_error
                 
             elif is_sdxl:
-                logger.info("Detected SDXL model, using SDXL initialization with CPU VAE")
-                try:
-                    # Aggressively clean memory before init to prevent 0xc000001d errors
-                    import gc
-                    gc.collect()
-                    
-                    model_instance = StableDiffusion(
-                        model_path=model_path,
-                        wtype="default",
-                        verbose=True,
-                        # limit VAE memory usage if supported
-                        # keep_vae_on_cpu=True, # DISABLED: Causes massive slowdown on VAE decode
-                    )
-                    logger.info("SDXL model initialized - checking if VAE is on CPU...")
-                except TypeError as e:
-                    logger.warning(f"Feature support check (keep_vae_on_cpu): {e}")
-                    # Try fallback without advanced params
+                logger.info("Detected SDXL model")
+                
+                # Robust loading loop with fallback
+                max_load_retries = 2
+                for attempt in range(max_load_retries):
                     try:
+                        # Aggressively clean memory before init
                         import gc
-                        gc.collect() 
+                        import time
+                        gc.collect()
+                        
+                        # Add a small delay on retries to allow OS to reclaim resources
+                        if attempt > 0:
+                            logger.info(f"Retrying SDXL load (attempt {attempt+1}) with conservative settings...")
+                            time.sleep(2)
+                        
+                        # Attempt 1: Standard Load
+                        # Attempt 2: Fallback with reduced threads (safer)
+                        threads_to_use = -1 if attempt == 0 else 8
+                        
                         model_instance = StableDiffusion(
                             model_path=model_path,
-                            wtype="default", 
+                            wtype="default",
                             verbose=True,
+                            n_threads=threads_to_use,
+                            # limit VAE memory usage if supported
+                            # keep_vae_on_cpu=True, # DISABLED: Causes massive slowdown on VAE decode
                         )
-                    except Exception as fallback_error:
-                         logger.error(f"SDXL fallback initialization failed: {fallback_error}")
-                         raise fallback_error
-                if not model_instance:
-                    logger.error("Failed to initialize SDXL model")
-                    return False
+                        logger.info(f"SDXL model initialized successfully (Attempt {attempt+1})")
+                        break # Success
+                    except Exception as e:
+                        logger.warning(f"SDXL init attempt {attempt+1} failed: {type(e).__name__}: {e}")
+                        if attempt == max_load_retries - 1:
+                            logger.error("All SDXL load attempts failed.")
+                            raise e # Propagate error if last attempt
+                
+                if not model_instance: # Should be caught by raise above, but for safety
+                    raise RuntimeError("Failed to initialize SDXL model instance")
+
 
                 # Note: SDXL models do not require special handling like FLUX
             else:
@@ -765,6 +833,8 @@ class SDManager:
                     sample_method = kwargs.get('sample_method', 'euler')
                     logger.info(f"Generating Standard SD image: {steps} steps, cfg_scale={cfg_scale}")
 
+                sample_method = self._normalize_sample_method(sample_method)
+
                 # Define internal helper for progress inside the loop to capture closure
                 def call_with_progress_internal(method, **call_kwargs):
                     progress_callback = None
@@ -803,14 +873,50 @@ class SDManager:
                      self.init_progress(task_id, steps=steps, state="starting")
 
                 # Locate method
-                candidates = []
-                if hasattr(model_instance, 'generate_image'): candidates.append(("generate_image", model_instance.generate_image))
-                if hasattr(model_instance, 'txt_to_img'): candidates.append(("txt_to_img", model_instance.txt_to_img))
-                if hasattr(model_instance, 'txt2img'): candidates.append(("txt2img", model_instance.txt2img))
+                # Locate method based on mode (txt2img vs img2img)
+                method_name = None
+                method = None
 
-                if not candidates:
-                     raise RuntimeError(f"No generation method found on model.")
-                method_name, method = candidates[0]
+                # Check if we are doing img2img (init_image present and not None)
+                is_img2img = 'init_image' in kwargs and kwargs['init_image'] is not None
+                
+                if is_img2img:
+                    # Prioritize img2img methods
+                    if hasattr(model_instance, 'img_to_img'): 
+                         method_name = "img_to_img"
+                         method = model_instance.img_to_img
+                    elif hasattr(model_instance, 'img2img'): 
+                         method_name = "img2img"
+                         method = model_instance.img2img
+                    elif hasattr(model_instance, 'generate_image'):
+                         # Fallback if specific method not found (generic wrapper?)
+                         method_name = "generate_image"
+                         method = model_instance.generate_image
+                else:
+                    # Prioritize txt2img methods
+                    if hasattr(model_instance, 'txt_to_img'): 
+                         method_name = "txt_to_img"
+                         method = model_instance.txt_to_img
+                    elif hasattr(model_instance, 'txt2img'): 
+                         method_name = "txt2img"
+                         method = model_instance.txt2img
+                    elif hasattr(model_instance, 'generate_image'):
+                         method_name = "generate_image"
+                         method = model_instance.generate_image
+
+                if not method:
+                     # Check candidates from previous logic as last resort
+                     candidates = []
+                     if hasattr(model_instance, 'generate_image'): candidates.append(("generate_image", model_instance.generate_image))
+                     if hasattr(model_instance, 'txt_to_img'): candidates.append(("txt_to_img", model_instance.txt_to_img))
+                     if hasattr(model_instance, 'txt2img'): candidates.append(("txt2img", model_instance.txt2img))
+                     
+                     if candidates:
+                         method_name, method = candidates[0]
+                     else:
+                         raise RuntimeError(f"No generation method found on model.")
+                         
+                logger.info(f"Using SD method: {method_name} (img2img mode: {is_img2img})")
                 logger.info(f"Using SD method: {method_name}")
 
                 # Memory cleanup before call
@@ -867,7 +973,7 @@ class SDManager:
 
             except OSError as e:
                 err_str = str(e).lower()
-                critical_errors = ["access violation", "0xc000001d", "-1073741795", "0xc0000005", "illegal instruction"]
+                critical_errors = ["access violation", "0xc000001d", "-1073741795", "0xc0000005", "illegal instruction", "privileged instruction"]
                 is_critical = any(err in err_str for err in critical_errors)
                 
                 if is_critical and retry_count < max_retries:

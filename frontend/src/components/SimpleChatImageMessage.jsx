@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { Button } from './ui/button';
+import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo, ArrowUpCircle, Image as ImageIcon } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
@@ -23,8 +24,58 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [isUpscaling, setIsUpscaling] = useState(false);
   const [scaleFactor, setScaleFactor] = useState("2");
-  // Enhance mode state: 'refine' (0.35) or 'creative' (0.75)
-  const [enhanceMode, setEnhanceMode] = useState("refine");
+  const [showEnhanceSettings, setShowEnhanceSettings] = useState(false);
+
+  const [adetailerSettings, setAdetailerSettings] = useState(() => {
+    const defaultModel = (() => {
+      const savedModel = localStorage.getItem('adetailer-selected-model');
+      if (savedModel) return savedModel;
+      const savedSettings = localStorage.getItem('adetailer-settings');
+      if (savedSettings) {
+        try {
+          const parsed = JSON.parse(savedSettings);
+          if (parsed?.modelName) return parsed.modelName;
+        } catch (error) {
+          // Ignore malformed settings
+        }
+      }
+      return 'face_yolov8n.pt';
+    })();
+
+    const defaults = {
+      strength: 0.35,
+      steps: 45,
+      confidence: 0.3,
+      facePrompt: 'detailed face, high quality, sharp focus',
+      modelName: defaultModel,
+      sampler: 'euler_a',
+      useOriginalPrompt: true,
+      useOriginalNegativePrompt: false
+    };
+
+    const saved = localStorage.getItem('adetailer-settings');
+    if (!saved) return defaults;
+
+    try {
+      const parsed = JSON.parse(saved);
+      return {
+        ...defaults,
+        ...parsed,
+        strength: Number.isFinite(Number(parsed?.strength)) ? Number(parsed.strength) : defaults.strength,
+        steps: Number.isFinite(Number(parsed?.steps)) ? Number(parsed.steps) : defaults.steps,
+        confidence: Number.isFinite(Number(parsed?.confidence)) ? Number(parsed.confidence) : defaults.confidence,
+        modelName: parsed?.modelName || defaultModel,
+        sampler: parsed?.sampler || defaults.sampler,
+        useOriginalPrompt: typeof parsed?.useOriginalPrompt === 'boolean' ? parsed.useOriginalPrompt : defaults.useOriginalPrompt,
+        useOriginalNegativePrompt: typeof parsed?.useOriginalNegativePrompt === 'boolean' ? parsed.useOriginalNegativePrompt : defaults.useOriginalNegativePrompt
+      };
+    } catch (error) {
+      return defaults;
+    }
+  });
+
+  const [availableAdetailerModels, setAvailableAdetailerModels] = useState([]);
+  const [adetailerAvailable, setAdetailerAvailable] = useState(false);
 
   // Existing functions
   const getImageUrl = () => {
@@ -36,27 +87,94 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
   };
 
   const imageUrl = getImageUrl();
+  const adetailerModelOptions = (() => {
+    const models = Array.isArray(availableAdetailerModels) ? [...availableAdetailerModels] : [];
+    const current = adetailerSettings.modelName;
+    if (current && !models.includes(current)) {
+      models.unshift(current);
+    }
+    return models;
+  })();
+  const adetailerSamplerOptions = [
+    'default',
+    'euler',
+    'euler_a',
+    'heun',
+    'dpm2',
+    'dpm++2s_a',
+    'dpm++2m',
+    'dpm++2mv2',
+    'ipndm',
+    'ipndm_v',
+    'lcm',
+    'ddim_trailing',
+    'tcd'
+  ];
+
+  useEffect(() => {
+    localStorage.setItem('adetailer-settings', JSON.stringify(adetailerSettings));
+    if (adetailerSettings.modelName) {
+      localStorage.setItem('adetailer-selected-model', adetailerSettings.modelName);
+    }
+  }, [adetailerSettings]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const safeFetchJson = async (url) => {
+      if (!url) return null;
+      try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        return await response.json();
+      } catch (error) {
+        return null;
+      }
+    };
+
+    const fetchAdetailerInfo = async () => {
+      const [primaryStatus, primaryModels, memoryStatus, memoryModels] = await Promise.all([
+        safeFetchJson(PRIMARY_API_URL ? `${PRIMARY_API_URL}/sd-local/adetailer-status` : null),
+        safeFetchJson(PRIMARY_API_URL ? `${PRIMARY_API_URL}/sd-local/adetailer-models` : null),
+        safeFetchJson(MEMORY_API_URL ? `${MEMORY_API_URL}/sd-local/adetailer-status` : null),
+        safeFetchJson(MEMORY_API_URL ? `${MEMORY_API_URL}/sd-local/adetailer-models` : null)
+      ]);
+
+      if (!isMounted) return;
+
+      const status = primaryStatus || memoryStatus;
+      if (status && typeof status.available === 'boolean') {
+        setAdetailerAvailable(status.available);
+      }
+
+      const modelsData = primaryModels || memoryModels;
+      if (modelsData && Array.isArray(modelsData.models)) {
+        setAvailableAdetailerModels(modelsData.models);
+      }
+    };
+
+    fetchAdetailerInfo();
+    return () => {
+      isMounted = false;
+    };
+  }, [PRIMARY_API_URL, MEMORY_API_URL]);
 
   // Enhanced enhancement function with history tracking
   const handleManualEnhance = useCallback(async () => {
     if (!imageUrl || isEnhancing) return;
 
-    // Use saved settings from localStorage (same as auto-enhance)
-    const savedModel = localStorage.getItem('adetailer-selected-model') || 'face_yolov8n_v2.pt';
-
-    // Determine strength and steps based on mode
-    // refine = 0.35 strength, 25 steps (subtle fix, fast)
-    // creative = 0.75 strength, 45 steps (hallucinate details, slow)
-    // The user specifically requested 45 steps for creative mode to "restore" previous behavior
-    const strength = enhanceMode === 'creative' ? 0.75 : 0.35;
-    const steps = enhanceMode === 'creative' ? 45 : 25;
-
     const settings = {
-      strength: strength,
-      steps: steps,
-      confidence: 0.3,
-      facePrompt: 'detailed face, high quality, sharp focus'
+      strength: Number.isFinite(adetailerSettings.strength) ? adetailerSettings.strength : 0.35,
+      steps: Number.isFinite(adetailerSettings.steps) ? Math.max(1, Math.round(adetailerSettings.steps)) : 45,
+      confidence: Number.isFinite(adetailerSettings.confidence) ? adetailerSettings.confidence : 0.3,
+      facePrompt: adetailerSettings.facePrompt || 'detailed face, high quality, sharp focus',
+      modelName: adetailerSettings.modelName || 'face_yolov8n.pt',
+      sampler: adetailerSettings.sampler || 'euler_a',
+      useOriginalPrompt: adetailerSettings.useOriginalPrompt !== false,
+      useOriginalNegativePrompt: adetailerSettings.useOriginalNegativePrompt === true
     };
+    const originalPrompt = settings.useOriginalPrompt ? (message.prompt || '') : '';
+    const negativePrompt = settings.useOriginalNegativePrompt ? (message.negative_prompt || '') : '';
 
     setIsEnhancing(true);
 
@@ -66,12 +184,14 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image_url: imageUrl,
-          original_prompt: message.prompt || '',
+          original_prompt: originalPrompt,
           face_prompt: settings.facePrompt,
+          negative_prompt: negativePrompt,
           strength: settings.strength,
           steps: settings.steps,
           confidence: settings.confidence,
-          model_name: savedModel,
+          sampler: settings.sampler,
+          model_name: settings.modelName,
           gpu_id: message.gpuId || 0 // Use the GPU ID from the message or default to 0
         })
       });
@@ -84,6 +204,19 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
       const result = await response.json();
 
       if (result.status === 'success' && result.enhanced_image_url) {
+        const appliedSettings = result.parameters
+          ? {
+            strength: result.parameters.strength ?? settings.strength,
+            steps: result.parameters.steps ?? settings.steps,
+            effective_steps: result.parameters.effective_steps,
+            confidence: result.parameters.confidence ?? settings.confidence,
+            facePrompt: result.parameters.face_prompt ?? settings.facePrompt,
+            model_name: result.parameters.model_name ?? settings.modelName,
+            sampler: result.parameters.sampler ?? settings.sampler,
+            negative_prompt: result.parameters.negative_prompt ?? negativePrompt
+          }
+          : { ...settings, model_name: settings.modelName };
+
         // Update message with enhancement history tracking
         setMessages(prev => prev.map(msg =>
           msg.id === message.id
@@ -96,7 +229,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                 : [msg.imagePath, result.enhanced_image_url],
               current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
               enhanced: true,
-              enhancement_settings: { ...settings, model_name: savedModel, mode: enhanceMode }
+              enhancement_settings: appliedSettings
             }
             : msg
         ));
@@ -118,7 +251,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
     } finally {
       setIsEnhancing(false);
     }
-  }, [imageUrl, isEnhancing, MEMORY_API_URL, PRIMARY_API_URL, setMessages, message, generateUniqueId, enhanceMode]);
+  }, [imageUrl, isEnhancing, PRIMARY_API_URL, setMessages, message, generateUniqueId, adetailerSettings]);
 
   // Add this state near your other useState declarations
   const [upscalerModels, setUpscalerModels] = useState([]);
@@ -373,7 +506,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
           {/* Enhanced image info */}
           {message.enhanced && message.enhancement_settings && (
             <div className='text-xs text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 p-2 rounded'>
-              Enhanced {message.current_enhancement_level}x with ADetailer • Model: {message.enhancement_settings.model_name} • Strength: {message.enhancement_settings.strength} • Confidence: {message.enhancement_settings.confidence}
+              Enhanced {message.current_enhancement_level}x with ADetailer | Model: {message.enhancement_settings.model_name || message.enhancement_settings.modelName} | Sampler: {message.enhancement_settings.sampler || 'n/a'} | Strength: {message.enhancement_settings.strength} | Steps: {message.enhancement_settings.steps ?? 'n/a'}{message.enhancement_settings.effective_steps ? ` (${message.enhancement_settings.effective_steps} effective)` : ''} | Confidence: {message.enhancement_settings.confidence}
             </div>
           )}
 
@@ -405,15 +538,15 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                 size='sm'
                 variant='ghost'
                 onClick={() => onRegenerate({
-                  prompt: message.prompt || '',
-                  negative_prompt: message.negative_prompt || '',
-                  width: message.width || 512,
-                  height: message.height || 512,
-                  steps: message.steps || 20,
-                  guidance_scale: message.guidance_scale || 7.0,
-                  sampler: message.sampler || 'Euler a',
+                  prompt: message.original_prompt || message.prompt || '',
+                  negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
+                  width: message.original_width || message.width || 512,
+                  height: message.original_height || message.height || 512,
+                  steps: message.original_steps || message.steps || 20,
+                  guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
+                  sampler: message.original_sampler || message.sampler || 'Euler a',
                   seed: -1,
-                  model: message.model || '',
+                  model: message.original_model || message.model || '',
                   gpu_id: message.gpuId ?? 0
                 })}
                 className='h-8 px-2 text-xs'
@@ -426,16 +559,6 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
 
             {/* Enhancement controls */}
             <div className="flex items-center gap-1">
-              <Select value={enhanceMode} onValueChange={setEnhanceMode}>
-                <SelectTrigger className="h-8 w-[85px] text-xs px-2 bg-transparent border-input/50">
-                  <SelectValue placeholder="Mode" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="refine">Refine</SelectItem>
-                  <SelectItem value="creative">Creative</SelectItem>
-                </SelectContent>
-              </Select>
-
               <Button
                 size='sm'
                 variant='secondary'
@@ -455,6 +578,16 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                     ? `Enhance Again (${(message.current_enhancement_level || 0) + 1}x)`
                     : 'Enhance'
                 }
+              </Button>
+
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={() => setShowEnhanceSettings(prev => !prev)}
+                className='h-8 px-2 text-xs'
+                title='Configure ADetailer settings'
+              >
+                {showEnhanceSettings ? 'Hide ADetailer' : 'ADetailer'}
               </Button>
             </div>
 
@@ -596,6 +729,150 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
               Delete
             </Button>
           </div>
+
+          {showEnhanceSettings && (
+            <div className="mt-2 p-2 rounded-md border bg-gray-50 dark:bg-gray-900/20 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">ADetailer Model</Label>
+                  {adetailerModelOptions.length > 0 ? (
+                    <Select
+                      value={adetailerSettings.modelName}
+                      onValueChange={(value) => setAdetailerSettings(prev => ({ ...prev, modelName: value }))}
+                    >
+                      <SelectTrigger className="w-full text-xs">
+                        <SelectValue placeholder="Select model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {adetailerModelOptions.map((model) => (
+                          <SelectItem key={model} value={model} className="text-xs">
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={adetailerSettings.modelName}
+                      onChange={(e) => setAdetailerSettings(prev => ({ ...prev, modelName: e.target.value }))}
+                      placeholder="face_yolov8n.pt"
+                      className="w-full text-xs p-2 border rounded bg-background text-foreground"
+                    />
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Sampler</Label>
+                  <Select
+                    value={adetailerSettings.sampler}
+                    onValueChange={(value) => setAdetailerSettings(prev => ({ ...prev, sampler: value }))}
+                  >
+                    <SelectTrigger className="w-full text-xs">
+                      <SelectValue placeholder="Select sampler" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {adetailerSamplerOptions.map((sampler) => (
+                        <SelectItem key={sampler} value={sampler} className="text-xs">
+                          {sampler}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Steps</Label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="1"
+                    value={adetailerSettings.steps}
+                    onChange={(e) => {
+                      const next = Number.parseInt(e.target.value, 10);
+                      if (Number.isFinite(next)) {
+                        const clamped = Math.min(100, Math.max(1, next));
+                        setAdetailerSettings(prev => ({ ...prev, steps: clamped }));
+                      }
+                    }}
+                    className="w-full text-xs p-2 border rounded bg-background text-foreground"
+                  />
+                  <div className="text-[11px] text-muted-foreground">
+                    Effective steps: {Math.max(1, Math.round(adetailerSettings.steps * adetailerSettings.strength))}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Strength: {adetailerSettings.strength.toFixed(2)}</Label>
+                  <input
+                    type="range"
+                    min="0.05"
+                    max="1.00"
+                    step="0.01"
+                    value={adetailerSettings.strength}
+                    onChange={(e) => setAdetailerSettings(prev => ({ ...prev, strength: parseFloat(e.target.value) }))}
+                    className="w-full mt-1"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Confidence: {adetailerSettings.confidence.toFixed(2)}</Label>
+                  <input
+                    type="range"
+                    min="0.05"
+                    max="0.95"
+                    step="0.01"
+                    value={adetailerSettings.confidence}
+                    onChange={(e) => setAdetailerSettings(prev => ({ ...prev, confidence: parseFloat(e.target.value) }))}
+                    className="w-full mt-1"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-2 space-y-2">
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={adetailerSettings.useOriginalPrompt}
+                    onChange={(e) => setAdetailerSettings(prev => ({ ...prev, useOriginalPrompt: e.target.checked }))}
+                  />
+                  Reuse original prompt
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={adetailerSettings.useOriginalNegativePrompt}
+                    onChange={(e) => setAdetailerSettings(prev => ({ ...prev, useOriginalNegativePrompt: e.target.checked }))}
+                    disabled={!message.negative_prompt}
+                  />
+                  Reuse original negative prompt
+                </label>
+                {!message.negative_prompt && (
+                  <div className="text-[11px] text-muted-foreground">
+                    No negative prompt stored for this image.
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-2">
+                <Label className="text-xs">Face Prompt</Label>
+                <input
+                  type="text"
+                  value={adetailerSettings.facePrompt}
+                  onChange={(e) => setAdetailerSettings(prev => ({ ...prev, facePrompt: e.target.value }))}
+                  placeholder="detailed face, high quality, sharp focus"
+                  className="w-full mt-1 text-xs p-2 border rounded bg-background text-foreground"
+                />
+              </div>
+
+              {!adetailerAvailable && (
+                <div className="mt-2 text-xs text-yellow-700 dark:text-yellow-300">
+                  ADetailer not available. Install ultralytics and check the model directory.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -668,15 +945,15 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                       size='sm'
                       variant='ghost'
                       onClick={() => onRegenerate({
-                        prompt: message.prompt || '',
-                        negative_prompt: message.negative_prompt || '',
-                        width: message.width || 512,
-                        height: message.height || 512,
-                        steps: message.steps || 20,
-                        guidance_scale: message.guidance_scale || 7.0,
-                        sampler: message.sampler || 'Euler a',
+                        prompt: message.original_prompt || message.prompt || '',
+                        negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
+                        width: message.original_width || message.width || 512,
+                        height: message.original_height || message.height || 512,
+                        steps: message.original_steps || message.steps || 20,
+                        guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
+                        sampler: message.original_sampler || message.sampler || 'Euler a',
                         seed: -1,
-                        model: message.model || '',
+                        model: message.original_model || message.model || '',
                         gpu_id: message.gpuId ?? 0
                       })}
                       className='h-8 px-2 text-xs'
