@@ -84,6 +84,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     useOpenAIAPI: contextSettings.useOpenAIAPI ?? false,
     customApiEndpoints: contextSettings.customApiEndpoints ?? [],
     admin_password: contextSettings.admin_password ?? "",
+    main_gpu_id: contextSettings.main_gpu_id ?? 0,
   });
   const [hasChanges, setHasChanges] = useState(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
@@ -502,6 +503,36 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                 />
               </div>
               <Separator />
+
+              {/* Main Model GPU Selection - Visible if multiple GPUs detected */}
+              {gpuCount > 1 && (
+                <>
+                  <div className="space-y-4">
+                    <div>
+                      <Label htmlFor="main-gpu-id">Main Model GPU</Label>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Select which GPU runs the heavy LLM model service.
+                      </p>
+                    </div>
+                    <Select
+                      value={localSettings.main_gpu_id?.toString() || "0"}
+                      onValueChange={(value) => handleChange('main_gpu_id', parseInt(value, 10))}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select Main GPU" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Array.from({ length: gpuCount }, (_, i) => (
+                          <SelectItem key={i} value={i.toString()}>
+                            GPU {i}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Separator />
+                </>
+              )}
 
               {/* GPU Usage Mode - Hidden in Single GPU Mode */}
               {!localSettings.singleGpuMode && (

@@ -322,21 +322,64 @@ def launch_browser():
         pass  # Fail silently - don't break the app if browser launch fails
 
 
+def load_local_settings():
+    """Load settings from ~/.LiangLocal/settings.json"""
+    try:
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        if settings_path.exists():
+            with open(settings_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Could not load settings: {e}")
+    return {}
+
+
 # MOVED TO MODULE LEVEL - Windows can't pickle local functions
 def run_model_service(root_path):
     """Run the model service with proper GPU isolation."""
     gpu_count = get_gpu_count()
-    if gpu_count >= 2:
-        # If multiple GPUs, use the last GPU for main LLM inference
-        model_gpu_id = str(gpu_count - 1)
+
+    # helper to safely get int from settings
+    def get_setting_int(settings, key, default=None):
+        try:
+            val = settings.get(key)
+            return int(val) if val is not None else default
+        except:
+            return default
+
+    # 1. Determine which GPU to use
+    model_gpu_id = None
+    selection_source = "auto"
+    
+    # Check Environment Variable first
+    env_gpu = os.environ.get("ELOQUENT_MAIN_GPU")
+    if env_gpu is not None:
+        model_gpu_id = str(env_gpu)
+        selection_source = "environment variable"
+    
+    # Check Settings second
+    if model_gpu_id is None:
+        settings = load_local_settings()
+        conf_gpu = get_setting_int(settings, "main_gpu_id")
+        if conf_gpu is not None and 0 <= conf_gpu < gpu_count:
+            model_gpu_id = str(conf_gpu)
+            selection_source = "settings.json"
+            
+    # Default logic (Original behavior)
+    if model_gpu_id is None:
+        if gpu_count >= 1:
+            # Default to GPU 0 (Primary) unless overridden
+            model_gpu_id = "0"
+            selection_source = "default (Primary GPU)"
+        else:
+            model_gpu_id = "-1" # CPU
+            selection_source = "CPU fallback"
+
+    # 2. Configure Environment
+    if model_gpu_id != "-1":
         os.environ["CUDA_VISIBLE_DEVICES"] = model_gpu_id
         os.environ["GPU_ID"] = model_gpu_id
-        print(f"🔒 Model service will use GPU {model_gpu_id} for main LLM inference")
-    elif gpu_count == 1:
-        # Single GPU - use it for everything
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        os.environ["GPU_ID"] = "0"
-        print("🔒 Model service will use GPU 0")
+        print(f"🔒 Model service will use GPU {model_gpu_id} (Selected via {selection_source})")
     else:
         # No GPU - run on CPU
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
