@@ -348,6 +348,10 @@ const Chat = ({ layoutMode }) => {
         return [...filtered, {
           id: generateUniqueId(),
           role: 'bot',
+          characterId: activeCharacter?.id,
+          characterName: activeCharacter?.name,
+          avatar: activeCharacter?.avatar,
+          modelId: 'primary',
           type: 'image',
           content: data.generated_prompt,
           imagePath: data.image_url,
@@ -361,7 +365,7 @@ const Chat = ({ layoutMode }) => {
       console.error('Visualization error:', error);
       setMessages(prev => prev.map(m => m.id === tempId ? { ...m, content: `❌ Visualization failed: ${error.message}`, error: true } : m));
     }
-  }, [messages, isGenerating, primaryModel, PRIMARY_API_URL, setMessages, generateUniqueId]);
+  }, [messages, isGenerating, primaryModel, PRIMARY_API_URL, setMessages, generateUniqueId, activeCharacter]);
 
   // Author's Note helper functions
   const countTokens = (text) => Math.ceil(text.length / 4);
@@ -699,7 +703,9 @@ const Chat = ({ layoutMode }) => {
           original_prompt: originalPrompt,
           face_prompt: enhancementSettings.facePrompt,
           strength: enhancementSettings.strength,
+          steps: enhancementSettings.steps,
           confidence: enhancementSettings.confidence,
+          sampler: enhancementSettings.sampler,
           model_name: modelName,
           gpu_id: gpuId
         })
@@ -761,6 +767,10 @@ const Chat = ({ layoutMode }) => {
           const imageMessage = {
             id: messageId,
             role: 'bot',
+            characterId: activeCharacter?.id,
+            characterName: activeCharacter?.name,
+            avatar: activeCharacter?.avatar,
+            modelId: 'primary',
             type: 'image',
             content: imageParams.prompt,
             imagePath: imageUrl,
@@ -774,6 +784,15 @@ const Chat = ({ layoutMode }) => {
             model: responseData.parameters?.sd_model_checkpoint || imageParams.model || '',
             sampler: responseData.parameters?.sampler || imageParams.sampler || 'Euler a',
             seed: responseData.parameters?.seed ?? -1,
+            original_prompt: imageParams.original_prompt || imageParams.prompt,
+            original_negative_prompt: imageParams.original_negative_prompt || imageParams.negative_prompt || '',
+            original_width: imageParams.original_width || imageParams.width || 512,
+            original_height: imageParams.original_height || imageParams.height || 512,
+            original_steps: imageParams.original_steps || imageParams.steps || 20,
+            original_guidance_scale: imageParams.original_guidance_scale ?? imageParams.guidance_scale ?? 7.0,
+            original_model: imageParams.original_model || imageParams.model || '',
+            original_sampler: imageParams.original_sampler || imageParams.sampler || 'Euler a',
+            original_seed: imageParams.original_seed ?? imageParams.seed ?? -1,
             timestamp: new Date().toISOString()
           };
 
@@ -783,6 +802,8 @@ const Chat = ({ layoutMode }) => {
             const fallbackSettings = {
               strength: typeof adetailerSettings.strength === 'number' ? adetailerSettings.strength : 0.35,
               confidence: typeof adetailerSettings.confidence === 'number' ? adetailerSettings.confidence : 0.3,
+              steps: typeof adetailerSettings.steps === 'number' ? adetailerSettings.steps : 45,
+              sampler: adetailerSettings.sampler || 'euler_a',
               facePrompt: adetailerSettings.facePrompt || 'detailed face, high quality, sharp focus'
             };
             autoEnhanceRegeneratedImage(
@@ -822,6 +843,7 @@ const Chat = ({ layoutMode }) => {
     }
   }, [
     generateImage,
+    activeCharacter,
     setMessages,
     setRegenerationQueue,
     autoEnhanceEnabled,

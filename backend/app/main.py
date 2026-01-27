@@ -122,7 +122,7 @@ try:
 except Exception as e:
     logger.warning(f"Could not initialize file logging: {e}")
 
-from .sd_manager import SDManager
+from .sd_worker import SDWorkerClient
 from .upscale_manager import UpscaleManager
 import random
 from .web_search_service import perform_web_search
@@ -1920,12 +1920,12 @@ async def lifespan(app: FastAPI):
         logger.error(f"FATAL: Failed to initialize ModelManager: {init_err}", exc_info=True)
         raise init_err
 
-    # Initialize SD Manager (add this after your ModelManager initialization)
+    # Initialize SD Manager in a separate worker process
     try:
-        app.state.sd_manager = SDManager()
-        logger.info("SD Manager initialized")
+        app.state.sd_manager = SDWorkerClient()
+        logger.info("SD Worker initialized")
     except Exception as sd_err:
-        logger.error(f"Failed to initialize SD Manager: {sd_err}")
+        logger.error(f"Failed to initialize SD Worker: {sd_err}")
         app.state.sd_manager = None
       
     # === TTS SERVICE INTEGRATION ===
@@ -4917,7 +4917,7 @@ async def list_adetailer_models(request: Request):
     if not sd_manager:
         return {"available": False, "models": []}
     
-    models = sd_manager.adetailer.available_models
+    models = sd_manager.get_adetailer_models()
     
     # Add default models that auto-download
     default_models = [
@@ -4934,7 +4934,7 @@ async def list_adetailer_models(request: Request):
         "available": True,
         "models": all_models,
         "custom_models": models,
-        "directory": str(sd_manager.adetailer.model_directory) if sd_manager.adetailer.model_directory else None
+        "directory": sd_manager.get_adetailer_directory()
     }
 
 @router.post("/sd-local/set-adetailer-directory")
@@ -4963,12 +4963,38 @@ async def set_adetailer_directory(request: Request, data: dict = Body(...)):
         # Update manager
         sd_manager = getattr(request.app.state, 'sd_manager', None)
         if sd_manager:
-            sd_manager.adetailer.set_model_directory(directory)
+            sd_manager.set_adetailer_directory(directory)
         
         return {"status": "success", "message": "ADetailer directory updated"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 # Update existing enhance endpoint
+
+@router.get("/sd-local/adetailer-models")
+async def list_adetailer_models():
+    """List available ADetailer models from the configured directory."""
+    try:
+        settings_path = Path("C:/Users/bpfit/.LiangLocal/settings.json")
+        if not settings_path.exists():
+             return {"models": []}
+        
+        with open(settings_path, "r") as f:
+            settings = json.load(f)
+            
+        model_dir = settings.get("adetailerModelDirectory")
+        if not model_dir:
+             # Fallback try checking if it's in a different key or default
+             model_dir = settings.get("adetailer_models_dir")
+
+        if not model_dir or not os.path.exists(model_dir):
+             return {"models": []}
+             
+        models = [f for f in os.listdir(model_dir) if f.endswith(('.pt', '.pth'))]
+        return {"models": sorted(models)}
+    except Exception as e:
+        logger.error(f"Failed to list ADetailer models: {e}")
+        return {"models": []}
+
 @router.post("/sd-local/enhance-adetailer")
 async def enhance_image_with_adetailer(request: Request, data: dict = Body(...)):
     """Enhance an existing image using ADetailer post-processing on a specific GPU."""
@@ -4980,14 +5006,28 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
         # Extract parameters
         image_url = data.get("image_url")
         gpu_id = data.get("gpu_id", 0) # CRITICAL FIX: Get the GPU ID from the request
+        raw_steps = data.get("steps", 45)
+        sampler = data.get("sampler") or data.get("sample_method") or "euler_a"
+        raw_strength = data.get("strength", 0.4)
+        negative_prompt = data.get("negative_prompt", "")
+        try:
+            steps = int(raw_steps)
+        except (TypeError, ValueError):
+            steps = 45
+        steps = max(1, steps)
 
         if not image_url:
             raise HTTPException(status_code=400, detail="image_url is required")
         
         # Convert URL to local file path
-        if "/static/generated_images/" in image_url:
-            filename = image_url.split("/static/generated_images/")[-1]
-            image_path = Path(__file__).parent / "static" / "generated_images" / filename
+        if "/static/" in image_url:
+            try:
+                relative_path = image_url.split("/static/", 1)[1]
+                from urllib.parse import unquote
+                relative_path = unquote(relative_path)
+                image_path = (Path(__file__).parent / "static" / relative_path).resolve()
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid image URL format")
         else:
             raise HTTPException(status_code=400, detail="Invalid image URL")
         
@@ -5001,11 +5041,13 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
             image_path=str(image_path),
             original_prompt=data.get("original_prompt", ""),
             face_prompt=data.get("face_prompt", ""),
-            strength=data.get("strength", 0.4),
-            steps=data.get("steps", 45), # Pass steps, default to 45
+            negative_prompt=negative_prompt,
+            strength=raw_strength,
+            steps=steps, # Pass validated steps
             confidence=data.get("confidence", 0.3),
             model_name=data.get("model_name", "face_yolov8n.pt"),
-            gpu_id=gpu_id # CRITICAL FIX: Pass the GPU ID to the manager
+            gpu_id=gpu_id, # CRITICAL FIX: Pass the GPU ID to the manager
+            sample_method=sampler
         )
         
         # Save enhanced image
@@ -5018,6 +5060,12 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
         # Return the enhanced image URL
         enhanced_url = f"/static/generated_images/{enhanced_filename}"
         
+        try:
+            strength = float(raw_strength)
+        except (TypeError, ValueError):
+            strength = 0.4
+        effective_steps = max(1, int(round(steps * strength)))
+
         return {
             "status": "success",
             "enhanced_image_url": enhanced_url,
@@ -5025,10 +5073,14 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
             "enhancement_applied": True,
             "model_used": data.get("model_name", "face_yolov8n.pt"),
             "parameters": {
-                "strength": data.get("strength", 0.4),
+                "strength": strength,
+                "steps": steps,
+                "effective_steps": effective_steps,
                 "confidence": data.get("confidence", 0.3),
                 "face_prompt": data.get("face_prompt", ""),
-                "model_name": data.get("model_name", "face_yolov8n.pt")
+                "negative_prompt": negative_prompt,
+                "model_name": data.get("model_name", "face_yolov8n.pt"),
+                "sampler": sampler
             }
         }
         
@@ -5182,9 +5234,10 @@ async def sd_local_status(request: Request):
         return {"available": False, "error": "SD Manager not initialized", "loaded_models": {}}
     
     # Return a dictionary of loaded models keyed by GPU ID
+    status = sd_manager.get_status()
     return {
         "available": True,
-        "loaded_models": sd_manager.current_model_paths 
+        "loaded_models": status.get("loaded_models", {})
     }
 
 # ============================================================================
@@ -5934,14 +5987,20 @@ async def sd_upscale(body: dict, request: Request, model_manager: ModelManager =
         elif image_url:
             # Convert URL to local path if possible
             # Assumes URL is like /static/generated_images/...
-            if "/static/generated_images/" in image_url:
-                filename = image_url.split("/")[-1]
-                file_path = generated_images_dir / filename
-                if file_path.exists():
-                    with open(file_path, "rb") as f:
-                        image_bytes = f.read()
-                else:
-                    raise HTTPException(status_code=404, detail="Source image file not found")
+            if "/static/" in image_url:
+                try:
+                    relative_path = image_url.split("/static/", 1)[1]
+                    from urllib.parse import unquote
+                    relative_path = unquote(relative_path)
+                    base_static = (Path(__file__).parent / "static").resolve()
+                    file_path = (base_static / relative_path).resolve()
+                    if file_path.exists():
+                        with open(file_path, "rb") as f:
+                            image_bytes = f.read()
+                    else:
+                        raise HTTPException(status_code=404, detail=f"Source image file not found: {relative_path}")
+                except Exception as e:
+                     raise HTTPException(status_code=400, detail=f"Error resolving image path: {str(e)}")
             else:
                 raise HTTPException(status_code=400, detail="Only local generated images supported for now")
         
