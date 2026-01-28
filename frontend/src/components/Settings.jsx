@@ -21,7 +21,6 @@ import { useApp } from '../contexts/AppContext';
 import { useMemory } from '../contexts/MemoryContext';
 import DocumentSettings from './DocumentSettings';
 import RAGSettings from './RAGSettings';
-import TokenSettings from './TokenSettings';
 import ProfileSelector from './ProfileSelector';
 import SimpleUserProfileEditor from './SimpleUserProfileEditor';
 
@@ -324,7 +323,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
             <TabsTrigger value="memory" className="flex-shrink-0">Memory Browser</TabsTrigger>
             <TabsTrigger value="lore" className="flex-shrink-0">Lore Debugger</TabsTrigger>
             <TabsTrigger value="about" className="flex-shrink-0">About</TabsTrigger>
-            <TabsTrigger value="tokens" className="flex-shrink-0">Tokens</TabsTrigger>
             <TabsTrigger value="profiles" className="flex-shrink-0">User Profiles</TabsTrigger>
           </TabsList>
         </div>
@@ -729,67 +727,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               <ProfileSelector />
               <Separator />
               <SimpleUserProfileEditor />
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Tokens */}
-        <TabsContent value="tokens">
-          <Card>
-            <CardHeader>
-              <CardTitle>Token Settings</CardTitle>
-              <CardDescription>Configure model token limits and response length</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="space-y-2">
-                <Label htmlFor="max-tokens">Maximum Response Length</Label>
-                <Select
-                  value={localSettings.max_tokens === -1 ? 'auto' : localSettings.max_tokens.toString()}
-                  onValueChange={(value) => handleChange('max_tokens', value === 'auto' ? -1 : parseInt(value, 10))}
-                >
-                  <SelectTrigger id="max-tokens" className="w-full">
-                    <SelectValue placeholder="Select max tokens" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="auto">Auto (Maximum Available)</SelectItem>
-                    <SelectItem value="1024">1024 tokens (Short)</SelectItem>
-                    <SelectItem value="2048">2048 tokens (Medium)</SelectItem>
-                    <SelectItem value="4096">4096 tokens (Long)</SelectItem>
-                    <SelectItem value="8192">8192 tokens (Very Long)</SelectItem>
-                    <SelectItem value="16384">16384 tokens (Maximum)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <Separator />
-
-              <div className="space-y-2">
-                <Label htmlFor="context-length">Model Context Length</Label>
-                <Select
-                  value={localSettings.contextLength?.toString() || "8192"}
-                  onValueChange={(value) => handleChange('contextLength', parseInt(value, 10))}
-                >
-                  <SelectTrigger id="context-length" className="w-full">
-                    <SelectValue placeholder="Select context length" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="8192">8K</SelectItem>
-                    <SelectItem value="16384">16K</SelectItem>
-                    <SelectItem value="32768">32K</SelectItem>
-                    <SelectItem value="65536">64K</SelectItem>
-                    <SelectItem value="131072">128K</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="flex justify-end space-x-2 pt-4">
-                <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
-                  <Save className="mr-1 h-4 w-4" />Save
-                </Button>
-                <Button variant="outline" onClick={handleReset} className="w-full md:w-auto">
-                  Reset
-                </Button>
-              </div>
             </CardContent>
           </Card>
         </TabsContent>
