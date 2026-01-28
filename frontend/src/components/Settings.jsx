@@ -1897,23 +1897,68 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
           <Card>
             <CardHeader>
               <CardTitle>About Eloquent</CardTitle>
-              <CardDescription>Advanced Local AI Interface</CardDescription>
+              <CardDescription>Local-first AI platform built for power users.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Eloquent is a local-first AI platform that combines LLM chat, image generation, voice,
+                  evaluation, and tooling in one interface. It is designed to run on your hardware
+                  (Windows + NVIDIA GPUs) with optional OpenAI-compatible API endpoints.
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  The stack pairs a React frontend with a FastAPI backend and includes multi-GPU orchestration,
+                  a built-in Stable Diffusion pipeline, streaming TTS, a tool-calling code editor, and
+                  a deep roleplay toolkit (character creator, multi-character chat, and lore).
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
-                  <h4 className="font-semibold mb-2">Core Architecture</h4>
-                  <ul className="text-sm space-y-1 text-muted-foreground">
-                    <li>• Dual-GPU intelligent memory system</li>
-                    <li>• Local-first privacy (100% offline)</li>
-                    <li>• Custom LLaMa.cpp Python backend</li>
+                  <h4 className="font-semibold mb-2">Core Systems</h4>
+                  <ul className="text-sm space-y-1 text-muted-foreground list-disc pl-4">
+                    <li>Local LLM inference with multi-GPU support and OpenAI-compatible APIs</li>
+                    <li>Built-in Stable Diffusion (SD, SDXL, FLUX) plus optional external engines</li>
+                    <li>Streaming TTS with Kokoro and Chatterbox voice cloning</li>
                   </ul>
                 </div>
                 <div>
-                  <h4 className="font-semibold mb-2">Advanced Features</h4>
-                  <p className="text-sm text-muted-foreground">RAG, Forensics, Character Personas, Model ELO.</p>
+                  <h4 className="font-semibold mb-2">Creator Tools</h4>
+                  <ul className="text-sm space-y-1 text-muted-foreground list-disc pl-4">
+                    <li>Character creator and library with persona management</li>
+                    <li>Multi-character chat with roster control, roles, and narrator support</li>
+                    <li>Mobile-friendly UI and call-mode voice interface</li>
+                  </ul>
+                </div>
+                <div>
+                  <h4 className="font-semibold mb-2">Evaluation & Analysis</h4>
+                  <ul className="text-sm space-y-1 text-muted-foreground list-disc pl-4">
+                    <li>Model ELO testing, A/B comparisons, and judge workflows</li>
+                    <li>Forensic linguistics analysis with embedding models</li>
+                    <li>Memory, RAG, and document ingestion tools</li>
+                  </ul>
                 </div>
               </div>
+
+              <Separator />
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h4 className="font-semibold mb-2">Local-First Philosophy</h4>
+                  <p className="text-sm text-muted-foreground">
+                    Runs offline by default. Your data stays on your machine unless you enable external API
+                    endpoints or web search.
+                  </p>
+                </div>
+                <div>
+                  <h4 className="font-semibold mb-2">Credits & License</h4>
+                  <p className="text-sm text-muted-foreground">
+                    Built with FastAPI, React, llama.cpp, stable-diffusion.cpp, Kokoro, Chatterbox,
+                    and ultralytics YOLO. Licensed under AGPL-3.0. Created by Bernard Peter Fitzgerald.
+                  </p>
+                </div>
+              </div>
+
             </CardContent>
           </Card>
         </TabsContent>
