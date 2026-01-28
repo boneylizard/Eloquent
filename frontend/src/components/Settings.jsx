@@ -11,7 +11,7 @@ import { Switch } from './ui/switch';
 import { Label } from './ui/label';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { Slider } from './ui/slider';
-import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshCw, AlertTriangle, Globe, X, Power, RotateCw, Volume2 } from 'lucide-react';
+import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshCw, AlertTriangle, Globe, X, Power, RotateCw, Volume2, FolderOpen } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import CharacterEditor from './CharacterEditor';
@@ -99,6 +99,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [isUnloadingForensicModels, setIsUnloadingForensicModels] = useState(false);
   const [isShuttingDownTTS, setIsShuttingDownTTS] = useState(false);
   const [isRestartingTTS, setIsRestartingTTS] = useState(false);
+  const [directoryPickerKey, setDirectoryPickerKey] = useState(null);
   const pendingSettingsRef = useRef({});
   const settingsSaveTimerRef = useRef(null);
 
@@ -276,6 +277,34 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
       alert("Failed to clear backend logs.");
     }
   }, [PRIMARY_API_URL]);
+
+  const handleDirectoryBrowse = useCallback(async (settingKey, title) => {
+    const baseUrl = PRIMARY_API_URL || getBackendUrl();
+    setDirectoryPickerKey(settingKey);
+    try {
+      const response = await fetch(`${baseUrl}/system/select-directory`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initial_directory: localSettings[settingKey] || null,
+          title
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || 'Failed to open directory picker.');
+      }
+      if (data.status === 'cancelled' || !data.directory) {
+        return;
+      }
+      handleChange(settingKey, data.directory);
+    } catch (error) {
+      console.error('Directory picker failed:', error);
+      alert(`Directory picker failed: ${error.message}`);
+    } finally {
+      setDirectoryPickerKey(null);
+    }
+  }, [PRIMARY_API_URL, handleChange, localSettings]);
 
   const { ttsVoice, ttsSpeed, ttsPitch, ttsAutoPlay } = localSettings;
 
@@ -468,6 +497,18 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       onChange={(e) => handleChange('modelDirectory', e.target.value)}
                       placeholder="C:\models\gguf"
                     />
+                    <Button
+                      variant="outline"
+                      onClick={() => handleDirectoryBrowse('modelDirectory', 'Select Models Directory')}
+                      disabled={directoryPickerKey === 'modelDirectory'}
+                    >
+                      {directoryPickerKey === 'modelDirectory' ? (
+                        <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                      ) : (
+                        <FolderOpen className="mr-1 h-4 w-4" />
+                      )}
+                      Browse
+                    </Button>
                     <Button
                       variant="outline"
                       onClick={() => {
@@ -1155,7 +1196,20 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         value={localSettings.sdModelDirectory || ''}
                         className="flex-1 md:w-64"
                         onChange={(e) => handleChange('sdModelDirectory', e.target.value)}
+                        placeholder="C:\\path\\to\\sd-models"
                       />
+                      <Button
+                        variant="outline"
+                        onClick={() => handleDirectoryBrowse('sdModelDirectory', 'Select Local SD Models Directory')}
+                        disabled={directoryPickerKey === 'sdModelDirectory'}
+                      >
+                        {directoryPickerKey === 'sdModelDirectory' ? (
+                          <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                        ) : (
+                          <FolderOpen className="mr-1 h-4 w-4" />
+                        )}
+                        Browse
+                      </Button>
                       <Button
                         variant="outline"
                         onClick={() => {
@@ -1183,7 +1237,20 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         value={localSettings.adetailerModelDirectory || ''}
                         className="flex-1 md:w-64"
                         onChange={(e) => handleChange('adetailerModelDirectory', e.target.value)}
+                        placeholder="C:\\path\\to\\adetailer-models"
                       />
+                      <Button
+                        variant="outline"
+                        onClick={() => handleDirectoryBrowse('adetailerModelDirectory', 'Select ADetailer Models Directory')}
+                        disabled={directoryPickerKey === 'adetailerModelDirectory'}
+                      >
+                        {directoryPickerKey === 'adetailerModelDirectory' ? (
+                          <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                        ) : (
+                          <FolderOpen className="mr-1 h-4 w-4" />
+                        )}
+                        Browse
+                      </Button>
                       <Button
                         variant="outline"
                         onClick={() => {
@@ -1213,7 +1280,20 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           value={localSettings.upscalerModelDirectory || ''}
                           className="flex-1 md:w-64"
                           onChange={(e) => handleChange('upscalerModelDirectory', e.target.value)}
+                          placeholder="C:\\path\\to\\upscalers"
                         />
+                        <Button
+                          variant="outline"
+                          onClick={() => handleDirectoryBrowse('upscalerModelDirectory', 'Select Upscaler Models Directory')}
+                          disabled={directoryPickerKey === 'upscalerModelDirectory'}
+                        >
+                          {directoryPickerKey === 'upscalerModelDirectory' ? (
+                            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                          ) : (
+                            <FolderOpen className="mr-1 h-4 w-4" />
+                          )}
+                          Browse
+                        </Button>
                         <Button
                           variant="outline"
                           onClick={() => {

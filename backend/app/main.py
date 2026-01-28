@@ -311,6 +311,10 @@ class DirectoryListRequest(BaseModel):
     path: str = "."
     include_hidden: bool = False
 
+class SelectDirectoryRequest(BaseModel):
+    initial_directory: Optional[str] = None
+    title: Optional[str] = None
+
 class SearchFilesRequest(BaseModel):
     query: str
     path: str = "."
@@ -602,6 +606,47 @@ async def clear_backend_logs():
         logger.warning(f"Skipped deleting {len(skipped)} log files: {skipped}")
 
     return {"status": "success", "deleted": deleted, "skipped": skipped}
+
+@router.post("/system/select-directory")
+async def select_directory(data: SelectDirectoryRequest = Body(...)):
+    """Open a native directory picker on the server and return the selected path."""
+    try:
+        from tkinter import Tk, filedialog
+    except Exception as exc:
+        logger.error(f"Directory picker unavailable: {exc}")
+        raise HTTPException(status_code=500, detail="Directory picker is unavailable on this system.")
+
+    def _open_dialog():
+        root = Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        options = {}
+        if data.title:
+            options["title"] = data.title
+        if data.initial_directory and os.path.isdir(data.initial_directory):
+            options["initialdir"] = data.initial_directory
+
+        selected = filedialog.askdirectory(**options)
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        return selected
+
+    try:
+        directory = await asyncio.to_thread(_open_dialog)
+    except Exception as exc:
+        logger.error(f"Directory picker failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to open directory picker.")
+
+    if not directory:
+        return {"status": "cancelled"}
+
+    return {"status": "success", "directory": directory}
 @router.post("/models/update-gpu-mode")
 async def update_gpu_mode(
     data: dict = Body(...),

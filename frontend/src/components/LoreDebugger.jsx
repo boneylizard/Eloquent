@@ -1,7 +1,9 @@
 // Save this file as: src/components/LoreDebugger.jsx
 
 import React, { useState } from 'react';
-import { useApp } from '../contexts/AppContext'; // Make sure this path is correct
+import { useApp } from '../contexts/AppContext';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
 
 const LoreDebugger = () => {
   const [testText, setTestText] = useState('');
@@ -38,45 +40,45 @@ const LoreDebugger = () => {
   };
 
   return (
-    <div className="p-4 bg-gray-100 rounded-lg shadow-md">
+    <div className="p-4 bg-card text-card-foreground rounded-lg border border-border shadow-sm">
       <h2 className="text-lg font-bold mb-4">Lore System Debugger</h2>
       
       <div className="mb-4">
-        <p className="text-sm text-gray-600 mb-2">
+        <p className="text-sm text-muted-foreground mb-2">
           Test if keywords in your text trigger character lore entries
         </p>
         
-        <div className="flex mb-2">
-          <input
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3 mb-2">
+          <Input
             type="text"
             value={testText}
             onChange={(e) => setTestText(e.target.value)}
             placeholder="Enter text with potential keywords..."
-            className="flex-1 p-2 border rounded-md mr-2 text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+            className="flex-1"
           />
-          <button
+          <Button
             onClick={handleTest}
             disabled={isLoading || !activeCharacter}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md disabled:bg-gray-400"
+            className="w-full md:w-auto"
           >
             {isLoading ? 'Testing...' : 'Test Lore'}
-          </button>
+          </Button>
         </div>
         
         {activeCharacter ? (
-          <div className="text-sm text-gray-600">
+          <div className="text-sm text-muted-foreground">
             Testing with character: <span className="font-medium">{activeCharacter.name}</span>
             {activeCharacter.lore_entries && (
               <span> ({activeCharacter.lore_entries.length} lore entries)</span>
             )}
           </div>
         ) : (
-          <div className="text-sm text-red-500">No character selected</div>
+          <div className="text-sm text-destructive">No character selected</div>
         )}
       </div>
       
       {error && (
-        <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded-md">
+        <div className="mb-4 p-3 border border-destructive/40 bg-destructive/10 text-destructive rounded-md">
           {error}
         </div>
       )}
@@ -88,17 +90,17 @@ const LoreDebugger = () => {
           </h3>
           
           {results.length === 0 ? (
-            <p className="text-gray-500 italic">No lore entries were triggered</p>
+            <p className="text-muted-foreground italic">No lore entries were triggered</p>
           ) : (
             <div className="space-y-3">
               {results.map((lore, index) => (
-                <div key={index} className="p-3 bg-white border border-gray-200 rounded-md">
-                  <div className="font-medium text-blue-700">
+                <div key={index} className="p-3 bg-muted/40 border border-border rounded-md">
+                  <div className="font-medium text-foreground">
                     Keyword: {lore.keyword || 'Unknown'}
                   </div>
-                  <div className="mt-1 text-gray-700">{lore.content}</div>
+                  <div className="mt-1 text-muted-foreground">{lore.content}</div>
                   {lore.importance && (
-                    <div className="mt-1 text-sm text-gray-500">
+                    <div className="mt-1 text-sm text-muted-foreground">
                       Importance: {lore.importance}
                     </div>
                   )}

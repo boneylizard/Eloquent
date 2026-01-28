@@ -253,6 +253,19 @@
     --primary-gradient: linear-gradient(135deg, #D68977, #CC785C);
   }
 
+  /* Prevent browser autofill from forcing light backgrounds in themed inputs */
+  input.bg-background:-webkit-autofill,
+  input.bg-background:-webkit-autofill:hover,
+  input.bg-background:-webkit-autofill:focus,
+  textarea.bg-background:-webkit-autofill,
+  textarea.bg-background:-webkit-autofill:hover,
+  textarea.bg-background:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--foreground);
+    -webkit-box-shadow: 0 0 0 1000px var(--background) inset;
+    box-shadow: 0 0 0 1000px var(--background) inset;
+    caret-color: var(--foreground);
+  }
+
   /* MARKDOWN COLOR OVERRIDES - CRITICAL FIX */
   /* Force prose to use the container's text color (which we successfully set to white/contrast) */
   /* This overrides the default grey text from @tailwindcss/typography */
