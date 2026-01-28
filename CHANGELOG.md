@@ -19,6 +19,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 * **Directory Browser**: Added native folder picker buttons in Settings to choose model directories instead of manual copy/paste.
 * **NanoGPT Image Support**: Added support for cloud-based image generation via NanoGPT (OpenAI-compatible). Users can now generate images without local GPU resources by configuring an API key in the Image Generation settings.
+* **NanoGPT Video Support (Experimental)**: Added experimental support for generating videos via NanoGPT. Includes a new "Video Mode" toggle in the image generation UI and a dedicated video player for playback. *Note: Video generation is pay-per-generation and not included in subscription.*
 
 ## 2026-01-24
 

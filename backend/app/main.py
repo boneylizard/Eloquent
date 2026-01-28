@@ -1686,6 +1686,20 @@ def save_image_and_get_url(image_data: bytes) -> str:
     # Return the web-accessible URL path
     return f"/static/generated_images/{filename}"
 
+def save_video_and_get_url(video_data: bytes) -> str:
+    """Saves video data to a file and returns its static URL path."""
+    generated_images_dir = base_dir / "static" / "generated_images"
+    generated_images_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{uuid.uuid4()}.mp4"
+    save_path = generated_images_dir / filename
+    
+    with open(save_path, "wb") as f:
+        f.write(video_data)
+        
+    logger.info(f"Video saved to: {save_path}")
+    return f"/static/generated_images/{filename}"
+
 def create_default_character_image(character_name: str) -> Image.Image:
     """Create a default character image with gradient background and name."""
     # Create 512x512 image
@@ -5337,6 +5351,116 @@ async def sd_nanogpt(body: dict):
     except Exception as e:
         logger.error(f"NanoGPT error: {e}", exc_info=True)
         raise HTTPException(500, f"NanoGPT generation failed: {e}")
+
+
+@app.post("/sd/nanogpt/video")
+async def sd_nanogpt_video_start(body: dict):
+    """Start NanoGPT video generation."""
+    try:
+        api_key = body.get("api_key")
+        if not api_key:
+            raise HTTPException(400, "Missing NanoGPT API Key")
+
+        prompt = body.get("prompt")
+        model = body.get("model", "svd")
+        
+        # Endpoint for starting video generation
+        url = "https://nano-gpt.com/api/generate-video"
+        
+        payload = {
+            "prompt": prompt,
+            "model": model
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=payload, headers=headers, timeout=60.0)
+        
+        if resp.status_code != 200:
+            logger.error(f"NanoGPT Video Start Error: {resp.text}")
+            raise HTTPException(resp.status_code, f"NanoGPT Video Start Error: {resp.text}")
+
+        data = resp.json()
+        # Expecting { "id": "...", ... } or { "runId": "..." }
+        job_id = data.get("id") or data.get("runId")
+        
+        if not job_id:
+             raise HTTPException(500, f"No job ID returned from NanoGPT. Resp: {data}")
+
+        return {
+            "status": "success",
+            "job_id": job_id
+        }
+
+    except Exception as e:
+        logger.error(f"NanoGPT Video Start error: {e}", exc_info=True)
+        raise HTTPException(500, f"NanoGPT Video Start failed: {e}")
+
+@app.get("/sd/nanogpt/video/status/{job_id}")
+async def sd_nanogpt_video_status(job_id: str, api_key: str):
+    """
+    Poll video status. 
+    If status is 'COMPLETED' (or similar), download video and return local URL.
+    """
+    try:
+        if not api_key:
+            raise HTTPException(400, "Missing NanoGPT API Key")
+
+        url = f"https://nano-gpt.com/api/video/status?requestId={job_id}"
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}"
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=30.0)
+            
+        if resp.status_code != 200:
+             logger.error(f"NanoGPT Status Check Error: {resp.text}")
+             # Return failed so frontend stops polling
+             return {"status": "failed", "error": f"API Error: {resp.text}"}
+             
+        data = resp.json()
+        # status: "pending", "processing", "COMPLETED"?
+        # Research says: "pending" initially.
+        # "until video generation is complete and final assets are available."
+        
+        status = data.get("status")
+        
+        if status in ["COMPLETED", "success", "succeeded"]: 
+            # Download video
+            # data should have "output" or "videoUrl" or "assets"
+            video_url = data.get("output") or data.get("videoUrl") or (data.get("assets", [{}])[0].get("url"))
+            
+            if not video_url:
+                return {"status": "failed", "error": "Completed but no video URL found"}
+                
+            # Download and save
+            async with httpx.AsyncClient() as client:
+                vid_resp = await client.get(video_url, timeout=120.0)
+                if vid_resp.status_code == 200:
+                    local_url = save_video_and_get_url(vid_resp.content)
+                    return {"status": "success", "video_url": local_url}
+                else:
+                    return {"status": "failed", "error": "Failed to download video asset"}
+                    
+        elif status in ["FAILED", "failed", "error"]:
+            return {"status": "failed", "error": data.get("error", "Unknown backend error")}
+            
+        else:
+            # Assume pending/processing
+            return {"status": "pending"}
+
+    except Exception as e:
+        logger.error(f"NanoGPT Status Error: {e}", exc_info=True)
+        # Return pending so we don't crash the poll loop on transient network error, 
+        # unless it's critical. But to be safe return failed for internal errors?
+        # Better return pending with warning? Or failed.
+        return {"status": "failed", "error": str(e)}
 
 @app.get("/sd-local/status")
 async def sd_local_status(request: Request):

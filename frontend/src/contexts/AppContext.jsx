@@ -1270,6 +1270,65 @@ const AppProvider = ({ children }) => {
     }
   }, [clearError, setApiError, PRIMARY_API_URL, MEMORY_API_URL, settings, setIsImageGenerating]);
 
+  // NEW: Generate Video via NanoGPT
+  const generateVideo = useCallback(async (prompt) => {
+    console.log("Starting video generation prompt:", prompt);
+    const videoModel = settings.nanoGptVideoModel || 'svd';
+    const apiKey = settings.nanoGptApiKey;
+
+    if (!apiKey) {
+      throw new Error("NanoGPT API Key is missing. Please check Settings > Image Generation.");
+    }
+
+    // 1. Start Job
+    const startRes = await fetch(`${PRIMARY_API_URL}/sd/nanogpt/video`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        model: videoModel,
+        api_key: apiKey
+      })
+    });
+
+    if (!startRes.ok) {
+      const errorText = await startRes.text();
+      throw new Error(`Failed to start video job: ${errorText}`);
+    }
+
+    const startData = await startRes.json();
+    const jobId = startData.job_id;
+    console.log("Video job started:", jobId);
+
+    // 2. Poll for Status
+    let attempts = 0;
+    const maxAttempts = 60; // 5 minutes (5s * 60)
+
+    while (attempts < maxAttempts) {
+      // Wait 5s
+      await new Promise(r => setTimeout(r, 5000));
+      attempts++;
+
+      const statusRes = await fetch(`${PRIMARY_API_URL}/sd/nanogpt/video/status/${jobId}?api_key=${apiKey}`);
+      if (!statusRes.ok) {
+        console.warn("Video status check failed, retrying...");
+        continue;
+      }
+
+      const statusData = await statusRes.json();
+      console.log("Video polling status:", statusData);
+
+      if (statusData.status === 'success') {
+        return statusData.video_url; // Local URL returned by backend
+      } else if (statusData.status === 'failed') {
+        throw new Error(`Video generation failed: ${statusData.error || 'Unknown error'}`);
+      }
+      // If pending/processing, continue loop
+    }
+
+    throw new Error("Video generation timed out.");
+  }, [PRIMARY_API_URL, settings]);
+
 
 
 
@@ -3825,6 +3884,7 @@ Return ONLY valid JSON:
     isStreamingStopped,
     checkSdStatus,
     generateImage,
+    generateVideo, // NEW
     generatedImages,
     isImageGenerating,
     generateAndShowImage,
@@ -3927,7 +3987,7 @@ Return ONLY valid JSON:
     setActiveContextSummary,
     unlockAudioContext
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, generateCallModeFollowUp, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, generateCallModeFollowUp, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
   ]);
 
 

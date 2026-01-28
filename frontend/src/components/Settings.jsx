@@ -1111,11 +1111,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                 <div className="space-y-4 py-4">
                   <div>
                     <h3 className="text-md font-medium">NanoGPT (Cloud)</h3>
-                    <p className="text-xs text-muted-foreground">Generate images using NanoGPT model APIs.</p>
+                    <p className="text-xs text-muted-foreground">Generate images and videos using NanoGPT model APIs.</p>
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="nanogpt-api-key">NanoGPT API Key</Label>
+                    <Label htmlFor="nanogpt-api-key">NanoGPT API Key (Shared)</Label>
                     <Input
                       id="nanogpt-api-key"
                       type="password"
@@ -1126,13 +1126,24 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="nanogpt-model">Model Name</Label>
+                    <Label htmlFor="nanogpt-model">Image Model Name</Label>
                     <Input
                       id="nanogpt-model"
                       value={localSettings.nanoGptModel || 'dall-e-3'}
                       onChange={(e) => handleChange('nanoGptModel', e.target.value)}
                       placeholder="dall-e-3"
                     />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="nanogpt-video-model">Video Model Name</Label>
+                    <Input
+                      id="nanogpt-video-model"
+                      value={localSettings.nanoGptVideoModel || 'svd'}
+                      onChange={(e) => handleChange('nanoGptVideoModel', e.target.value)}
+                      placeholder="svd"
+                    />
+                    <p className="text-[10px] text-muted-foreground">Default: svd (stable-video-diffusion)</p>
                   </div>
                   <Separator />
                 </div>

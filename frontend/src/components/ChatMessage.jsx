@@ -145,7 +145,7 @@ const ChatMessage = memo(({
     };
 
     // --- Image Message Rendering ---
-    if (msg.type === 'image') {
+    if (msg.type === 'image' || msg.type === 'video') {
         return (
             <div
                 className={cn(
