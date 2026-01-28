@@ -951,10 +951,53 @@ class SDManager:
 
                 model_lock = self._get_model_lock(gpu_id)
                 with model_lock:
-                    images_list = call_with_progress_internal(
-                        method,
-                        **call_args
-                    )
+                    # Filter args to match the selected method signature
+                    try:
+                        method_params = inspect.signature(method).parameters
+                    except (TypeError, ValueError):
+                        method_params = {}
+
+                    call_kwargs = dict(call_args)
+                    if method_params:
+                        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in method_params.values())
+                        if not accepts_kwargs:
+                            # Map init_image <-> image based on what the method accepts
+                            if 'init_image' in call_kwargs and 'init_image' not in method_params and 'image' in method_params:
+                                call_kwargs['image'] = call_kwargs.pop('init_image')
+                            if 'image' in call_kwargs and 'image' not in method_params and 'init_image' in method_params:
+                                call_kwargs['init_image'] = call_kwargs.pop('image')
+
+                            call_kwargs = {k: v for k, v in call_kwargs.items() if k in method_params}
+
+                    try:
+                        images_list = call_with_progress_internal(
+                            method,
+                            **call_kwargs
+                        )
+                    except TypeError as e:
+                        error_text = str(e)
+                        retry_kwargs = dict(call_kwargs)
+
+                        if "unexpected keyword argument 'init_image'" in error_text:
+                            if 'init_image' in retry_kwargs:
+                                if 'image' not in retry_kwargs:
+                                    retry_kwargs['image'] = retry_kwargs.pop('init_image')
+                                else:
+                                    retry_kwargs.pop('init_image', None)
+                        if "unexpected keyword argument 'image'" in error_text:
+                            if 'image' in retry_kwargs:
+                                if 'init_image' not in retry_kwargs:
+                                    retry_kwargs['init_image'] = retry_kwargs.pop('image')
+                                else:
+                                    retry_kwargs.pop('image', None)
+
+                        if retry_kwargs == call_kwargs:
+                            raise
+
+                        images_list = call_with_progress_internal(
+                            method,
+                            **retry_kwargs
+                        )
                 
                 if not images_list:
                     raise RuntimeError("Image generation returned empty list.")
