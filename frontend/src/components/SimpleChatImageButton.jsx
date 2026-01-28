@@ -6,7 +6,7 @@ import { Textarea } from './ui/textarea';
 import { Slider } from './ui/slider';
 import { Label } from './ui/label';
 import { Progress } from './ui/progress';
-import { AlertTriangle, Image, Loader2, X, Sparkles, Info } from 'lucide-react';
+import { AlertTriangle, Image, Loader2, X, Sparkles, Info, Video } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import * as Path from 'path-browserify';
 
@@ -24,6 +24,7 @@ const SimpleChatImageButton = () => {
         PRIMARY_API_URL,
         activeCharacter,
         generateUniqueId,
+        generateVideo, // NEW
     } = useApp();
 
     const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -41,6 +42,9 @@ const SimpleChatImageButton = () => {
     // AUTOMATIC1111 state
     const [selectedModel, setSelectedModel] = useState('');
     const [availableModels, setAvailableModels] = useState([]);
+
+    // NEW: NanoGPT Video Mode
+    const [generationMode, setGenerationMode] = useState('image'); // 'image' or 'video'
 
     // Local SD state
     const [localSdStatus, setLocalSdStatus] = useState({
@@ -370,6 +374,47 @@ const SimpleChatImageButton = () => {
             return;
         }
 
+        // NEW: Video Generation Branch
+        if (imageEngine === 'nanogpt' && generationMode === 'video') {
+            clearError();
+            try {
+                setImageProgress({ state: 'Starting video job...', progress: 0 });
+                const videoUrl = await generateVideo(prompt);
+
+                if (videoUrl) {
+                    const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 7)}-vid`;
+                    const videoMessage = {
+                        id: messageId,
+                        role: 'bot',
+                        characterId: activeCharacter?.id,
+                        characterName: activeCharacter?.name,
+                        avatar: activeCharacter?.avatar,
+                        modelId: 'primary',
+                        type: 'video', // NEW TYPE
+                        content: prompt,
+                        videoPath: videoUrl, // NEW FIELD
+                        timestamp: new Date().toISOString()
+                    };
+                    setMessages(prev => [...prev, videoMessage]);
+                    setPrompt('');
+                    setIsDialogOpen(false);
+                }
+            } catch (err) {
+                console.error("Video generation failed:", err);
+                setMessages(prev => [
+                    ...prev, {
+                        id: `${Date.now()}-error`,
+                        role: 'system',
+                        content: `Error generating video: ${err.message}`,
+                        error: true
+                    }
+                ]);
+            } finally {
+                setImageProgress(null);
+            }
+            return;
+        }
+
         clearError();
         try {
             const taskId = isLocalEngine ? `img-${generateUniqueId()}` : null;
@@ -505,7 +550,32 @@ const SimpleChatImageButton = () => {
                             <Button variant="ghost" size="icon" className="-mt-1 -mr-2" onClick={() => setIsDialogOpen(false)}>
                                 <X className="h-4 w-4" />
                             </Button>
+
                         </div>
+
+                        {/* NanoGPT Mode Toggle */}
+                        {imageEngine === 'nanogpt' && (
+                            <div className="flex items-center justify-center mb-4 p-1 bg-muted rounded-lg w-full">
+                                <Button
+                                    variant={generationMode === 'image' ? 'secondary' : 'ghost'}
+                                    size="sm"
+                                    className="flex-1 text-xs"
+                                    onClick={() => setGenerationMode('image')}
+                                >
+                                    <Image className="h-3 w-3 mr-2" />
+                                    Image
+                                </Button>
+                                <Button
+                                    variant={generationMode === 'video' ? 'secondary' : 'ghost'}
+                                    size="sm"
+                                    className="flex-1 text-xs"
+                                    onClick={() => setGenerationMode('video')}
+                                >
+                                    <Video className="h-3 w-3 mr-2" />
+                                    Video
+                                </Button>
+                            </div>
+                        )}
 
                         <div className="space-y-4 overflow-y-auto">
                             {apiError && (
@@ -808,7 +878,7 @@ const SimpleChatImageButton = () => {
                                 />
                             </div>
 
-                            {imageEngine !== 'nanogpt' && (
+                            {imageEngine !== 'nanogpt' && generationMode !== 'video' && (
                                 <>
                                     <div className="space-y-2">
                                         <Label htmlFor="negativePrompt" className="text-xs">Negative Prompt</Label>
@@ -840,43 +910,45 @@ const SimpleChatImageButton = () => {
                                 </>
                             )}
                             {/* Size Controls - RESTORED FULL VERSION */}
-                            <div className="space-y-2">
-                                <div className="flex justify-between text-xs items-center">
-                                    <Label>Size</Label>
-                                    <span>{width} × {height}</span>
-                                </div>
-                                <div className="flex gap-2">
-                                    <Button size="sm" variant={width === 512 && height === 512 ? "secondary" : "outline"} onClick={() => { setWidth(512); setHeight(512); }} disabled={isImageGenerating}>1:1</Button>
-                                    <Button size="sm" variant={width === 768 && height === 512 ? "secondary" : "outline"} onClick={() => { setWidth(768); setHeight(512); }} disabled={isImageGenerating}>3:2</Button>
-                                    <Button size="sm" variant={width === 512 && height === 768 ? "secondary" : "outline"} onClick={() => { setWidth(512); setHeight(768); }} disabled={isImageGenerating}>2:3</Button>
-                                </div>
+                            {generationMode !== 'video' && (
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-xs items-center">
+                                        <Label>Size</Label>
+                                        <span>{width} × {height}</span>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <Button size="sm" variant={width === 512 && height === 512 ? "secondary" : "outline"} onClick={() => { setWidth(512); setHeight(512); }} disabled={isImageGenerating}>1:1</Button>
+                                        <Button size="sm" variant={width === 768 && height === 512 ? "secondary" : "outline"} onClick={() => { setWidth(768); setHeight(512); }} disabled={isImageGenerating}>3:2</Button>
+                                        <Button size="sm" variant={width === 512 && height === 768 ? "secondary" : "outline"} onClick={() => { setWidth(512); setHeight(768); }} disabled={isImageGenerating}>2:3</Button>
+                                    </div>
 
-                                {/* Width Slider */}
-                                <div className="space-y-1">
-                                    <Label className="text-xs">Width: {width}px</Label>
-                                    <Slider
-                                        min={256}
-                                        max={1024}
-                                        step={64}
-                                        value={[width]}
-                                        onValueChange={([v]) => setWidth(v)}
-                                        disabled={isImageGenerating}
-                                    />
-                                </div>
+                                    {/* Width Slider */}
+                                    <div className="space-y-1">
+                                        <Label className="text-xs">Width: {width}px</Label>
+                                        <Slider
+                                            min={256}
+                                            max={1024}
+                                            step={64}
+                                            value={[width]}
+                                            onValueChange={([v]) => setWidth(v)}
+                                            disabled={isImageGenerating}
+                                        />
+                                    </div>
 
-                                {/* Height Slider */}
-                                <div className="space-y-1">
-                                    <Label className="text-xs">Height: {height}px</Label>
-                                    <Slider
-                                        min={256}
-                                        max={1024}
-                                        step={64}
-                                        value={[height]}
-                                        onValueChange={([v]) => setHeight(v)}
-                                        disabled={isImageGenerating}
-                                    />
+                                    {/* Height Slider */}
+                                    <div className="space-y-1">
+                                        <Label className="text-xs">Height: {height}px</Label>
+                                        <Slider
+                                            min={256}
+                                            max={1024}
+                                            step={64}
+                                            value={[height]}
+                                            onValueChange={([v]) => setHeight(v)}
+                                            disabled={isImageGenerating}
+                                        />
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
                             {imageEngine !== 'nanogpt' && (
                                 <div className="space-y-2">
@@ -919,12 +991,21 @@ const SimpleChatImageButton = () => {
                                     disabled={isImageGenerating || !prompt.trim() || !isModelLoadedForSelectedGpu}
                                 >
                                     <>
-                                        <Image className="mr-2 h-4 w-4" />
-                                        Generate Image
-                                        {autoEnhanceEnabled && adetailerAvailable && (
+                                        {generationMode === 'video' ? (
                                             <>
-                                                <Sparkles className="ml-2 h-4 w-4" />
-                                                <span className="ml-1 text-xs">+ Auto-Enhance</span>
+                                                <Video className="mr-2 h-4 w-4" />
+                                                Generate Video
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Image className="mr-2 h-4 w-4" />
+                                                Generate Image
+                                                {autoEnhanceEnabled && adetailerAvailable && (
+                                                    <>
+                                                        <Sparkles className="ml-2 h-4 w-4" />
+                                                        <span className="ml-1 text-xs">+ Auto-Enhance</span>
+                                                    </>
+                                                )}
                                             </>
                                         )}
                                     </>
@@ -932,7 +1013,7 @@ const SimpleChatImageButton = () => {
                             )}
                         </div>
                     </div>
-                </div>,
+                </div >,
                 document.body
             )}
         </>

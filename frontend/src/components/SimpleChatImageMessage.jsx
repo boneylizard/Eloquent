@@ -79,6 +79,10 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
 
   // Existing functions
   const getImageUrl = () => {
+    // Return video path if it's a video message
+    if (message.type === 'video' && (message.videoPath || message.imagePath)) {
+      return message.videoPath || message.imagePath;
+    }
     if (message.imagePath && typeof message.imagePath === 'string') {
       return message.imagePath;
     }
@@ -442,9 +446,10 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
 
     const link = document.createElement('a');
     link.href = imageUrl;
+    const ext = message.type === 'video' ? 'mp4' : 'png';
     const filename = message.prompt ?
-      `sd-image-${message.prompt.substring(0, 50).replace(/[^a-z0-9]/gi, '_')}.png` :
-      `sd-image-${Date.now()}.png`;
+      `sd-${message.type || 'image'}-${message.prompt.substring(0, 50).replace(/[^a-z0-9]/gi, '_')}.${ext}` :
+      `sd-${message.type || 'image'}-${Date.now()}.${ext}`;
     link.download = filename;
     document.body.appendChild(link);
     link.click();
@@ -477,22 +482,36 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
           </div>
         )}
 
-        <img
-          src={imageUrl}
-          alt={message.prompt || 'Generated image'}
-          className='w-full max-w-2xl mx-auto rounded-md object-contain cursor-pointer'
-          style={{
-            display: isImageLoaded ? 'block' : 'none',
-            maxHeight: '400px',
-            minHeight: '200px'
-          }}
-          onLoad={() => setIsImageLoaded(true)}
-          onClick={() => setIsViewerOpen(true)}
-          onError={(e) => {
-            console.error('Failed to load image:', imageUrl, e);
-            e.target.style.display = 'none';
-          }}
-        />
+        {message.type === 'video' ? (
+          <video
+            src={imageUrl}
+            controls
+            className='w-full max-w-2xl mx-auto rounded-md object-contain'
+            style={{
+              display: isImageLoaded ? 'block' : 'none',
+              maxHeight: '400px',
+              minHeight: '200px'
+            }}
+            onLoadedData={() => setIsImageLoaded(true)}
+          />
+        ) : (
+          <img
+            src={imageUrl}
+            alt={message.prompt || 'Generated image'}
+            className='w-full max-w-2xl mx-auto rounded-md object-contain cursor-pointer'
+            style={{
+              display: isImageLoaded ? 'block' : 'none',
+              maxHeight: '400px',
+              minHeight: '200px'
+            }}
+            onLoad={() => setIsImageLoaded(true)}
+            onClick={() => setIsViewerOpen(true)}
+            onError={(e) => {
+              console.error('Failed to load image:', imageUrl, e);
+              e.target.style.display = 'none';
+            }}
+          />
+        )}
 
         <div className='flex flex-col gap-1 mt-2 text-sm'>
           {message.prompt && (
@@ -532,156 +551,161 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
           </div>
 
           <div className='flex justify-end gap-2 mt-1 flex-wrap'>
-            {/* Regenerate button */}
-            {onRegenerate && (
-              <Button
-                size='sm'
-                variant='ghost'
-                onClick={() => onRegenerate({
-                  prompt: message.original_prompt || message.prompt || '',
-                  negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
-                  width: message.original_width || message.width || 512,
-                  height: message.original_height || message.height || 512,
-                  steps: message.original_steps || message.steps || 20,
-                  guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
-                  sampler: message.original_sampler || message.sampler || 'Euler a',
-                  seed: -1,
-                  model: message.original_model || message.model || '',
-                  gpu_id: message.gpuId ?? 0
-                })}
-                className='h-8 px-2 text-xs'
-                title='Regenerate with same parameters'
-              >
-                <RotateCcw className='h-3 w-3 mr-1' />
-                Regenerate {regenerationQueue > 0 && `(${regenerationQueue})`}
-              </Button>
-            )}
-
-            {/* Enhancement controls */}
-            <div className="flex items-center gap-1">
-              <Button
-                size='sm'
-                variant='secondary'
-                onClick={handleManualEnhance}
-                disabled={isEnhancing}
-                className='h-8 px-2 text-xs bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white border-0'
-                title={`${message.enhanced ? 'Enhance further' : 'Enhance faces and details'} with ADetailer`}
-              >
-                {isEnhancing ? (
-                  <Loader2 className='h-3 w-3 mr-1 animate-spin' />
-                ) : (
-                  <Sparkles className='h-3 w-3 mr-1' />
+            {/* HIDE Controls if Video */}
+            {message.type !== 'video' && (
+              <>
+                {/* Regenerate button */}
+                {onRegenerate && (
+                  <Button
+                    size='sm'
+                    variant='ghost'
+                    onClick={() => onRegenerate({
+                      prompt: message.original_prompt || message.prompt || '',
+                      negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
+                      width: message.original_width || message.width || 512,
+                      height: message.original_height || message.height || 512,
+                      steps: message.original_steps || message.steps || 20,
+                      guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
+                      sampler: message.original_sampler || message.sampler || 'Euler a',
+                      seed: -1,
+                      model: message.original_model || message.model || '',
+                      gpu_id: message.gpuId ?? 0
+                    })}
+                    className='h-8 px-2 text-xs'
+                    title='Regenerate with same parameters'
+                  >
+                    <RotateCcw className='h-3 w-3 mr-1' />
+                    Regenerate {regenerationQueue > 0 && `(${regenerationQueue})`}
+                  </Button>
                 )}
-                {isEnhancing
-                  ? 'Enhancing...'
-                  : message.enhanced
-                    ? `Enhance Again (${(message.current_enhancement_level || 0) + 1}x)`
-                    : 'Enhance'
-                }
-              </Button>
 
-              <Button
-                size='sm'
-                variant='outline'
-                onClick={() => setShowEnhanceSettings(prev => !prev)}
-                className='h-8 px-2 text-xs'
-                title='Configure ADetailer settings'
-              >
-                {showEnhanceSettings ? 'Hide ADetailer' : 'ADetailer'}
-              </Button>
-            </div>
+                {/* Enhancement controls */}
+                <div className="flex items-center gap-1">
+                  <Button
+                    size='sm'
+                    variant='secondary'
+                    onClick={handleManualEnhance}
+                    disabled={isEnhancing}
+                    className='h-8 px-2 text-xs bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white border-0'
+                    title={`${message.enhanced ? 'Enhance further' : 'Enhance faces and details'} with ADetailer`}
+                  >
+                    {isEnhancing ? (
+                      <Loader2 className='h-3 w-3 mr-1 animate-spin' />
+                    ) : (
+                      <Sparkles className='h-3 w-3 mr-1' />
+                    )}
+                    {isEnhancing
+                      ? 'Enhancing...'
+                      : message.enhanced
+                        ? `Enhance Again (${(message.current_enhancement_level || 0) + 1}x)`
+                        : 'Enhance'
+                    }
+                  </Button>
+
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={() => setShowEnhanceSettings(prev => !prev)}
+                    className='h-8 px-2 text-xs'
+                    title='Configure ADetailer settings'
+                  >
+                    {showEnhanceSettings ? 'Hide ADetailer' : 'ADetailer'}
+                  </Button>
+                </div>
 
 
 
-            {/* Upscale Controls */}
-            <div className="flex items-center gap-1">
-              {upscalerModels.length > 0 && (
-                <Select
-                  value={selectedUpscaler}
-                  onValueChange={(val) => {
-                    setSelectedUpscaler(val);
-                    localStorage.setItem('local-upscaler-model', val);
-                  }}
+                {/* Upscale Controls */}
+                <div className="flex items-center gap-1">
+                  {upscalerModels.length > 0 && (
+                    <Select
+                      value={selectedUpscaler}
+                      onValueChange={(val) => {
+                        setSelectedUpscaler(val);
+                        localStorage.setItem('local-upscaler-model', val);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-[140px] text-xs px-2 bg-transparent border-input/50 truncate">
+                        <SelectValue placeholder="Model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {upscalerModels.map((m) => (
+                          <SelectItem key={m} value={m}>{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  <Select value={scaleFactor} onValueChange={setScaleFactor}>
+                    <SelectTrigger className="h-8 w-[60px] text-xs px-2 bg-transparent border-input/50">
+                      <SelectValue placeholder="2x" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="2">2x</SelectItem>
+                      <SelectItem value="3">3x</SelectItem>
+                      <SelectItem value="4">4x</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={handleUpscale}
+                    disabled={isUpscaling || isEnhancing}
+                    className='h-8 px-2 text-xs border bg-primary/5 text-primary hover:bg-primary/10 transition-colors'
+                    title={`Upscale ${scaleFactor}x`}
+                  >
+                    {isUpscaling ? (
+                      <Loader2 className='h-3 w-3 mr-1 animate-spin' />
+                    ) : (
+                      <ArrowUpCircle className='h-3 w-3 mr-1' />
+                    )}
+                    {isUpscaling ? '...' : 'Upscale'}
+                  </Button>
+                </div>
+
+                {/* Set Background Button */}
+                <Button
+                  size='sm'
+                  variant='outline'
+                  onClick={handleSetBackground}
+                  className='h-8 px-2 text-xs border bg-primary/5 text-primary hover:bg-primary/10 transition-colors'
+                  title='Set as chat background'
                 >
-                  <SelectTrigger className="h-8 w-[140px] text-xs px-2 bg-transparent border-input/50 truncate">
-                    <SelectValue placeholder="Model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {upscalerModels.map((m) => (
-                      <SelectItem key={m} value={m}>{m}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              <Select value={scaleFactor} onValueChange={setScaleFactor}>
-                <SelectTrigger className="h-8 w-[60px] text-xs px-2 bg-transparent border-input/50">
-                  <SelectValue placeholder="2x" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="2">2x</SelectItem>
-                  <SelectItem value="3">3x</SelectItem>
-                  <SelectItem value="4">4x</SelectItem>
-                </SelectContent>
-              </Select>
+                  <ImageIcon className='h-3 w-3 mr-1' />
+                  Set BG
+                </Button>
 
-              <Button
-                size='sm'
-                variant='outline'
-                onClick={handleUpscale}
-                disabled={isUpscaling || isEnhancing}
-                className='h-8 px-2 text-xs border bg-primary/5 text-primary hover:bg-primary/10 transition-colors'
-                title={`Upscale ${scaleFactor}x`}
-              >
-                {isUpscaling ? (
-                  <Loader2 className='h-3 w-3 mr-1 animate-spin' />
-                ) : (
-                  <ArrowUpCircle className='h-3 w-3 mr-1' />
+                {/* Reset to last button (shown when enhanced) */}
+                {message.enhanced && message.current_enhancement_level > 0 && (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={handleResetToLast}
+                    className='h-8 px-2 text-xs'
+                    title='Go back to previous enhancement level'
+                  >
+                    <Undo className='h-3 w-3 mr-1' />
+                    Reset to Last
+                  </Button>
                 )}
-                {isUpscaling ? '...' : 'Upscale'}
-              </Button>
-            </div>
 
-            {/* Set Background Button */}
-            <Button
-              size='sm'
-              variant='outline'
-              onClick={handleSetBackground}
-              className='h-8 px-2 text-xs border bg-primary/5 text-primary hover:bg-primary/10 transition-colors'
-              title='Set as chat background'
-            >
-              <ImageIcon className='h-3 w-3 mr-1' />
-              Set BG
-            </Button>
-
-            {/* Reset to last button (shown when enhanced) */}
-            {message.enhanced && message.current_enhancement_level > 0 && (
-              <Button
-                size='sm'
-                variant='outline'
-                onClick={handleResetToLast}
-                className='h-8 px-2 text-xs'
-                title='Go back to previous enhancement level'
-              >
-                <Undo className='h-3 w-3 mr-1' />
-                Reset to Last
-              </Button>
+                {/* Ask about image button */}
+                <Button
+                  size='sm'
+                  variant='secondary'
+                  onClick={() => setShowImageQuery(true)}
+                  className='h-8 px-2 text-xs'
+                  disabled={isAnalyzing}
+                  title='Ask a question about this image'
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
+                    <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10-7-3-7-10-7Z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                  Ask
+                </Button>
+              </>
             )}
-
-            {/* Ask about image button */}
-            <Button
-              size='sm'
-              variant='secondary'
-              onClick={() => setShowImageQuery(true)}
-              className='h-8 px-2 text-xs'
-              disabled={isAnalyzing}
-              title='Ask a question about this image'
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
-                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10-7-3-7-10-7Z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-              Ask
-            </Button>
 
             {/* Existing buttons */}
             {message.prompt && (
@@ -713,6 +737,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
               variant='ghost'
               onClick={() => setIsViewerOpen(true)}
               className='h-8 px-2 text-xs'
+              disabled={message.type === 'video'}
               title='View image in full size'
             >
               View
@@ -728,6 +753,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
               <X className='h-3 w-3 mr-1' />
               Delete
             </Button>
+
           </div>
 
           {showEnhanceSettings && (
