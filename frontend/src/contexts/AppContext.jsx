@@ -1128,6 +1128,8 @@ const AppProvider = ({ children }) => {
       endpoint = `${targetApiUrl}/sd-local/txt2img`;
     } else if (imageEngine === 'comfyui') {
       endpoint = `${PRIMARY_API_URL}/sd-comfy/txt2img`;
+    } else if (imageEngine === 'nanogpt') {
+      endpoint = `${PRIMARY_API_URL}/sd/nanogpt`;
     } else {
       endpoint = `${PRIMARY_API_URL}/sd/txt2img`;
     }
@@ -1205,6 +1207,21 @@ const AppProvider = ({ children }) => {
           guidance_scale: opts.guidance_scale || 7.0,
           sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
           seed: opts.seed || -1,
+        };
+      } else if (imageEngine === 'nanogpt') {
+        // NanoGPT payload
+        payload = {
+          prompt,
+          width: opts.width || 1024,
+          height: opts.height || 1024,
+          model: settings.nanoGptModel || 'dall-e-3',
+          api_key: settings.nanoGptApiKey,
+          // NanoGPT / OpenAI DALL-E 3 doesn't support negative_prompt, steps, cfg, sampler often
+          // But we can pass them if the backend filters them or if using a different model
+          n: 1,
+          size: `${opts.width || 1024}x${opts.height || 1024}`,
+          quality: "standard",
+          response_format: "url"
         };
       } else {
         // A1111 payload

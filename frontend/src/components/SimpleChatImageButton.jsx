@@ -347,11 +347,13 @@ const SimpleChatImageButton = () => {
         ? localSdStatus?.available
         : imageEngine === 'comfyui'
             ? sdStatus?.comfyui
-            : sdStatus?.automatic1111;
+            : imageEngine === 'nanogpt'
+                ? true
+                : sdStatus?.automatic1111;
     const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
         ? Boolean(localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId])
-        : imageEngine === 'comfyui'
-            ? sdStatus?.comfyui // ComfyUI doesn't require pre-loading
+        : imageEngine === 'comfyui' || imageEngine === 'nanogpt'
+            ? true // ComfyUI and NanoGPT don't require pre-loading
             : sdStatus?.automatic1111;
     useEffect(() => {
         if (sdStatus?.models?.length) {
@@ -806,33 +808,37 @@ const SimpleChatImageButton = () => {
                                 />
                             </div>
 
-                            <div className="space-y-2">
-                                <Label htmlFor="negativePrompt" className="text-xs">Negative Prompt</Label>
-                                <Textarea
-                                    id="negativePrompt"
-                                    placeholder="Elements to avoid..."
-                                    value={negativePrompt}
-                                    onChange={e => setNegativePrompt(e.target.value)}
-                                    rows={1}
-                                    disabled={isImageGenerating || !isAvailable}
-                                />
-                            </div>
-                            <div className="mb-2">
-                                <label className="block text-sm font-medium text-foreground">
-                                    Sampler
-                                </label>
-                                <select
-                                    className="mt-1 block w-full rounded-md border border-border bg-background text-foreground shadow-sm focus:border-ring focus:ring-ring sm:text-sm"
-                                    value={selectedSampler}
-                                    onChange={(e) => setSelectedSampler(e.target.value)}
-                                >
-                                    {availableSamplers.map((sampler) => (
-                                        <option key={sampler} value={sampler}>
-                                            {sampler}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
+                            {imageEngine !== 'nanogpt' && (
+                                <>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="negativePrompt" className="text-xs">Negative Prompt</Label>
+                                        <Textarea
+                                            id="negativePrompt"
+                                            placeholder="Elements to avoid..."
+                                            value={negativePrompt}
+                                            onChange={e => setNegativePrompt(e.target.value)}
+                                            rows={1}
+                                            disabled={isImageGenerating || !isAvailable}
+                                        />
+                                    </div>
+                                    <div className="mb-2">
+                                        <label className="block text-sm font-medium text-foreground">
+                                            Sampler
+                                        </label>
+                                        <select
+                                            className="mt-1 block w-full rounded-md border border-border bg-background text-foreground shadow-sm focus:border-ring focus:ring-ring sm:text-sm"
+                                            value={selectedSampler}
+                                            onChange={(e) => setSelectedSampler(e.target.value)}
+                                        >
+                                            {availableSamplers.map((sampler) => (
+                                                <option key={sampler} value={sampler}>
+                                                    {sampler}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </>
+                            )}
                             {/* Size Controls - RESTORED FULL VERSION */}
                             <div className="space-y-2">
                                 <div className="flex justify-between text-xs items-center">
@@ -872,15 +878,19 @@ const SimpleChatImageButton = () => {
                                 </div>
                             </div>
 
-                            <div className="space-y-2">
-                                <Label className="text-xs">Steps: {steps}</Label>
-                                <Slider min={4} max={50} step={1} value={[steps]} onValueChange={val => setSteps(val[0])} />
-                            </div>
+                            {imageEngine !== 'nanogpt' && (
+                                <div className="space-y-2">
+                                    <Label className="text-xs">Steps: {steps}</Label>
+                                    <Slider min={4} max={50} step={1} value={[steps]} onValueChange={val => setSteps(val[0])} />
+                                </div>
+                            )}
 
-                            <div className="space-y-2">
-                                <Label className="text-xs">Guidance Scale: {guidanceScale.toFixed(1)}</Label>
-                                <Slider min={1} max={15} step={0.1} value={[guidanceScale]} onValueChange={val => setGuidanceScale(val[0])} disabled={isImageGenerating} />
-                            </div>
+                            {imageEngine !== 'nanogpt' && (
+                                <div className="space-y-2">
+                                    <Label className="text-xs">Guidance Scale: {guidanceScale.toFixed(1)}</Label>
+                                    <Slider min={1} max={15} step={0.1} value={[guidanceScale]} onValueChange={val => setGuidanceScale(val[0])} disabled={isImageGenerating} />
+                                </div>
+                            )}
 
                             {isImageGenerating ? (
                                 <div className="w-full space-y-2">
