@@ -1100,11 +1100,43 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     <SelectItem value="EloDiffusion">Local SD (Built-in)</SelectItem>
                     <SelectItem value="auto1111">AUTOMATIC1111 (External)</SelectItem>
                     <SelectItem value="comfyui">ComfyUI (External)</SelectItem>
+                    <SelectItem value="nanogpt">NanoGPT (Cloud)</SelectItem>
                     <SelectItem value="both">Show Both Options</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <Separator />
+
+              {localSettings.imageEngine === 'nanogpt' && (
+                <div className="space-y-4 py-4">
+                  <div>
+                    <h3 className="text-md font-medium">NanoGPT (Cloud)</h3>
+                    <p className="text-xs text-muted-foreground">Generate images using NanoGPT model APIs.</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="nanogpt-api-key">NanoGPT API Key</Label>
+                    <Input
+                      id="nanogpt-api-key"
+                      type="password"
+                      value={localSettings.nanoGptApiKey || ''}
+                      onChange={(e) => handleChange('nanoGptApiKey', e.target.value)}
+                      placeholder="sk-..."
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="nanogpt-model">Model Name</Label>
+                    <Input
+                      id="nanogpt-model"
+                      value={localSettings.nanoGptModel || 'dall-e-3'}
+                      onChange={(e) => handleChange('nanoGptModel', e.target.value)}
+                      placeholder="dall-e-3"
+                    />
+                  </div>
+                  <Separator />
+                </div>
+              )}
 
               <div className="space-y-4">
                 <div>

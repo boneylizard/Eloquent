@@ -18,6 +18,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 ### Added
 
 * **Directory Browser**: Added native folder picker buttons in Settings to choose model directories instead of manual copy/paste.
+* **NanoGPT Image Support**: Added support for cloud-based image generation via NanoGPT (OpenAI-compatible). Users can now generate images without local GPU resources by configuring an API key in the Image Generation settings.
 
 ## 2026-01-24
 

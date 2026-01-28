@@ -5271,6 +5271,73 @@ async def sd_txt2img(body: dict):
         "parameters": sd_response.get("parameters", {}),
         "info": sd_response.get("info", "")
     })
+@app.post("/sd/nanogpt")
+async def sd_nanogpt(body: dict):
+    """Proxy to NanoGPT (OpenAI compatible) image generation."""
+    try:
+        api_key = body.get("api_key")
+        if not api_key:
+            raise HTTPException(400, "Missing NanoGPT API Key")
+
+        prompt = body.get("prompt")
+        model = body.get("model", "dall-e-3")
+        width = body.get("width", 1024)
+        height = body.get("height", 1024)
+        size_str = f"{width}x{height}"
+
+        # Payload for OpenAI/NanoGPT
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "n": 1,
+            "size": size_str,
+            "response_format": "b64_json" 
+        }
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        url = "https://nano-gpt.com/api/v1/images/generations"
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=payload, headers=headers, timeout=120.0)
+        
+        if resp.status_code != 200:
+            logger.error(f"NanoGPT API Error: {resp.text}")
+            raise HTTPException(resp.status_code, f"NanoGPT API Error: {resp.text}")
+
+        data = resp.json()
+        
+        # Process response
+        images = data.get("data", [])
+        saved_urls = []
+        for img in images:
+            image_data = None
+            if "b64_json" in img:
+                b64 = img["b64_json"]
+                image_data = base64.b64decode(b64)
+            elif "url" in img:
+                img_url = img["url"]
+                async with httpx.AsyncClient() as client:
+                    img_resp = await client.get(img_url)
+                    if img_resp.status_code == 200:
+                        image_data = img_resp.content
+            
+            if image_data:
+                url = save_image_and_get_url(image_data)
+                saved_urls.append(url)
+
+        return {
+            "status": "success",
+            "image_urls": saved_urls
+        }
+
+    except Exception as e:
+        logger.error(f"NanoGPT error: {e}", exc_info=True)
+        raise HTTPException(500, f"NanoGPT generation failed: {e}")
+
 @app.get("/sd-local/status")
 async def sd_local_status(request: Request):
     """Check local SD status and loaded models on all GPUs."""
