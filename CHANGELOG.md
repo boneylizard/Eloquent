@@ -13,6 +13,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 * **Placeholder Contrast**: Dimmed placeholder text in inputs/selects so suggested values don't look like saved settings.
 * **Settings Placeholder Visibility**: Restored placeholders for Image Generation directory fields and prevented autofill from forcing light backgrounds in dark themes.
 * **Lore Debugger Theme**: Updated Lore Debugger styling to use theme tokens for readable dark mode colors.
+* **Settings Simplification**: Removed the Tokens tab to avoid duplicated max-token controls; LLM max tokens now live in LLM Settings only.
 
 ### Added
 
