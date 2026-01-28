@@ -6,6 +6,18 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-28
+
+### Fixed
+
+* **Placeholder Contrast**: Dimmed placeholder text in inputs/selects so suggested values don't look like saved settings.
+* **Settings Placeholder Visibility**: Restored placeholders for Image Generation directory fields and prevented autofill from forcing light backgrounds in dark themes.
+* **Lore Debugger Theme**: Updated Lore Debugger styling to use theme tokens for readable dark mode colors.
+
+### Added
+
+* **Directory Browser**: Added native folder picker buttons in Settings to choose model directories instead of manual copy/paste.
+
 ## 2026-01-24
 
 ### Added
