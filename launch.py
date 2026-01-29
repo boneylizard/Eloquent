@@ -316,8 +316,15 @@ def launch_browser():
     """Launch browser after delay - runs in separate thread to avoid blocking startup"""
     try:
         time.sleep(25)  # Wait 25 seconds
-        webbrowser.open('http://localhost:5173/')
-        print("Browser launched at http://localhost:5173/")
+        
+        # Check settings
+        settings = load_local_settings()
+        if settings.get("auto_launch_browser", True):
+            webbrowser.open('http://localhost:5173/')
+            print("Browser launched at http://localhost:5173/")
+        else:
+            print("Browser auto-launch disabled in settings.")
+
     except Exception:
         pass  # Fail silently - don't break the app if browser launch fails
 

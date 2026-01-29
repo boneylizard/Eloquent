@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
   X, Code, FileText, Loader2, FolderTree, Folder, FolderOpen,
-  ChevronRight, ChevronDown, File, Search, RefreshCw, Settings,
+  ChevronRight, ChevronDown, ChevronUp, CornerLeftUp, File, Search, RefreshCw, Settings,
   Send, Terminal, Image, Trash2, Plus, Zap, History, Menu
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -19,30 +19,112 @@ import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // ============================================================================
 // DIRECTORY PICKER COMPONENT
 // ============================================================================
+// ============================================================================
+// DIRECTORY PICKER COMPONENT
+// ============================================================================
 const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => {
-  const [inputPath, setInputPath] = useState(currentDir || '');
+  const [currentPath, setCurrentPath] = useState(currentDir || '');
+  const [drives, setDrives] = useState([]);
+  const [items, setItems] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [history, setHistory] = useState([]);
 
-  const handleSubmit = async () => {
-    if (!inputPath.trim()) return;
+  const baseUrl = import.meta.env.VITE_API_URL || getBackendUrl();
 
+  // Load drives on open
+  useEffect(() => {
+    if (isOpen) {
+      fetchDrives();
+      if (currentPath) {
+        browsePath(currentPath);
+      }
+    }
+  }, [isOpen]);
+
+  const fetchDrives = async () => {
+    try {
+      const res = await fetch(`${baseUrl}/code_editor/list_drives`);
+      const data = await res.json();
+      if (data.success) {
+        setDrives(data.drives);
+        // If no path set, default to first drive
+        if (!currentPath && data.drives.length > 0) {
+          browsePath(data.drives[0]);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load drives", e);
+    }
+  };
+
+  const browsePath = async (path) => {
     setIsLoading(true);
     setError('');
-
     try {
-      const baseUrl = import.meta.env.VITE_API_URL || getBackendUrl();
-      const response = await fetch(`${baseUrl}/code_editor/set_base_dir?path=${encodeURIComponent(inputPath)}`, {
+      const res = await fetch(`${baseUrl}/code_editor/list_path`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setCurrentPath(data.current_path);
+        setItems(data.items);
+      } else {
+        setError(data.error || "Failed to list directory");
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleNavigate = (path) => {
+    setHistory([...history, currentPath]);
+    browsePath(path);
+  };
+
+  const handleUp = () => {
+    // Naive parent check
+    // If windows drive root (C:\), don't go up? 
+    // Backend returns parent_path usually
+    // But let's verify if we are at root
+    if (history.length > 0) {
+      const prev = history[history.length - 1];
+      setHistory(history.slice(0, -1));
+      browsePath(prev);
+    } else {
+      // Try to go to parent path manually if history empty
+      // This is tricky cross-platform without backend help, 
+      // but let's try just browsing the parent directory logic
+      const sep = currentPath.includes('/') ? '/' : '\\';
+      const parts = currentPath.split(sep).filter(Boolean);
+      if (parts.length > 1) {
+        // Provide Parent path request?
+        // Actually let's just use the Input logic or rely on user clicking ".."
+        // Ideally backend tells us parent
+      }
+    }
+  };
+
+  const getParentPath = (path) => {
+    // Basic string manipulation to find parent
+    return path.substring(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
+  };
+
+  const handleSubmit = async () => {
+    if (!currentPath.trim()) return;
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${baseUrl}/code_editor/set_base_dir?path=${encodeURIComponent(currentPath)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to set directory');
-      }
-
-      onSelectDirectory(inputPath);
+      if (!response.ok) throw new Error('Failed to set directory');
+      onSelectDirectory(currentPath);
       onClose();
     } catch (err) {
       setError(err.message);
@@ -53,31 +135,83 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-zinc-900 border-zinc-700">
+      <DialogContent className="bg-zinc-900 border-zinc-700 max-w-2xl h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle className="text-zinc-100">Select Project Directory</DialogTitle>
+          <DialogTitle className="text-zinc-100 flex items-center gap-2">
+            <FolderTree className="h-5 w-5 text-emerald-500" />
+            Select Project Directory
+          </DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm font-medium text-zinc-300">Directory Path:</label>
-            <Input
-              value={inputPath}
-              onChange={(e) => setInputPath(e.target.value)}
-              placeholder="C:\path\to\your\project"
-              className="mt-1 bg-zinc-800 border-zinc-600 text-zinc-100"
-            />
-            {error && (
-              <p className="text-sm text-red-400 mt-1">{error}</p>
-            )}
-          </div>
-          <div className="text-xs text-zinc-400">
-            Enter the absolute path to your project directory.
-          </div>
+
+        {/* Navigation Bar */}
+        <div className="flex items-center gap-2 p-2 bg-zinc-800/50 rounded-lg">
+          <select
+            className="bg-zinc-800 border-zinc-600 text-zinc-100 text-xs rounded p-1"
+            onChange={(e) => {
+              setHistory([]);
+              browsePath(e.target.value);
+            }}
+            value={drives.find(d => currentPath.startsWith(d)) || ''}
+          >
+            {drives.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+
+          <Button variant="ghost" size="sm" onClick={() => browsePath(getParentPath(currentPath))} disabled={!currentPath || currentPath.length <= 3}>
+            <ChevronUp className="h-4 w-4" />
+          </Button>
+
+          <Input
+            value={currentPath}
+            onChange={(e) => setCurrentPath(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && browsePath(currentPath)}
+            className="flex-1 h-8 bg-zinc-800 border-zinc-600 text-xs font-mono"
+          />
+
+          <Button size="sm" onClick={() => browsePath(currentPath)}>Go</Button>
         </div>
-        <DialogFooter>
+
+        {/* File List */}
+        <ScrollArea className="flex-1 border border-zinc-700 rounded-md bg-zinc-950/30 p-2">
+          {isLoading ? (
+            <div className="flex justify-center p-10"><Loader2 className="animate-spin text-zinc-500" /></div>
+          ) : (
+            <div className="grid grid-cols-1 gap-1">
+              {/* Parent Folder Link */}
+              <div
+                className="flex items-center gap-2 p-2 hover:bg-zinc-800/50 rounded cursor-pointer text-zinc-400"
+                onClick={() => {
+                  const parent = getParentPath(currentPath);
+                  if (parent) browsePath(parent);
+                }}
+              >
+                <CornerLeftUp className="h-4 w-4" />
+                <span className="text-sm">..</span>
+              </div>
+
+              {items.map((item, idx) => (
+                <div
+                  key={idx}
+                  className={cn(
+                    "flex items-center gap-2 p-2 rounded cursor-pointer transition-colors",
+                    item.type === 'folder' ? "hover:bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:bg-zinc-900/50"
+                  )}
+                  onClick={() => item.type === 'folder' && handleNavigate(item.path)}
+                >
+                  {item.type === 'folder' ? <Folder className="h-4 w-4 text-amber-500 fill-amber-500/20" /> : <File className="h-4 w-4" />}
+                  <span className="text-sm truncate">{item.name}</span>
+                </div>
+              ))}
+              {items.length === 0 && <div className="text-center text-zinc-600 py-10">Empty directory</div>}
+            </div>
+          )}
+        </ScrollArea>
+
+        {error && <div className="text-xs text-red-500 px-2">{error}</div>}
+
+        <DialogFooter className="mt-2">
           <Button variant="outline" onClick={onClose} className="border-zinc-600">Cancel</Button>
-          <Button onClick={handleSubmit} disabled={isLoading || !inputPath.trim()} className="bg-emerald-600 hover:bg-emerald-700">
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Select Directory'}
+          <Button onClick={handleSubmit} className="bg-emerald-600 hover:bg-emerald-700">
+            Select Current Folder
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -174,10 +308,11 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
-  
+  const [isAgentMode, setIsAgentMode] = useState(false); // New Agent Mode State
+
   // Mobile View State: 'chat' | 'explorer' | 'sessions'
   const [mobileView, setMobileView] = useState('chat');
-  
+
   const scrollAreaRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -258,7 +393,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         timestamp: Date.now(),
         tools_used: ['read_file']
       }]);
-      
+
       // Auto-switch to chat on mobile when a file is selected
       setMobileView('chat');
     } catch (error) {
@@ -344,58 +479,175 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
           : msg.content
       }));
 
-      const response = await apiCall('/devstral/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          messages: conversationMessages,
-          working_dir: currentPath,
-          temperature: 0.15,
-          max_tokens: 4096,
-          image_base64: currentImage,
-          auto_execute: true,
-          model: (primaryIsAPI && primaryModel)
-            ? primaryModel
-            : ((typeof activeModel === 'string' ? activeModel : activeModel?.id) || 'devstral-small')
-        })
-      });
+      const modelId = (primaryIsAPI && primaryModel)
+        ? primaryModel
+        : ((typeof activeModel === 'string' ? activeModel : activeModel?.id) || 'devstral-small');
 
-      let assistantContent = '';
-      let toolsUsed = [];
+      // Use streaming for agent mode, regular fetch for single-turn
+      if (isAgentMode) {
+        // STREAMING AGENT MODE
+        const response = await fetch(`${baseUrl}/devstral/chat/stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: conversationMessages,
+            working_dir: currentPath,
+            temperature: 0.15,
+            max_tokens: 4096,
+            image_base64: currentImage,
+            model: modelId
+          })
+        });
 
-      if (response.choices && response.choices[0]) {
-        const message = response.choices[0].message;
-        assistantContent = message.content || '';
-
-        if (message.tool_calls && message.tool_calls.length > 0) {
-          toolsUsed = message.tool_calls.map(tc => tc.function?.name).filter(Boolean);
+        if (!response.ok) {
+          throw new Error(`Stream request failed: ${response.status}`);
         }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        let liveContent = '';
+        let liveSteps = [];
+        let toolsUsed = [];
+
+        // Create a placeholder message that we'll update live
+        const liveMessage = {
+          role: 'assistant',
+          content: '🤖 Agent working...',
+          timestamp: Date.now(),
+          tools_used: [],
+          isStreaming: true
+        };
+
+        setCodeMessages(prev => [...prev, liveMessage]);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const event = JSON.parse(line.slice(6));
+
+                if (event.type === 'content' && event.text) {
+                  const thoughtText = `💭 **Thought:**\n${event.text}`;
+                  liveSteps.push({ type: 'thought', text: thoughtText });
+                }
+
+                if (event.type === 'tool_call') {
+                  const callText = `🔧 **${event.tool}**: ${JSON.stringify(event.args).slice(0, 100)}...`;
+                  liveSteps.push({ type: 'call', text: callText, tool: event.tool });
+                  toolsUsed.push(event.tool);
+                }
+
+                if (event.type === 'tool_result') {
+                  const icon = event.success ? '✅' : '❌';
+                  const resultText = `${icon} **${event.tool}**:\n\`\`\`\n${event.result}\n\`\`\``;
+                  liveSteps.push({ type: 'result', text: resultText, success: event.success });
+                }
+
+                if (event.type === 'error') {
+                  liveSteps.push({ type: 'error', text: `❌ Error: ${event.error}` });
+                }
+
+                // Update the live message with current progress
+                const stepsText = liveSteps.map(s => s.text).join('\n\n');
+                const updatedContent = `**Agent Execution Log:**\n${stepsText}`;
+
+                setCodeMessages(prev => {
+                  const updated = [...prev];
+                  updated[updated.length - 1] = {
+                    ...liveMessage,
+                    content: updatedContent || '🤖 Agent working...',
+                    tools_used: [...new Set(toolsUsed)]
+                  };
+                  return updated;
+                });
+
+              } catch (parseErr) {
+                // Ignore parse errors for incomplete chunks
+              }
+            }
+          }
+        }
+
+        // Finalize the message
+        const stepsText = liveSteps.map(s => s.text).join('\n\n');
+        const finalContent = liveContent
+          ? `${liveContent}\n\n---\n\n**Agent Execution Log:**\n${stepsText}`
+          : `**Agent Execution Log:**\n${stepsText}`;
+
+        setCodeMessages(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = {
+            role: 'assistant',
+            content: finalContent || "Agent finished.",
+            timestamp: Date.now(),
+            tools_used: [...new Set(toolsUsed)],
+            isStreaming: false
+          };
+          updateActiveSession(updated);
+          return updated;
+        });
+
+      } else {
+        // STANDARD SINGLE-TURN MODE (non-streaming)
+        const response = await apiCall('/devstral/chat', {
+          method: 'POST',
+          body: JSON.stringify({
+            messages: conversationMessages,
+            working_dir: currentPath,
+            temperature: 0.15,
+            max_tokens: 4096,
+            image_base64: currentImage,
+            auto_execute: true,
+            agent_mode: false,
+            model: modelId
+          })
+        });
+
+        let assistantContent = '';
+        let toolsUsed = [];
+
+        if (response.choices && response.choices[0]) {
+          const message = response.choices[0].message;
+          assistantContent = message.content || '';
+
+          if (message.tool_calls && message.tool_calls.length > 0) {
+            toolsUsed = message.tool_calls.map(tc => tc.function?.name).filter(Boolean);
+          }
+        }
+
+        if (response.tool_results && response.tool_results.length > 0) {
+          const toolResultsText = response.tool_results.map(tr => {
+            const icon = tr.success ? '✅' : '❌';
+            return `${icon} **${tr.name}**:\n\`\`\`\n${tr.result}\n\`\`\``;
+          }).join('\n\n');
+
+          assistantContent = assistantContent
+            ? `${assistantContent}\n\n---\n\n**Tool Results:**\n${toolResultsText}`
+            : toolResultsText;
+
+          toolsUsed = response.tool_results.map(tr => tr.name);
+        }
+
+        const aiMessage = {
+          role: 'assistant',
+          content: assistantContent || "I've completed the requested operations.",
+          timestamp: Date.now(),
+          tools_used: toolsUsed
+        };
+
+        setCodeMessages(prev => {
+          const next = [...prev, aiMessage];
+          updateActiveSession(next);
+          return next;
+        });
       }
-
-      if (response.tool_results && response.tool_results.length > 0) {
-        const toolResultsText = response.tool_results.map(tr => {
-          const icon = tr.success ? '✅' : '❌';
-          return `${icon} **${tr.name}**:\n\`\`\`\n${tr.result}\n\`\`\``;
-        }).join('\n\n');
-
-        assistantContent = assistantContent
-          ? `${assistantContent}\n\n---\n\n**Tool Results:**\n${toolResultsText}`
-          : toolResultsText;
-
-        toolsUsed = response.tool_results.map(tr => tr.name);
-      }
-
-      const aiMessage = {
-        role: 'assistant',
-        content: assistantContent || "I've completed the requested operations.",
-        timestamp: Date.now(),
-        tools_used: toolsUsed
-      };
-
-      setCodeMessages(prev => {
-        const next = [...prev, aiMessage];
-        updateActiveSession(next);
-        return next;
-      });
 
     } catch (error) {
       console.error('❌ Devstral chat error:', error);
@@ -626,8 +878,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-medium text-zinc-300">Explorer</h3>
                 <div className="flex gap-1">
-                  <Button variant="ghost" size="sm" onClick={() => setShowDirectoryPicker(true)} className="h-6 w-6 p-0 text-zinc-400">
-                    <Settings className="h-3.5 w-3.5" />
+                  <Button variant="outline" size="sm" onClick={() => setShowDirectoryPicker(true)} className="h-6 px-2 text-xs border-zinc-600 bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700">
+                    <Settings className="h-3.5 w-3.5 mr-1" />
+                    Change Dir
                   </Button>
                   <Button variant="ghost" size="sm" onClick={loadFileTree} disabled={isLoadingTree} className="h-6 w-6 p-0 text-zinc-400">
                     <RefreshCw className={cn("h-3.5 w-3.5", isLoadingTree && "animate-spin")} />
@@ -830,7 +1083,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
             {/* Input Area */}
             <div className="border-t border-zinc-700 p-2 md:p-4 bg-zinc-800/30 shrink-0 mb-14 md:mb-0">
-              
+
               {/* Attached Files/Image Preview */}
               {(draggedFiles.length > 0 || imagePreview) && (
                 <div className="mb-2 flex flex-wrap gap-2">
@@ -916,6 +1169,25 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     )}
                   </Button>
                 </div>
+                {/* Agent Mode Toggle */}
+                <div className="flex items-center gap-2 px-2">
+                  <Button
+                    type="button"
+                    variant={isAgentMode ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setIsAgentMode(!isAgentMode)}
+                    className={cn(
+                      "h-full border-zinc-600 text-xs transition-colors",
+                      isAgentMode
+                        ? "bg-purple-600 hover:bg-purple-700 text-white border-purple-500"
+                        : "text-zinc-400 hover:text-zinc-100"
+                    )}
+                    title={isAgentMode ? "Agent Mode Active (Max 10 Steps)" : "Enable Agent Mode"}
+                  >
+                    <Zap className={cn("h-3 w-3 mr-1", isAgentMode && "fill-current")} />
+                    Agent
+                  </Button>
+                </div>
               </form>
             </div>
           </div>
@@ -933,7 +1205,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             <FolderTree className="h-5 w-5" />
             <span>Explorer</span>
           </button>
-          
+
           <button
             onClick={() => setMobileView('chat')}
             className={cn(
@@ -944,7 +1216,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             <Terminal className="h-5 w-5" />
             <span>Chat</span>
           </button>
-          
+
           <button
             onClick={() => setMobileView('sessions')}
             className={cn(

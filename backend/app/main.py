@@ -607,6 +607,58 @@ async def clear_backend_logs():
 
     return {"status": "success", "deleted": deleted, "skipped": skipped}
 
+@router.post("/system/shutdown")
+async def shutdown_system():
+    """Shutdown both backend and frontend processes."""
+    def _shutdown():
+        # Kill Frontend (search by window title set in run.bat)
+        subprocess.run('taskkill /F /FI "WINDOWTITLE eq Eloquent Frontend" /T', shell=True)
+        # Kill Backend (search by window title set in run.bat)
+        # This will kill the current process, so it must be last
+        subprocess.run('taskkill /F /FI "WINDOWTITLE eq Eloquent Backend" /T', shell=True)
+        # Fallback if window title doesn't match (e.g. running from VSCode)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    # Run in background to allow response to return
+    threading.Thread(target=_shutdown, daemon=True).start()
+    return {"status": "success", "message": "System shutting down..."}
+
+
+@router.post("/system/restart")
+async def restart_system():
+    """Restart the entire application by launching a temporary batch file."""
+    try:
+        # Create a temporary batch file to handle the restart
+        # It waits, kills processes, then starts run.bat
+        project_root = os.getcwd() # Assumes backend runs from root or we can find run.bat
+        if not os.path.exists(os.path.join(project_root, "run.bat")):
+             # Try going up a level if we are in backend/app
+             project_root = str(Path(__file__).parents[2])
+        
+        restart_bat_path = os.path.join(project_root, "restart_eloquent_temp.bat")
+        run_bat_path = os.path.join(project_root, "run.bat")
+        
+        bat_content = f"""@echo off
+timeout /t 2 >nul
+taskkill /F /FI "WINDOWTITLE eq Eloquent Frontend" /T
+taskkill /F /FI "WINDOWTITLE eq Eloquent Backend" /T
+timeout /t 2 >nul
+cd /d "{project_root}"
+start "" "{run_bat_path}"
+del "%~f0"
+"""
+        with open(restart_bat_path, "w") as f:
+            f.write(bat_content)
+            
+        # Execute the batch file detached
+        subprocess.Popen(restart_bat_path, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        
+        return {"status": "success", "message": "System restarting..."}
+    except Exception as e:
+        logger.error(f"Restart failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Restart failed: {str(e)}")
+
+
 @router.post("/system/select-directory")
 async def select_directory(data: SelectDirectoryRequest = Body(...)):
     """Open a native directory picker on the server and return the selected path."""
@@ -2220,7 +2272,44 @@ async def devstral_chat_endpoint(
                 'content': devstral_service.get_system_prompt(working_dir)
             })
         
-        # Get response from model with tools
+        agent_mode = data.get('agent_mode', False)
+        
+        if agent_mode:
+            logger.info("🤖 AGENT MODE ACTIVATED")
+            result = await devstral_service.run_agent_loop(
+                messages=messages,
+                model_instance=model_instance,
+                working_dir=working_dir,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                image_base64=image_base64,
+                api_config=api_config
+            )
+            
+            # The result from run_agent_loop is a dictionary with {final_response, history, tool_steps}
+            # We return the FINAL response, but attach tool steps to it so frontend can render
+            response = result['final_response']
+            if not response:
+                 # Fallback if agent failed completely
+                raise HTTPException(status_code=500, detail="Agent loop failed to produce a response")
+
+            if 'choices' not in response:
+                 # Should not happen if response is valid OpenAI format
+                 response['choices'] = [{'message': {'role': 'assistant', 'content': 'Agent finished.'}}]
+
+            # Attach detailed tool execution steps for UI
+            response['tool_steps'] = result['tool_steps']
+            
+            # We might also want to return the full conversation history if the frontend needs to sync up
+            # But normally frontend just appends the last message. 
+            # With agent mode, we might have multiple messages.
+            # Best approach: The frontend expects a single "response". 
+            # We will rely on `tool_steps` to show the intermediate work, 
+            # and the final assistant message (which usually says "Done") as the chat bubble.
+            
+            return response
+
+        # --- STANDARD SINGLE-TURN MODE ---
         # Get response from model with tools
         response = await devstral_service.chat_with_tools(
             messages=messages,
@@ -2232,11 +2321,12 @@ async def devstral_chat_endpoint(
             api_config=api_config  # Pass the new config
         )
         
-        # If auto_execute is enabled and we have tool calls, execute them
+        # If auto_execute is enabled (LEGACY SINGLE STEP) and we have tool calls, execute them
         if auto_execute and response.get('choices'):
             choice = response['choices'][0]
             message = choice.get('message', {})
             tool_calls = message.get('tool_calls', [])
+            content = message.get('content')
             
             if tool_calls:
                 tool_results = []
@@ -2247,6 +2337,162 @@ async def devstral_chat_endpoint(
                         arguments = json.loads(func.get('arguments', '{}'))
                     except json.JSONDecodeError:
                         arguments = {}
+
+                    # --- FIX MALFORMED JSON FROM NANOGPT ---
+                    # NanoGPT sometimes returns corrupted JSON - extract values using regex
+                    if not arguments:
+                        raw_args = func.get('arguments', '')
+                        if raw_args and '{' in raw_args:
+                            logger.warning(f"🔧 Auto-exec: Parsing malformed JSON: {raw_args[:200]}...")
+                            extracted = {}
+                            
+                            fp_match = re.search(r'"filepath"\s*:\s*"([^"]+?)(?:"|,|\s|{)', raw_args)
+                            if fp_match:
+                                extracted['filepath'] = fp_match.group(1).rstrip(',').strip()
+                            
+                            sl_match = re.search(r'"start_line"\s*:\s*(\d+)', raw_args)
+                            if sl_match:
+                                extracted['start_line'] = int(sl_match.group(1))
+                            
+                            el_match = re.search(r'"end_line"\s*:\s*(\d+)', raw_args)
+                            if el_match:
+                                extracted['end_line'] = int(el_match.group(1))
+                            
+                            path_match = re.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
+                            if path_match:
+                                extracted['path'] = path_match.group(1)
+                            
+                            query_match = re.search(r'"query"\s*:\s*"([^"]+)"', raw_args)
+                            if query_match:
+                                extracted['query'] = query_match.group(1)
+                            
+                            if extracted:
+                                logger.info(f"✅ Auto-exec rescued from malformed JSON: {extracted}")
+                                arguments = extracted
+                                
+                                # Also infer tool name if empty
+                                if not tool_name or tool_name == 'unknown_tool':
+                                    inferred_name = None
+                                    if 'content' in extracted and 'filepath' in extracted:
+                                        inferred_name = 'write_file'
+                                    elif 'query' in extracted:
+                                        inferred_name = 'search_files'
+                                    elif 'filepath' in extracted:
+                                        inferred_name = 'read_file'
+                                    elif 'path' in extracted:
+                                        inferred_name = 'list_directory'
+                                    elif 'command' in extracted:
+                                        inferred_name = 'run_command'
+                                    
+                                    if inferred_name:
+                                        logger.info(f"✅ Also inferred tool name: {inferred_name}")
+                                        tool_name = inferred_name
+
+                    def _is_nonempty_str(value: Any) -> bool:
+                        return isinstance(value, str) and value.strip() != ""
+                    def _extract_filepath_from_text(text: str) -> Optional[str]:
+                        if not text:
+                            return None
+                        m = re.search(r'`([^`]+\.(?:py|js|jsx|ts|tsx|json|md|yml|yaml|txt|html|css|scss|rs|go|java|cs|cpp|c|h|hpp))`', text, re.IGNORECASE)
+                        if m:
+                            return m.group(1)
+                        m = re.search(r'[\w./\\-]+\.(?:py|js|jsx|ts|tsx|json|md|yml|yaml|txt|html|css|scss|rs|go|java|cs|cpp|c|h|hpp)', text, re.IGNORECASE)
+                        if m:
+                            return m.group(0)
+                        return None
+
+                    # --- RESCUE LOGIC (from agent mode) ---
+                    # If arguments are empty, try to parse tool calls from content
+                    if not arguments and content:
+                        logger.warning(f"🛟 Auto-exec: Attempting to rescue empty args from content...")
+                        parsed_calls, _ = devstral_service.parse_tool_calls(content)
+                        for pc in parsed_calls:
+                            pc_name = pc['function']['name']
+                            pc_args_str = pc['function']['arguments']
+                            try:
+                                rescued_args = json.loads(pc_args_str)
+                                if rescued_args:
+                                    # Match by name if we have one, otherwise take first valid parsed call
+                                    if (tool_name and pc_name == tool_name) or (not tool_name):
+                                        arguments = rescued_args
+                                        logger.info(f"✅ Auto-exec rescued arguments: {arguments}")
+                                        # Also rescue tool name if we didn't have one
+                                        if not tool_name:
+                                            tool_name = pc_name
+                                            logger.info(f"✅ Auto-exec also rescued tool name: {tool_name}")
+                                        break
+                            except:
+                                pass
+
+                    # Infer missing tool name from arguments (matches agent-mode heuristic)
+                    if not tool_name and arguments:
+                        if 'content' in arguments and 'filepath' in arguments:
+                            tool_name = 'write_file'
+                        elif 'query' in arguments:
+                            tool_name = 'search_files'
+                        elif 'filepath' in arguments:
+                            tool_name = 'read_file'
+                        elif 'path' in arguments:
+                            tool_name = 'list_directory'
+                        elif 'command' in arguments:
+                            tool_name = 'run_command'
+                        if tool_name:
+                            logger.warning(f"🩹 Auto-exec inferred tool '{tool_name}' from arguments")
+
+                    # If read_file args are empty, try to infer filepath from message content
+                    if tool_name == "read_file" and not _is_nonempty_str(arguments.get('filepath', '')) and content:
+                        inferred_path = _extract_filepath_from_text(content)
+                        if inferred_path:
+                            arguments['filepath'] = inferred_path
+                            logger.warning(f"🩹 Auto-exec inferred filepath from content: {inferred_path}")
+
+                    # --- ENFORCE READ_FILE LINE RANGES ---
+                    # Prevent reading entire huge files - enforce 200 line window
+                    if tool_name == "read_file" and _is_nonempty_str(arguments.get('filepath', '')):
+                        if arguments.get('start_line') is None and arguments.get('end_line') is None:
+                            arguments['start_line'] = 1
+                            arguments['end_line'] = 200
+                            logger.warning(f"🩹 Auto-enforcing read_file range: lines 1-200 (no range specified)")
+
+                    # Validate required args for common tools
+                    invalid_reason = None
+                    if tool_name == "read_file":
+                        if not _is_nonempty_str(arguments.get('filepath', '')):
+                            invalid_reason = "read_file requires a non-empty 'filepath' string."
+                    elif tool_name == "write_file":
+                        if not _is_nonempty_str(arguments.get('filepath', '')):
+                            invalid_reason = "write_file requires a non-empty 'filepath' string."
+                        elif not isinstance(arguments.get('content', None), str):
+                            invalid_reason = "write_file requires a string 'content' value."
+                    elif tool_name == "list_directory":
+                        if 'path' in arguments and not isinstance(arguments.get('path'), str):
+                            invalid_reason = "list_directory 'path' must be a string."
+                    elif tool_name == "search_files":
+                        if not _is_nonempty_str(arguments.get('query', '')):
+                            invalid_reason = "search_files requires a non-empty 'query' string."
+                    elif tool_name == "run_command":
+                        if not _is_nonempty_str(arguments.get('command', '')):
+                            invalid_reason = "run_command requires a non-empty 'command' string."
+
+                    if not tool_name:
+                        logger.warning("🛑 Auto-exec blocked tool call with empty name")
+                        tool_results.append({
+                            'tool_call_id': tool_call.get('id'),
+                            'name': tool_name,
+                            'success': False,
+                            'result': "SYSTEM ERROR: Tool call missing name. Model must specify function.name."
+                        })
+                        continue
+
+                    if invalid_reason:
+                        logger.warning(f"🛑 Auto-exec blocked invalid args for {tool_name}: {invalid_reason}")
+                        tool_results.append({
+                            'tool_call_id': tool_call.get('id'),
+                            'name': tool_name,
+                            'success': False,
+                            'result': f"SYSTEM ERROR: Invalid arguments for {tool_name}. {invalid_reason}"
+                        })
+                        continue
                     
                     logger.info(f"🔧 Auto-executing tool: {tool_name}")
                     success, result = await devstral_service.execute_tool(
@@ -2270,6 +2516,102 @@ async def devstral_chat_endpoint(
     except Exception as e:
         logger.error(f"❌ Devstral chat error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/devstral/chat/stream")
+async def devstral_chat_stream_endpoint(
+    request: Request,
+    data: dict = Body(...),
+    model_manager: ModelManager = Depends(get_model_manager)
+):
+    """
+    STREAMING version of /devstral/chat for real-time agent loop updates.
+    Returns Server-Sent Events (SSE) for each step.
+    """
+    from .devstral_service import EXTERNAL_LLM_ENABLED, EXTERNAL_LLM_URL
+    
+    messages = data.get("messages", [])
+    working_dir = data.get("working_dir", devstral_service.base_dir)
+    temperature = data.get("temperature", 0.15)
+    max_tokens = data.get("max_tokens", 4096)
+    image_base64 = data.get("image_base64")
+    requested_model = data.get("model")
+    
+    if not messages:
+        raise HTTPException(status_code=400, detail="messages is required")
+    
+    # Resolve model (same logic as devstral_chat_endpoint)
+    api_config = None
+    model_instance = None
+    
+    is_api = requested_model and is_api_endpoint(requested_model)
+    if is_api:
+        endpoint_config = get_configured_endpoint(requested_model)
+        if endpoint_config:
+            api_config = {
+                "url": endpoint_config.get("url"),
+                "api_key": endpoint_config.get("api_key"),
+                "model": endpoint_config.get("model")
+            }
+    
+    if not api_config:
+        if requested_model:
+            for key, model_info in model_manager.loaded_models.items():
+                name, gpu_id = key
+                if requested_model.lower() in name.lower():
+                    model_instance = model_manager.get_model(name, gpu_id)
+                    break
+        
+        if not model_instance:
+            for key, model_info in model_manager.loaded_models.items():
+                name, gpu_id = key
+                if devstral_service.is_devstral_model(name):
+                    model_instance = model_manager.get_model(name, gpu_id)
+                    break
+        
+        if not model_instance and EXTERNAL_LLM_ENABLED:
+            pass  # Will use external API fallback
+        elif not model_instance and model_manager.loaded_models:
+            key = next(iter(model_manager.loaded_models.keys()))
+            name, gpu_id = key
+            model_instance = model_manager.get_model(name, gpu_id)
+        elif not model_instance and not EXTERNAL_LLM_ENABLED:
+            raise HTTPException(status_code=400, detail="No model loaded")
+    
+    # Add system prompt if missing
+    if not messages or messages[0].get('role') != 'system':
+        messages.insert(0, {
+            'role': 'system',
+            'content': devstral_service.get_system_prompt(working_dir)
+        })
+    
+    async def event_generator():
+        """Generate SSE events from the streaming agent loop."""
+        try:
+            async for event in devstral_service.run_agent_loop_streaming(
+                messages=messages,
+                model_instance=model_instance,
+                working_dir=working_dir,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                image_base64=image_base64,
+                api_config=api_config
+            ):
+                # Format as SSE: data: {...}\n\n
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            logger.error(f"❌ Streaming error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
 
 
 @router.post("/devstral/execute-tool")
@@ -6884,6 +7226,72 @@ async def set_base_directory(path: str):
     except Exception as e:
         logger.error(f"Error setting base directory: {e}")
         raise HTTPException(status_code=500, detail=f"Error setting base directory: {str(e)}")
+
+def get_drives():
+    """Get list of available drives on Windows."""
+    drives = []
+    if os.name == 'nt':
+        import string
+        from ctypes import windll
+        bitmask = windll.kernel32.GetLogicalDrives()
+        for letter in string.ascii_uppercase:
+            if bitmask & 1:
+                drives.append(f"{letter}:\\")
+            bitmask >>= 1
+    else:
+        # Unix/Linux/Mac just has root
+        drives.append("/")
+    return drives
+
+@app.get("/code_editor/list_drives")
+async def list_drives():
+    """List available drives (Windows) or root (Unix)"""
+    try:
+        return {"success": True, "drives": get_drives()}
+    except Exception as e:
+        logger.error(f"Error listing drives: {e}")
+        return {"success": False, "drives": [], "error": str(e)}
+
+@app.post("/code_editor/list_path")
+async def list_path_contents(item: dict = Body(...)):
+    """List contents of a specific path for navigation (without setting it as base)"""
+    path = item.get("path")
+    if not path:
+        raise HTTPException(status_code=400, detail="Path is required")
+    
+    try:
+        if not os.path.exists(path):
+            return {"success": False, "error": "Path not found"}
+        
+        if not os.path.isdir(path):
+            return {"success": False, "error": "Path is not a directory"}
+            
+        items = []
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    if entry.name.startswith('.'):
+                        continue
+                    items.append({
+                        "name": entry.name,
+                        "type": "folder" if entry.is_dir() else "file",
+                        "path": entry.path
+                    })
+        except PermissionError:
+            return {"success": False, "error": "Permission denied"}
+            
+        # Sort: folders first, then files
+        items.sort(key=lambda x: (x["type"] != "folder", x["name"].lower()))
+        
+        return {
+            "success": True, 
+            "current_path": path,
+            "parent_path": os.path.dirname(path),
+            "items": items
+        }
+    except Exception as e:
+        logger.error(f"Error listing path {path}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     
 @app.post("/v1/chat/completions/tools")
 async def chat_completions_with_tools(
