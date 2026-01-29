@@ -6,6 +6,22 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-01-30
+
+### Added
+
+* **Browser Auto-Launch Toggle**: Added a toggle in **Settings > General** to enable or disable the automatic launching of the browser window on startup.
+* **System Controls**: Added **Shutdown** and **Restart** buttons to the top navigation bar, allowing users to manage the application lifecycle directly from the UI.
+* **Code Editor Navigation**: Implemented a comprehensive file explorer for the Code Editor. Users can now navigate drives and folders to set any directory as the project root.
+* **Agent Process Visualization**: Added full visibility of the Agent's internal processing and tool execution to the Code Editor UI. Users can now see the agent's real-time "Chain of Thought", understanding exactly why it is taking an action before it happens.
+* **Agent Mode Reliability**: Overhauled the Code Editor's "Agent Mode" to functional status. This includes a new "Hallucination Rescue" system that detects when the model *intends* to use a tool (reasoning in text) but fails the strict JSON protocol, automatically executing the intended tool call to ensure valid operations.
+
+### Fixed
+
+*   **File Search**: Fixed the `search_files` tool to correctly handle single file paths, preventing errors when the agent attempts to search specific files.
+*   **Functional Agent Mode**: Restored the Code Editor's "Agent Mode" to a fully functional state, resolving critical issues where the agent would stall, fail to parse arguments, or act without reasoning.
+*   **UI Fixes**: Fixed the visibility of the "Change Directory" button in the Code Editor, which was previously invisible due to low contrast styling.
+
 ## 2026-01-28
 
 ### Fixed
