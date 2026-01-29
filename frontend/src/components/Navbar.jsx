@@ -13,7 +13,9 @@ import {
   Search,
   Code,
   Fingerprint,
-  Palette
+  Palette,
+  Power,
+  RotateCw
 } from 'lucide-react';
 
 const Navbar = ({ toggleSidebar }) => {
@@ -23,7 +25,8 @@ const Navbar = ({ toggleSidebar }) => {
     loadedModels,
     activeModel,
     activeTab,
-    setActiveTab
+    setActiveTab,
+    PRIMARY_API_URL
   } = useApp();
 
   const { theme, setTheme } = useTheme();
@@ -70,6 +73,46 @@ const Navbar = ({ toggleSidebar }) => {
 
         {/* Right Side: Status Indicators & Theme Toggle */}
         <div className="flex items-center gap-4">
+
+          {/* System Controls */}
+          <div className="flex items-center gap-1 border-r pr-2 mr-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Restart Application"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={async () => {
+                if (confirm('Are you sure you want to restart Eloquent?')) {
+                  try {
+                    await fetch(`${PRIMARY_API_URL}/system/restart`, { method: 'POST' });
+                    // No alert needed as page will loose connection
+                  } catch (e) {
+                    console.error("Restart failed", e);
+                  }
+                }
+              }}
+            >
+              <RotateCw className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Shutdown Application"
+              className="text-muted-foreground hover:text-red-500"
+              onClick={async () => {
+                if (confirm('Are you sure you want to shutdown Eloquent?')) {
+                  try {
+                    await fetch(`${PRIMARY_API_URL}/system/shutdown`, { method: 'POST' });
+                    alert("System shutting down. You can close this window.");
+                  } catch (e) {
+                    console.error("Shutdown failed", e);
+                  }
+                }
+              }}
+            >
+              <Power className="h-4 w-4" />
+            </Button>
+          </div>
 
           {/* Theme Selector - Custom Styled or Standard Select */}
           <div className="flex items-center mr-2">

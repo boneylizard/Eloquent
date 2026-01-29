@@ -84,6 +84,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     customApiEndpoints: contextSettings.customApiEndpoints ?? [],
     admin_password: contextSettings.admin_password ?? "",
     main_gpu_id: contextSettings.main_gpu_id ?? 0,
+    auto_launch_browser: contextSettings.auto_launch_browser ?? true,
   });
   const [hasChanges, setHasChanges] = useState(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
@@ -523,6 +524,21 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     </Button>
                   </div>
                 </div>
+              </div>
+              <Separator />
+
+              <div className="flex flex-row items-center justify-between">
+                <div>
+                  <Label htmlFor="auto-launch-browser">Auto-Launch Browser</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Automatically open the browser window on startup.
+                  </p>
+                </div>
+                <Switch
+                  id="auto-launch-browser"
+                  checked={localSettings.auto_launch_browser}
+                  onCheckedChange={(value) => handleChange('auto_launch_browser', value)}
+                />
               </div>
               <Separator />
 
