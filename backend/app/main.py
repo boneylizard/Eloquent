@@ -716,17 +716,26 @@ async def update_system():
     if status_output:
         stash_name = f"eloquent_autoupdate_{int(time.time())}"
         stash_result = run_git_command(
-            ["stash", "push", "-u", "-m", stash_name],
+            ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "push", "-u", "-m", stash_name],
             repo_root,
             timeout=120
         )
         if stash_result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"git stash failed: {stash_result.stderr.strip() or stash_result.stdout.strip()}"
-            )
-        if "No local changes to save" not in stash_result.stdout:
+            # Some Git setups emit CRLF warnings on stderr and still create a stash.
+            # Verify whether the stash was created before failing.
+            list_result = run_git_command(["stash", "list"], repo_root)
+            stash_found = False
+            if list_result.returncode == 0 and stash_name:
+                stash_found = stash_name in list_result.stdout
+            if not stash_found:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"git stash failed: {stash_result.stderr.strip() or stash_result.stdout.strip()}"
+                )
             stashed = True
+        else:
+            if "No local changes to save" not in stash_result.stdout:
+                stashed = True
 
     upstream_result = run_git_command(
         ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
@@ -757,7 +766,11 @@ async def update_system():
     stash_applied = False
     stash_conflicts = False
     if stashed:
-        pop_result = run_git_command(["stash", "pop"], repo_root, timeout=120)
+        pop_result = run_git_command(
+            ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "pop"],
+            repo_root,
+            timeout=120
+        )
         stash_applied = pop_result.returncode == 0
         if pop_result.returncode != 0:
             stash_conflicts = True
