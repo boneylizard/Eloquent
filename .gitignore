@@ -25,6 +25,7 @@ frontend/package-lock.json
 frontend/.vite/
 frontend/.cache/
 frontend/dist/
+frontend/public/ports.json
 
 # Ignore system stuff
 .DS_Store
