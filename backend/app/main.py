@@ -801,30 +801,10 @@ def _run_update_task(update_id: str) -> None:
         return
 
     try:
-        status_result = _run_git_with_logs(["status", "--porcelain"], repo_root, "Checking status")
-        if status_result.returncode != 0:
-            raise RuntimeError("Failed to check git status.")
-
-        status_output = status_result.stdout.strip()
-        stashed = False
-        stash_name = None
-        if status_output:
-            stash_name = f"eloquent_autoupdate_{int(time.time())}"
-            stash_result = _run_git_with_logs(
-                ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "push", "-u", "-m", stash_name],
-                repo_root,
-                "Stashing changes",
-                timeout=120
-            )
-            if stash_result.returncode != 0:
-                list_result = _run_git_with_logs(["stash", "list"], repo_root, "Checking stash list")
-                if list_result.returncode != 0 or stash_name not in list_result.stdout:
-                    raise RuntimeError("git stash failed")
-                stashed = True
-            else:
-                if "No local changes to save" not in stash_result.stdout:
-                    stashed = True
-            _update_state({"stash_used": stashed, "stash_name": stash_name})
+        _append_update_log(
+            "warn",
+            "Force update enabled: local changes will be discarded to match the latest git version."
+        )
 
         upstream_result = _run_git_with_logs(
             ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
@@ -844,21 +824,23 @@ def _run_update_task(update_id: str) -> None:
         if fetch_result.returncode != 0:
             raise RuntimeError("git fetch failed")
 
-        pull_result = _run_git_with_logs(["pull", "--ff-only"], repo_root, "Pulling updates", timeout=120)
-        if pull_result.returncode != 0:
-            raise RuntimeError("git pull failed")
+        reset_result = _run_git_with_logs(
+            ["reset", "--hard", "@{upstream}"],
+            repo_root,
+            "Resetting to latest commit",
+            timeout=120
+        )
+        if reset_result.returncode != 0:
+            raise RuntimeError("git reset --hard failed")
 
-        stash_applied = None
-        stash_conflicts = False
-        if stashed:
-            stash_applied = False
-            stash_conflicts = False
-            _append_update_log(
-                "warn",
-                "Local changes were stashed and NOT reapplied to avoid overwriting updates. "
-                "Use `git stash list` and `git stash pop` to restore them if needed."
-            )
-            _update_state({"stash_applied": stash_applied, "stash_conflicts": stash_conflicts})
+        clean_result = _run_git_with_logs(
+            ["clean", "-fd"],
+            repo_root,
+            "Cleaning untracked files",
+            timeout=120
+        )
+        if clean_result.returncode != 0:
+            raise RuntimeError("git clean failed")
 
         after_result = _run_git_with_logs(["rev-parse", "HEAD"], repo_root, "Reading updated commit")
         if after_result.returncode != 0:
@@ -872,10 +854,10 @@ def _run_update_task(update_id: str) -> None:
             "updated": updated,
             "after": after_commit,
             "restart_recommended": updated,
-            "stash_used": stashed,
-            "stash_name": stash_name,
-            "stash_applied": stash_applied,
-            "stash_conflicts": stash_conflicts,
+            "stash_used": False,
+            "stash_name": None,
+            "stash_applied": None,
+            "stash_conflicts": False,
             "finished_at": _now_iso()
         })
 
