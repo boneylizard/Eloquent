@@ -45,8 +45,9 @@ INPUT/OUTPUT FORMAT:
 - You are interacting via a structured tool-calling API.
 - Do not make up tool names. Use only the tools provided in your schema.
 - Do not output empty arguments. If a tool requires a parameter, you must provide it.
-- To read the next part of a file, you MUST explicitly calculate and provide the new `start_line` and `end_line`.
-- DO NOT send empty arguments to "page" through a file.
+- DO NOT page through huge files linearly. This is inefficient.
+- Use `search_files` to find the relevant section first.
+- IF `search_files` returns matches, you MUST use `read_file` on the found location(s) immediately to verify the context. DO NOT SEARCH AGAIN.
 - WHEN EDITING FILES: Use `replace_lines` for modifying existing code. Use `write_file` ONLY for creating new files or replacing small files completely.
 """
 
@@ -847,15 +848,21 @@ class DevstralService:
                                     tool_call['function']['arguments'] = json.dumps(arguments)
                                 logger.warning(f"🩹 Enforcing read_file range: {arguments['filepath']} lines {start_line}-{end_line}")
                         
-                        # EARLY LOOP BREAK: Detect consecutive reads of same file (3+ in a row)
+                        # EARLY LOOP BREAK: Detect consecutive reads of same file (2+ in a row)
                         current_fp = arguments.get("filepath", "")
-                        if current_fp and current_fp == last_read_file.get("filepath"):
+                        last_fp = last_read_file.get("filepath", "")
+                        
+                        # Debug log to trace why detector might fail
+                        if tool_name == "read_file":
+                            logger.info(f"🕵️ Loop Check: Current='{current_fp}' Last='{last_fp}' Count={consecutive_same_file_reads}")
+
+                        if current_fp and current_fp == last_fp:
                             consecutive_same_file_reads += 1
-                            if consecutive_same_file_reads >= 3:
+                            if consecutive_same_file_reads >= 4:
                                 logger.warning(f"🛑 Breaking read loop: {consecutive_same_file_reads} consecutive reads of {current_fp}")
-                                result = (f"SYSTEM MONITOR: You've made {consecutive_same_file_reads} sequential reads of '{current_fp}'. "
-                                          f"STOP reading linearly. Use 'search_files' with query=<what you're looking for> path=<directory> "
-                                          f"to find the exact line numbers, then read_file with those specific line ranges.")
+                                result = (f"SYSTEM MONITOR: You have made {consecutive_same_file_reads} sequential reads of '{current_fp}'. "
+                                          f"STOP reading this file linearly. It is inefficient. "
+                                          f"Use 'search_files' to find the text you need, then read specific lines.")
                                 tool_steps.append({
                                     'step': loop_count + 1,
                                     'tool': tool_name,
@@ -872,7 +879,10 @@ class DevstralService:
                                 consecutive_same_file_reads = 0  # Reset counter
                                 continue  # Skip execution, force model to rethink
                         else:
-                            consecutive_same_file_reads = 1  # New file, reset to 1
+                            if tool_name == "read_file":
+                                consecutive_same_file_reads = 1  # New file, start count at 1
+                            else:
+                                consecutive_same_file_reads = 0 # Different tool breaks chain
 
 
                     # Check for empty tool name (Model Malfunction)
@@ -1077,6 +1087,7 @@ class DevstralService:
         Events: {"type": "content/tool_call/tool_result/done", ...}
         """
         import json as json_lib
+        import re
         
         loop_count = 0
         tool_steps = []
@@ -1084,6 +1095,7 @@ class DevstralService:
         consecutive_blocked_calls = 0
         consecutive_same_file_reads = 0
         last_read_file = {"filepath": None, "end_line": None}
+        should_terminate = False
         
         conversation_history = list(messages)
         
@@ -1138,37 +1150,86 @@ class DevstralService:
                 message = response.get('choices', [{}])[0].get('message', {})
                 content = message.get('content', '')
                 tool_calls = message.get('tool_calls', [])
+                if tool_calls is None:
+                    tool_calls = []
                 
                 # --- HALLUCINATION RESCUE START ---
                 # If model wrote a tool call in text content instead of using the function, rescue it!
                 if not tool_calls and content and "🔧" in content:
                     logger.warning("🕵️ Detected potential tool hallucination in text. Attempting rescue...")
                     # Regex to match: 🔧 **tool_name**: {json_args}
-                    import re
+                    # Regex to match: 🔧 **tool_name**: {json_args}
+                    
                     # Look for the pattern user showed in logs
-                    matches = re.finditer(r"🔧 \*\*(?P<name>[\w_]+)\*\*: (?P<args>\{.*?\})", content, re.DOTALL)
+                    # Helper to extract balanced JSON objects
+                    def _extract_json_objects(text):
+                        objects = []
+                        stack = []
+                        start_index = -1
+                        
+                        for i, char in enumerate(text):
+                            if char == '{':
+                                if not stack:
+                                    start_index = i
+                                stack.append(char)
+                            elif char == '}':
+                                if stack:
+                                    stack.pop()
+                                    if not stack:
+                                        # Found a complete JSON object
+                                        json_str = text[start_index:i+1]
+                                        objects.append(json_str)
+                        return objects
+
+                    # Look for tool usage pattern: 🔧 **tool_name**: {param: value}
+                    # We first find the tool name, then look for the JSON object immediately following it
+                    import re
+                    matches = list(re.finditer(r"🔧 \*\*(?P<name>[\w_]+)\*\*: (?=\s*\{)", content))
+                    
                     rescued_tools = []
                     for match in matches:
                         t_name = match.group("name")
-                        t_args = match.group("args")
-                        # Try to clean up args if they have trailing ... or similar
-                        if "..." in t_args:
-                            t_args = t_args.split("...")[0] + "}" # Very naive fix, might need better json repair
                         
-                        # Validate JSON
-                        try:
-                            json_lib.loads(t_args) # Just check if valid
-                            rescued_tools.append({
-                                "id": f"rescued_{loop_count}_{len(rescued_tools)}",
-                                "type": "function",
-                                "function": {
-                                    "name": t_name,
-                                    "arguments": t_args
-                                }
-                            })
-                            logger.info(f"✅ Rescued tool call from text: {t_name}({t_args})")
-                        except:
-                            logger.warning(f"❌ Failed to parse rescued JSON for {t_name}")
+                        # Extract the JSON object starting after the colon
+                        start_pos = match.end()
+                        json_candidates = _extract_json_objects(content[start_pos:])
+                        
+                        if json_candidates:
+                            # The first valid JSON object found immediately after the tool name
+                            potential_json = json_candidates[0]
+                            try:
+                                # Validate JSON
+                                json_lib.loads(potential_json)
+                                rescued_tools.append({
+                                    "id": f"rescued_{loop_count}_{len(rescued_tools)}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": t_name,
+                                        "arguments": potential_json
+                                    }
+                                })
+                                logger.info(f"✅ Rescued tool call from text: {t_name}")
+                            except:
+                                logger.warning(f"❌ Failed to parse rescued JSON for {t_name}")
+                    
+                    # FALLBACK: If robust extraction failed, try the simple regex for simple tools
+                    if not rescued_tools:
+                         matches = re.finditer(r"🔧 \*\*(?P<name>[\w_]+)\*\*: (?P<args>\{.*?\})", content, re.DOTALL)
+                         for match in matches:
+                             t_name = match.group("name")
+                             t_args = match.group("args")
+                             try:
+                                 json_lib.loads(t_args)
+                                 rescued_tools.append({
+                                    "id": f"rescued_fallback_{loop_count}_{len(rescued_tools)}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": t_name,
+                                        "arguments": t_args
+                                    }
+                                })
+                             except:
+                                 pass
                     
                     if rescued_tools:
                         tool_calls = rescued_tools
@@ -1266,6 +1327,141 @@ class DevstralService:
                             tool_name = inferred_name
                             func['name'] = tool_name
                     
+                    # yield tool_call event happening below...
+
+                    # ALIAS MAPPING: Fix common model mistakes (e.g. filename vs filepath)
+                    if tool_name == "read_file":
+                        if 'filepath' not in arguments or not arguments['filepath']:
+                            for alias in ['filename', 'path', 'file', 'name']:
+                                if alias in arguments and arguments[alias]:
+                                    arguments['filepath'] = arguments[alias]
+                                    break
+                    elif tool_name == "list_directory":
+                        if 'path' not in arguments or not arguments['path']:
+                            for alias in ['dir', 'directory', 'folder', 'filepath']:
+                                if alias in arguments and arguments[alias]:
+                                    arguments['path'] = arguments[alias]
+                                    break
+
+                    # Auto-fill + enforce read_file ranges to avoid huge file dumps
+                    if tool_name == "read_file":
+                        if not arguments.get("filepath") and last_read_file.get("filepath"):
+                             # Autofill filepath if missing (contextual read)
+                             arguments["filepath"] = last_read_file["filepath"]
+                        
+                        if arguments.get("filepath"):
+                             # If we have a file, check if we need to auto-page
+                             if arguments.get("start_line") is None:
+                                  current_end = last_read_file.get("end_line", 0) or 0
+                                  if last_read_file.get("filepath") == arguments["filepath"]:
+                                       arguments["start_line"] = current_end + 1
+                                       arguments["end_line"] = arguments["start_line"] + 199
+
+                    # EARLY LOOP BREAK: Detect consecutive reads of same file (2+ in a row)
+                    current_fp = arguments.get("filepath", "")
+                    last_fp = last_read_file.get("filepath", "")
+                    
+                    if tool_name == "read_file" and current_fp and current_fp == last_fp:
+                        consecutive_same_file_reads += 1
+                        if consecutive_same_file_reads >= 4:
+                            logger.warning(f"🛑 Breaking read loop: {consecutive_same_file_reads} consecutive reads of {current_fp}")
+                            result = (f"SYSTEM MONITOR: You have made {consecutive_same_file_reads} sequential reads of '{current_fp}'. "
+                                      f"STOP reading this file linearly. It is inefficient. "
+                                      f"Use 'search_files' to find the text you need, then read specific lines.")
+                            
+                             # Yield error/result event
+                            yield {
+                                "type": "tool_result",
+                                "step": loop_count + 1,
+                                "tool": tool_name,
+                                "success": False,
+                                "result": result
+                            }
+                            tool_steps.append({
+                                'step': loop_count + 1,
+                                'tool': tool_name,
+                                'args': arguments,
+                                'result': result,
+                                'success': False
+                            })
+                            conversation_history.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": result
+                            })
+                            consecutive_same_file_reads = 0
+                            
+                            consecutive_blocked_calls += 1
+                            if consecutive_blocked_calls >= 2:
+                                logger.warning("🛑 Maximum consecutive blocked calls reached. Stopping loop.")
+                                yield {"type": "content", "step": loop_count + 1, "text": "\n\n**SYSTEM**: Terminating sequence due to repeated invalid actions."}
+                                should_terminate = True
+                                break
+                                
+                            continue # Skip execution
+                    else:
+                        if tool_name == "read_file":
+                            consecutive_same_file_reads = 1
+                        else:
+                            consecutive_same_file_reads = 0
+
+                    # REPETITION GUARD: Check for ANY identical tool call in history (Read-Only tools only)
+                    # We only strict-block repeated READS/SEARCHES to prevent infinite information loops.
+                    # We ALLOW repeated edits because sometimes a retry is needed or intentional.
+                    is_repetition = False
+                    previous_step_index = -1
+                    
+                    # Only enforce guard for read-only tools
+                    if tool_name in ["read_file", "search_files", "list_directory", "ls"]:
+                        current_args_json = json_lib.dumps(arguments, sort_keys=True)
+                        
+                        for i, step in enumerate(tool_steps):
+                            if (step['tool'] == tool_name and 
+                                json_lib.dumps(step['args'], sort_keys=True) == current_args_json):
+                                is_repetition = True
+                                previous_step_index = step['step']
+                                break
+                    
+                    if is_repetition:
+                        logger.warning(f"🛑 Blocking streaming repetitive tool call: {tool_name} (Same as Step {previous_step_index})")
+                        success = False
+                        result = (f"SYSTEM MONITOR: You ALREADY executed this exact tool call in Step {previous_step_index}. "
+                                  f"Do not repeat actions. Check the history for the result. "
+                                  f"You must try a DIFFERENT tool, path, or argument.")
+                        
+                        yield {
+                            "type": "tool_result",
+                            "step": loop_count + 1,
+                            "tool": tool_name,
+                            "success": False,
+                            "result": result
+                        }
+                        
+                        tool_steps.append({
+                            'step': loop_count + 1,
+                            'tool': tool_name,
+                            'args': arguments,
+                            'result': result,
+                            'success': False
+                        })
+                        conversation_history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": result
+                        })
+                        
+                        consecutive_blocked_calls += 1
+                        if consecutive_blocked_calls >= 2:
+                            logger.warning("🛑 Maximum consecutive blocked calls reached. Stopping loop.")
+                            yield {"type": "content", "step": loop_count + 1, "text": "\n\n**SYSTEM**: Terminating sequence due to repeated invalid actions."}
+                            should_terminate = True
+                            break
+                            
+                        continue
+
+
                     # Log raw arguments
                     logger.info(f"🔍 Raw arguments for {tool_name}: {arguments}")
                     
@@ -1288,11 +1484,50 @@ class DevstralService:
                     # Track read_file progress
                     if tool_name == "read_file" and success:
                         last_read_file["filepath"] = arguments.get("filepath")
-                        last_read_file["end_line"] = arguments.get("end_line")
+                        # Infer end line...
+                        end_line_val = None
+                        try:
+                            if arguments.get("end_line"):
+                                end_line_val = int(arguments.get("end_line"))
+                            else:
+                                lc = len(str(result).splitlines())
+                                start = int(arguments.get("start_line", 1))
+                                end_line_val = start + lc - 1
+                        except:
+                            pass
+                        last_read_file["end_line"] = end_line_val
                     
                     result_str = str(result)
                     
                     # Yield tool result event
+                    yield {
+                        "type": "tool_result",
+                        "step": loop_count + 1,
+                        "tool": tool_name,
+                        "success": success,
+                        "result": result_str[:500]  # Truncate for UI
+                    }
+                    
+                    tool_steps.append({
+                        'step': loop_count + 1,
+                        'tool': tool_name,
+                        'args': arguments,
+                        'result': result_str[:500],
+                        'success': success
+                    })
+                    
+                    # Add to conversation history
+                    history_result = result_str[:20000] + "..." if len(result_str) > 20000 else result_str
+                    conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "content": history_result
+                    })
+
+                # BREAK OUTER LOOP if flag is set
+                if should_terminate:
+                    break
                     yield {
                         "type": "tool_result",
                         "step": loop_count + 1,

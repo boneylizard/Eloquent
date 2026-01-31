@@ -20,6 +20,7 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 *   **File Search**: Fixed the `search_files` tool to correctly handle single file paths, preventing errors when the agent attempts to search specific files.
 *   **Functional Agent Mode**: Restored the Code Editor's "Agent Mode" to a fully functional state, resolving critical issues where the agent would stall, fail to parse arguments, or act without reasoning.
+*   **Endless Read Loop**: Implemented strict loop detection to prevent the agent from inefficiently paging through files. It is now forced to use `search_files` after 2 consecutive reads of the same file.
 *   **UI Fixes**: Fixed the visibility of the "Change Directory" button in the Code Editor, which was previously invisible due to low contrast styling.
 
 ## 2026-01-28

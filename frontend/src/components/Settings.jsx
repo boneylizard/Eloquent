@@ -100,6 +100,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [isShuttingDownTTS, setIsShuttingDownTTS] = useState(false);
   const [isRestartingTTS, setIsRestartingTTS] = useState(false);
   const [directoryPickerKey, setDirectoryPickerKey] = useState(null);
+  const [updateStatus, setUpdateStatus] = useState(null);
+  const [updateError, setUpdateError] = useState(null);
+  const [updateOutput, setUpdateOutput] = useState(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const pendingSettingsRef = useRef({});
   const settingsSaveTimerRef = useRef(null);
 
@@ -275,6 +280,52 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     } catch (error) {
       console.error("Failed to clear backend logs:", error);
       alert("Failed to clear backend logs.");
+    }
+  }, [PRIMARY_API_URL]);
+
+  const handleCheckUpdates = useCallback(async () => {
+    setIsCheckingUpdate(true);
+    setUpdateError(null);
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/system/update-status?fetch=1`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || `Status ${response.status}`);
+      }
+      setUpdateStatus(data);
+    } catch (error) {
+      setUpdateError(error.message || 'Failed to check updates.');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  }, [PRIMARY_API_URL]);
+
+  const handleRunUpdate = useCallback(async () => {
+    if (!confirm("Pull the latest updates from GitHub? A restart may be required.")) {
+      return;
+    }
+    setIsUpdating(true);
+    setUpdateError(null);
+    setUpdateOutput(null);
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/system/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || `Update failed (${response.status})`);
+      }
+      setUpdateOutput(data);
+      setUpdateStatus(prev => (prev ? { ...prev, current_commit: data.after || prev.current_commit } : prev));
+      if (data.restart_recommended) {
+        alert('Update complete. Please restart the app to apply changes.');
+      }
+    } catch (error) {
+      setUpdateError(error.message || 'Failed to update.');
+    } finally {
+      setIsUpdating(false);
     }
   }, [PRIMARY_API_URL]);
 
@@ -481,6 +532,81 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     Delete Old Logs
                   </Button>
                 </div>
+              </div>
+              <Separator />
+
+              {/* App Updates */}
+              <div className="space-y-2">
+                <Label className="text-base font-medium">App Updates</Label>
+                <p className="text-xs text-muted-foreground">
+                  Pull latest changes from GitHub. Requires git and a clean working tree.
+                </p>
+                <div className="flex flex-col md:flex-row gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={handleCheckUpdates}
+                    disabled={isCheckingUpdate || isUpdating}
+                  >
+                    {isCheckingUpdate ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                    )}
+                    Check for Updates
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleRunUpdate}
+                    disabled={isUpdating || isCheckingUpdate}
+                  >
+                    {isUpdating ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <RotateCw className="mr-2 h-4 w-4" />
+                    )}
+                    Update Now
+                  </Button>
+                </div>
+
+                {updateStatus && (
+                  <div className="text-xs text-muted-foreground space-y-1">
+                    <div>
+                      Branch: {updateStatus.branch || 'unknown'} (
+                      {updateStatus.current_commit ? updateStatus.current_commit.slice(0, 7) : 'unknown'})
+                    </div>
+                    {updateStatus.upstream ? (
+                      <div>
+                        Tracking: {updateStatus.upstream} - Ahead {updateStatus.ahead ?? 'n/a'} - Behind {updateStatus.behind ?? 'n/a'}
+                      </div>
+                    ) : (
+                      <div>No upstream configured for this branch.</div>
+                    )}
+                    <div>Working tree: {updateStatus.dirty ? 'dirty' : 'clean'}</div>
+                  </div>
+                )}
+
+                {typeof updateStatus?.behind === 'number' && updateStatus.behind > 0 && (
+                  <Alert>
+                    <AlertTitle>Update available</AlertTitle>
+                    <AlertDescription>Behind by {updateStatus.behind} commit(s).</AlertDescription>
+                  </Alert>
+                )}
+
+                {updateOutput && (
+                  <Alert>
+                    <AlertTitle>{updateOutput.updated ? 'Updated' : 'Already up to date'}</AlertTitle>
+                    <AlertDescription className="whitespace-pre-wrap text-xs">
+                      {updateOutput.stdout || updateOutput.stderr || 'Update complete.'}
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {updateError && (
+                  <Alert variant="destructive">
+                    <AlertTitle>Update failed</AlertTitle>
+                    <AlertDescription>{updateError}</AlertDescription>
+                  </Alert>
+                )}
               </div>
               <Separator />
 

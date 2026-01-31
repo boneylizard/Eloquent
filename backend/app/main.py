@@ -92,6 +92,23 @@ def get_log_dir():
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
+def get_repo_root() -> Path:
+    """Resolve the git repo root (project root)."""
+    return Path(__file__).resolve().parents[2]
+
+def run_git_command(args: List[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Run a git command and return the CompletedProcess."""
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="git is not installed or not on PATH.")
+
 # File logging for backend logs (one file per port)
 disable_backend_file_log = os.environ.get("ELOQUENT_DISABLE_BACKEND_LOG", "").lower() in ("1", "true", "yes")
 try:
@@ -448,7 +465,20 @@ def get_safe_path(basedir: str, path: str) -> Optional[str]:
         return os.path.abspath(os.path.join(basedir, path))
     return None
 
-CODE_EDITOR_BASE_DIR = os.getcwd()  # You can change this to a specific project directory
+CODE_EDITOR_BASE_DIR = os.getcwd()  # Default to current dir
+
+# Try to load saved base dir from settings
+try:
+    settings_path = Path.home() / ".LiangLocal" / "settings.json"
+    if settings_path.exists():
+        with open(settings_path, 'r', encoding='utf-8') as f:
+            saved_settings = json.load(f)
+            saved_dir = saved_settings.get("code_editor_base_dir")
+            if saved_dir and os.path.exists(saved_dir) and os.path.isdir(saved_dir):
+                CODE_EDITOR_BASE_DIR = saved_dir
+                logger.info(f"Loaded saved code editor directory: {CODE_EDITOR_BASE_DIR}")
+except Exception as e:
+    logger.warning(f"Failed to load saved code editor directory: {e}")
 
 
 # Add this to your existing FastAPI app
@@ -606,6 +636,121 @@ async def clear_backend_logs():
         logger.warning(f"Skipped deleting {len(skipped)} log files: {skipped}")
 
     return {"status": "success", "deleted": deleted, "skipped": skipped}
+
+@router.get("/system/update-status")
+async def get_update_status(fetch: bool = False):
+    """Get git update status for the local repo."""
+    repo_root = get_repo_root()
+    if not (repo_root / ".git").exists():
+        raise HTTPException(status_code=404, detail="Not a git repository.")
+
+    if fetch:
+        fetch_result = run_git_command(["fetch", "--prune"], repo_root, timeout=60)
+        if fetch_result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"git fetch failed: {fetch_result.stderr.strip() or fetch_result.stdout.strip()}"
+            )
+
+    branch_result = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"], repo_root)
+    if branch_result.returncode != 0:
+        raise HTTPException(status_code=500, detail="Failed to resolve current branch.")
+    branch = branch_result.stdout.strip()
+
+    commit_result = run_git_command(["rev-parse", "HEAD"], repo_root)
+    if commit_result.returncode != 0:
+        raise HTTPException(status_code=500, detail="Failed to resolve current commit.")
+    current_commit = commit_result.stdout.strip()
+
+    dirty_result = run_git_command(["status", "--porcelain"], repo_root)
+    if dirty_result.returncode != 0:
+        raise HTTPException(status_code=500, detail="Failed to check git status.")
+    dirty = bool(dirty_result.stdout.strip())
+
+    upstream = None
+    ahead = None
+    behind = None
+    upstream_result = run_git_command(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        repo_root
+    )
+    if upstream_result.returncode == 0:
+        upstream = upstream_result.stdout.strip()
+        counts_result = run_git_command(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], repo_root)
+        if counts_result.returncode == 0:
+            parts = counts_result.stdout.strip().split()
+            if len(parts) == 2:
+                try:
+                    ahead = int(parts[0])
+                    behind = int(parts[1])
+                except ValueError:
+                    pass
+
+    return {
+        "status": "success",
+        "repo_root": str(repo_root),
+        "branch": branch,
+        "current_commit": current_commit,
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "dirty": dirty
+    }
+
+@router.post("/system/update")
+async def update_system():
+    """Pull latest changes from the git repo."""
+    repo_root = get_repo_root()
+    if not (repo_root / ".git").exists():
+        raise HTTPException(status_code=404, detail="Not a git repository.")
+
+    status_result = run_git_command(["status", "--porcelain"], repo_root)
+    if status_result.returncode != 0:
+        raise HTTPException(status_code=500, detail="Failed to check git status.")
+    if status_result.stdout.strip():
+        raise HTTPException(status_code=409, detail="Working tree has uncommitted changes. Update aborted.")
+
+    upstream_result = run_git_command(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        repo_root
+    )
+    if upstream_result.returncode != 0:
+        raise HTTPException(status_code=400, detail="No upstream configured for the current branch.")
+
+    before_result = run_git_command(["rev-parse", "HEAD"], repo_root)
+    if before_result.returncode != 0:
+        raise HTTPException(status_code=500, detail="Failed to resolve current commit.")
+    before_commit = before_result.stdout.strip()
+
+    fetch_result = run_git_command(["fetch", "--prune"], repo_root, timeout=60)
+    if fetch_result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"git fetch failed: {fetch_result.stderr.strip() or fetch_result.stdout.strip()}"
+        )
+
+    pull_result = run_git_command(["pull", "--ff-only"], repo_root, timeout=120)
+    if pull_result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"git pull failed: {pull_result.stderr.strip() or pull_result.stdout.strip()}"
+        )
+
+    after_result = run_git_command(["rev-parse", "HEAD"], repo_root)
+    if after_result.returncode != 0:
+        raise HTTPException(status_code=500, detail="Failed to resolve updated commit.")
+    after_commit = after_result.stdout.strip()
+
+    updated = before_commit != after_commit
+    return {
+        "status": "success",
+        "updated": updated,
+        "before": before_commit,
+        "after": after_commit,
+        "stdout": pull_result.stdout,
+        "stderr": pull_result.stderr,
+        "restart_recommended": updated
+    }
 
 @router.post("/system/shutdown")
 async def shutdown_system():
@@ -7214,6 +7359,27 @@ async def set_base_directory(path: str):
             raise HTTPException(status_code=400, detail="Path is not a directory")
         
         CODE_EDITOR_BASE_DIR = abs_path
+        
+        # Save to settings
+        try:
+            settings_path = Path.home() / ".LiangLocal" / "settings.json"
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            settings = {}
+            if settings_path.exists():
+                try:
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        settings = json.load(f)
+                except Exception:
+                    pass
+            
+            settings["code_editor_base_dir"] = CODE_EDITOR_BASE_DIR
+            
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=4)
+                
+        except Exception as e:
+            logger.error(f"Failed to save code editor directory setting: {e}")
         
         return {
             "success": True,
