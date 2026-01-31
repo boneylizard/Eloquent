@@ -1169,6 +1169,108 @@ const Chat = ({ layoutMode }) => {
     return null; // Placeholder for brevity
   };
 
+  const renderedMessages = useMemo(() => {
+    if (messages.length === 0) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground pt-10">
+          <h3 className="text-lg font-medium mb-2">No messages yet</h3>
+          <p className="max-w-md mb-4">
+            {!primaryModel ? "Load a model to start chatting" : "Send a message or use the microphone"}
+          </p>
+          {!primaryModel && (
+            <Button variant="outline" onClick={() => setShowModelSelector(true)}>Load Model</Button>
+          )}
+        </div>
+      );
+    }
+
+    return messages.map((msg) => (
+      <ChatMessage
+        key={msg.id}
+        msg={msg}
+        content={getCurrentVariantContent(msg.id, msg.content)}
+        isGenerating={isGenerating}
+        isTranscribing={isTranscribing}
+        isPlayingAudio={isPlayingAudio}
+        editingMessageId={editingMessageId}
+        editingMessageContent={editingMessageContent}
+        editingBotMessageId={editingBotMessageId}
+        editingBotMessageContent={editingBotMessageContent}
+        primaryCharacter={primaryCharacter}
+        secondaryCharacter={secondaryCharacter}
+        userProfile={userProfile}
+        userCharacter={userCharacter}
+        isMultiRoleMode={settings.multiRoleMode}
+        characterAvatarSize={characterAvatarSize}
+        userAvatarSize={userAvatarSize}
+        variantCount={getVariantCount(msg.id)}
+        variantIndex={currentVariantIndex[msg.id] || 0}
+        PRIMARY_API_URL={PRIMARY_API_URL}
+        regenerationQueue={regenerationQueue}
+        ttsEnabled={ttsEnabled}
+
+        onEditUserMessage={handleEditUserMessage}
+        onCancelEdit={handleCancelEdit}
+        onChangeEditingMessageContent={setEditingMessageContent}
+        onSaveEditedMessage={handleSaveEditedMessage}
+        onRegenerateFromEditedPrompt={handleRegenerateFromEditedPrompt}
+        onDeleteMessage={handleDeleteMessage}
+
+        onEditBotMessage={handleEditBotMessage}
+        onCancelBotEdit={handleCancelBotEdit}
+        onChangeEditingBotMessageContent={setEditingBotMessageContent}
+        onSaveBotMessage={handleSaveBotMessage}
+        onGenerateVariant={handleGenerateVariant}
+        onContinueGeneration={handleContinueGeneration}
+        onNavigateVariant={navigateVariant}
+        onSpeakerClick={handleSpeakerClick}
+        onRegenerateImage={handleRegenerateImage}
+
+        formatModelName={formatModelName}
+      />
+    ));
+  }, [
+    messages,
+    primaryModel,
+    setShowModelSelector,
+    isGenerating,
+    isTranscribing,
+    isPlayingAudio,
+    editingMessageId,
+    editingMessageContent,
+    editingBotMessageId,
+    editingBotMessageContent,
+    primaryCharacter,
+    secondaryCharacter,
+    userProfile,
+    userCharacter,
+    settings.multiRoleMode,
+    characterAvatarSize,
+    userAvatarSize,
+    currentVariantIndex,
+    PRIMARY_API_URL,
+    regenerationQueue,
+    ttsEnabled,
+    getCurrentVariantContent,
+    getVariantCount,
+    formatModelName,
+    handleEditUserMessage,
+    handleCancelEdit,
+    handleSaveEditedMessage,
+    handleRegenerateFromEditedPrompt,
+    handleDeleteMessage,
+    handleEditBotMessage,
+    handleCancelBotEdit,
+    handleSaveBotMessage,
+    handleGenerateVariant,
+    handleContinueGeneration,
+    navigateVariant,
+    handleSpeakerClick,
+    handleRegenerateImage,
+    setEditingMessageContent,
+    setEditingBotMessageContent
+  ]);
+
   // --- Component Render ---
   return (
     <div
@@ -1647,63 +1749,7 @@ const Chat = ({ layoutMode }) => {
 
 
             {/* Messages Render Loop */}
-            {messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground pt-10">
-                <h3 className="text-lg font-medium mb-2">No messages yet</h3>
-                <p className="max-w-md mb-4">
-                  {!primaryModel ? "Load a model to start chatting" : "Send a message or use the microphone"}
-                </p>
-                {!primaryModel && (
-                  <Button variant="outline" onClick={() => setShowModelSelector(true)}>Load Model</Button>
-                )}
-              </div>
-            ) : (
-              messages.map((msg) => (
-                <ChatMessage
-                  key={msg.id}
-                  msg={msg}
-                  content={getCurrentVariantContent(msg.id, msg.content)}
-                  isGenerating={isGenerating}
-                  isTranscribing={isTranscribing}
-                  isPlayingAudio={isPlayingAudio}
-                  editingMessageId={editingMessageId}
-                  editingMessageContent={editingMessageContent}
-                  editingBotMessageId={editingBotMessageId}
-                  editingBotMessageContent={editingBotMessageContent}
-                  primaryCharacter={primaryCharacter}
-                  secondaryCharacter={secondaryCharacter}
-                  userProfile={userProfile}
-                  userCharacter={userCharacter}
-                  isMultiRoleMode={settings.multiRoleMode}
-                  characterAvatarSize={characterAvatarSize}
-                  userAvatarSize={userAvatarSize}
-                  variantCount={getVariantCount(msg.id)}
-                  variantIndex={currentVariantIndex[msg.id] || 0}
-                  PRIMARY_API_URL={PRIMARY_API_URL}
-                  regenerationQueue={regenerationQueue}
-                  ttsEnabled={ttsEnabled}
-
-                  onEditUserMessage={handleEditUserMessage}
-                  onCancelEdit={handleCancelEdit}
-                  onChangeEditingMessageContent={setEditingMessageContent}
-                  onSaveEditedMessage={handleSaveEditedMessage}
-                  onRegenerateFromEditedPrompt={handleRegenerateFromEditedPrompt}
-                  onDeleteMessage={handleDeleteMessage}
-
-                  onEditBotMessage={handleEditBotMessage}
-                  onCancelBotEdit={handleCancelBotEdit}
-                  onChangeEditingBotMessageContent={setEditingBotMessageContent}
-                  onSaveBotMessage={handleSaveBotMessage}
-                  onGenerateVariant={handleGenerateVariant}
-                  onContinueGeneration={handleContinueGeneration}
-                  onNavigateVariant={navigateVariant}
-                  onSpeakerClick={handleSpeakerClick}
-                  onRegenerateImage={handleRegenerateImage}
-
-                  formatModelName={formatModelName}
-                />
-              ))
-            )}
+            {renderedMessages}
           </div>
         </ScrollArea>
       </div>
