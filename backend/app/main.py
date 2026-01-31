@@ -851,16 +851,13 @@ def _run_update_task(update_id: str) -> None:
         stash_applied = None
         stash_conflicts = False
         if stashed:
-            pop_result = _run_git_with_logs(
-                ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "pop"],
-                repo_root,
-                "Reapplying local changes",
-                timeout=120
+            stash_applied = False
+            stash_conflicts = False
+            _append_update_log(
+                "warn",
+                "Local changes were stashed and NOT reapplied to avoid overwriting updates. "
+                "Use `git stash list` and `git stash pop` to restore them if needed."
             )
-            stash_applied = pop_result.returncode == 0
-            if pop_result.returncode != 0:
-                stash_conflicts = True
-                _append_update_log("warn", "Stash pop reported conflicts. Your stash is still available.")
             _update_state({"stash_applied": stash_applied, "stash_conflicts": stash_conflicts})
 
         after_result = _run_git_with_logs(["rev-parse", "HEAD"], repo_root, "Reading updated commit")

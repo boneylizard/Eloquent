@@ -657,7 +657,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     {updateProgress.stash_used && (
                       <div className="text-xs text-muted-foreground">
                         Stash: {updateProgress.stash_name || 'auto'}
-                        {updateProgress.stash_conflicts ? ' (conflicts)' : updateProgress.stash_applied ? ' (applied)' : ''}
+                        {updateProgress.stash_conflicts ? ' (conflicts)' : updateProgress.stash_applied ? ' (applied)' : ' (not reapplied)'}
                       </div>
                     )}
                     {updateProgress.error && (
