@@ -138,10 +138,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [isRestartingTTS, setIsRestartingTTS] = useState(false);
   const [directoryPickerKey, setDirectoryPickerKey] = useState(null);
   const [updateStatus, setUpdateStatus] = useState(null);
+  const [updateProgress, setUpdateProgress] = useState(null);
   const [updateError, setUpdateError] = useState(null);
-  const [updateOutput, setUpdateOutput] = useState(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
+  const [isUpdateRunning, setIsUpdateRunning] = useState(false);
   const pendingSettingsRef = useRef({});
   const settingsSaveTimerRef = useRef(null);
 
@@ -337,13 +337,35 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     }
   }, [PRIMARY_API_URL]);
 
+  const fetchUpdateProgress = useCallback(async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/system/update-progress`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || `Update failed (${response.status})`);
+      }
+      setUpdateProgress(data);
+      if (data.status !== 'running') {
+        setIsUpdateRunning(false);
+        if (data.status === 'failed') {
+          setUpdateError(data.error || 'Update failed.');
+        }
+        if (data.status === 'success' && data.restart_recommended) {
+          alert('Update complete. Please restart the app to apply changes.');
+        }
+      }
+    } catch (error) {
+      setUpdateError(error.message || 'Failed to fetch update progress.');
+      setIsUpdateRunning(false);
+    }
+  }, [PRIMARY_API_URL]);
+
   const handleRunUpdate = useCallback(async () => {
     if (!confirm("Pull the latest updates from GitHub? A restart may be required.")) {
       return;
     }
-    setIsUpdating(true);
     setUpdateError(null);
-    setUpdateOutput(null);
+    setUpdateProgress(null);
     try {
       const response = await fetch(`${PRIMARY_API_URL}/system/update`, {
         method: 'POST',
@@ -351,20 +373,22 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
         body: JSON.stringify({})
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      if (!response.ok && response.status !== 409) {
         throw new Error(data.detail || data.message || `Update failed (${response.status})`);
       }
-      setUpdateOutput(data);
-      setUpdateStatus(prev => (prev ? { ...prev, current_commit: data.after || prev.current_commit } : prev));
-      if (data.restart_recommended) {
-        alert('Update complete. Please restart the app to apply changes.');
-      }
+      setIsUpdateRunning(true);
+      fetchUpdateProgress();
     } catch (error) {
-      setUpdateError(error.message || 'Failed to update.');
-    } finally {
-      setIsUpdating(false);
+      setUpdateError(error.message || 'Failed to start update.');
+      setIsUpdateRunning(false);
     }
-  }, [PRIMARY_API_URL]);
+  }, [PRIMARY_API_URL, fetchUpdateProgress]);
+
+  useEffect(() => {
+    if (!isUpdateRunning) return;
+    const timer = setInterval(fetchUpdateProgress, 1000);
+    return () => clearInterval(timer);
+  }, [isUpdateRunning, fetchUpdateProgress]);
 
   const handleDirectoryBrowse = useCallback(async (settingKey, title) => {
     const baseUrl = PRIMARY_API_URL || getBackendUrl();
@@ -393,6 +417,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
       setDirectoryPickerKey(null);
     }
   }, [PRIMARY_API_URL, handleChange, localSettings]);
+
+  const updateLogLines = updateProgress?.logs || [];
+  const updateLogText = updateLogLines
+    .map((entry) => `[${entry.ts}] ${String(entry.level).toUpperCase()}: ${entry.message}`)
+    .join('\n');
 
   return (
     <div className="w-full min-h-screen p-2 md:p-4">
@@ -569,12 +598,12 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               title="App Updates"
               description="Pull the latest changes from GitHub. Requires git and a clean working tree."
             >
-              <SettingRow label="Update Controls" layout="stack">
+              <SettingRow label="Update Controls" layout="stack" description="Live progress and logs are shown while updating.">
                 <div className="flex flex-col md:flex-row gap-2">
                   <Button
                     variant="outline"
                     onClick={handleCheckUpdates}
-                    disabled={isCheckingUpdate || isUpdating}
+                    disabled={isCheckingUpdate || isUpdateRunning}
                   >
                     {isCheckingUpdate ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -586,9 +615,9 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   <Button
                     variant="outline"
                     onClick={handleRunUpdate}
-                    disabled={isUpdating || isCheckingUpdate}
+                    disabled={isUpdateRunning || isCheckingUpdate}
                   >
-                    {isUpdating ? (
+                    {isUpdateRunning ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     ) : (
                       <RotateCw className="mr-2 h-4 w-4" />
@@ -610,7 +639,41 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     ) : (
                       <div>No upstream configured for this branch.</div>
                     )}
-                    <div>Working tree: {updateStatus.dirty ? 'dirty' : 'clean'}</div>
+                    <div>Working tree: {updateStatus.dirty ? `dirty (${updateStatus.dirty_count})` : 'clean'}</div>
+                  </div>
+                )}
+
+                {updateProgress && (
+                  <div className="rounded-lg border border-border/60 bg-muted/30 p-3 space-y-2">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Update Status</div>
+                    <div className="text-sm text-foreground">
+                      {updateProgress.status === 'running' ? 'Running' : updateProgress.status}
+                      {updateProgress.step ? ` - ${updateProgress.step}` : ''}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {updateProgress.before ? `Before: ${updateProgress.before.slice(0, 7)}` : ''}
+                      {updateProgress.after ? ` | After: ${updateProgress.after.slice(0, 7)}` : ''}
+                    </div>
+                    {updateProgress.stash_used && (
+                      <div className="text-xs text-muted-foreground">
+                        Stash: {updateProgress.stash_name || 'auto'}
+                        {updateProgress.stash_conflicts ? ' (conflicts)' : updateProgress.stash_applied ? ' (applied)' : ''}
+                      </div>
+                    )}
+                    {updateProgress.error && (
+                      <Alert variant="destructive">
+                        <AlertTitle>Update failed</AlertTitle>
+                        <AlertDescription>{updateProgress.error}</AlertDescription>
+                      </Alert>
+                    )}
+                    {updateLogLines.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Update Log</div>
+                        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md bg-background/80 p-3 text-xs text-foreground">
+{updateLogText}
+                        </pre>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -618,15 +681,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   <Alert>
                     <AlertTitle>Update available</AlertTitle>
                     <AlertDescription>Behind by {updateStatus.behind} commit(s).</AlertDescription>
-                  </Alert>
-                )}
-
-                {updateOutput && (
-                  <Alert>
-                    <AlertTitle>{updateOutput.updated ? 'Updated' : 'Already up to date'}</AlertTitle>
-                    <AlertDescription className="whitespace-pre-wrap text-xs">
-                      {updateOutput.stdout || updateOutput.stderr || 'Update complete.'}
-                    </AlertDescription>
                   </Alert>
                 )}
 

@@ -82,6 +82,44 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# --- Update status tracking ---
+UPDATE_LOCK = threading.Lock()
+UPDATE_STATE = {
+    "status": "idle",
+    "step": None,
+    "logs": [],
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+    "update_id": None,
+    "updated": None,
+    "before": None,
+    "after": None,
+    "restart_recommended": False,
+    "stash_used": False,
+    "stash_name": None,
+    "stash_applied": None,
+    "stash_conflicts": False,
+}
+
+def _now_iso() -> str:
+    return datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+def _update_state(patch: Dict[str, Any]) -> None:
+    with UPDATE_LOCK:
+        UPDATE_STATE.update(patch)
+
+def _append_update_log(level: str, message: str) -> None:
+    entry = {"ts": _now_iso(), "level": level, "message": message}
+    with UPDATE_LOCK:
+        UPDATE_STATE["logs"].append(entry)
+        if len(UPDATE_STATE["logs"]) > 500:
+            UPDATE_STATE["logs"] = UPDATE_STATE["logs"][-500:]
+
+def _get_update_state() -> Dict[str, Any]:
+    with UPDATE_LOCK:
+        return dict(UPDATE_STATE)
+
 def get_log_dir():
     """Resolve the log directory (project-root logs/ by default)."""
     env_dir = os.environ.get("ELOQUENT_LOG_DIR")
@@ -108,6 +146,16 @@ def run_git_command(args: List[str], cwd: Path, timeout: int = 30) -> subprocess
         )
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="git is not installed or not on PATH.")
+
+def _run_git_with_logs(args: List[str], cwd: Path, step: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    _update_state({"step": step})
+    _append_update_log("info", f"$ git {' '.join(args)}")
+    result = run_git_command(args, cwd, timeout=timeout)
+    if result.stdout:
+        _append_update_log("stdout", result.stdout.strip())
+    if result.stderr:
+        _append_update_log("stderr", result.stderr.strip())
+    return result
 
 # File logging for backend logs (one file per port)
 disable_backend_file_log = os.environ.get("ELOQUENT_DISABLE_BACKEND_LOG", "").lower() in ("1", "true", "yes")
@@ -702,103 +750,147 @@ async def get_update_status(fetch: bool = False):
 
 @router.post("/system/update")
 async def update_system():
-    """Pull latest changes from the git repo."""
+    """Start a background update of the git repo and return an update id."""
+    with UPDATE_LOCK:
+        if UPDATE_STATE.get("status") == "running":
+            return JSONResponse(status_code=409, content={
+                "status": "running",
+                "message": "An update is already running.",
+                "update_id": UPDATE_STATE.get("update_id")
+            })
+
+        update_id = uuid.uuid4().hex[:8]
+        UPDATE_STATE.update({
+            "status": "running",
+            "step": "queued",
+            "logs": [],
+            "error": None,
+            "started_at": _now_iso(),
+            "finished_at": None,
+            "update_id": update_id,
+            "updated": None,
+            "before": None,
+            "after": None,
+            "restart_recommended": False,
+            "stash_used": False,
+            "stash_name": None,
+            "stash_applied": None,
+            "stash_conflicts": False,
+        })
+
+    threading.Thread(target=_run_update_task, args=(update_id,), daemon=True).start()
+    return {"status": "started", "update_id": update_id}
+
+@router.get("/system/update-progress")
+async def get_update_progress():
+    """Get the current update progress and logs."""
+    return _get_update_state()
+
+
+def _run_update_task(update_id: str) -> None:
     repo_root = get_repo_root()
+    _append_update_log("info", f"Update started (id={update_id})")
+
     if not (repo_root / ".git").exists():
-        raise HTTPException(status_code=404, detail="Not a git repository.")
+        _update_state({
+            "status": "failed",
+            "step": "failed",
+            "error": "Not a git repository.",
+            "finished_at": _now_iso()
+        })
+        return
 
-    status_result = run_git_command(["status", "--porcelain"], repo_root)
-    if status_result.returncode != 0:
-        raise HTTPException(status_code=500, detail="Failed to check git status.")
-    status_output = status_result.stdout.strip()
-    stashed = False
-    stash_name = None
-    if status_output:
-        stash_name = f"eloquent_autoupdate_{int(time.time())}"
-        stash_result = run_git_command(
-            ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "push", "-u", "-m", stash_name],
-            repo_root,
-            timeout=120
-        )
-        if stash_result.returncode != 0:
-            # Some Git setups emit CRLF warnings on stderr and still create a stash.
-            # Verify whether the stash was created before failing.
-            list_result = run_git_command(["stash", "list"], repo_root)
-            stash_found = False
-            if list_result.returncode == 0 and stash_name:
-                stash_found = stash_name in list_result.stdout
-            if not stash_found:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"git stash failed: {stash_result.stderr.strip() or stash_result.stdout.strip()}"
-                )
-            stashed = True
-        else:
-            if "No local changes to save" not in stash_result.stdout:
-                stashed = True
+    try:
+        status_result = _run_git_with_logs(["status", "--porcelain"], repo_root, "Checking status")
+        if status_result.returncode != 0:
+            raise RuntimeError("Failed to check git status.")
 
-    upstream_result = run_git_command(
-        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-        repo_root
-    )
-    if upstream_result.returncode != 0:
-        raise HTTPException(status_code=400, detail="No upstream configured for the current branch.")
-
-    before_result = run_git_command(["rev-parse", "HEAD"], repo_root)
-    if before_result.returncode != 0:
-        raise HTTPException(status_code=500, detail="Failed to resolve current commit.")
-    before_commit = before_result.stdout.strip()
-
-    fetch_result = run_git_command(["fetch", "--prune"], repo_root, timeout=60)
-    if fetch_result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"git fetch failed: {fetch_result.stderr.strip() or fetch_result.stdout.strip()}"
-        )
-
-    pull_result = run_git_command(["pull", "--ff-only"], repo_root, timeout=120)
-    if pull_result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"git pull failed: {pull_result.stderr.strip() or pull_result.stdout.strip()}"
-        )
-
-    stash_applied = False
-    stash_conflicts = False
-    if stashed:
-        pop_result = run_git_command(
-            ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "pop"],
-            repo_root,
-            timeout=120
-        )
-        stash_applied = pop_result.returncode == 0
-        if pop_result.returncode != 0:
-            stash_conflicts = True
-            logger.warning(
-                "Stash pop reported conflicts after update at %s: %s",
+        status_output = status_result.stdout.strip()
+        stashed = False
+        stash_name = None
+        if status_output:
+            stash_name = f"eloquent_autoupdate_{int(time.time())}"
+            stash_result = _run_git_with_logs(
+                ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "push", "-u", "-m", stash_name],
                 repo_root,
-                pop_result.stderr.strip() or pop_result.stdout.strip()
+                "Stashing changes",
+                timeout=120
             )
+            if stash_result.returncode != 0:
+                list_result = _run_git_with_logs(["stash", "list"], repo_root, "Checking stash list")
+                if list_result.returncode != 0 or stash_name not in list_result.stdout:
+                    raise RuntimeError("git stash failed")
+                stashed = True
+            else:
+                if "No local changes to save" not in stash_result.stdout:
+                    stashed = True
+            _update_state({"stash_used": stashed, "stash_name": stash_name})
 
-    after_result = run_git_command(["rev-parse", "HEAD"], repo_root)
-    if after_result.returncode != 0:
-        raise HTTPException(status_code=500, detail="Failed to resolve updated commit.")
-    after_commit = after_result.stdout.strip()
+        upstream_result = _run_git_with_logs(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            repo_root,
+            "Checking upstream"
+        )
+        if upstream_result.returncode != 0:
+            raise RuntimeError("No upstream configured for the current branch.")
 
-    updated = before_commit != after_commit
-    return {
-        "status": "success",
-        "updated": updated,
-        "before": before_commit,
-        "after": after_commit,
-        "stdout": pull_result.stdout,
-        "stderr": pull_result.stderr,
-        "restart_recommended": updated,
-        "stash_used": stashed,
-        "stash_name": stash_name,
-        "stash_applied": stash_applied,
-        "stash_conflicts": stash_conflicts
-    }
+        before_result = _run_git_with_logs(["rev-parse", "HEAD"], repo_root, "Reading current commit")
+        if before_result.returncode != 0:
+            raise RuntimeError("Failed to resolve current commit.")
+        before_commit = before_result.stdout.strip()
+        _update_state({"before": before_commit})
+
+        fetch_result = _run_git_with_logs(["fetch", "--prune"], repo_root, "Fetching updates", timeout=60)
+        if fetch_result.returncode != 0:
+            raise RuntimeError("git fetch failed")
+
+        pull_result = _run_git_with_logs(["pull", "--ff-only"], repo_root, "Pulling updates", timeout=120)
+        if pull_result.returncode != 0:
+            raise RuntimeError("git pull failed")
+
+        stash_applied = None
+        stash_conflicts = False
+        if stashed:
+            pop_result = _run_git_with_logs(
+                ["-c", "core.safecrlf=false", "-c", "core.autocrlf=false", "stash", "pop"],
+                repo_root,
+                "Reapplying local changes",
+                timeout=120
+            )
+            stash_applied = pop_result.returncode == 0
+            if pop_result.returncode != 0:
+                stash_conflicts = True
+                _append_update_log("warn", "Stash pop reported conflicts. Your stash is still available.")
+            _update_state({"stash_applied": stash_applied, "stash_conflicts": stash_conflicts})
+
+        after_result = _run_git_with_logs(["rev-parse", "HEAD"], repo_root, "Reading updated commit")
+        if after_result.returncode != 0:
+            raise RuntimeError("Failed to resolve updated commit.")
+        after_commit = after_result.stdout.strip()
+        updated = before_commit != after_commit
+
+        _update_state({
+            "status": "success",
+            "step": "done",
+            "updated": updated,
+            "after": after_commit,
+            "restart_recommended": updated,
+            "stash_used": stashed,
+            "stash_name": stash_name,
+            "stash_applied": stash_applied,
+            "stash_conflicts": stash_conflicts,
+            "finished_at": _now_iso()
+        })
+
+    except Exception as e:
+        logger.error("Update failed: %s", e, exc_info=True)
+        _append_update_log("error", str(e))
+        _update_state({
+            "status": "failed",
+            "step": "failed",
+            "error": str(e),
+            "finished_at": _now_iso()
+        })
 
 @router.post("/system/shutdown")
 async def shutdown_system():
