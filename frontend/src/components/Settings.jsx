@@ -596,101 +596,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
 
             <SettingsSection
               title="App Updates"
-              description="Pull the latest changes from GitHub. Requires git and a clean working tree."
+              description="Updates are temporarily disabled while the updater is being fixed."
             >
-              <SettingRow label="Update Controls" layout="stack" description="Live progress and logs are shown while updating.">
-                <div className="flex flex-col md:flex-row gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={handleCheckUpdates}
-                    disabled={isCheckingUpdate || isUpdateRunning}
-                  >
-                    {isCheckingUpdate ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                    )}
-                    Check for Updates
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleRunUpdate}
-                    disabled={isUpdateRunning || isCheckingUpdate}
-                  >
-                    {isUpdateRunning ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RotateCw className="mr-2 h-4 w-4" />
-                    )}
-                    Update Now
-                  </Button>
-                </div>
-
-                {updateStatus && (
-                  <div className="text-xs text-muted-foreground space-y-1">
-                    <div>
-                      Branch: {updateStatus.branch || 'unknown'} (
-                      {updateStatus.current_commit ? updateStatus.current_commit.slice(0, 7) : 'unknown'})
-                    </div>
-                    {updateStatus.upstream ? (
-                      <div>
-                        Tracking: {updateStatus.upstream} - Ahead {updateStatus.ahead ?? 'n/a'} - Behind {updateStatus.behind ?? 'n/a'}
-                      </div>
-                    ) : (
-                      <div>No upstream configured for this branch.</div>
-                    )}
-                    <div>Working tree: {updateStatus.dirty ? `dirty (${updateStatus.dirty_count})` : 'clean'}</div>
-                  </div>
-                )}
-
-                {updateProgress && (
-                  <div className="rounded-lg border border-border/60 bg-muted/30 p-3 space-y-2">
-                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Update Status</div>
-                    <div className="text-sm text-foreground">
-                      {updateProgress.status === 'running' ? 'Running' : updateProgress.status}
-                      {updateProgress.step ? ` - ${updateProgress.step}` : ''}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {updateProgress.before ? `Before: ${updateProgress.before.slice(0, 7)}` : ''}
-                      {updateProgress.after ? ` | After: ${updateProgress.after.slice(0, 7)}` : ''}
-                    </div>
-                    {updateProgress.stash_used && (
-                      <div className="text-xs text-muted-foreground">
-                        Stash: {updateProgress.stash_name || 'auto'}
-                        {updateProgress.stash_conflicts ? ' (conflicts)' : updateProgress.stash_applied ? ' (applied)' : ' (not reapplied)'}
-                      </div>
-                    )}
-                    {updateProgress.error && (
-                      <Alert variant="destructive">
-                        <AlertTitle>Update failed</AlertTitle>
-                        <AlertDescription>{updateProgress.error}</AlertDescription>
-                      </Alert>
-                    )}
-                    {updateLogLines.length > 0 && (
-                      <div className="space-y-2">
-                        <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Update Log</div>
-                        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md bg-background/80 p-3 text-xs text-foreground">
-{updateLogText}
-                        </pre>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {typeof updateStatus?.behind === 'number' && updateStatus.behind > 0 && (
-                  <Alert>
-                    <AlertTitle>Update available</AlertTitle>
-                    <AlertDescription>Behind by {updateStatus.behind} commit(s).</AlertDescription>
-                  </Alert>
-                )}
-
-                {updateError && (
-                  <Alert variant="destructive">
-                    <AlertTitle>Update failed</AlertTitle>
-                    <AlertDescription>{updateError}</AlertDescription>
-                  </Alert>
-                )}
-              </SettingRow>
+              <div className="text-sm text-muted-foreground">
+                Update is currently disabled.
+              </div>
             </SettingsSection>
 
             <SettingsSection
