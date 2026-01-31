@@ -665,7 +665,9 @@ async def get_update_status(fetch: bool = False):
     dirty_result = run_git_command(["status", "--porcelain"], repo_root)
     if dirty_result.returncode != 0:
         raise HTTPException(status_code=500, detail="Failed to check git status.")
-    dirty = bool(dirty_result.stdout.strip())
+    dirty_output = dirty_result.stdout.strip()
+    dirty_lines = dirty_output.splitlines() if dirty_output else []
+    dirty = bool(dirty_lines)
 
     upstream = None
     ahead = None
@@ -694,7 +696,8 @@ async def get_update_status(fetch: bool = False):
         "upstream": upstream,
         "ahead": ahead,
         "behind": behind,
-        "dirty": dirty
+        "dirty": dirty,
+        "dirty_count": len(dirty_lines)
     }
 
 @router.post("/system/update")
@@ -707,8 +710,23 @@ async def update_system():
     status_result = run_git_command(["status", "--porcelain"], repo_root)
     if status_result.returncode != 0:
         raise HTTPException(status_code=500, detail="Failed to check git status.")
-    if status_result.stdout.strip():
-        raise HTTPException(status_code=409, detail="Working tree has uncommitted changes. Update aborted.")
+    status_output = status_result.stdout.strip()
+    stashed = False
+    stash_name = None
+    if status_output:
+        stash_name = f"eloquent_autoupdate_{int(time.time())}"
+        stash_result = run_git_command(
+            ["stash", "push", "-u", "-m", stash_name],
+            repo_root,
+            timeout=120
+        )
+        if stash_result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"git stash failed: {stash_result.stderr.strip() or stash_result.stdout.strip()}"
+            )
+        if "No local changes to save" not in stash_result.stdout:
+            stashed = True
 
     upstream_result = run_git_command(
         ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
@@ -736,6 +754,19 @@ async def update_system():
             detail=f"git pull failed: {pull_result.stderr.strip() or pull_result.stdout.strip()}"
         )
 
+    stash_applied = False
+    stash_conflicts = False
+    if stashed:
+        pop_result = run_git_command(["stash", "pop"], repo_root, timeout=120)
+        stash_applied = pop_result.returncode == 0
+        if pop_result.returncode != 0:
+            stash_conflicts = True
+            logger.warning(
+                "Stash pop reported conflicts after update at %s: %s",
+                repo_root,
+                pop_result.stderr.strip() or pop_result.stdout.strip()
+            )
+
     after_result = run_git_command(["rev-parse", "HEAD"], repo_root)
     if after_result.returncode != 0:
         raise HTTPException(status_code=500, detail="Failed to resolve updated commit.")
@@ -749,7 +780,11 @@ async def update_system():
         "after": after_commit,
         "stdout": pull_result.stdout,
         "stderr": pull_result.stderr,
-        "restart_recommended": updated
+        "restart_recommended": updated,
+        "stash_used": stashed,
+        "stash_name": stash_name,
+        "stash_applied": stash_applied,
+        "stash_conflicts": stash_conflicts
     }
 
 @router.post("/system/shutdown")
