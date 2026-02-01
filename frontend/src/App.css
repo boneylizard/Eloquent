@@ -49,11 +49,11 @@
     --focus-ring: 2px solid var(--ring);
 
     /* Markdown emphasis colors (light defaults) */
-    --md-body-color-default: var(--foreground);
-    --md-bold-color-default: var(--foreground);
+    --md-body-color-default: #111827;
+    --md-bold-color-default: #0b0f14;
     --md-italic-color-default: #4b5563;
-    --md-quote-color-default: #6b7280;
-    --md-quote-border-default: #d1d5db;
+    --md-quote-color-default: #2563eb;
+    --md-quote-border-default: #cbd5e1;
     --md-h1-color-default: var(--foreground);
     --md-h2-color-default: var(--foreground);
     --md-h3-color-default: var(--foreground);
@@ -61,11 +61,11 @@
     --md-h2-font-default: var(--font-heading);
     --md-h3-font-default: var(--font-heading);
 
-    --md-body-color: var(--foreground);
-    --md-bold-color: var(--foreground);
+    --md-body-color: #111827;
+    --md-bold-color: #0b0f14;
     --md-italic-color: #4b5563;
-    --md-quote-color: #6b7280;
-    --md-quote-border: #d1d5db;
+    --md-quote-color: #2563eb;
+    --md-quote-border: #cbd5e1;
     --md-h1-color: var(--foreground);
     --md-h2-color: var(--foreground);
     --md-h3-color: var(--foreground);
@@ -116,16 +116,17 @@
     --button-text: #ffffff;
 
     /* Markdown emphasis colors (dark defaults) */
-    --md-body-color-default: var(--foreground);
+    --md-body-color-default: #e6edf3;
     --md-bold-color-default: #ffffff;
-    --md-italic-color-default: #9ca3af;
-    --md-quote-color-default: #94a3b8;
-    --md-quote-border-default: #334155;
+    --md-italic-color-default: #a7b0c0;
+    --md-quote-color-default: #9ec5ff;
+    --md-quote-border-default: #3b4a64;
 
+    --md-body-color: #e6edf3;
     --md-bold-color: #ffffff;
-    --md-italic-color: #9ca3af;
-    --md-quote-color: #94a3b8;
-    --md-quote-border: #334155;
+    --md-italic-color: #a7b0c0;
+    --md-quote-color: #9ec5ff;
+    --md-quote-border: #3b4a64;
   }
 
   /* WhatsApp Theme (Authentic Dark) */
@@ -164,16 +165,17 @@
     /* Flat aesthetic */
 
     /* Markdown emphasis colors */
-    --md-body-color-default: var(--foreground);
-    --md-bold-color-default: #e9edef;
-    --md-italic-color-default: #cbd5e1;
-    --md-quote-color-default: #94a3b8;
-    --md-quote-border-default: #1f2c34;
+    --md-body-color-default: #e9edef;
+    --md-bold-color-default: #ffffff;
+    --md-italic-color-default: #bfc8cc;
+    --md-quote-color-default: #9de0d6;
+    --md-quote-border-default: #2d3b43;
 
-    --md-bold-color: #e9edef;
-    --md-italic-color: #cbd5e1;
-    --md-quote-color: #94a3b8;
-    --md-quote-border: #1f2c34;
+    --md-body-color: #e9edef;
+    --md-bold-color: #ffffff;
+    --md-italic-color: #bfc8cc;
+    --md-quote-color: #9de0d6;
+    --md-quote-border: #2d3b43;
   }
 
   /* Messenger Theme (Premium Dark + Gradient) */
@@ -218,15 +220,16 @@
     --primary-gradient: linear-gradient(to right, #00C6FF, #0072FF);
 
     /* Markdown emphasis colors */
-    --md-body-color-default: var(--foreground);
+    --md-body-color-default: #e4e6eb;
     --md-bold-color-default: #ffffff;
     --md-italic-color-default: #cbd5e1;
-    --md-quote-color-default: #94a3b8;
+    --md-quote-color-default: #93c5fd;
     --md-quote-border-default: #2f3336;
 
+    --md-body-color: #e4e6eb;
     --md-bold-color: #ffffff;
     --md-italic-color: #cbd5e1;
-    --md-quote-color: #94a3b8;
+    --md-quote-color: #93c5fd;
     --md-quote-border: #2f3336;
   }
 
@@ -267,15 +270,16 @@
     /* Neon Glow */
 
     /* Markdown emphasis colors */
-    --md-body-color-default: var(--foreground);
+    --md-body-color-default: #e2f2ff;
     --md-bold-color-default: #ffffff;
-    --md-italic-color-default: #a5f3fc;
-    --md-quote-color-default: #67e8f9;
+    --md-italic-color-default: #7dd3fc;
+    --md-quote-color-default: #22d3ee;
     --md-quote-border-default: #0e7490;
 
+    --md-body-color: #e2f2ff;
     --md-bold-color: #ffffff;
-    --md-italic-color: #a5f3fc;
-    --md-quote-color: #67e8f9;
+    --md-italic-color: #7dd3fc;
+    --md-quote-color: #22d3ee;
     --md-quote-border: #0e7490;
   }
 
@@ -326,16 +330,17 @@
     --primary-gradient: linear-gradient(135deg, #D68977, #CC785C);
 
     /* Markdown emphasis colors */
-    --md-body-color-default: var(--foreground);
-    --md-bold-color-default: #141413;
+    --md-body-color-default: #141413;
+    --md-bold-color-default: #111111;
     --md-italic-color-default: #6b7280;
-    --md-quote-color-default: #78716c;
-    --md-quote-border-default: #e7e5e4;
+    --md-quote-color-default: #b45309;
+    --md-quote-border-default: #d6d3d1;
 
-    --md-bold-color: #141413;
+    --md-body-color: #141413;
+    --md-bold-color: #111111;
     --md-italic-color: #6b7280;
-    --md-quote-color: #78716c;
-    --md-quote-border: #e7e5e4;
+    --md-quote-color: #b45309;
+    --md-quote-border: #d6d3d1;
   }
 
   /* Prevent browser autofill from forcing light backgrounds in themed inputs */
