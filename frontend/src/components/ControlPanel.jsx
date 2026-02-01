@@ -338,6 +338,16 @@ const ControlPanel = ({
                                     <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Auto</span>
                                 </div>
                             )}
+
+                            <div className="flex flex-col items-center justify-center pt-1" title="Performance Mode (reduce typing lag)">
+                                <Switch
+                                    id="panel-perf"
+                                    checked={settings.performanceMode || false}
+                                    onCheckedChange={(checked) => updateSettings({ performanceMode: checked })}
+                                    className="scale-75 data-[state=checked]:bg-primary"
+                                />
+                                <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Perf</span>
+                            </div>
                         </div>
                     </>
                 )}

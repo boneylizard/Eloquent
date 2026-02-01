@@ -562,6 +562,7 @@ const AppProvider = ({ children }) => {
     mdH1Font: '',
     mdH2Font: '',
     mdH3Font: '',
+    performanceMode: false,
     admin_password: "", // <-- Password for remote access
   });
   useEffect(() => {
