@@ -49,6 +49,18 @@
     --focus-ring: 2px solid var(--ring);
 
     /* Markdown emphasis colors (light defaults) */
+    --md-body-color-default: var(--foreground);
+    --md-bold-color-default: var(--foreground);
+    --md-italic-color-default: #4b5563;
+    --md-quote-color-default: #6b7280;
+    --md-quote-border-default: #d1d5db;
+    --md-h1-color-default: var(--foreground);
+    --md-h2-color-default: var(--foreground);
+    --md-h3-color-default: var(--foreground);
+    --md-h1-font-default: var(--font-heading);
+    --md-h2-font-default: var(--font-heading);
+    --md-h3-font-default: var(--font-heading);
+
     --md-body-color: var(--foreground);
     --md-bold-color: var(--foreground);
     --md-italic-color: #4b5563;
@@ -104,6 +116,12 @@
     --button-text: #ffffff;
 
     /* Markdown emphasis colors (dark defaults) */
+    --md-body-color-default: var(--foreground);
+    --md-bold-color-default: #ffffff;
+    --md-italic-color-default: #9ca3af;
+    --md-quote-color-default: #94a3b8;
+    --md-quote-border-default: #334155;
+
     --md-bold-color: #ffffff;
     --md-italic-color: #9ca3af;
     --md-quote-color: #94a3b8;
@@ -146,6 +164,12 @@
     /* Flat aesthetic */
 
     /* Markdown emphasis colors */
+    --md-body-color-default: var(--foreground);
+    --md-bold-color-default: #e9edef;
+    --md-italic-color-default: #cbd5e1;
+    --md-quote-color-default: #94a3b8;
+    --md-quote-border-default: #1f2c34;
+
     --md-bold-color: #e9edef;
     --md-italic-color: #cbd5e1;
     --md-quote-color: #94a3b8;
@@ -194,6 +218,12 @@
     --primary-gradient: linear-gradient(to right, #00C6FF, #0072FF);
 
     /* Markdown emphasis colors */
+    --md-body-color-default: var(--foreground);
+    --md-bold-color-default: #ffffff;
+    --md-italic-color-default: #cbd5e1;
+    --md-quote-color-default: #94a3b8;
+    --md-quote-border-default: #2f3336;
+
     --md-bold-color: #ffffff;
     --md-italic-color: #cbd5e1;
     --md-quote-color: #94a3b8;
@@ -237,6 +267,12 @@
     /* Neon Glow */
 
     /* Markdown emphasis colors */
+    --md-body-color-default: var(--foreground);
+    --md-bold-color-default: #ffffff;
+    --md-italic-color-default: #a5f3fc;
+    --md-quote-color-default: #67e8f9;
+    --md-quote-border-default: #0e7490;
+
     --md-bold-color: #ffffff;
     --md-italic-color: #a5f3fc;
     --md-quote-color: #67e8f9;
@@ -290,6 +326,12 @@
     --primary-gradient: linear-gradient(135deg, #D68977, #CC785C);
 
     /* Markdown emphasis colors */
+    --md-body-color-default: var(--foreground);
+    --md-bold-color-default: #141413;
+    --md-italic-color-default: #6b7280;
+    --md-quote-color-default: #78716c;
+    --md-quote-border-default: #e7e5e4;
+
     --md-bold-color: #141413;
     --md-italic-color: #6b7280;
     --md-quote-color: #78716c;
