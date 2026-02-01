@@ -6,6 +6,24 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-02-01
+
+### Added
+
+* **Major Text Formatting Update**: Eloquent now has full chat text styling controls in one place — plain text, bold, italics, quotes, and H1/H2/H3 headings — so you can make long roleplay responses easier to read and visually distinct.
+* **Styles Tab**: New **Settings > Styles** tab to control how chat text looks without cluttering General.
+* **Quote Highlighting**: Dialogue inside quotation marks is automatically color‑tinted (no forced italics) to make speech stand out.
+* **Readable Paragraphs**: Single line breaks and paragraph spacing now render more naturally, reducing “wall of text” fatigue.
+
+### Changed
+
+* **Streaming Toggle Location**: **Stream Responses** now lives in **Styles**, since it affects how text is displayed.
+
+### Fixed
+
+* **Plain Text Color Override**: The plain text color setting now actually changes the main chat text (even in dark mode).
+* **Quote Styling**: Quoted dialogue is no longer italicized; italics only happen when the model uses *asterisks*.
+
 ## 2026-01-30
 
 ### Added
