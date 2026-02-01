@@ -604,10 +604,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
             </SettingsSection>
 
             <SettingsSection
-              title="Backup and Logs"
-              description="Export, import, and manage local logs."
+              title="Backups and Logs"
+              description="Manage local browser backups (characters, chat history, and settings) and backend logs."
             >
-              <SettingRow label="Backup and Restore" layout="stack">
+              <SettingRow label="Local Browser Backup" layout="stack">
                 <div className="flex flex-col md:flex-row gap-2">
                   <Button
                     variant="outline"
@@ -632,7 +632,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     className="flex-1"
                   >
                     <DownloadCloud className="mr-2 h-4 w-4" />
-                    Export Config
+                    Export Backup
                   </Button>
 
                   <div className="relative flex-1">
@@ -646,7 +646,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           reader.onload = (ev) => {
                             try {
                               const config = JSON.parse(ev.target.result);
-                              if (confirm('Import settings?')) {
+                              if (confirm('Import local backup? This will overwrite your current browser data.')) {
                                 Object.entries(config).forEach(([k, v]) => localStorage.setItem(k, v));
                                 window.location.reload();
                               }
@@ -660,7 +660,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     />
                     <Button variant="outline" className="w-full">
                       <RefreshCw className="mr-2 h-4 w-4" />
-                      Import Config
+                      Import Backup
                     </Button>
                   </div>
                 </div>
