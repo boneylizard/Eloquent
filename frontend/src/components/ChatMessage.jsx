@@ -4,6 +4,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Loader2, X, PlayCircle as PlayIcon, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkSoftBreaks from '@/utils/remarkSoftBreaks';
+import remarkDialogueQuotes from '@/utils/remarkDialogueQuotes';
 import { cn } from '@/lib/utils';
 import SimpleChatImageMessage from './SimpleChatImageMessage';
 import CodeBlock from './CodeBlock';
@@ -267,8 +269,8 @@ const ChatMessage = memo(({
                             </div>
                             <ReactMarkdown
                                 components={{ code: CodeBlock }}
-                                remarkPlugins={[remarkGfm]}
-                                className="prose prose-sm dark:prose-invert max-w-none break-words"
+                                remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]}
+                                className="prose prose-sm dark:prose-invert max-w-none break-words chat-prose"
                             >
                                 {msg.content}
                             </ReactMarkdown>
@@ -425,8 +427,8 @@ const ChatMessage = memo(({
                                     ) : (
                                         <ReactMarkdown
                                             components={{ code: CodeBlock }}
-                                            remarkPlugins={[remarkGfm]}
-                                            className="prose prose-sm dark:prose-invert max-w-none break-words"
+                                            remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]}
+                                            className="prose prose-sm dark:prose-invert max-w-none break-words chat-prose"
                                         >
                                             {content}
                                         </ReactMarkdown>

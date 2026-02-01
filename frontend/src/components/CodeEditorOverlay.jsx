@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
+import remarkSoftBreaks from '@/utils/remarkSoftBreaks';
+import remarkDialogueQuotes from '@/utils/remarkDialogueQuotes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -1039,8 +1041,9 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                           ? 'bg-emerald-600/30 text-zinc-100 ml-8'
                           : 'bg-zinc-800 text-zinc-200 mr-8'
                       )}>
-                        <div className="prose prose-sm max-w-none prose-invert text-xs md:text-sm">
+                        <div className="prose prose-sm max-w-none prose-invert text-xs md:text-sm chat-prose">
                           <ReactMarkdown
+                            remarkPlugins={[remarkDialogueQuotes, remarkSoftBreaks]}
                             components={{
                               code({ node, inline, className, children, ...props }) {
                                 const match = /language-(\w+)/.exec(className || '');

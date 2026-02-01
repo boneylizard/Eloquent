@@ -87,6 +87,16 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     isPlayingAudio,
   } = useApp();
 
+  const headingFontOptions = [
+    { label: 'Default (Theme)', value: 'default' },
+    { label: 'Poppins', value: "'Poppins', sans-serif" },
+    { label: 'Inter', value: "'Inter', sans-serif" },
+    { label: 'JetBrains Mono', value: "'JetBrains Mono', monospace" }
+  ];
+
+  const resolveHeadingFontValue = (value) => (value ? value : 'default');
+  const normalizeHeadingFontValue = (value) => (value === 'default' ? '' : value);
+
   // Local editable copy of context settings
   const [localSettings, setLocalSettings] = useState({
     ...contextSettings,
@@ -101,6 +111,17 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     antiRepetitionMode: contextSettings.antiRepetitionMode ?? false,
     detectRepeatedPhrases: contextSettings.detectRepeatedPhrases ?? false,
     streamResponses: contextSettings.streamResponses ?? true,
+    mdBodyColor: contextSettings.mdBodyColor ?? '',
+    mdBoldColor: contextSettings.mdBoldColor ?? '',
+    mdItalicColor: contextSettings.mdItalicColor ?? '',
+    mdQuoteColor: contextSettings.mdQuoteColor ?? '',
+    mdQuoteBorder: contextSettings.mdQuoteBorder ?? '',
+    mdH1Color: contextSettings.mdH1Color ?? '',
+    mdH2Color: contextSettings.mdH2Color ?? '',
+    mdH3Color: contextSettings.mdH3Color ?? '',
+    mdH1Font: contextSettings.mdH1Font ?? '',
+    mdH2Font: contextSettings.mdH2Font ?? '',
+    mdH3Font: contextSettings.mdH3Font ?? '',
     ttsSpeed: contextSettings.ttsSpeed ?? 1.0,
     ttsPitch: contextSettings.ttsPitch ?? 0,
     ttsAutoPlay: contextSettings.ttsAutoPlay ?? false,
@@ -134,6 +155,19 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [currentTensorSplit, setCurrentTensorSplit] = useState([0.5, 0.5]);
   const [gpuCount, setGpuCount] = useState(2);
   const [isUnloadingForensicModels, setIsUnloadingForensicModels] = useState(false);
+  const [markdownDefaults, setMarkdownDefaults] = useState({
+    body: '#ffffff',
+    bold: '#ffffff',
+    italic: '#9ca3af',
+    quote: '#94a3b8',
+    quoteBorder: '#334155',
+    h1Color: '#ffffff',
+    h2Color: '#ffffff',
+    h3Color: '#ffffff',
+    h1Font: "'Poppins', sans-serif",
+    h2Font: "'Poppins', sans-serif",
+    h3Font: "'Poppins', sans-serif"
+  });
   const [isShuttingDownTTS, setIsShuttingDownTTS] = useState(false);
   const [isRestartingTTS, setIsRestartingTTS] = useState(false);
   const [directoryPickerKey, setDirectoryPickerKey] = useState(null);
@@ -211,6 +245,58 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   useEffect(() => {
     updateSettings({ memoryIntentText: memoryIntentDetected });
   }, [memoryIntentDetected, updateSettings]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const styles = getComputedStyle(document.documentElement);
+
+    const toHex = (value) => {
+      const trimmed = String(value || '').trim();
+      if (!trimmed) return '';
+      if (trimmed.startsWith('#')) return trimmed;
+      const rgbMatch = trimmed.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+      if (rgbMatch) {
+        const r = parseInt(rgbMatch[1], 10);
+        const g = parseInt(rgbMatch[2], 10);
+        const b = parseInt(rgbMatch[3], 10);
+        return `#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+      }
+      return trimmed;
+    };
+
+    const resolveVarRaw = (name, fallback) => {
+      let value = String(styles.getPropertyValue(name) || '').trim();
+      if (!value) value = fallback;
+      const varMatch = value.match(/^var\((--[^),]+)(?:,[^)]+)?\)$/);
+      if (varMatch) {
+        const nested = String(styles.getPropertyValue(varMatch[1]) || '').trim();
+        value = nested || fallback;
+      }
+      return value || fallback;
+    };
+
+    const resolveColor = (name, fallback) => {
+      return toHex(resolveVarRaw(name, fallback)) || fallback;
+    };
+
+    const resolveFont = (name, fallback) => {
+      return resolveVarRaw(name, fallback) || fallback;
+    };
+
+    setMarkdownDefaults({
+      body: resolveColor('--md-body-color', '#ffffff'),
+      bold: resolveColor('--md-bold-color', '#ffffff'),
+      italic: resolveColor('--md-italic-color', '#9ca3af'),
+      quote: resolveColor('--md-quote-color', '#94a3b8'),
+      quoteBorder: resolveColor('--md-quote-border', '#334155'),
+      h1Color: resolveColor('--md-h1-color', '#ffffff'),
+      h2Color: resolveColor('--md-h2-color', '#ffffff'),
+      h3Color: resolveColor('--md-h3-color', '#ffffff'),
+      h1Font: resolveFont('--md-h1-font', "'Poppins', sans-serif"),
+      h2Font: resolveFont('--md-h2-font', "'Poppins', sans-serif"),
+      h3Font: resolveFont('--md-h3-font', "'Poppins', sans-serif")
+    });
+  }, [darkMode]);
 
   const handleChange = useCallback((key, value) => {
     setLocalSettings(prev => {
@@ -431,6 +517,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
           <div className="border rounded-lg bg-card p-1 overflow-x-auto">
             <TabsList className="flex w-full flex-wrap justify-start gap-1 h-auto min-h-[40px]">
             <TabsTrigger value="general" className="flex-shrink-0">General</TabsTrigger>
+            <TabsTrigger value="styles" className="flex-shrink-0">Styles</TabsTrigger>
             <TabsTrigger value="generation" className="flex-shrink-0">LLM Settings</TabsTrigger>
             <TabsTrigger value="image-generation" className="flex-shrink-0">Image Generation</TabsTrigger>
             <TabsTrigger value="rag" className="flex-shrink-0">Document Context</TabsTrigger>
@@ -916,6 +1003,267 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
           </div>
         </TabsContent>
 
+        {/* Styles */}
+        <TabsContent value="styles">
+          <div className="space-y-6">
+            <SettingsSection
+              title="Message Styling"
+              description="Quick access to text and markdown presentation controls."
+            >
+              <SettingRow
+                label="Plain Text Color"
+                htmlFor="md-body-color"
+                description="Applies to unformatted text inside messages."
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="md-body-color"
+                    type="color"
+                    value={localSettings.mdBodyColor || markdownDefaults.body}
+                    onChange={(e) => handleChange('mdBodyColor', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdBodyColor', '')}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Bold Text Color"
+                htmlFor="md-bold-color"
+                description="Applies to **bold** text."
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="md-bold-color"
+                    type="color"
+                    value={localSettings.mdBoldColor || markdownDefaults.bold}
+                    onChange={(e) => handleChange('mdBoldColor', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdBoldColor', '')}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Italic Text Color"
+                htmlFor="md-italic-color"
+                description="Applies to *italic* text (often used for actions)."
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="md-italic-color"
+                    type="color"
+                    value={localSettings.mdItalicColor || markdownDefaults.italic}
+                    onChange={(e) => handleChange('mdItalicColor', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdItalicColor', '')}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Quote Text Color"
+                htmlFor="md-quote-color"
+                description="Applies to text inside quotes."
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="md-quote-color"
+                    type="color"
+                    value={localSettings.mdQuoteColor || markdownDefaults.quote}
+                    onChange={(e) => handleChange('mdQuoteColor', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdQuoteColor', '')}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Quote Border Color"
+                htmlFor="md-quote-border"
+                description="Controls the left border of blockquotes."
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="md-quote-border"
+                    type="color"
+                    value={localSettings.mdQuoteBorder || markdownDefaults.quoteBorder}
+                    onChange={(e) => handleChange('mdQuoteBorder', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdQuoteBorder', '')}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </SettingRow>
+            </SettingsSection>
+
+            <SettingsSection
+              title="Heading Styles"
+              description="Control the appearance of Markdown headings."
+            >
+              <SettingRow
+                label="Heading 1 (H1)"
+                htmlFor="md-h1-color"
+                description="Applies to # Heading."
+                layout="stack"
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  <Input
+                    id="md-h1-color"
+                    type="color"
+                    value={localSettings.mdH1Color || markdownDefaults.h1Color}
+                    onChange={(e) => handleChange('mdH1Color', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Select
+                    value={resolveHeadingFontValue(localSettings.mdH1Font)}
+                    onValueChange={(value) => handleChange('mdH1Font', normalizeHeadingFontValue(value))}
+                  >
+                    <SelectTrigger className="w-full md:w-64">
+                      <SelectValue placeholder="Default (Theme)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {headingFontOptions.map((option) => (
+                        <SelectItem key={option.label} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdH1Color', '')}
+                  >
+                    Reset Color
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Heading 2 (H2)"
+                htmlFor="md-h2-color"
+                description="Applies to ## Heading."
+                layout="stack"
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  <Input
+                    id="md-h2-color"
+                    type="color"
+                    value={localSettings.mdH2Color || markdownDefaults.h2Color}
+                    onChange={(e) => handleChange('mdH2Color', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Select
+                    value={resolveHeadingFontValue(localSettings.mdH2Font)}
+                    onValueChange={(value) => handleChange('mdH2Font', normalizeHeadingFontValue(value))}
+                  >
+                    <SelectTrigger className="w-full md:w-64">
+                      <SelectValue placeholder="Default (Theme)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {headingFontOptions.map((option) => (
+                        <SelectItem key={option.label} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdH2Color', '')}
+                  >
+                    Reset Color
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Heading 3 (H3)"
+                htmlFor="md-h3-color"
+                description="Applies to ### Heading."
+                layout="stack"
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  <Input
+                    id="md-h3-color"
+                    type="color"
+                    value={localSettings.mdH3Color || markdownDefaults.h3Color}
+                    onChange={(e) => handleChange('mdH3Color', e.target.value)}
+                    className="h-10 w-16 p-1"
+                  />
+                  <Select
+                    value={resolveHeadingFontValue(localSettings.mdH3Font)}
+                    onValueChange={(value) => handleChange('mdH3Font', normalizeHeadingFontValue(value))}
+                  >
+                    <SelectTrigger className="w-full md:w-64">
+                      <SelectValue placeholder="Default (Theme)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {headingFontOptions.map((option) => (
+                        <SelectItem key={option.label} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleChange('mdH3Color', '')}
+                  >
+                    Reset Color
+                  </Button>
+                </div>
+              </SettingRow>
+            </SettingsSection>
+
+            <SettingsSection
+              title="Streaming"
+              description="Control how responses are displayed as they arrive."
+            >
+              <SettingRow label="Stream Responses" htmlFor="stream-responses">
+                <Switch
+                  id="stream-responses"
+                  checked={localSettings.streamResponses}
+                  onCheckedChange={(value) => handleChange('streamResponses', value)}
+                />
+              </SettingRow>
+            </SettingsSection>
+
+            <div className="flex justify-end pt-2">
+              <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
+                <Save className="mr-2 h-4 w-4" />
+                Save Changes
+              </Button>
+            </div>
+          </div>
+        </TabsContent>
+
         {/* User Profiles */}
         <TabsContent value="profiles">
           <div className="space-y-6">
@@ -1037,13 +1385,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   value={localSettings.max_tokens}
                   onChange={e => handleChange('max_tokens', parseInt(e.target.value, 10))}
                   className="w-full md:max-w-xs"
-                />
-              </SettingRow>
-              <SettingRow label="Stream Responses" htmlFor="stream-responses">
-                <Switch
-                  id="stream-responses"
-                  checked={localSettings.streamResponses}
-                  onCheckedChange={(value) => handleChange('streamResponses', value)}
                 />
               </SettingRow>
             </SettingsSection>

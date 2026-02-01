@@ -10,6 +10,8 @@ import { Textarea } from './ui/textarea';
 import { Send, Bot, User, Users, Loader2, MessageSquare, BarChart3 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkSoftBreaks from '@/utils/remarkSoftBreaks';
+import remarkDialogueQuotes from '@/utils/remarkDialogueQuotes';
 import Settings from './Settings';
 
 const AnalysisChat = ({ 
@@ -1498,13 +1500,13 @@ useEffect(() => {
                         )}
                       </div>
                     )}
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                    <div className="prose prose-sm dark:prose-invert max-w-none chat-prose">
                       {message.role === 'system' ? (
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]}>
   {typeof message.content === 'string' ? message.content : String(message.content || '')}
 </ReactMarkdown>
                       ) : (
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]}>
   {typeof message.content === 'string' ? message.content : String(message.content || '')}
 </ReactMarkdown>
                       )}
