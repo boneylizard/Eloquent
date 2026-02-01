@@ -284,17 +284,17 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     };
 
     setMarkdownDefaults({
-      body: resolveColor('--md-body-color', '#ffffff'),
-      bold: resolveColor('--md-bold-color', '#ffffff'),
-      italic: resolveColor('--md-italic-color', '#9ca3af'),
-      quote: resolveColor('--md-quote-color', '#94a3b8'),
-      quoteBorder: resolveColor('--md-quote-border', '#334155'),
-      h1Color: resolveColor('--md-h1-color', '#ffffff'),
-      h2Color: resolveColor('--md-h2-color', '#ffffff'),
-      h3Color: resolveColor('--md-h3-color', '#ffffff'),
-      h1Font: resolveFont('--md-h1-font', "'Poppins', sans-serif"),
-      h2Font: resolveFont('--md-h2-font', "'Poppins', sans-serif"),
-      h3Font: resolveFont('--md-h3-font', "'Poppins', sans-serif")
+      body: resolveColor('--md-body-color-default', '#ffffff'),
+      bold: resolveColor('--md-bold-color-default', '#ffffff'),
+      italic: resolveColor('--md-italic-color-default', '#9ca3af'),
+      quote: resolveColor('--md-quote-color-default', '#94a3b8'),
+      quoteBorder: resolveColor('--md-quote-border-default', '#334155'),
+      h1Color: resolveColor('--md-h1-color-default', '#ffffff'),
+      h2Color: resolveColor('--md-h2-color-default', '#ffffff'),
+      h3Color: resolveColor('--md-h3-color-default', '#ffffff'),
+      h1Font: resolveFont('--md-h1-font-default', "'Poppins', sans-serif"),
+      h2Font: resolveFont('--md-h2-font-default', "'Poppins', sans-serif"),
+      h3Font: resolveFont('--md-h3-font-default', "'Poppins', sans-serif")
     });
   }, [darkMode]);
 
