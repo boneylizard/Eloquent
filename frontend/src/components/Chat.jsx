@@ -96,6 +96,8 @@ const Chat = ({ layoutMode }) => {
     generateCallModeFollowUp
   } = useApp();
   const { profiles, activeProfileId, switchProfile } = useMemory();
+  const performanceMode = settings?.performanceMode === true;
+  const PERFORMANCE_MESSAGE_LIMIT = 80;
 
   // Local state for the input field
   const [messageVariants, setMessageVariants] = useState({}); // Store variants by message ID
@@ -112,6 +114,7 @@ const Chat = ({ layoutMode }) => {
   const [autoplayPaused, setAutoplayPaused] = useState(false);
   const messagesEndRef = useRef(null);
   const [inputValue, setInputValue] = useState('');
+  const [showAllMessages, setShowAllMessages] = useState(false);
   const [isFocusModeActive, setIsFocusModeActive] = useState(false);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState(null);
   const prevMessageCount = useRef(messages.length);
@@ -630,6 +633,10 @@ const Chat = ({ layoutMode }) => {
       }
     }
   }, [messages, autoAnalyzeImages]);
+
+  useEffect(() => {
+    setShowAllMessages(false);
+  }, [performanceMode, activeConversation]);
 
   // Variant Storage Logic
   useEffect(() => {
@@ -1184,55 +1191,83 @@ const Chat = ({ layoutMode }) => {
       );
     }
 
-    return messages.map((msg) => (
-      <ChatMessage
-        key={msg.id}
-        msg={msg}
-        content={getCurrentVariantContent(msg.id, msg.content)}
-        isGenerating={isGenerating}
-        isTranscribing={isTranscribing}
-        isPlayingAudio={isPlayingAudio}
-        editingMessageId={editingMessageId}
-        editingMessageContent={editingMessageContent}
-        editingBotMessageId={editingBotMessageId}
-        editingBotMessageContent={editingBotMessageContent}
-        primaryCharacter={primaryCharacter}
-        secondaryCharacter={secondaryCharacter}
-        userProfile={userProfile}
-        userCharacter={userCharacter}
-        isMultiRoleMode={settings.multiRoleMode}
-        characterAvatarSize={characterAvatarSize}
-        userAvatarSize={userAvatarSize}
-        variantCount={getVariantCount(msg.id)}
-        variantIndex={currentVariantIndex[msg.id] || 0}
-        PRIMARY_API_URL={PRIMARY_API_URL}
-        regenerationQueue={regenerationQueue}
-        ttsEnabled={ttsEnabled}
+    const visibleMessages = performanceMode && !showAllMessages
+      ? messages.slice(-PERFORMANCE_MESSAGE_LIMIT)
+      : messages;
+    const hiddenCount = messages.length - visibleMessages.length;
 
-        onEditUserMessage={handleEditUserMessage}
-        onCancelEdit={handleCancelEdit}
-        onChangeEditingMessageContent={setEditingMessageContent}
-        onSaveEditedMessage={handleSaveEditedMessage}
-        onRegenerateFromEditedPrompt={handleRegenerateFromEditedPrompt}
-        onDeleteMessage={handleDeleteMessage}
+    return (
+      <>
+        {performanceMode && messages.length > PERFORMANCE_MESSAGE_LIMIT && (
+          <div className="flex items-center justify-between gap-2 p-2 mb-2 text-xs text-muted-foreground bg-muted/50 rounded border border-border">
+            <span>
+              {showAllMessages
+                ? "Performance mode is on. Showing all messages (may be slower)."
+                : `Performance mode is on. Showing last ${visibleMessages.length} of ${messages.length}.`}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAllMessages(prev => !prev)}
+              className="h-7 px-2 text-xs"
+            >
+              {showAllMessages ? "Show recent" : `Show all (${hiddenCount})`}
+            </Button>
+          </div>
+        )}
+        {visibleMessages.map((msg) => (
+          <ChatMessage
+            key={msg.id}
+            msg={msg}
+            content={getCurrentVariantContent(msg.id, msg.content)}
+            isGenerating={isGenerating}
+            isTranscribing={isTranscribing}
+            isPlayingAudio={isPlayingAudio}
+            editingMessageId={editingMessageId}
+            editingMessageContent={editingMessageContent}
+            editingBotMessageId={editingBotMessageId}
+            editingBotMessageContent={editingBotMessageContent}
+            primaryCharacter={primaryCharacter}
+            secondaryCharacter={secondaryCharacter}
+            userProfile={userProfile}
+            userCharacter={userCharacter}
+            isMultiRoleMode={settings.multiRoleMode}
+            characterAvatarSize={characterAvatarSize}
+            userAvatarSize={userAvatarSize}
+            variantCount={getVariantCount(msg.id)}
+            variantIndex={currentVariantIndex[msg.id] || 0}
+            PRIMARY_API_URL={PRIMARY_API_URL}
+            regenerationQueue={regenerationQueue}
+            ttsEnabled={ttsEnabled}
 
-        onEditBotMessage={handleEditBotMessage}
-        onCancelBotEdit={handleCancelBotEdit}
-        onChangeEditingBotMessageContent={setEditingBotMessageContent}
-        onSaveBotMessage={handleSaveBotMessage}
-        onGenerateVariant={handleGenerateVariant}
-        onContinueGeneration={handleContinueGeneration}
-        onNavigateVariant={navigateVariant}
-        onSpeakerClick={handleSpeakerClick}
-        onRegenerateImage={handleRegenerateImage}
+            onEditUserMessage={handleEditUserMessage}
+            onCancelEdit={handleCancelEdit}
+            onChangeEditingMessageContent={setEditingMessageContent}
+            onSaveEditedMessage={handleSaveEditedMessage}
+            onRegenerateFromEditedPrompt={handleRegenerateFromEditedPrompt}
+            onDeleteMessage={handleDeleteMessage}
 
-        formatModelName={formatModelName}
-      />
-    ));
+            onEditBotMessage={handleEditBotMessage}
+            onCancelBotEdit={handleCancelBotEdit}
+            onChangeEditingBotMessageContent={setEditingBotMessageContent}
+            onSaveBotMessage={handleSaveBotMessage}
+            onGenerateVariant={handleGenerateVariant}
+            onContinueGeneration={handleContinueGeneration}
+            onNavigateVariant={navigateVariant}
+            onSpeakerClick={handleSpeakerClick}
+            onRegenerateImage={handleRegenerateImage}
+
+            formatModelName={formatModelName}
+          />
+        ))}
+      </>
+    );
   }, [
     messages,
     primaryModel,
     setShowModelSelector,
+    performanceMode,
+    showAllMessages,
     isGenerating,
     isTranscribing,
     isPlayingAudio,
@@ -1268,7 +1303,8 @@ const Chat = ({ layoutMode }) => {
     handleSpeakerClick,
     handleRegenerateImage,
     setEditingMessageContent,
-    setEditingBotMessageContent
+    setEditingBotMessageContent,
+    setShowAllMessages
   ]);
 
   // --- Component Render ---
@@ -1828,6 +1864,7 @@ const Chat = ({ layoutMode }) => {
             webSearchEnabled={webSearchEnabled}
             inputValue={inputValue}
             setInputValue={setInputValue}
+            performanceMode={performanceMode}
             onBack={handleBack}
             canGoBack={messages.length > 0 && messages.some(m => m.role === 'user')}
           />

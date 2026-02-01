@@ -16,6 +16,7 @@ const ChatInputForm = ({
   webSearchEnabled,
   inputValue,
   setInputValue,
+  performanceMode,
   onBack,
   canGoBack
 }) => {
@@ -44,6 +45,7 @@ const ChatInputForm = ({
   }, [isGenerating, isRecording, isTranscribing]);
 
   useEffect(() => {
+    if (performanceMode) return;
     const textarea = inputRef.current;
     if (!textarea) return;
 
@@ -60,7 +62,7 @@ const ChatInputForm = ({
     } else {
       textarea.style.overflowY = 'hidden';
     }
-  }, [inputValue]);
+  }, [inputValue, performanceMode]);
 
   const isDisabled = !primaryModel || isGenerating || isModelLoading || agentConversationActive || isRecording || isTranscribing;
   const placeholderText =
@@ -83,11 +85,12 @@ const ChatInputForm = ({
           placeholder={placeholderText}
           disabled={isDisabled}
           className="flex-1 resize-none border-input bg-background pr-16 md:pr-20 text-base py-3"
-          rows={1}
+          rows={performanceMode ? 3 : 1}
           style={{
-            minHeight: '44px', // Taller touch target
-            overflowY: 'hidden',
-            transition: 'height 0.1s ease'
+            minHeight: performanceMode ? '96px' : '44px', // Taller touch target
+            height: performanceMode ? '96px' : undefined,
+            overflowY: performanceMode ? 'auto' : 'hidden',
+            transition: performanceMode ? 'none' : 'height 0.1s ease'
           }}
         />
         <div className="absolute right-1 bottom-1.5 flex gap-1">
