@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkSoftBreaks from '@/utils/remarkSoftBreaks';
+import remarkDialogueQuotes from '@/utils/remarkDialogueQuotes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'; // Or choose another theme
 import { Button } from '@/components/ui/button';
@@ -214,9 +216,9 @@ useEffect(() => {
                 ) : (
                   // Display Message Content (Markdown)
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
+                    remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]}
                     components={{ code: CodeBlock }}
-                    className="prose prose-sm dark:prose-invert max-w-none" // prose classes for markdown styling
+                    className="prose prose-sm dark:prose-invert max-w-none chat-prose" // prose classes for markdown styling
                   >
                     {message.content}
                   </ReactMarkdown>

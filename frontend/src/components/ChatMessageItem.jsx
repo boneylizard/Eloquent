@@ -2,6 +2,8 @@ import React from 'react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkSoftBreaks from '@/utils/remarkSoftBreaks';
+import remarkDialogueQuotes from '@/utils/remarkDialogueQuotes';
 import CodeBlock from './CodeBlock';
 import SimpleChatImageMessage from './SimpleChatImageMessage';
 import { Button } from '@/components/ui/button';
@@ -117,7 +119,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                     </Button>
                   </div>
                 </div>
-                <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm]} className="prose prose-sm prose-invert max-w-none text-white">{msg.content}</ReactMarkdown>
+                <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]} className="prose prose-sm prose-invert max-w-none text-white chat-prose">{msg.content}</ReactMarkdown>
               </>
             )}
           </div>
@@ -156,7 +158,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                 <button onClick={() => navigateVariant(msg.id, 'next')} className="hover:text-white">Next →</button>
               </div>
             )}
-            <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm]} className="prose prose-sm prose-invert max-w-none text-white">
+            <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]} className="prose prose-sm prose-invert max-w-none text-white chat-prose">
               {getCurrentVariantContent(msg.id, msg.content)}
             </ReactMarkdown>
           </div>

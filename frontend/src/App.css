@@ -48,6 +48,19 @@
     --input-bg: transparent;
     --focus-ring: 2px solid var(--ring);
 
+    /* Markdown emphasis colors (light defaults) */
+    --md-body-color: var(--foreground);
+    --md-bold-color: var(--foreground);
+    --md-italic-color: #4b5563;
+    --md-quote-color: #6b7280;
+    --md-quote-border: #d1d5db;
+    --md-h1-color: var(--foreground);
+    --md-h2-color: var(--foreground);
+    --md-h3-color: var(--foreground);
+    --md-h1-font: var(--font-heading);
+    --md-h2-font: var(--font-heading);
+    --md-h3-font: var(--font-heading);
+
     /* Global Font Family Variable (optional to override per theme) */
     --font-heading: 'Poppins', sans-serif;
     --font-body: 'Inter', sans-serif;
@@ -89,6 +102,12 @@
     /* Extended Tokens - Dark Mode Overrides */
     --input-bg: var(--input);
     --button-text: #ffffff;
+
+    /* Markdown emphasis colors (dark defaults) */
+    --md-bold-color: #ffffff;
+    --md-italic-color: #9ca3af;
+    --md-quote-color: #94a3b8;
+    --md-quote-border: #334155;
   }
 
   /* WhatsApp Theme (Authentic Dark) */
@@ -125,6 +144,12 @@
     /* Rounder bubbles */
     --shadow: none;
     /* Flat aesthetic */
+
+    /* Markdown emphasis colors */
+    --md-bold-color: #e9edef;
+    --md-italic-color: #cbd5e1;
+    --md-quote-color: #94a3b8;
+    --md-quote-border: #1f2c34;
   }
 
   /* Messenger Theme (Premium Dark + Gradient) */
@@ -167,6 +192,12 @@
 
     /* Special Gradient Token */
     --primary-gradient: linear-gradient(to right, #00C6FF, #0072FF);
+
+    /* Markdown emphasis colors */
+    --md-bold-color: #ffffff;
+    --md-italic-color: #cbd5e1;
+    --md-quote-color: #94a3b8;
+    --md-quote-border: #2f3336;
   }
 
   /* Cyberpunk Theme (Neon, High Contrast) */
@@ -204,6 +235,12 @@
     /* Sharp edges */
     --shadow: 0 0 10px rgba(252, 238, 10, 0.3), 0 0 5px rgba(0, 240, 255, 0.2);
     /* Neon Glow */
+
+    /* Markdown emphasis colors */
+    --md-bold-color: #ffffff;
+    --md-italic-color: #a5f3fc;
+    --md-quote-color: #67e8f9;
+    --md-quote-border: #0e7490;
   }
 
   /* Claude Theme - Light Mode (Actual claude.ai colors) */
@@ -251,6 +288,12 @@
     /* Very subtle shadow */
 
     --primary-gradient: linear-gradient(135deg, #D68977, #CC785C);
+
+    /* Markdown emphasis colors */
+    --md-bold-color: #141413;
+    --md-italic-color: #6b7280;
+    --md-quote-color: #78716c;
+    --md-quote-border: #e7e5e4;
   }
 
   /* Prevent browser autofill from forcing light backgrounds in themed inputs */
@@ -269,18 +312,111 @@
   /* MARKDOWN COLOR OVERRIDES - CRITICAL FIX */
   /* Force prose to use the container's text color (which we successfully set to white/contrast) */
   /* This overrides the default grey text from @tailwindcss/typography */
-  .message-bubble .prose,
-  .message-bubble .prose * {
-    color: inherit !important;
+  .message-bubble .prose:not(.chat-prose),
+  .message-bubble .prose:not(.chat-prose) * {
+    color: inherit;
+  }
+
+  .chat-prose,
+  .chat-prose * {
+    color: inherit;
   }
 
   /* Ensure links and code blocks still look distinct if needed, or inherit */
-  .message-bubble .prose a {
+  .message-bubble .prose a,
+  .chat-prose a {
     color: inherit;
     text-decoration: underline;
   }
 
-  .message-bubble .prose code {
+  .message-bubble .prose strong,
+  .chat-prose strong {
+    color: var(--md-bold-color);
+    font-weight: 700;
+  }
+
+  .message-bubble .prose em,
+  .chat-prose em {
+    color: var(--md-italic-color);
+    font-style: italic;
+  }
+
+  .message-bubble .prose em.dialogue-quote,
+  .chat-prose em.dialogue-quote {
+    color: var(--md-quote-color);
+    font-weight: 500;
+    font-style: normal;
+  }
+
+  .message-bubble .prose blockquote,
+  .chat-prose blockquote {
+    color: var(--md-quote-color);
+    border-left: 3px solid var(--md-quote-border);
+    padding-left: 0.75rem;
+  }
+
+  .message-bubble .prose blockquote *,
+  .chat-prose blockquote * {
+    color: var(--md-quote-color);
+  }
+
+  .chat-prose p {
+    margin-bottom: 0.75rem;
+    white-space: pre-line;
+    color: var(--md-body-color, inherit);
+  }
+
+  .chat-prose p:last-child {
+    margin-bottom: 0;
+  }
+
+  .chat-prose ul,
+  .chat-prose ol {
+    margin: 0.5rem 0 0.75rem 1.25rem;
+  }
+
+  .chat-prose li {
+    margin-bottom: 0.25rem;
+  }
+
+  .chat-prose {
+    color: var(--md-body-color, inherit);
+    --tw-prose-body: var(--md-body-color, inherit);
+    --tw-prose-lead: var(--md-body-color, inherit);
+    --tw-prose-bullets: var(--md-body-color, inherit);
+    --tw-prose-counters: var(--md-body-color, inherit);
+    --tw-prose-invert-body: var(--md-body-color, inherit);
+    --tw-prose-invert-lead: var(--md-body-color, inherit);
+    --tw-prose-invert-bullets: var(--md-body-color, inherit);
+    --tw-prose-invert-counters: var(--md-body-color, inherit);
+  }
+
+  .chat-prose h1 {
+    color: var(--md-h1-color);
+    font-family: var(--md-h1-font);
+    font-size: 1.5em;
+    font-weight: 700;
+    margin: 0.6em 0 0.4em;
+  }
+
+  .chat-prose h2 {
+    color: var(--md-h2-color);
+    font-family: var(--md-h2-font);
+    font-size: 1.3em;
+    font-weight: 600;
+    margin: 0.5em 0 0.35em;
+  }
+
+  .chat-prose h3 {
+    color: var(--md-h3-color);
+    font-family: var(--md-h3-font);
+    font-size: 1.1em;
+    font-weight: 600;
+    margin: 0.4em 0 0.3em;
+  }
+
+  .message-bubble .prose code,
+  .chat-prose code {
     color: inherit;
     background-color: rgba(0, 0, 0, 0.2);
     /* Slight dim for code bg inside colored bubbles */

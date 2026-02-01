@@ -551,11 +551,60 @@ const AppProvider = ({ children }) => {
     ttsAutoPlay: false,  // Simply set a default value
     userAvatarSize: null, // Default size for user avatar
     characterAvatarSize: null, // Default size for character avatar
+    mdBodyColor: '',
+    mdBoldColor: '',
+    mdItalicColor: '',
+    mdQuoteColor: '',
+    mdQuoteBorder: '',
+    mdH1Color: '',
+    mdH2Color: '',
+    mdH3Color: '',
+    mdH1Font: '',
+    mdH2Font: '',
+    mdH3Font: '',
     admin_password: "", // <-- Password for remote access
   });
   useEffect(() => {
     roleplayEnabledRef.current = settings.multiRoleMode === true;
   }, [settings.multiRoleMode]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+
+    const applyVar = (key, cssVar) => {
+      const value = settings?.[key];
+      if (typeof value === 'string' && value.trim()) {
+        root.style.setProperty(cssVar, value.trim());
+      } else {
+        root.style.removeProperty(cssVar);
+      }
+    };
+
+    applyVar('mdBodyColor', '--md-body-color');
+    applyVar('mdBoldColor', '--md-bold-color');
+    applyVar('mdItalicColor', '--md-italic-color');
+    applyVar('mdQuoteColor', '--md-quote-color');
+    applyVar('mdQuoteBorder', '--md-quote-border');
+    applyVar('mdH1Color', '--md-h1-color');
+    applyVar('mdH2Color', '--md-h2-color');
+    applyVar('mdH3Color', '--md-h3-color');
+    applyVar('mdH1Font', '--md-h1-font');
+    applyVar('mdH2Font', '--md-h2-font');
+    applyVar('mdH3Font', '--md-h3-font');
+  }, [
+    settings?.mdBodyColor,
+    settings?.mdBoldColor,
+    settings?.mdItalicColor,
+    settings?.mdQuoteColor,
+    settings?.mdQuoteBorder,
+    settings?.mdH1Color,
+    settings?.mdH2Color,
+    settings?.mdH3Color,
+    settings?.mdH1Font,
+    settings?.mdH2Font,
+    settings?.mdH3Font
+  ]);
 
   // Backend detects single_gpu_mode, frontend stores as singleGpuMode
   const isSingleGpuMode = settings?.singleGpuMode === true;
