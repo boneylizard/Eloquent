@@ -84,12 +84,17 @@ const ControlPanel = ({
     return (
         <div
             className={cn(
-                "fixed right-0 top-1/2 transform -translate-y-1/2 z-50 flex flex-col transition-all duration-300 ease-in-out",
-                isOpen ? "right-4" : "right-0 translate-x-[calc(100%-40px)]" // Peek out when closed
+                "fixed z-50 flex flex-col transition-all duration-300 ease-in-out",
+                // Vertical positioning: Top aligned on mobile, Centered on desktop
+                "top-20 lg:top-1/2 lg:transform lg:-translate-y-1/2",
+                // Horizontal positioning
+                isOpen ? "right-2 lg:right-4" : "right-0 translate-x-[calc(100%-40px)]"
             )}
         >
             <div className={cn(
-                "bg-background/95 backdrop-blur-md border border-border shadow-lg rounded-xl flex flex-col overflow-hidden transition-all duration-300",
+                "bg-background/95 backdrop-blur-md border border-border shadow-lg rounded-xl flex flex-col transition-all duration-300",
+                // Scroll handling
+                "max-h-[calc(100vh-6rem)] overflow-y-auto [&::-webkit-scrollbar]:hidden",
                 isOpen ? "w-[60px] p-2 gap-2" : "w-[40px] p-1 gap-1 opacity-80 hover:opacity-100"
             )}>
 
@@ -117,26 +122,6 @@ const ControlPanel = ({
                             >
                                 <Plus size={20} />
                             </Button>
-
-                            <Button
-                                variant={showModelSelector ? "secondary" : "ghost"}
-                                size="icon"
-                                className="h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors"
-                                onClick={() => setShowModelSelector(!showModelSelector)}
-                                title={showModelSelector ? "Hide Models" : "Show Models"}
-                            >
-                                <Cpu size={20} />
-                            </Button>
-
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors"
-                                onClick={() => setIsFocusModeActive(true)}
-                                title="Enter Focus Mode"
-                            >
-                                <Focus size={20} />
-                            </Button>
                         </div>
 
                         {/* --- Generation Group --- */}
@@ -150,17 +135,6 @@ const ControlPanel = ({
                                 title="Visualize Scene"
                             >
                                 <Eye size={20} />
-                            </Button>
-
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors"
-                                onClick={handleAiContinue}
-                                disabled={isGenerating || isTranscribing || !messages.some(m => m.role === 'bot')}
-                                title="Continue AI response"
-                            >
-                                <FastForward size={20} />
                             </Button>
 
                             {isGenerating && (
@@ -223,39 +197,10 @@ const ControlPanel = ({
                                         <X size={20} />
                                     </Button>
                                 )}
-
-                                {/* AutoTTS Toggle */}
-                                {ttsEnabled && (
-                                    <div className="flex flex-col items-center justify-center pt-1" title="Toggle Auto-TTS">
-                                        <Switch
-                                            id="panel-autotts"
-                                            checked={settings?.ttsAutoPlay || false}
-                                            onCheckedChange={handleAutoPlayToggle}
-                                            className="scale-75 data-[state=checked]:bg-primary"
-                                        />
-                                        <span className="text-[9px] font-medium text-muted-foreground mt-0.5">TTS</span>
-                                    </div>
-                                )}
                             </div>
                         )}
 
-                        {/* --- Call Mode --- */}
-                        {sttEnabled && ttsEnabled && (
-                            <div className="flex flex-col gap-2 py-2 border-b border-border/50">
-                                <Button
-                                    variant={isCallModeActive ? "destructive" : "ghost"}
-                                    size="icon"
-                                    onClick={handleCallModeToggle}
-                                    title={isCallModeActive ? "Exit Call Mode" : "Enter Call Mode"}
-                                    className={cn(
-                                        "h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors",
-                                        isCallModeActive && "ring-2 ring-destructive/40"
-                                    )}
-                                >
-                                    {isCallModeActive ? <PhoneOff size={20} /> : <Phone size={20} />}
-                                </Button>
-                            </div>
-                        )}
+
 
 
                         {/* --- Tools Group --- */}
@@ -282,15 +227,7 @@ const ControlPanel = ({
                                 {isGeneratingCharacter ? <Loader2 className="animate-spin" size={20} /> : isAnalyzingCharacter ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Users size={20} />}
                             </Button>
 
-                            <Button
-                                variant={showAuthorNote ? "secondary" : "ghost"}
-                                size="icon"
-                                className="h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors"
-                                onClick={() => setShowAuthorNote(!showAuthorNote)}
-                                title="Author's Note"
-                            >
-                                <BookOpen size={20} />
-                            </Button>
+
 
                             <Button
                                 variant={showStoryTracker ? "secondary" : "ghost"}

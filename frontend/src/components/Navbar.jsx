@@ -31,6 +31,28 @@ const Navbar = ({ toggleSidebar }) => {
 
   const { theme, setTheme } = useTheme();
 
+  const handleRestart = async () => {
+    if (confirm('Are you sure you want to restart Eloquent?')) {
+      try {
+        await fetch(`${PRIMARY_API_URL}/system/restart`, { method: 'POST' });
+        // No alert needed as page will loose connection
+      } catch (e) {
+        console.error("Restart failed", e);
+      }
+    }
+  };
+
+  const handleShutdown = async () => {
+    if (confirm('Are you sure you want to shutdown Eloquent?')) {
+      try {
+        await fetch(`${PRIMARY_API_URL}/system/shutdown`, { method: 'POST' });
+        alert("System shutting down. You can close this window.");
+      } catch (e) {
+        console.error("Shutdown failed", e);
+      }
+    }
+  };
+
   // Define the navigation items that mirror the sidebar
   const sidebarNavItems = [
     { id: 'chat', label: 'Chat', icon: <MessageSquare className="mr-2 h-4 w-4" /> },
@@ -74,23 +96,14 @@ const Navbar = ({ toggleSidebar }) => {
         {/* Right Side: Status Indicators & Theme Toggle */}
         <div className="flex items-center gap-4">
 
-          {/* System Controls */}
-          <div className="flex items-center gap-1 border-r pr-2 mr-2">
+          {/* System Controls - Hidden on Mobile */}
+          <div className="hidden lg:flex items-center gap-1 border-r pr-2 mr-2">
             <Button
               variant="ghost"
               size="icon"
               title="Restart Application"
               className="text-muted-foreground hover:text-foreground"
-              onClick={async () => {
-                if (confirm('Are you sure you want to restart Eloquent?')) {
-                  try {
-                    await fetch(`${PRIMARY_API_URL}/system/restart`, { method: 'POST' });
-                    // No alert needed as page will loose connection
-                  } catch (e) {
-                    console.error("Restart failed", e);
-                  }
-                }
-              }}
+              onClick={handleRestart}
             >
               <RotateCw className="h-4 w-4" />
             </Button>
@@ -99,16 +112,7 @@ const Navbar = ({ toggleSidebar }) => {
               size="icon"
               title="Shutdown Application"
               className="text-muted-foreground hover:text-red-500"
-              onClick={async () => {
-                if (confirm('Are you sure you want to shutdown Eloquent?')) {
-                  try {
-                    await fetch(`${PRIMARY_API_URL}/system/shutdown`, { method: 'POST' });
-                    alert("System shutting down. You can close this window.");
-                  } catch (e) {
-                    console.error("Shutdown failed", e);
-                  }
-                }
-              }}
+              onClick={handleShutdown}
             >
               <Power className="h-4 w-4" />
             </Button>
@@ -166,7 +170,7 @@ const Navbar = ({ toggleSidebar }) => {
 
       {/* Mobile Menu Dropdown */}
       {mobileMenuOpen && (
-        <div className="lg:hidden border-t bg-card p-4 space-y-2 absolute top-16 left-0 right-0 z-50 shadow-lg">
+        <div className="lg:hidden border-t bg-card p-4 space-y-2 absolute top-16 left-0 right-0 z-50 shadow-lg animate-in slide-in-from-top-2">
           {sidebarNavItems.map((item) => (
             <Button
               key={item.id}
@@ -181,6 +185,32 @@ const Navbar = ({ toggleSidebar }) => {
               <span className="ml-2">{item.label}</span>
             </Button>
           ))}
+
+          <div className="border-t my-2 pt-2">
+            <div className="text-xs font-semibold text-muted-foreground mb-2 px-2 uppercase tracking-wider">System</div>
+            <Button
+              variant="ghost"
+              className="w-full justify-start text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                handleRestart();
+                setMobileMenuOpen(false);
+              }}
+            >
+              <RotateCw className="mr-2 h-4 w-4" />
+              <span className="ml-2">Restart Eloquent</span>
+            </Button>
+            <Button
+              variant="ghost"
+              className="w-full justify-start text-muted-foreground hover:text-red-500"
+              onClick={() => {
+                handleShutdown();
+                setMobileMenuOpen(false);
+              }}
+            >
+              <Power className="mr-2 h-4 w-4" />
+              <span className="ml-2">Shutdown Eloquent</span>
+            </Button>
+          </div>
         </div>
       )}
     </header>
