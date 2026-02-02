@@ -61,7 +61,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         <div className="flex-1">
           <SimpleChatImageMessage message={msg} onRegenerate={handleRegenerateImage} regenerationQueue={regenerationQueue} />
         </div>
-        {msg.role === 'user' && <div className="flex-shrink-0">{renderUserAvatar()}</div>}
+        {msg.role === 'user' && <div className="flex-shrink-0">{renderUserAvatar(msg)}</div>}
       </div>
     );
   }
@@ -79,7 +79,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         </div>
       )}
 
-      <div className={cn("flex-1 max-w-8xl", msg.role === 'user' ? 'order-first' : '')}>
+      <div className={cn("flex-1 max-w-[70ch]", msg.role === 'user' ? 'order-first' : '')}>
         {msg.role === 'user' ? (
           // User Message Content
           <div className="bg-blue-900/20 p-4 rounded-lg border border-blue-500/30">
@@ -165,7 +165,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         )}
       </div>
 
-      {msg.role === 'user' && <div className="flex-shrink-0">{renderUserAvatar()}</div>}
+      {msg.role === 'user' && <div className="flex-shrink-0">{renderUserAvatar(msg)}</div>}
     </div>
   );
 });
