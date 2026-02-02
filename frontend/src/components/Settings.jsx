@@ -22,6 +22,13 @@ import RAGSettings from './RAGSettings';
 import ProfileSelector from './ProfileSelector';
 import SimpleUserProfileEditor from './SimpleUserProfileEditor';
 
+const DIRECTORY_SETTING_KEYS = [
+  'modelDirectory',
+  'sdModelDirectory',
+  'adetailerModelDirectory',
+  'upscalerModelDirectory'
+];
+
 const SettingsSection = ({ title, description, children, actions }) => (
   <div className="rounded-2xl border border-border/70 bg-card/60 shadow-sm">
     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 border-b border-border/60 px-5 py-4">
@@ -71,7 +78,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     characterAvatarSize,
     setCharacterAvatarSize,
     sttEnabled,
-    setSttEnabled,
     ttsEnabled,
     checkSdStatus,
     sdStatus,
@@ -144,7 +150,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     main_gpu_id: contextSettings.main_gpu_id ?? 0,
     auto_launch_browser: contextSettings.auto_launch_browser ?? true,
   });
-  const [hasChanges, setHasChanges] = useState(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
   const [sdModels, setSdModels] = useState([]);
   const [isInstallingEngine, setIsInstallingEngine] = useState(false);
@@ -178,6 +183,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
   const [isUpdateRunning, setIsUpdateRunning] = useState(false);
   const pendingSettingsRef = useRef({});
   const settingsSaveTimerRef = useRef(null);
+  const customEndpointsSaveTimerRef = useRef(null);
 
   // Memory intent input and detected result
   const [memoryIntentInput, setMemoryIntentInput] = useState('');
@@ -298,28 +304,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     });
   }, [darkMode]);
 
-  const handleChange = useCallback((key, value) => {
-    setLocalSettings(prev => {
-      const updated = { ...prev, [key]: value };
-      setHasChanges(JSON.stringify(updated) !== JSON.stringify(contextSettings));
-      return updated;
-    });
-  }, [contextSettings]);
-
-  const handleSave = useCallback(async () => {
-    updateSettings(localSettings);
-    try {
-      await fetch(`${PRIMARY_API_URL}/models/update-settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(localSettings)
-      });
-    } catch (e) {
-      console.error("Failed to save settings to backend:", e);
-    }
-    setHasChanges(false);
-  }, [localSettings, updateSettings, PRIMARY_API_URL]);
-
   const queueSettingsSave = useCallback((patch) => {
     updateSettings(patch);
     pendingSettingsRef.current = { ...pendingSettingsRef.current, ...patch };
@@ -341,15 +325,51 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     }, 300);
   }, [PRIMARY_API_URL, updateSettings]);
 
+  const queueCustomEndpointsSave = useCallback((endpoints) => {
+    if (customEndpointsSaveTimerRef.current) {
+      clearTimeout(customEndpointsSaveTimerRef.current);
+    }
+    customEndpointsSaveTimerRef.current = setTimeout(async () => {
+      try {
+        await fetch(`${PRIMARY_API_URL}/models/save-custom-endpoints`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customApiEndpoints: endpoints || [] })
+        });
+      } catch (e) {
+        console.error("Failed to auto-save custom endpoints:", e);
+      }
+    }, 400);
+  }, [PRIMARY_API_URL]);
+
+  const handleChange = useCallback((key, value) => {
+    setLocalSettings(prev => {
+      if (Object.is(prev[key], value)) {
+        return prev;
+      }
+      const updated = { ...prev, [key]: value };
+      const isDirectorySetting = DIRECTORY_SETTING_KEYS.includes(key);
+      if (!isDirectorySetting) {
+        queueSettingsSave({ [key]: value });
+        if (key === 'customApiEndpoints') {
+          queueCustomEndpointsSave(value);
+        }
+      }
+      return updated;
+    });
+  }, [contextSettings, queueCustomEndpointsSave, queueSettingsSave]);
+
   useEffect(() => () => {
     if (settingsSaveTimerRef.current) {
       clearTimeout(settingsSaveTimerRef.current);
+    }
+    if (customEndpointsSaveTimerRef.current) {
+      clearTimeout(customEndpointsSaveTimerRef.current);
     }
   }, []);
 
   const handleReset = useCallback(() => {
     setLocalSettings({ ...contextSettings });
-    setHasChanges(false);
   }, [contextSettings]);
 
   const handleCheckSdStatus = useCallback(async () => {
@@ -513,6 +533,9 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
     <div className="w-full min-h-screen p-2 md:p-4">
       <div className="mx-auto max-w-6xl space-y-4">
         <h2 className="text-2xl font-bold mb-4">Settings</h2>
+        <p className="text-sm text-muted-foreground">
+          Changes save automatically. Directory fields still require the Save button.
+        </p>
         <Tabs defaultValue={initialTab} className="space-y-6">
           <div className="border rounded-lg bg-card p-1 overflow-x-auto">
             <TabsList className="flex w-full flex-wrap justify-start gap-1 h-auto min-h-[40px]">
@@ -803,6 +826,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     variant="outline"
                     onClick={() => {
                       if (localSettings.modelDirectory) {
+                        queueSettingsSave({ modelDirectory: localSettings.modelDirectory });
                         fetch(`${PRIMARY_API_URL}/models/refresh-directory`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
@@ -994,12 +1018,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               </SettingRow>
             </SettingsSection>
 
-            <div className="flex justify-end pt-2">
-              <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
-                <Save className="mr-2 h-4 w-4" />
-                Save Changes
-              </Button>
-            </div>
           </div>
         </TabsContent>
 
@@ -1255,12 +1273,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               </SettingRow>
             </SettingsSection>
 
-            <div className="flex justify-end pt-2">
-              <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
-                <Save className="mr-2 h-4 w-4" />
-                Save Changes
-              </Button>
-            </div>
           </div>
         </TabsContent>
 
@@ -1546,29 +1558,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                 </div>
               ))}
 
-              <div className="flex justify-end">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    fetch(`${PRIMARY_API_URL}/models/save-custom-endpoints`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ customApiEndpoints: localSettings.customApiEndpoints || [] })
-                    }).then(r => r.json()).then(d => alert(d.status === 'success' ? 'Saved!' : d.message));
-                  }}
-                  className="w-full md:w-auto"
-                >
-                  <Save className="mr-1 h-4 w-4" />
-                  Save Endpoints
-                </Button>
+              <div className="text-xs text-muted-foreground">
+                Changes are saved automatically.
               </div>
             </SettingsSection>
 
-            <div className="flex justify-end pt-2">
-              <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
-                <Save className="mr-1 h-4 w-4" />Save
-              </Button>
-            </div>
           </div>
         </TabsContent>
 
@@ -1680,6 +1674,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     variant="outline"
                     onClick={() => {
                       if (localSettings.sdModelDirectory) {
+                        queueSettingsSave({ sdModelDirectory: localSettings.sdModelDirectory });
                         fetch(`${PRIMARY_API_URL}/sd-local/refresh-directory`, {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ directory: localSettings.sdModelDirectory })
@@ -1717,6 +1712,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     variant="outline"
                     onClick={() => {
                       if (localSettings.adetailerModelDirectory) {
+                        queueSettingsSave({ adetailerModelDirectory: localSettings.adetailerModelDirectory });
                         fetch(`${PRIMARY_API_URL}/sd-local/set-adetailer-directory`, {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ directory: localSettings.adetailerModelDirectory })
@@ -1753,6 +1749,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                   <Button
                     variant="outline"
                     onClick={() => {
+                      queueSettingsSave({ upscalerModelDirectory: localSettings.upscalerModelDirectory });
                       fetch(`${PRIMARY_API_URL}/models/update-upscaler-dir`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ directory: localSettings.upscalerModelDirectory })
@@ -1873,10 +1870,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
               </SettingsSection>
             )}
 
-            <div className="flex justify-end space-x-2 pt-2">
-              <Button onClick={handleSave} disabled={!hasChanges} className="w-full md:w-auto">
-                <Save className="mr-1 h-4 w-4" />Save
-              </Button>
+            <div className="flex justify-end pt-2">
               <Button variant="outline" onClick={handleReset} className="w-full md:w-auto">
                 Reset
               </Button>
@@ -1900,7 +1894,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                 <Switch
                   id="stt-enabled"
                   checked={sttEnabled}
-                  onCheckedChange={setSttEnabled}
+                  onCheckedChange={(value) => handleChange('sttEnabled', value)}
                 />
               </SettingRow>
 
@@ -1992,7 +1986,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                 <Switch
                   id="tts-enabled"
                   checked={ttsEnabled}
-                  onCheckedChange={value => queueSettingsSave({ ttsEnabled: value })}
+                  onCheckedChange={(value) => handleChange('ttsEnabled', value)}
                 />
               </SettingRow>
 
@@ -2004,10 +1998,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       value={localSettings.ttsEngine || 'kokoro'}
                       onValueChange={value => {
                         handleChange('ttsEngine', value);
-                        queueSettingsSave({ ttsEngine: value });
                         if (value === 'kokoro') {
                           handleChange('ttsVoice', 'af_heart');
-                          queueSettingsSave({ ttsVoice: 'af_heart' });
                         }
                       }}
                     >
@@ -2029,7 +2021,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         value={localSettings.ttsVoice || 'af_heart'}
                         onValueChange={value => {
                           handleChange('ttsVoice', value);
-                          queueSettingsSave({ ttsVoice: value });
                         }}
                       >
                         <SelectTrigger className="w-full md:w-64">
@@ -2073,7 +2064,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                               });
                               const result = await response.json();
                               handleChange('ttsVoice', result.voice_id);
-                              queueSettingsSave({ ttsVoice: result.voice_id });
                               await fetchAvailableVoices();
                               alert(`Voice "${file.name}" uploaded successfully!`);
                             } catch (error) {
@@ -2092,7 +2082,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           value={localSettings.ttsVoice || 'default'}
                           onValueChange={value => {
                             handleChange('ttsVoice', value);
-                            queueSettingsSave({ ttsVoice: value });
                             fetch(`${PRIMARY_API_URL}/tts/save-voice-preference`, {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
@@ -2117,7 +2106,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           id="tts-exaggeration"
                           min={0.0} max={1.0} step={0.1}
                           value={[localSettings.ttsExaggeration || 0.5]}
-                          onValueChange={([v]) => { handleChange('ttsExaggeration', v); queueSettingsSave({ ttsExaggeration: v }); }}
+                          onValueChange={([v]) => handleChange('ttsExaggeration', v)}
                         />
                       </SettingRow>
 
@@ -2126,7 +2115,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           id="tts-cfg"
                           min={0.1} max={1.0} step={0.1}
                           value={[localSettings.ttsCfg || 0.5]}
-                          onValueChange={([v]) => { handleChange('ttsCfg', v); queueSettingsSave({ ttsCfg: v }); }}
+                          onValueChange={([v]) => handleChange('ttsCfg', v)}
                         />
                       </SettingRow>
 
@@ -2135,7 +2124,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           value={localSettings.ttsSpeedMode || 'standard'}
                           onValueChange={(value) => {
                             handleChange('ttsSpeedMode', value);
-                            queueSettingsSave({ ttsSpeedMode: value });
                           }}
                         >
                           <SelectTrigger className="w-full md:w-64">
@@ -2187,10 +2175,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                     <Switch
                       id="tts-autoplay"
                       checked={localSettings.ttsAutoPlay}
-                      onCheckedChange={value => {
-                        handleChange('ttsAutoPlay', value);
-                        queueSettingsSave({ ttsAutoPlay: value });
-                      }}
+                      onCheckedChange={(value) => handleChange('ttsAutoPlay', value)}
                     />
                   </SettingRow>
 
@@ -2199,10 +2184,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                       id="tts-speed"
                       min={0.5} max={3.0} step={0.1}
                       value={[localSettings.ttsSpeed || 1.0]}
-                      onValueChange={([v]) => {
-                        handleChange('ttsSpeed', v);
-                        queueSettingsSave({ ttsSpeed: v });
-                      }}
+                      onValueChange={([v]) => handleChange('ttsSpeed', v)}
                     />
                   </SettingRow>
 
@@ -2212,10 +2194,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         id="tts-pitch"
                         min={-12} max={12} step={1}
                         value={[localSettings.ttsPitch || 0]}
-                        onValueChange={([v]) => {
-                          handleChange('ttsPitch', v);
-                          queueSettingsSave({ ttsPitch: v });
-                        }}
+                        onValueChange={([v]) => handleChange('ttsPitch', v)}
                       />
                     </SettingRow>
                   )}
