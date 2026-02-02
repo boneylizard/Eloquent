@@ -6,6 +6,26 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-02-02
+
+### Changed
+
+* **Chat Interface Refactor**: Relocated 'Focus Mode', 'Call Mode', and 'Author's Note' buttons to the chat input area for improved accessibility.
+* **Mobile Optimization**: Streamlined the layout of the chat input area to prevent overcrowding on smaller screens.
+* **Control Panel Cleanup**: Removed redundant buttons ('Models', 'Continue Response') from the top Control Panel to reduce visual clutter.
+* **Auto-TTS Control**: Replaced the tiny switch with a clearly labeled toggle button to improve tap accuracy and visibility on mobile.
+* **Focus Mode Readability**: Constrained message bubble width to a standard readable line length (70ch).
+* **Settings UX**: Settings now auto-save on change; manual save buttons were removed except for directory fields.
+
+### Added
+
+* **Quick-Access Auto-TTS**: Added an 'Auto-TTS' toggle directly to the chat input bar for convenient voice control.
+* **Auto-Save Hint**: Added a short note in Settings explaining that changes save automatically and directories still require Save.
+
+### Fixed
+
+* **Focus Mode Avatars**: Restored character/user avatar rendering in Focus Mode (latest-message-only behavior preserved).
+
 ## 2026-02-01
 
 ### Added
