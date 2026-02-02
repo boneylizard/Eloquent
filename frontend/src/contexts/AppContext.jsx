@@ -3616,6 +3616,33 @@ Return ONLY valid JSON:
       return updatedSettings;
     });
   }, []);
+  const customEndpointsSaveTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!PRIMARY_API_URL) return;
+    const endpoints = settings?.customApiEndpoints;
+    if (!Array.isArray(endpoints)) return;
+
+    if (customEndpointsSaveTimerRef.current) {
+      clearTimeout(customEndpointsSaveTimerRef.current);
+    }
+
+    customEndpointsSaveTimerRef.current = setTimeout(() => {
+      fetch(`${PRIMARY_API_URL}/models/save-custom-endpoints`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customApiEndpoints: endpoints })
+      }).catch((error) => {
+        console.warn("Failed to auto-sync custom endpoints:", error);
+      });
+    }, 400);
+
+    return () => {
+      if (customEndpointsSaveTimerRef.current) {
+        clearTimeout(customEndpointsSaveTimerRef.current);
+      }
+    };
+  }, [PRIMARY_API_URL, settings?.customApiEndpoints]);
 
   // Update the current conversation when messages change
   useEffect(() => {
