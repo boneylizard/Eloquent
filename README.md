@@ -47,7 +47,6 @@ Optional cloud APIs for when you want them. Your choice.
 
 - You don't have an NVIDIA GPU
 - You're on Mac or Linux (Windows only)
-- You want a simple mobile app
 
 ---
 
