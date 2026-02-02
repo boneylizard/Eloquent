@@ -52,6 +52,35 @@ START "Eloquent Backend" cmd /c "cd /d "%PROJECT_DIR%" && python launch.py"
 
 echo Launching Frontend Development Server (new window)...
 set "FRONTEND_DIR=%PROJECT_DIR%frontend"
+if not exist "%FRONTEND_DIR%\package.json" (
+    echo ERROR: Frontend folder or package.json missing at "%FRONTEND_DIR%".
+    echo The frontend will not start.
+    pause
+    exit /b 1
+)
+if not exist "%FRONTEND_DIR%\node_modules" (
+    echo Frontend dependencies missing. Running npm install...
+    pushd "%FRONTEND_DIR%"
+    call npm install
+    if errorlevel 1 (
+        echo ERROR: npm install failed. Frontend will not start.
+        popd
+        pause
+        exit /b 1
+    )
+    popd
+) else if not exist "%FRONTEND_DIR%\node_modules\.bin\vite.cmd" (
+    echo Frontend dependencies incomplete. Running npm install...
+    pushd "%FRONTEND_DIR%"
+    call npm install
+    if errorlevel 1 (
+        echo ERROR: npm install failed. Frontend will not start.
+        popd
+        pause
+        exit /b 1
+    )
+    popd
+)
 START "Eloquent Frontend" cmd /c "cd /d "%FRONTEND_DIR%" && npm run dev"
 
 echo.
