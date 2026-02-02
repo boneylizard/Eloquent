@@ -834,9 +834,9 @@ def _run_update_task(update_id: str) -> None:
             raise RuntimeError("git reset --hard failed")
 
         clean_result = _run_git_with_logs(
-            ["clean", "-fd"],
+            ["clean", "-fd", "-e", "frontend/node_modules", "-e", "frontend/.vite"],
             repo_root,
-            "Cleaning untracked files",
+            "Cleaning untracked files (preserving frontend deps)",
             timeout=120
         )
         if clean_result.returncode != 0:
