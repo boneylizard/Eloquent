@@ -156,8 +156,17 @@ Optional cloud APIs for when you want them. Your choice.
 **UI & Customization**
 - 5 premium themes: Claude, Messenger, WhatsApp, Cyberpunk, ChatGPT Light
 - Text formatting: Quote highlighting, H1-H3 headings, paragraph controls
-- Mobile-optimized with responsive layouts
 - Auto-save settings (directories require manual save)
+
+### Mobile Support
+
+**Full mobile optimization for phones and tablets.**
+
+- Responsive design with touch-friendly UI throughout
+- Universal access: automatic `0.0.0.0` binding and IP discovery for local network connection
+- Native audio handling for reliable TTS on iOS and Android
+- Mobile-first themes (Messenger, WhatsApp) designed for phone/tablet use
+- Touch-optimized controls and adaptive layouts
 
 ---
 
@@ -358,7 +367,7 @@ See [CHANGELOG.md](CHANGELOG.md) for detailed version history and updates.
 
 ## 🤝 Contributing
 
-Built by one developer with a day job. Contributions welcome.
+Contributions welcome.
 
 Licensed under **GNU Affero General Public License v3.0**.
 
