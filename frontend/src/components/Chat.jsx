@@ -1168,12 +1168,91 @@ const Chat = ({ layoutMode }) => {
   }, [isGenerating, messages, getCurrentVariantContent, generateReply, settings, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, messageVariants, currentVariantIndex, getTtsOverridesForMessageId]);
 
   const renderAvatar = (message, apiUrl, activeCharacter) => {
-    // ... [Original Logic] ...
-    return null; // Placeholder for brevity
+    const avatarSource = message.avatar || (message.role === 'bot' && !message.characterId && activeCharacter?.avatar);
+    const characterName = message.characterName
+      || (message.role === 'bot' && activeCharacter?.name)
+      || 'activeCharacter';
+
+    const sizeStyle = {
+      width: `${characterAvatarSize}px`,
+      height: `${characterAvatarSize}px`
+    };
+
+    let displayUrl = null;
+    if (avatarSource) {
+      if (avatarSource.startsWith('/')) {
+        displayUrl = `${apiUrl || getBackendUrl()}${avatarSource}`;
+      } else {
+        displayUrl = avatarSource;
+      }
+    }
+
+    if (displayUrl) {
+      return (
+        <img
+          src={displayUrl}
+          alt={`${characterName || '?'}`}
+          onError={(e) => { e.target.style.display = 'none'; }}
+          className="rounded-full object-cover border border-gray-300 dark:border-gray-600 flex-shrink-0"
+          style={sizeStyle}
+        />
+      );
+    }
+
+    return (
+      <div
+        title={characterName || '?'}
+        className="rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm font-semibold text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 flex-shrink-0"
+        style={sizeStyle}
+      >
+        {characterName ? characterName.charAt(0).toUpperCase() : '?'}
+      </div>
+    );
   };
-  const renderUserAvatar = () => {
-    // ... [Original Logic] ...
-    return null; // Placeholder for brevity
+
+  const renderUserAvatar = (message = null) => {
+    const roleplayAvatar = settings.multiRoleMode && message?.characterId
+      ? message?.avatar || userCharacter?.avatar
+      : null;
+    const userAvatarSource = roleplayAvatar || userProfile?.avatar;
+    const userName = settings.multiRoleMode && message?.characterId
+      ? (message?.characterName || userCharacter?.name || 'User')
+      : (userProfile?.name || userProfile?.username || 'User');
+    let userDisplayUrl = null;
+
+    const userSizeStyle = {
+      width: `${userAvatarSize}px`,
+      height: `${userAvatarSize}px`
+    };
+
+    if (userAvatarSource) {
+      userDisplayUrl = userAvatarSource.startsWith('/')
+        ? `${PRIMARY_API_URL || getBackendUrl()}${userAvatarSource}`
+        : userAvatarSource;
+    }
+
+    if (userDisplayUrl) {
+      return (
+        <img
+          src={userDisplayUrl}
+          alt={`${userName}'s avatar`}
+          title={userName}
+          onError={(e) => { e.target.style.display = 'none'; }}
+          className="rounded-full object-cover border border-gray-300 dark:border-gray-600 flex-shrink-0"
+          style={userSizeStyle}
+        />
+      );
+    }
+
+    return (
+      <div
+        title={userName}
+        className="rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-semibold flex-shrink-0 border border-primary/50"
+        style={userSizeStyle}
+      >
+        {userName ? userName.charAt(0).toUpperCase() : 'U'}
+      </div>
+    );
   };
 
   const renderedMessages = useMemo(() => {
