@@ -1841,7 +1841,7 @@ const Chat = ({ layoutMode }) => {
 
       {/* Input Area */}
       <div className="border-t border-border bg-muted/5">
-        <div className="max-w-4xl mx-auto px-2 md:px-4 py-2 flex items-center justify-between">
+        <div className="max-w-4xl mx-auto px-2 md:px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto">
           <WebSearchControl
             webSearchEnabled={webSearchEnabled}
             setWebSearchEnabled={setWebSearchEnabled}
@@ -1849,6 +1849,62 @@ const Chat = ({ layoutMode }) => {
             isRecording={isRecording}
             isTranscribing={isTranscribing}
           />
+
+          <div className="flex items-center gap-2">
+            {ttsEnabled && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-pressed={settings?.ttsAutoPlay || false}
+                className={cn(
+                  "h-8 px-2 gap-1 flex-shrink-0",
+                  (settings?.ttsAutoPlay || false)
+                    ? "bg-primary/10 border-primary text-primary"
+                    : "text-muted-foreground"
+                )}
+                onClick={() => handleAutoPlayToggle(!(settings?.ttsAutoPlay || false))}
+                title="Toggle Auto-TTS"
+              >
+                <PlayIcon size={14} />
+                <span className="text-xs">Auto TTS</span>
+              </Button>
+            )}
+
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-primary"
+                onClick={() => setIsFocusModeActive(true)}
+                title="Enter Focus Mode"
+              >
+                <Focus size={16} />
+              </Button>
+
+              {sttEnabled && ttsEnabled && (
+                <Button
+                  variant={isCallModeActive ? "destructive" : "ghost"}
+                  size="icon"
+                  className={cn("h-8 w-8 text-muted-foreground hover:text-primary", isCallModeActive && "text-white hover:text-white")}
+                  onClick={handleCallModeToggle}
+                  title={isCallModeActive ? "Exit Call Mode" : "Enter Call Mode"}
+                >
+                  {isCallModeActive ? <PhoneOff size={16} /> : <Phone size={16} />}
+                </Button>
+              )}
+
+              <Button
+                variant={showAuthorNote ? "secondary" : "ghost"}
+                size="icon"
+                className={cn("h-8 w-8 text-muted-foreground hover:text-primary", showAuthorNote && "bg-secondary text-secondary-foreground")}
+                onClick={() => setShowAuthorNote(!showAuthorNote)}
+                title="Author's Note"
+              >
+                <BookOpen size={16} />
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
       <div className="border-t border-border">
