@@ -360,3 +360,5 @@ Licensed under **GNU Affero General Public License v3.0**.
 ---
 
 *Eloquent – your GPUs deserve better.*
+
+<!-- auto-update test marker -->
