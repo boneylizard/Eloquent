@@ -843,9 +843,11 @@ def _run_update_task(update_id: str) -> None:
                 "frontend/.vite",
                 "-e",
                 "static",
+                "-e",
+                "backend/app/user_memories",
             ],
             repo_root,
-            "Cleaning untracked files (preserving frontend deps + static assets)",
+            "Cleaning untracked files (preserving frontend deps + static assets + user memories)",
             timeout=120
         )
         if clean_result.returncode != 0:
