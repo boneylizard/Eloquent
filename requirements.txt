@@ -202,6 +202,7 @@ phonemizer-fork
 pillow
 plac
 platformdirs
+playwright
 pluggy
 pooch
 preshed
@@ -238,6 +239,7 @@ python-dateutil
 python-dotenv
 python-json-logger
 python-multipart
+python-chess
 python-rtmidi
 pytorch-lightning
 pytz
