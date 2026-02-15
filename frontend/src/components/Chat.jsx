@@ -140,6 +140,8 @@ const Chat = ({ layoutMode }) => {
   const [characterImagePrompt, setCharacterImagePrompt] = useState('');
   const [customImagePrompt, setCustomImagePrompt] = useState('');
   const [regenerationQueue, setRegenerationQueue] = useState(0);
+  const regenerationQueueRef = useRef([]);
+  const regenerationProcessingRef = useRef(false);
   const [showCustomPrompt, setShowCustomPrompt] = useState(false);
   const streamingTtsMessageIdRef = useRef(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -276,7 +278,11 @@ const Chat = ({ layoutMode }) => {
   }, [rosterCandidates, updateActiveCharacterIds]);
 
   useEffect(() => {
-    setAvailableSummaries(getSummaries());
+    let cancelled = false;
+    getSummaries().then((list) => {
+      if (!cancelled) setAvailableSummaries(list);
+    });
+    return () => { cancelled = true; };
   }, []);
 
   const fetchAvailableVoices = useCallback(async () => {
@@ -308,9 +314,9 @@ const Chat = ({ layoutMode }) => {
     const result = await generateConversationSummary();
     setIsSummarizing(false);
     if (result) {
-      setAvailableSummaries(getSummaries()); // Refresh list
+      const list = await getSummaries();
+      setAvailableSummaries(list);
       setActiveContextSummary(result.content);
-      localStorage.setItem('eloquent-active-summary', result.content);
       alert(`Summary saved: ${result.title}`);
     } else {
       alert("Failed to create summary. Check console/logs.");
@@ -318,7 +324,6 @@ const Chat = ({ layoutMode }) => {
   };
   const clearSummaryContext = () => {
     setActiveContextSummary(null);
-    localStorage.removeItem('eloquent-active-summary');
   };
 
   const handleVisualizeScene = useCallback(async () => {
@@ -742,12 +747,16 @@ const Chat = ({ layoutMode }) => {
     }
   }, [PRIMARY_API_URL, setMessages]);
 
-  const handleRegenerateImage = useCallback(async (imageParams) => {
+  const runRegenerationTask = useCallback(async (queueItem) => {
+    const imageParams = queueItem?.imageParams;
     if (!imageParams?.prompt?.trim()) {
       return;
     }
 
-    setRegenerationQueue(prev => prev + 1);
+    const characterSnapshot = queueItem?.characterSnapshot;
+    const characterId = characterSnapshot?.id ?? activeCharacter?.id;
+    const characterName = characterSnapshot?.name ?? activeCharacter?.name;
+    const avatar = characterSnapshot?.avatar ?? activeCharacter?.avatar;
 
     const gpuId = Number.isInteger(imageParams.gpu_id)
       ? imageParams.gpu_id
@@ -774,9 +783,9 @@ const Chat = ({ layoutMode }) => {
           const imageMessage = {
             id: messageId,
             role: 'bot',
-            characterId: activeCharacter?.id,
-            characterName: activeCharacter?.name,
-            avatar: activeCharacter?.avatar,
+            characterId,
+            characterName,
+            avatar,
             modelId: 'primary',
             type: 'image',
             content: imageParams.prompt,
@@ -845,20 +854,52 @@ const Chat = ({ layoutMode }) => {
           error: true
         }
       ]);
-    } finally {
-      setRegenerationQueue(prev => Math.max(0, prev - 1));
     }
   }, [
     generateImage,
     activeCharacter,
     setMessages,
-    setRegenerationQueue,
     autoEnhanceEnabled,
     adetailerSettings,
     selectedAdetailerModel,
     settings?.imageEngine,
     autoEnhanceRegeneratedImage
   ]);
+
+  const processRegenerationQueue = useCallback(async () => {
+    if (regenerationProcessingRef.current) return;
+    regenerationProcessingRef.current = true;
+
+    try {
+      while (regenerationQueueRef.current.length > 0) {
+        const nextItem = regenerationQueueRef.current[0];
+        await runRegenerationTask(nextItem);
+        regenerationQueueRef.current.shift();
+        setRegenerationQueue(regenerationQueueRef.current.length);
+      }
+    } finally {
+      regenerationProcessingRef.current = false;
+    }
+  }, [runRegenerationTask]);
+
+  const handleRegenerateImage = useCallback((imageParams) => {
+    if (!imageParams?.prompt?.trim()) {
+      return;
+    }
+
+    regenerationQueueRef.current.push({
+      imageParams: { ...imageParams },
+      characterSnapshot: activeCharacter
+        ? {
+          id: activeCharacter.id,
+          name: activeCharacter.name,
+          avatar: activeCharacter.avatar
+        }
+        : null
+    });
+    setRegenerationQueue(regenerationQueueRef.current.length);
+    processRegenerationQueue();
+  }, [activeCharacter, processRegenerationQueue]);
 
   const handleSaveCharacter = useCallback(() => {
     if (!generatedCharacter) return;
@@ -1535,7 +1576,6 @@ const Chat = ({ layoutMode }) => {
                   const summary = availableSummaries.find(s => s.id === e.target.value);
                   if (summary) {
                     setActiveContextSummary(summary.content);
-                    localStorage.setItem('eloquent-active-summary', summary.content);
                     alert(`Loaded context: ${summary.title}`);
                   } else {
                     clearSummaryContext();

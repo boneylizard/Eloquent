@@ -1,62 +1,60 @@
 /**
  * summaryUtils.js
- * Utilities for managing manual conversation summaries in localStorage.
- * Key: 'eloquent-chat-summaries' -> Array of { id, title, content, date }
+ * Manages conversation summaries via backend API (JSON files in backend static/summaries).
+ * No localStorage; active summary is in-memory only (no restore on load).
  */
 
-const STORAGE_KEY = 'eloquent-chat-summaries';
+import { getBackendUrl } from '../config/api';
+
+const getBaseUrl = () => getBackendUrl().replace(/\/$/, '');
 
 /**
- * Get all saved summaries
- * @returns {Array} Array of summary objects
+ * Get all saved summaries from backend
+ * @returns {Promise<Array>} Array of summary objects { id, title, content, date }
  */
-export const getSummaries = () => {
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-        console.error('Failed to parse summaries:', e);
-        return [];
-    }
-};
+export async function getSummaries() {
+  try {
+    const res = await fetch(`${getBaseUrl()}/summaries`);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.error('Failed to fetch summaries:', e);
+    return [];
+  }
+}
 
 /**
- * Save a new summary
+ * Save a new summary to backend
  * @param {string} title - User-defined title
  * @param {string} content - AI generated summary
- * @returns {object} The saved summary object
+ * @returns {Promise<object>} The saved summary object
  */
-export const saveSummary = (title, content) => {
-    const summaries = getSummaries();
-    const newSummary = {
-        id: Date.now().toString(),
-        title: title || `Summary ${new Date().toLocaleDateString()}`,
-        content,
-        date: new Date().toISOString()
-    };
-
-    const updated = [newSummary, ...summaries];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    return newSummary;
-};
+export async function saveSummary(title, content) {
+  const res = await fetch(`${getBaseUrl()}/summaries`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: title || `Summary ${new Date().toLocaleDateString()}`,
+      content: content || '',
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || 'Failed to save summary');
+  }
+  return res.json();
+}
 
 /**
  * Delete a summary by ID
- * @param {string} id 
+ * @param {string} id
+ * @returns {Promise<void>}
  */
-export const deleteSummary = (id) => {
-    const summaries = getSummaries();
-    const updated = summaries.filter(s => s.id !== id);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-};
+export async function deleteSummary(id) {
+  const res = await fetch(`${getBaseUrl()}/summaries/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(res.statusText || 'Failed to delete summary');
+}
 
-/**
- * Update an existing summary
- * @param {string} id 
- * @param {object} updates 
- */
-export const updateSummary = (id, updates) => {
-    const summaries = getSummaries();
-    const updated = summaries.map(s => s.id === id ? { ...s, ...updates } : s);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-};

@@ -6,6 +6,20 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-02-13
+
+### Added
+
+* **Elections Feature (Alpha)**: New **Elections** section for tracking 2026 US races — ready for alpha launch.
+  * **Polls tab**: State-level polls for Senate, Governor, and House from Real Clear Politics and Race to the WH. Table shows pollster, race, margin, dates; party (D/R) coloring uses a 2026 candidate roster so lead and candidates are labeled correctly.
+  * **Map tab**: Hex state map colored by polling averages (same data as Polls). Click a state to open a details panel with margin, source (polls vs manual), and the full list of polls used for that state’s average. Optional manual overrides per state; “Edit” in the panel opens the override form.
+  * **News tab**: AI-driven web search for political and polling news. The agent is given 2026 election research and a candidate roster so searches and results are informed by key races and names (e.g. Texas Senate, Cornyn/Paxton). Update runs the agent and displays articles with title, source, and snippet.
+  * **Trends**: Time-series polling averages by week for charting (Dem/GOP, approval, etc.).
+  * **Polling AI**: “Ask AI” in the Polls tab sends your question plus current poll data to an assistant that can analyze margins, compare pollsters, and use web search; it uses the same 2026 fact sheet and roster for party and race context. Suggested questions are generated with that context so prompts are specific to the data.
+  * **Data retention**: Refreshes only add or update polls (no deletes). Map and Polls use a rolling 18‑month window so new polls don’t push older data out of averages or trends.
+
+---
+
 ## 2026-02-02
 
 ### Changed

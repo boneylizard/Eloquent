@@ -1,5 +1,4 @@
 // Description: Main application component that sets up the layout and theme context for the app.
-//   <button
 import React, { useState, useEffect } from 'react';
 import './App.css';
 // Correct named import for ThemeProvider and import useTheme
@@ -19,7 +18,7 @@ import CharacterManager from './components/CharacterManager';
 import ModelTester from './components/ModelTester';
 import ForensicLinguistics from './components/ForensicLinguistics';
 import CodeEditorOverlay from './components/CodeEditorOverlay';
-
+import ElectionTracker from './components/ElectionTracker';
 
 import LoginOverlay from './components/LoginOverlay';
 import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
@@ -77,18 +76,20 @@ function AppContent() {
         return <Chat layoutMode={layoutMode} />;
       case 'documents':
         return <Documents />;
-      case 'forensics': // ADD THIS CASE
+      case 'forensics':
         return <ForensicLinguistics onClose={() => setActiveTab('chat')} />;
       case 'models':
         return <SimpleModelSelector />;
       case 'characters':
         return <CharacterManager />;
+      case 'election':
+        return <ElectionTracker />;
       case 'settings':
         // Pass theme state and toggle function to Settings
         return <Settings
           darkMode={theme === 'dark'}
           toggleDarkMode={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          initialTab="general" // Or keep whatever default you prefer
+          initialTab="general"
         />;
       case 'memory':
         return <MemoryPage />;

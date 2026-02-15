@@ -4,11 +4,12 @@ import logging
 import re
 import time
 from typing import List, Dict, Optional, Any, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote, parse_qs
 import httpx
 from bs4 import BeautifulSoup
 import json
 from dataclasses import dataclass, asdict
+from html import unescape
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,8 @@ class SearchResult:
     snippet: str
     content: Optional[str] = None  # Full scraped content
     scraped_successfully: bool = False
-    
+    publisher: Optional[str] = None  # Publisher/source name (e.g. from RSS <source>), for news display
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -121,6 +123,8 @@ USER INPUT: {user_prompt}
 
 Respond in this exact JSON format only, no other text:
 {{"queries": ["query1", "query2"], "intent": "brief description of what user wants to find"}}"""
+
+        logger.info("🔎 Web search configured: DuckDuckGo")
 
     def set_llm_function(self, llm_func: Callable):
         """Set the LLM function used for query optimization.
@@ -193,97 +197,261 @@ Respond in this exact JSON format only, no other text:
             
         return [cleaned], "general search"
     
+    def _decode_duckduckgo_redirect(self, url: str) -> str:
+        """Extract real URL from DuckDuckGo redirect link (l/?uddg=...)."""
+        if not url:
+            return url
+        try:
+            if "uddg=" in url:
+                parsed = urlparse(url)
+                qs = parse_qs(parsed.query)
+                uddg = (qs.get("uddg") or [None])[0]
+                if uddg:
+                    return unquote(uddg)
+            if url.startswith("//"):
+                return "https:" + url
+        except Exception:
+            pass
+        return url
+
     async def search_duckduckgo(self, query: str, max_results: int = 5) -> List[SearchResult]:
-        """Search DuckDuckGo and return results."""
+        """Search DuckDuckGo and return results. Prefer HTML search (organic results); Instant Answer API often empty."""
         try:
             logger.info(f"🔍 Searching DuckDuckGo for: '{query}'")
-            
+            headers = {
+                "User-Agent": self.user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
             async with httpx.AsyncClient(timeout=self.session_timeout) as client:
-                # DuckDuckGo instant answer API
-                params = {
-                    'q': query,
-                    'format': 'json',
-                    'no_html': '1',
-                    'skip_disambig': '1'
-                }
-                
-                response = await client.get(
-                    'https://api.duckduckgo.com/',
-                    params=params,
-                    headers={'User-Agent': self.user_agent}
-                )
-                response.raise_for_status()
-                
-                data = response.json()
-                results = []
-                
-                # Get related topics (these often have good URLs)
-                related_topics = data.get('RelatedTopics', [])
-                for topic in related_topics[:max_results]:
-                    if isinstance(topic, dict) and 'FirstURL' in topic:
-                        result = SearchResult(
-                            title=topic.get('Text', '').split(' - ')[0] if ' - ' in topic.get('Text', '') else topic.get('Text', ''),
-                            url=topic.get('FirstURL', ''),
-                            snippet=topic.get('Text', '')
-                        )
-                        if result.url and self._is_scrapeable_url(result.url):
-                            results.append(result)
-                
-                # If we don't have enough results, try the HTML search
+                # Try HTML search first (organic results; Instant Answer API often returns empty for news)
+                results = await self._search_duckduckgo_html(client, query, max_results, headers)
                 if len(results) < max_results:
-                    html_results = await self._search_duckduckgo_html(client, query, max_results - len(results))
-                    results.extend(html_results)
-                
+                    params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
+                    response = await client.get("https://api.duckduckgo.com/", params=params, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    for topic in data.get("RelatedTopics", [])[: max_results - len(results)]:
+                        if isinstance(topic, dict) and topic.get("FirstURL"):
+                            url = topic["FirstURL"]
+                            if self._is_scrapeable_url(url) and url not in {r.url for r in results}:
+                                text = topic.get("Text", "")
+                                results.append(SearchResult(title=text.split(" - ")[0] if " - " in text else text, url=url, snippet=text))
                 logger.info(f"🔍 Found {len(results)} search results")
                 return results[:max_results]
-                
         except Exception as e:
             logger.error(f"❌ DuckDuckGo search error: {e}")
             return []
+
+    async def search(self, query: str, max_results: int = 5) -> List[SearchResult]:
+        """Search the web using DuckDuckGo."""
+        return await self.search_duckduckgo(query, max_results)
     
-    async def _search_duckduckgo_html(self, client: httpx.AsyncClient, query: str, max_results: int) -> List[SearchResult]:
-        """Fallback HTML search for DuckDuckGo."""
+    async def search_news(self, query: str, max_results: int = 10) -> List[SearchResult]:
+        """News-focused search with RSS fallbacks before DuckDuckGo."""
+        results = await self._search_google_news_rss(query, max_results)
+        if not results:
+            results = await self._search_bing_news_rss(query, max_results)
+        if not results:
+            results = await self.search_duckduckgo(query, max_results)
+        if not results:
+            broadened = self._broaden_news_query(query)
+            if broadened and broadened != query:
+                results = await self._search_google_news_rss(broadened, max_results)
+                if not results:
+                    results = await self._search_bing_news_rss(broadened, max_results)
+                if not results:
+                    results = await self.search_duckduckgo(broadened, max_results)
+        return results
+
+    def _broaden_news_query(self, query: str) -> str:
+        q = query or ""
+        q = re.sub(r"\b(news|headlines?)\b", "", q, flags=re.IGNORECASE)
+        q = re.sub(
+            r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b",
+            "",
+            q,
+            flags=re.IGNORECASE
+        )
+        q = re.sub(r"\b(19|20)\d{2}\b", "", q)
+        q = re.sub(r"\s+", " ", q).strip()
+        return q or query
+
+    async def _search_google_news_rss(self, query: str, max_results: int = 10) -> List[SearchResult]:
+        url = "https://news.google.com/rss/search"
+        params = {
+            "q": query,
+            "hl": "en-US",
+            "gl": "US",
+            "ceid": "US:en"
+        }
+        return await self._fetch_rss_results(url, params, max_results)
+
+    async def _search_bing_news_rss(self, query: str, max_results: int = 10) -> List[SearchResult]:
+        url = "https://www.bing.com/news/search"
+        params = {
+            "q": query,
+            "format": "rss",
+            "mkt": "en-US"
+        }
+        return await self._fetch_rss_results(url, params, max_results)
+
+    async def _fetch_rss_results(self, url: str, params: Dict[str, Any], max_results: int) -> List[SearchResult]:
         try:
-            # Wait for rate limiting
-            await asyncio.sleep(self.rate_limit_delay)
-            
-            params = {'q': query}
-            response = await client.get(
-                'https://html.duckduckgo.com/html/',
-                params=params,
-                headers={'User-Agent': self.user_agent}
-            )
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            results = []
-            
-            # Parse search results
-            for result_div in soup.find_all('div', class_='result')[:max_results]:
-                title_elem = result_div.find('a', class_='result__a')
-                snippet_elem = result_div.find('a', class_='result__snippet')
-                
-                if title_elem and title_elem.get('href'):
-                    url = title_elem.get('href')
-                    # DuckDuckGo sometimes uses redirect URLs
-                    if url.startswith('//duckduckgo.com/l/?uddg='):
-                        continue  # Skip redirect URLs for now
-                    
-                    result = SearchResult(
-                        title=title_elem.get_text(strip=True),
-                        url=url,
-                        snippet=snippet_elem.get_text(strip=True) if snippet_elem else ''
-                    )
-                    
-                    if self._is_scrapeable_url(result.url):
-                        results.append(result)
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"❌ DuckDuckGo HTML search error: {e}")
+            headers = {
+                "User-Agent": self.user_agent,
+                "Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
+            async with httpx.AsyncClient(timeout=self.session_timeout) as client:
+                response = await client.get(url, params=params, headers=headers)
+                if response.status_code not in (200, 202):
+                    return []
+                soup = BeautifulSoup(response.text, "xml")
+                items = soup.find_all("item")
+                results: List[SearchResult] = []
+
+                for item in items:
+                    title_node = item.find("title")
+                    link_node = item.find("link")
+                    desc_node = item.find("description") or item.find("summary")
+
+                    title = unescape(title_node.get_text(strip=True)) if title_node else "No title"
+                    link = link_node.get_text(strip=True) if link_node else ""
+                    if not link:
+                        continue
+
+                    snippet = ""
+                    if desc_node and desc_node.get_text(strip=True):
+                        snippet_html = unescape(desc_node.get_text())
+                        snippet = BeautifulSoup(snippet_html, "html.parser").get_text(" ", strip=True)[:500]
+
+                    publisher = None
+                    source_node = item.find("source")
+                    if source_node and source_node.get_text(strip=True):
+                        publisher = unescape(source_node.get_text(strip=True))
+
+                    results.append(SearchResult(title=title or "No title", url=link, snippet=snippet, publisher=publisher))
+                    if len(results) >= max_results:
+                        break
+
+                return results
+        except Exception:
             return []
-    
+
+    async def _search_duckduckgo_html(self, client: httpx.AsyncClient, query: str, max_results: int, headers: Optional[Dict[str, str]] = None) -> List[SearchResult]:
+        """HTML search for DuckDuckGo. Decode uddg redirect URLs to get real links."""
+        try:
+            await asyncio.sleep(self.rate_limit_delay)
+            req_headers = headers or {"User-Agent": self.user_agent}
+            params = {"q": query}
+            search_urls = [
+                "https://html.duckduckgo.com/html/",
+                "https://duckduckgo.com/html/"
+            ]
+
+            for search_url in search_urls:
+                response = await client.get(
+                    search_url,
+                    params=params,
+                    headers=req_headers,
+                )
+                if response.status_code not in (200, 202):
+                    continue
+                results = self._parse_duckduckgo_html_results(response.text, max_results)
+                if results:
+                    return results
+
+            # Fallback: DDG lite often succeeds when HTML endpoint returns empty/202
+            return await self._search_duckduckgo_lite(client, query, max_results, req_headers)
+        except Exception as e:
+            logger.error(f"DuckDuckGo HTML search error: {e}")
+            return []
+
+    def _parse_duckduckgo_html_results(self, html: str, max_results: int) -> List[SearchResult]:
+        soup = BeautifulSoup(html, "html.parser")
+        results: List[SearchResult] = []
+        seen_urls = set()
+
+        for result_div in soup.find_all("div", class_="result")[: max_results * 3]:
+            title_elem = result_div.find("a", class_="result__a")
+            snippet_elem = result_div.find("a", class_="result__snippet") or result_div.find("div", class_="result__snippet")
+            href = title_elem.get("href") if title_elem else None
+            if not href or not title_elem:
+                continue
+            real_url = self._decode_duckduckgo_redirect(href)
+            if not real_url or real_url in seen_urls or not self._is_scrapeable_url(real_url):
+                continue
+            seen_urls.add(real_url)
+            title = title_elem.get_text(strip=True)
+            snippet = (snippet_elem.get_text(strip=True) if snippet_elem else "")[:500]
+            results.append(SearchResult(title=title or "No title", url=real_url, snippet=snippet))
+            if len(results) >= max_results:
+                return results
+
+        return results
+
+    async def _search_duckduckgo_lite(
+        self,
+        client: httpx.AsyncClient,
+        query: str,
+        max_results: int,
+        headers: Optional[Dict[str, str]] = None
+    ) -> List[SearchResult]:
+        try:
+            await asyncio.sleep(self.rate_limit_delay)
+            params = {"q": query}
+            response = await client.get(
+                "https://lite.duckduckgo.com/lite/",
+                params=params,
+                headers=headers or {"User-Agent": self.user_agent},
+            )
+            if response.status_code not in (200, 202):
+                return []
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            results: List[SearchResult] = []
+            seen_urls = set()
+
+            for link in soup.find_all("a", class_="result-link"):
+                href = link.get("href")
+                if not href:
+                    continue
+                real_url = self._decode_duckduckgo_redirect(href)
+                if not real_url or real_url in seen_urls or not self._is_scrapeable_url(real_url):
+                    continue
+                seen_urls.add(real_url)
+                title = link.get_text(strip=True)
+                snippet = ""
+
+                parent_row = link.find_parent("tr")
+                if parent_row:
+                    snippet_row = parent_row.find_next_sibling("tr")
+                    if snippet_row:
+                        snippet_cell = snippet_row.find("td", class_="result-snippet")
+                        if snippet_cell:
+                            snippet = snippet_cell.get_text(strip=True)[:500]
+
+                results.append(SearchResult(title=title or "No title", url=real_url, snippet=snippet))
+                if len(results) >= max_results:
+                    return results
+
+            for link in soup.find_all("a", class_="result__a"):
+                href = link.get("href")
+                if not href:
+                    continue
+                real_url = self._decode_duckduckgo_redirect(href)
+                if not real_url or real_url in seen_urls or not self._is_scrapeable_url(real_url):
+                    continue
+                seen_urls.add(real_url)
+                title = link.get_text(strip=True)
+                results.append(SearchResult(title=title or "No title", url=real_url, snippet=""))
+                if len(results) >= max_results:
+                    return results
+
+            return results
+        except Exception:
+            return []
+
     def _is_scrapeable_url(self, url: str) -> bool:
         """Check if URL is safe to scrape."""
         try:
@@ -462,8 +630,10 @@ Respond in this exact JSON format only, no other text:
         
         for i, result in enumerate(results, 1):
             context_parts.append(f"[{i}] {result.title}")
-            context_parts.append(f"Source: {result.url}")
-            
+            context_parts.append(f"URL: {result.url}")
+            if getattr(result, "publisher", None):
+                context_parts.append(f"Publisher: {result.publisher}")
+
             if result.scraped_successfully and result.content:
                 # For tool responses, include more content
                 content_preview = result.content[:1200] + "..." if len(result.content) > 1200 else result.content
@@ -484,7 +654,7 @@ async def perform_web_search(query: str, max_results: int = 5) -> str:
         logger.info(f"🌐 Starting web search for: '{query}'")
         
         # Search
-        results = await web_search_service.search_duckduckgo(query, max_results)
+        results = await web_search_service.search(query, max_results)
         
         if not results:
             return f"WEB SEARCH RESULTS for '{query}':\nNo results found or search service unavailable."
@@ -536,7 +706,7 @@ async def perform_smart_web_search(
         seen_urls = set()
         
         for query in optimized_queries:
-            results = await web_search_service.search_duckduckgo(query, max_results)
+            results = await web_search_service.search(query, max_results)
             
             # Deduplicate by URL
             for result in results:
@@ -584,7 +754,7 @@ async def perform_smart_web_search(
         )
 
 
-async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: int = 5) -> str:
+async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: int = 5, news: bool = False) -> str:
     """
     Handle a web_search tool call from a model.
     
@@ -595,6 +765,15 @@ async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: in
     Returns formatted search results as a string.
     """
     try:
+        if isinstance(arguments, str):
+            arguments = {"query": arguments}
+        if isinstance(arguments, dict) and "query" in arguments and isinstance(arguments["query"], str):
+            raw = arguments["query"]
+            if "{" in raw and "query" in raw:
+                queries = re.findall(r'"query"\s*:\s*"([^"]+)"', raw)
+                if queries:
+                    arguments = {"search_queries": queries}
+
         # Handle both tool definition formats
         if "search_queries" in arguments:
             queries = arguments["search_queries"]
@@ -607,14 +786,15 @@ async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: in
         else:
             return "Error: No search query provided in tool call arguments"
         
-        logger.info(f"🔧 Handling web_search tool call: {queries}")
+        logger.info(f"🔧 Handling web_search tool call ({'news' if news else 'web'}): {queries}")
         
         # Search for each query
         all_results: List[SearchResult] = []
         seen_urls = set()
         
+        search_fn = web_search_service.search_news if news else web_search_service.search
         for query in queries[:3]:  # Limit to 3 queries
-            results = await web_search_service.search_duckduckgo(query, max_results)
+            results = await search_fn(query, max_results)
             for result in results:
                 if result.url not in seen_urls:
                     seen_urls.add(result.url)
@@ -622,6 +802,12 @@ async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: in
         
         if not all_results:
             return f"Web search found no results for: {queries}"
+
+        if news:
+            # For news, rely on RSS titles/snippets; skip scraping to avoid Google News blocks.
+            top_titles = [r.title for r in all_results[:5] if r.title]
+            logger.info(f"🗞️ News search returned {len(all_results)} results. Top: {top_titles}")
+            return web_search_service.format_tool_response(queries, intent, all_results[:max_results])
         
         # Scrape top results
         results_to_scrape = all_results[:max_results]

@@ -1,0 +1,316 @@
+{
+    "president": {
+        "2024": {
+            "winner": "Trump",
+            "party": "REP",
+            "electoral_votes": {
+                "Trump": 312,
+                "Harris": 226
+            },
+            "popular_vote": {
+                "Trump": 76433539,
+                "Harris": 73752323
+            },
+            "states": {
+                "AL": {
+                    "winner": "REP",
+                    "margin": 31.0
+                },
+                "AK": {
+                    "winner": "REP",
+                    "margin": 10.0
+                },
+                "AZ": {
+                    "winner": "REP",
+                    "margin": 5.5
+                },
+                "AR": {
+                    "winner": "REP",
+                    "margin": 32.0
+                },
+                "CA": {
+                    "winner": "DEM",
+                    "margin": 20.0
+                },
+                "CO": {
+                    "winner": "DEM",
+                    "margin": 10.5
+                },
+                "CT": {
+                    "winner": "DEM",
+                    "margin": 14.0
+                },
+                "DE": {
+                    "winner": "DEM",
+                    "margin": 15.0
+                },
+                "FL": {
+                    "winner": "REP",
+                    "margin": 13.0
+                },
+                "GA": {
+                    "winner": "REP",
+                    "margin": 2.2
+                },
+                "HI": {
+                    "winner": "DEM",
+                    "margin": 25.0
+                },
+                "ID": {
+                    "winner": "REP",
+                    "margin": 35.0
+                },
+                "IL": {
+                    "winner": "DEM",
+                    "margin": 9.0
+                },
+                "IN": {
+                    "winner": "REP",
+                    "margin": 20.0
+                },
+                "IA": {
+                    "winner": "REP",
+                    "margin": 12.0
+                },
+                "KS": {
+                    "winner": "REP",
+                    "margin": 18.0
+                },
+                "KY": {
+                    "winner": "REP",
+                    "margin": 30.0
+                },
+                "LA": {
+                    "winner": "REP",
+                    "margin": 25.0
+                },
+                "ME": {
+                    "winner": "DEM",
+                    "margin": 7.0
+                },
+                "MD": {
+                    "winner": "DEM",
+                    "margin": 28.0
+                },
+                "MA": {
+                    "winner": "DEM",
+                    "margin": 28.0
+                },
+                "MI": {
+                    "winner": "REP",
+                    "margin": 1.4
+                },
+                "MN": {
+                    "winner": "DEM",
+                    "margin": 4.0
+                },
+                "MS": {
+                    "winner": "REP",
+                    "margin": 22.0
+                },
+                "MO": {
+                    "winner": "REP",
+                    "margin": 18.0
+                },
+                "MT": {
+                    "winner": "REP",
+                    "margin": 19.0
+                },
+                "NE": {
+                    "winner": "REP",
+                    "margin": 20.0
+                },
+                "NV": {
+                    "winner": "REP",
+                    "margin": 3.1
+                },
+                "NH": {
+                    "winner": "DEM",
+                    "margin": 2.0
+                },
+                "NJ": {
+                    "winner": "DEM",
+                    "margin": 5.0
+                },
+                "NM": {
+                    "winner": "DEM",
+                    "margin": 6.0
+                },
+                "NY": {
+                    "winner": "DEM",
+                    "margin": 12.0
+                },
+                "NC": {
+                    "winner": "REP",
+                    "margin": 3.4
+                },
+                "ND": {
+                    "winner": "REP",
+                    "margin": 35.0
+                },
+                "OH": {
+                    "winner": "REP",
+                    "margin": 11.0
+                },
+                "OK": {
+                    "winner": "REP",
+                    "margin": 34.0
+                },
+                "OR": {
+                    "winner": "DEM",
+                    "margin": 13.0
+                },
+                "PA": {
+                    "winner": "REP",
+                    "margin": 1.8
+                },
+                "RI": {
+                    "winner": "DEM",
+                    "margin": 14.0
+                },
+                "SC": {
+                    "winner": "REP",
+                    "margin": 18.0
+                },
+                "SD": {
+                    "winner": "REP",
+                    "margin": 30.0
+                },
+                "TN": {
+                    "winner": "REP",
+                    "margin": 28.0
+                },
+                "TX": {
+                    "winner": "REP",
+                    "margin": 14.0
+                },
+                "UT": {
+                    "winner": "REP",
+                    "margin": 20.0
+                },
+                "VT": {
+                    "winner": "DEM",
+                    "margin": 38.0
+                },
+                "VA": {
+                    "winner": "DEM",
+                    "margin": 5.0
+                },
+                "WA": {
+                    "winner": "DEM",
+                    "margin": 18.0
+                },
+                "WV": {
+                    "winner": "REP",
+                    "margin": 40.0
+                },
+                "WI": {
+                    "winner": "REP",
+                    "margin": 0.9
+                },
+                "WY": {
+                    "winner": "REP",
+                    "margin": 45.0
+                }
+            }
+        },
+        "2020": {
+            "winner": "Biden",
+            "party": "DEM",
+            "electoral_votes": {
+                "Biden": 306,
+                "Trump": 232
+            },
+            "popular_vote": {
+                "Biden": 81283501,
+                "Trump": 74223975
+            },
+            "states": {
+                "AZ": {
+                    "winner": "DEM",
+                    "margin": 0.3
+                },
+                "GA": {
+                    "winner": "DEM",
+                    "margin": 0.2
+                },
+                "MI": {
+                    "winner": "DEM",
+                    "margin": 2.8
+                },
+                "NM": {
+                    "winner": "DEM",
+                    "margin": 10.0
+                },
+                "NV": {
+                    "winner": "DEM",
+                    "margin": 2.4
+                },
+                "PA": {
+                    "winner": "DEM",
+                    "margin": 1.2
+                },
+                "WI": {
+                    "winner": "DEM",
+                    "margin": 0.6
+                }
+            }
+        },
+        "2016": {
+            "winner": "Trump",
+            "party": "REP",
+            "electoral_votes": {
+                "Trump": 304,
+                "Clinton": 227
+            },
+            "popular_vote": {
+                "Trump": 62984828,
+                "Clinton": 65853514
+            },
+            "states": {
+                "AZ": {
+                    "winner": "REP",
+                    "margin": 3.5
+                },
+                "FL": {
+                    "winner": "REP",
+                    "margin": 1.2
+                },
+                "GA": {
+                    "winner": "REP",
+                    "margin": 5.1
+                },
+                "MI": {
+                    "winner": "REP",
+                    "margin": 0.2
+                },
+                "NC": {
+                    "winner": "REP",
+                    "margin": 3.6
+                },
+                "PA": {
+                    "winner": "REP",
+                    "margin": 0.7
+                },
+                "WI": {
+                    "winner": "REP",
+                    "margin": 0.7
+                }
+            }
+        }
+    },
+    "senate": {
+        "2026_map": {
+            "seats_up": 33,
+            "dem_defending": 13,
+            "rep_defending": 20,
+            "key_races": [
+                "GA",
+                "MI",
+                "NH",
+                "NC",
+                "TX"
+            ]
+        }
+    }
+}

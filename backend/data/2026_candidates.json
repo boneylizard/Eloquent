@@ -1,0 +1,3372 @@
+{
+  "meta": {
+    "source": "candidates.jsonl",
+    "description": "Parseable candidate roster for 2026: name/alias -> party (D/R/I). Built from candidates.jsonl. Used for poll display, map averages, and AI context.",
+    "party_values": [
+      "D",
+      "R",
+      "I",
+      "G",
+      "L",
+      "F",
+      "C"
+    ]
+  },
+  "candidates": [
+    {
+      "name": "Jared Hudson",
+      "aliases": [
+        "Hudson",
+        "J Hudson"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Steve Marshall",
+      "aliases": [
+        "Marshall",
+        "S Marshall"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Barry Moore",
+      "aliases": [
+        "Moore",
+        "B Moore"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Morgan Murphy",
+      "aliases": [
+        "Murphy",
+        "M Murphy"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Jeremy Spratling",
+      "aliases": [
+        "Spratling",
+        "J Spratling"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Rodney Walker",
+      "aliases": [
+        "Walker",
+        "R Walker"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Dakarai Larriett",
+      "aliases": [
+        "Larriett",
+        "D Larriett"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Kyle Sweetser",
+      "aliases": [
+        "Sweetser",
+        "K Sweetser"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Mark Wheeler II",
+      "aliases": [
+        "II",
+        "M II",
+        "Wheeler II"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Ann Diener",
+      "aliases": [
+        "Diener",
+        "A Diener"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "AL"
+    },
+    {
+      "name": "Tommy Tuberville",
+      "aliases": [
+        "Tuberville",
+        "T Tuberville"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Ken McFeeters",
+      "aliases": [
+        "McFeeters",
+        "K McFeeters"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Will Santivasci",
+      "aliases": [
+        "Santivasci",
+        "W Santivasci"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Doug Jones",
+      "aliases": [
+        "Jones",
+        "D Jones"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Yolanda Flowers",
+      "aliases": [
+        "Flowers",
+        "Y Flowers"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Will Boyd",
+      "aliases": [
+        "Boyd",
+        "W Boyd"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Ja'Mel Brown",
+      "aliases": [
+        "Brown",
+        "J Brown"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Chad Chig Martin",
+      "aliases": [
+        "Martin",
+        "C Martin",
+        "Chig Martin"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Nathan Mathis",
+      "aliases": [
+        "Mathis",
+        "N Mathis"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AL"
+    },
+    {
+      "name": "Dan Sullivan",
+      "aliases": [
+        "Sullivan",
+        "D Sullivan"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AK"
+    },
+    {
+      "name": "Mary Peltola",
+      "aliases": [
+        "Peltola",
+        "M Peltola"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "AK"
+    },
+    {
+      "name": "Click Bishop",
+      "aliases": [
+        "Bishop",
+        "C Bishop"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Dave Bronson",
+      "aliases": [
+        "Bronson",
+        "D Bronson"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Nancy Dahlstrom",
+      "aliases": [
+        "Dahlstrom",
+        "N Dahlstrom"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Edna DeVries",
+      "aliases": [
+        "DeVries",
+        "E DeVries"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Shelley Hughes",
+      "aliases": [
+        "Hughes",
+        "S Hughes"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Treg Taylor",
+      "aliases": [
+        "Taylor",
+        "T Taylor"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Tom Begich",
+      "aliases": [
+        "Begich",
+        "T Begich"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Matt Claman",
+      "aliases": [
+        "Claman",
+        "M Claman"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AK"
+    },
+    {
+      "name": "Katie Hobbs",
+      "aliases": [
+        "Hobbs",
+        "K Hobbs"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AZ"
+    },
+    {
+      "name": "Andy Biggs",
+      "aliases": [
+        "Biggs",
+        "A Biggs"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AZ"
+    },
+    {
+      "name": "Karrin Taylor Robson",
+      "aliases": [
+        "Robson",
+        "K Robson",
+        "Taylor Robson"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AZ"
+    },
+    {
+      "name": "David Schweikert",
+      "aliases": [
+        "Schweikert",
+        "D Schweikert"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AZ"
+    },
+    {
+      "name": "Tom Cotton",
+      "aliases": [
+        "Cotton",
+        "T Cotton"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "AR"
+    },
+    {
+      "name": "Dan Whitfield",
+      "aliases": [
+        "Whitfield",
+        "D Whitfield"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "AR"
+    },
+    {
+      "name": "Hallie Shoffner",
+      "aliases": [
+        "Shoffner",
+        "H Shoffner"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "AR"
+    },
+    {
+      "name": "Sarah Huckabee Sanders",
+      "aliases": [
+        "Sanders",
+        "S Sanders",
+        "Huckabee Sanders"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "AR"
+    },
+    {
+      "name": "Fredrick Love",
+      "aliases": [
+        "Love",
+        "F Love"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AR"
+    },
+    {
+      "name": "Supha Xayprasith-Mays",
+      "aliases": [
+        "Xayprasith-Mays",
+        "S Xayprasith-Mays"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "AR"
+    },
+    {
+      "name": "Alex Padilla",
+      "aliases": [
+        "Padilla",
+        "A Padilla"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "CA"
+    },
+    {
+      "name": "Eric Early",
+      "aliases": [
+        "Early",
+        "E Early"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "CA"
+    },
+    {
+      "name": "Xavier Becerra",
+      "aliases": [
+        "Becerra",
+        "X Becerra"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Ian Calderon",
+      "aliases": [
+        "Calderon",
+        "I Calderon"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Steve Cloobeck",
+      "aliases": [
+        "Cloobeck",
+        "S Cloobeck"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Katie Porter",
+      "aliases": [
+        "Porter",
+        "K Porter"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Tom Steyer",
+      "aliases": [
+        "Steyer",
+        "T Steyer"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Tony Thurmond",
+      "aliases": [
+        "Thurmond",
+        "T Thurmond"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Antonio Villaraigosa",
+      "aliases": [
+        "Villaraigosa",
+        "A Villaraigosa"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Betty Yee",
+      "aliases": [
+        "Yee",
+        "B Yee"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Chad Bianco",
+      "aliases": [
+        "Bianco",
+        "C Bianco"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Steve Hilton",
+      "aliases": [
+        "Hilton",
+        "S Hilton"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Kyle Langford",
+      "aliases": [
+        "Langford",
+        "K Langford"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "Butch Ware",
+      "aliases": [
+        "Ware",
+        "B Ware"
+      ],
+      "party": "G",
+      "office": "governor",
+      "state": "CA"
+    },
+    {
+      "name": "John Hickenlooper",
+      "aliases": [
+        "Hickenlooper",
+        "J Hickenlooper"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "CO"
+    },
+    {
+      "name": "Karen Breslin",
+      "aliases": [
+        "Breslin",
+        "K Breslin"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "CO"
+    },
+    {
+      "name": "Janak Joshi",
+      "aliases": [
+        "Joshi",
+        "J Joshi"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "CO"
+    },
+    {
+      "name": "George Markert",
+      "aliases": [
+        "Markert",
+        "G Markert"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "CO"
+    },
+    {
+      "name": "Michael Bennet",
+      "aliases": [
+        "Bennet",
+        "M Bennet"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CO"
+    },
+    {
+      "name": "Phil Weiser",
+      "aliases": [
+        "Weiser",
+        "P Weiser"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CO"
+    },
+    {
+      "name": "Mark Baisley",
+      "aliases": [
+        "Baisley",
+        "M Baisley"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CO"
+    },
+    {
+      "name": "Scott Bottoms",
+      "aliases": [
+        "Bottoms",
+        "S Bottoms"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CO"
+    },
+    {
+      "name": "Barbara Kirkmeyer",
+      "aliases": [
+        "Kirkmeyer",
+        "B Kirkmeyer"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CO"
+    },
+    {
+      "name": "Greg Lopez",
+      "aliases": [
+        "Lopez",
+        "G Lopez"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CO"
+    },
+    {
+      "name": "Jason Mikesell",
+      "aliases": [
+        "Mikesell",
+        "J Mikesell"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CO"
+    },
+    {
+      "name": "Ned Lamont",
+      "aliases": [
+        "Lamont",
+        "N Lamont"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CT"
+    },
+    {
+      "name": "Josh Elliott",
+      "aliases": [
+        "Elliott",
+        "J Elliott"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "CT"
+    },
+    {
+      "name": "Ryan Fazio",
+      "aliases": [
+        "Fazio",
+        "R Fazio"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CT"
+    },
+    {
+      "name": "Erin Stewart",
+      "aliases": [
+        "Stewart",
+        "E Stewart"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "CT"
+    },
+    {
+      "name": "Chris Coons",
+      "aliases": [
+        "Coons",
+        "C Coons"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "DE"
+    },
+    {
+      "name": "Ashley Moody",
+      "aliases": [
+        "Moody",
+        "A Moody"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "FL"
+    },
+    {
+      "name": "Jake Lang",
+      "aliases": [
+        "Lang",
+        "J Lang"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "FL"
+    },
+    {
+      "name": "Jennifer Jenkins",
+      "aliases": [
+        "Jenkins",
+        "J Jenkins"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "FL"
+    },
+    {
+      "name": "Hector Mujica",
+      "aliases": [
+        "Mujica",
+        "H Mujica"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "FL"
+    },
+    {
+      "name": "Alan Grayson",
+      "aliases": [
+        "Grayson",
+        "A Grayson"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "FL"
+    },
+    {
+      "name": "Byron Donalds",
+      "aliases": [
+        "Donalds",
+        "B Donalds"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "FL"
+    },
+    {
+      "name": "Paul Renner",
+      "aliases": [
+        "Renner",
+        "P Renner"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "FL"
+    },
+    {
+      "name": "David Jolly",
+      "aliases": [
+        "Jolly",
+        "D Jolly"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "FL"
+    },
+    {
+      "name": "Jerry Demings",
+      "aliases": [
+        "Demings",
+        "J Demings"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "FL"
+    },
+    {
+      "name": "Jason Pizzo",
+      "aliases": [
+        "Pizzo",
+        "J Pizzo"
+      ],
+      "party": "I",
+      "office": "governor",
+      "state": "FL"
+    },
+    {
+      "name": "Jon Ossoff",
+      "aliases": [
+        "Ossoff",
+        "J Ossoff"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "GA"
+    },
+    {
+      "name": "Buddy Carter",
+      "aliases": [
+        "Carter",
+        "B Carter"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "GA"
+    },
+    {
+      "name": "Mike Collins",
+      "aliases": [
+        "Collins",
+        "M Collins"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "GA"
+    },
+    {
+      "name": "Derek Dooley",
+      "aliases": [
+        "Dooley",
+        "D Dooley"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "GA"
+    },
+    {
+      "name": "Chris Carr",
+      "aliases": [
+        "Carr",
+        "C Carr"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Burt Jones",
+      "aliases": [
+        "Jones",
+        "B Jones"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Brad Raffensperger",
+      "aliases": [
+        "Raffensperger",
+        "B Raffensperger"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Keisha Lance Bottoms",
+      "aliases": [
+        "Bottoms",
+        "K Bottoms",
+        "Lance Bottoms"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Jason Esteves",
+      "aliases": [
+        "Esteves",
+        "J Esteves"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Derrick Jackson",
+      "aliases": [
+        "Jackson",
+        "D Jackson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Ruwa Romman",
+      "aliases": [
+        "Romman",
+        "R Romman"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Mike Thurmond",
+      "aliases": [
+        "Thurmond",
+        "M Thurmond"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Geoff Duncan",
+      "aliases": [
+        "Duncan",
+        "G Duncan"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "GA"
+    },
+    {
+      "name": "Jim Risch",
+      "aliases": [
+        "Risch",
+        "J Risch"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "ID"
+    },
+    {
+      "name": "David Roth",
+      "aliases": [
+        "Roth",
+        "D Roth"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "ID"
+    },
+    {
+      "name": "Todd Achilles",
+      "aliases": [
+        "Achilles",
+        "T Achilles"
+      ],
+      "party": "I",
+      "office": "senate",
+      "state": "ID"
+    },
+    {
+      "name": "Terri Pickens",
+      "aliases": [
+        "Pickens",
+        "T Pickens"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "ID"
+    },
+    {
+      "name": "Juliana Stratton",
+      "aliases": [
+        "Stratton",
+        "J Stratton"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IL"
+    },
+    {
+      "name": "Robin Kelly",
+      "aliases": [
+        "Kelly",
+        "R Kelly"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IL"
+    },
+    {
+      "name": "Raja Krishnamoorthi",
+      "aliases": [
+        "Krishnamoorthi",
+        "R Krishnamoorthi"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IL"
+    },
+    {
+      "name": "Awisi Bustos",
+      "aliases": [
+        "Bustos",
+        "A Bustos"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IL"
+    },
+    {
+      "name": "Kevin Ryan",
+      "aliases": [
+        "Ryan",
+        "K Ryan"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IL"
+    },
+    {
+      "name": "Don Tracy",
+      "aliases": [
+        "Tracy",
+        "D Tracy"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "IL"
+    },
+    {
+      "name": "Casey Chlebek",
+      "aliases": [
+        "Chlebek",
+        "C Chlebek"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "IL"
+    },
+    {
+      "name": "JB Pritzker",
+      "aliases": [
+        "Pritzker",
+        "J Pritzker"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "IL"
+    },
+    {
+      "name": "Darren Bailey",
+      "aliases": [
+        "Bailey",
+        "D Bailey"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IL"
+    },
+    {
+      "name": "Ted Dabrowski",
+      "aliases": [
+        "Dabrowski",
+        "T Dabrowski"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IL"
+    },
+    {
+      "name": "James Mendrick",
+      "aliases": [
+        "Mendrick",
+        "J Mendrick"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IL"
+    },
+    {
+      "name": "Joseph Severino",
+      "aliases": [
+        "Severino",
+        "J Severino"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IL"
+    },
+    {
+      "name": "Ashley Hinson",
+      "aliases": [
+        "Hinson",
+        "A Hinson"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "IA"
+    },
+    {
+      "name": "Jim Carlin",
+      "aliases": [
+        "Carlin",
+        "J Carlin"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "IA"
+    },
+    {
+      "name": "Josh Turek",
+      "aliases": [
+        "Turek",
+        "J Turek"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IA"
+    },
+    {
+      "name": "Zach Wahls",
+      "aliases": [
+        "Wahls",
+        "Z Wahls"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IA"
+    },
+    {
+      "name": "Nathan Sage",
+      "aliases": [
+        "Sage",
+        "N Sage"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IA"
+    },
+    {
+      "name": "Bob Krause",
+      "aliases": [
+        "Krause",
+        "B Krause"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IA"
+    },
+    {
+      "name": "Richard Sherzan",
+      "aliases": [
+        "Sherzan",
+        "R Sherzan"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "IA"
+    },
+    {
+      "name": "Randy Feenstra",
+      "aliases": [
+        "Feenstra",
+        "R Feenstra"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Eddie Andrews",
+      "aliases": [
+        "Andrews",
+        "E Andrews"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Brad Sherman",
+      "aliases": [
+        "Sherman",
+        "B Sherman"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Adam Steen",
+      "aliases": [
+        "Steen",
+        "A Steen"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Rob Sand",
+      "aliases": [
+        "Sand",
+        "R Sand"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Julie Stauch",
+      "aliases": [
+        "Stauch",
+        "J Stauch"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Paul Dahl",
+      "aliases": [
+        "Dahl",
+        "P Dahl"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Sondra Wilson",
+      "aliases": [
+        "Wilson",
+        "S Wilson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "IA"
+    },
+    {
+      "name": "Roger Marshall",
+      "aliases": [
+        "Marshall",
+        "R Marshall"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "KS"
+    },
+    {
+      "name": "Christy Davis",
+      "aliases": [
+        "Davis",
+        "C Davis"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KS"
+    },
+    {
+      "name": "Mike Soetaert",
+      "aliases": [
+        "Soetaert",
+        "M Soetaert"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KS"
+    },
+    {
+      "name": "Anne Parelkar",
+      "aliases": [
+        "Parelkar",
+        "A Parelkar"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KS"
+    },
+    {
+      "name": "Ethan Corson",
+      "aliases": [
+        "Corson",
+        "E Corson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Cindy Holscher",
+      "aliases": [
+        "Holscher",
+        "C Holscher"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Marty Tuley",
+      "aliases": [
+        "Tuley",
+        "M Tuley"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Jeff Colyer",
+      "aliases": [
+        "Colyer",
+        "J Colyer"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Ty Masterson",
+      "aliases": [
+        "Masterson",
+        "T Masterson"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Vicki Schmidt",
+      "aliases": [
+        "Schmidt",
+        "V Schmidt"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Scott Schwab",
+      "aliases": [
+        "Schwab",
+        "S Schwab"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Charlotte O'Hara",
+      "aliases": [
+        "O'Hara",
+        "C O'Hara"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "KS"
+    },
+    {
+      "name": "Daniel Cameron",
+      "aliases": [
+        "Cameron",
+        "D Cameron"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Andy Barr",
+      "aliases": [
+        "Barr",
+        "A Barr"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Nate Morris",
+      "aliases": [
+        "Morris",
+        "N Morris"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Logan Forsythe",
+      "aliases": [
+        "Forsythe",
+        "L Forsythe"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Amy McGrath",
+      "aliases": [
+        "McGrath",
+        "A McGrath"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Dale Romans",
+      "aliases": [
+        "Romans",
+        "D Romans"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Pamela Stevenson",
+      "aliases": [
+        "Stevenson",
+        "P Stevenson"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Joel Willett",
+      "aliases": [
+        "Willett",
+        "J Willett"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "KY"
+    },
+    {
+      "name": "Bill Cassidy",
+      "aliases": [
+        "Cassidy",
+        "B Cassidy"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "LA"
+    },
+    {
+      "name": "John Fleming",
+      "aliases": [
+        "Fleming",
+        "J Fleming"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "LA"
+    },
+    {
+      "name": "Blake Miguez",
+      "aliases": [
+        "Miguez",
+        "B Miguez"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "LA"
+    },
+    {
+      "name": "Eric Skrmetta",
+      "aliases": [
+        "Skrmetta",
+        "E Skrmetta"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "LA"
+    },
+    {
+      "name": "Julie Emerson",
+      "aliases": [
+        "Emerson",
+        "J Emerson"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "LA"
+    },
+    {
+      "name": "Susan Collins",
+      "aliases": [
+        "Collins",
+        "S Collins"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "Dan Smeriglio",
+      "aliases": [
+        "Smeriglio",
+        "D Smeriglio"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "Carmen Calabrese",
+      "aliases": [
+        "Calabrese",
+        "C Calabrese"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "Janet Mills",
+      "aliases": [
+        "Mills",
+        "J Mills"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "David Costello",
+      "aliases": [
+        "Costello",
+        "D Costello"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "Graham Platner",
+      "aliases": [
+        "Platner",
+        "G Platner"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "Natasha Alcala",
+      "aliases": [
+        "Alcala",
+        "N Alcala"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "David Evans",
+      "aliases": [
+        "Evans",
+        "D Evans"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "Tucker Favreau",
+      "aliases": [
+        "Favreau",
+        "T Favreau"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "ME"
+    },
+    {
+      "name": "Troy Jackson",
+      "aliases": [
+        "Jackson",
+        "T Jackson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "Hannah Pingree",
+      "aliases": [
+        "Pingree",
+        "H Pingree"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "Angus King III",
+      "aliases": [
+        "III",
+        "A III",
+        "King III"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "Shenna Bellows",
+      "aliases": [
+        "Bellows",
+        "S Bellows"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "Nirav D. Shah",
+      "aliases": [
+        "Shah",
+        "N Shah",
+        "D. Shah"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "Jonathan S. Bush",
+      "aliases": [
+        "Bush",
+        "J Bush",
+        "S. Bush"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "James Libby",
+      "aliases": [
+        "Libby",
+        "J Libby"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "Robert B. Charles",
+      "aliases": [
+        "Charles",
+        "R Charles",
+        "B. Charles"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "ME"
+    },
+    {
+      "name": "Wes Moore",
+      "aliases": [
+        "Moore",
+        "W Moore"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MD"
+    },
+    {
+      "name": "Ed Markey",
+      "aliases": [
+        "Markey",
+        "E Markey"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MA"
+    },
+    {
+      "name": "Seth Moulton",
+      "aliases": [
+        "Moulton",
+        "S Moulton"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MA"
+    },
+    {
+      "name": "Alex Rikleen",
+      "aliases": [
+        "Rikleen",
+        "A Rikleen"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MA"
+    },
+    {
+      "name": "John Deaton",
+      "aliases": [
+        "Deaton",
+        "J Deaton"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "MA"
+    },
+    {
+      "name": "Maura Healey",
+      "aliases": [
+        "Healey",
+        "M Healey"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MA"
+    },
+    {
+      "name": "Haley Stevens",
+      "aliases": [
+        "Stevens",
+        "H Stevens"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MI"
+    },
+    {
+      "name": "Abdul El-Sayed",
+      "aliases": [
+        "El-Sayed",
+        "A El-Sayed"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MI"
+    },
+    {
+      "name": "Mallory McMorrow",
+      "aliases": [
+        "McMorrow",
+        "M McMorrow"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MI"
+    },
+    {
+      "name": "Rachel Howard",
+      "aliases": [
+        "Howard",
+        "R Howard"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MI"
+    },
+    {
+      "name": "Mike Rogers",
+      "aliases": [
+        "Rogers",
+        "M Rogers"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "MI"
+    },
+    {
+      "name": "Jocelyn Benson",
+      "aliases": [
+        "Benson",
+        "J Benson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Garlin Gilchrist",
+      "aliases": [
+        "Gilchrist",
+        "G Gilchrist"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Marni Sawicki",
+      "aliases": [
+        "Sawicki",
+        "M Sawicki"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Chris Swanson",
+      "aliases": [
+        "Swanson",
+        "C Swanson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "John James",
+      "aliases": [
+        "James",
+        "J James"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Aric Nesbitt",
+      "aliases": [
+        "Nesbitt",
+        "A Nesbitt"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Mike Cox",
+      "aliases": [
+        "Cox",
+        "M Cox"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Tom Leonard",
+      "aliases": [
+        "Leonard",
+        "T Leonard"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Mike Duggan",
+      "aliases": [
+        "Duggan",
+        "M Duggan"
+      ],
+      "party": "I",
+      "office": "governor",
+      "state": "MI"
+    },
+    {
+      "name": "Angie Craig",
+      "aliases": [
+        "Craig",
+        "A Craig"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MN"
+    },
+    {
+      "name": "Peggy Flanagan",
+      "aliases": [
+        "Flanagan",
+        "P Flanagan"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MN"
+    },
+    {
+      "name": "Royce White",
+      "aliases": [
+        "White",
+        "R White"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "MN"
+    },
+    {
+      "name": "Adam Schwarze",
+      "aliases": [
+        "Schwarze",
+        "A Schwarze"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "MN"
+    },
+    {
+      "name": "Tom Weiler",
+      "aliases": [
+        "Weiler",
+        "T Weiler"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "MN"
+    },
+    {
+      "name": "Tim Walz",
+      "aliases": [
+        "Walz",
+        "T Walz"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MN"
+    },
+    {
+      "name": "Amy Klobuchar",
+      "aliases": [
+        "Klobuchar",
+        "A Klobuchar"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "MN"
+    },
+    {
+      "name": "Mike Lindell",
+      "aliases": [
+        "Lindell",
+        "M Lindell"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MN"
+    },
+    {
+      "name": "Scott Jensen",
+      "aliases": [
+        "Jensen",
+        "S Jensen"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MN"
+    },
+    {
+      "name": "Kendall Qualls",
+      "aliases": [
+        "Qualls",
+        "K Qualls"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MN"
+    },
+    {
+      "name": "Kristin Robbins",
+      "aliases": [
+        "Robbins",
+        "K Robbins"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MN"
+    },
+    {
+      "name": "Cindy Hyde-Smith",
+      "aliases": [
+        "Hyde-Smith",
+        "C Hyde-Smith"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "MS"
+    },
+    {
+      "name": "Scott Colom",
+      "aliases": [
+        "Colom",
+        "S Colom"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MS"
+    },
+    {
+      "name": "Priscilla Williams-Till",
+      "aliases": [
+        "Williams-Till",
+        "P Williams-Till"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MS"
+    },
+    {
+      "name": "Ty Pinkins",
+      "aliases": [
+        "Pinkins",
+        "T Pinkins"
+      ],
+      "party": "I",
+      "office": "senate",
+      "state": "MS"
+    },
+    {
+      "name": "Steve Daines",
+      "aliases": [
+        "Daines",
+        "S Daines"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "MT"
+    },
+    {
+      "name": "Michael Black Wolf",
+      "aliases": [
+        "Wolf",
+        "M Wolf",
+        "Black Wolf"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MT"
+    },
+    {
+      "name": "Michael Hummert",
+      "aliases": [
+        "Hummert",
+        "M Hummert"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MT"
+    },
+    {
+      "name": "Reilly Neill",
+      "aliases": [
+        "Neill",
+        "R Neill"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "MT"
+    },
+    {
+      "name": "Greg Gianforte",
+      "aliases": [
+        "Gianforte",
+        "G Gianforte"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "MT"
+    },
+    {
+      "name": "Pete Ricketts",
+      "aliases": [
+        "Ricketts",
+        "P Ricketts"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "NE"
+    },
+    {
+      "name": "Dan Osborn",
+      "aliases": [
+        "Osborn",
+        "D Osborn"
+      ],
+      "party": "I",
+      "office": "senate",
+      "state": "NE"
+    },
+    {
+      "name": "Jim Pillen",
+      "aliases": [
+        "Pillen",
+        "J Pillen"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "NE"
+    },
+    {
+      "name": "Joe Lombardo",
+      "aliases": [
+        "Lombardo",
+        "J Lombardo"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "NV"
+    },
+    {
+      "name": "Aaron Ford",
+      "aliases": [
+        "Ford",
+        "A Ford"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NV"
+    },
+    {
+      "name": "Alexis Hill",
+      "aliases": [
+        "Hill",
+        "A Hill"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NV"
+    },
+    {
+      "name": "Chris Pappas",
+      "aliases": [
+        "Pappas",
+        "C Pappas"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NH"
+    },
+    {
+      "name": "Jared Sullivan",
+      "aliases": [
+        "Sullivan",
+        "J Sullivan"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NH"
+    },
+    {
+      "name": "Karishma Manzur",
+      "aliases": [
+        "Manzur",
+        "K Manzur"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NH"
+    },
+    {
+      "name": "Scott Brown",
+      "aliases": [
+        "Brown",
+        "S Brown"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "NH"
+    },
+    {
+      "name": "John E. Sununu",
+      "aliases": [
+        "Sununu",
+        "J Sununu",
+        "E. Sununu"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "NH"
+    },
+    {
+      "name": "Kelly Ayotte",
+      "aliases": [
+        "Ayotte",
+        "K Ayotte"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "NH"
+    },
+    {
+      "name": "Jonathan Kiper",
+      "aliases": [
+        "Kiper",
+        "J Kiper"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NH"
+    },
+    {
+      "name": "Cory Booker",
+      "aliases": [
+        "Booker",
+        "C Booker"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NJ"
+    },
+    {
+      "name": "Ben Ray Lujan",
+      "aliases": [
+        "Lujan",
+        "B Lujan",
+        "Ray Lujan"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NM"
+    },
+    {
+      "name": "Deb Haaland",
+      "aliases": [
+        "Haaland",
+        "D Haaland"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NM"
+    },
+    {
+      "name": "Sam Bregman",
+      "aliases": [
+        "Bregman",
+        "S Bregman"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NM"
+    },
+    {
+      "name": "Ken Miyagishima",
+      "aliases": [
+        "Miyagishima",
+        "K Miyagishima"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NM"
+    },
+    {
+      "name": "Gregg Hull",
+      "aliases": [
+        "Hull",
+        "G Hull"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "NM"
+    },
+    {
+      "name": "Kirsten Gillibrand",
+      "aliases": [
+        "Gillibrand",
+        "K Gillibrand"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NY"
+    },
+    {
+      "name": "Kathy Hochul",
+      "aliases": [
+        "Hochul",
+        "K Hochul"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NY"
+    },
+    {
+      "name": "Antonio Delgado",
+      "aliases": [
+        "Delgado",
+        "A Delgado"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "NY"
+    },
+    {
+      "name": "Elise Stefanik",
+      "aliases": [
+        "Stefanik",
+        "E Stefanik"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "NY"
+    },
+    {
+      "name": "Roy Cooper",
+      "aliases": [
+        "Cooper",
+        "R Cooper"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NC"
+    },
+    {
+      "name": "Orrick Quick",
+      "aliases": [
+        "Quick",
+        "O Quick"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "NC"
+    },
+    {
+      "name": "Michael Whatley",
+      "aliases": [
+        "Whatley",
+        "M Whatley"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "NC"
+    },
+    {
+      "name": "Don Brown",
+      "aliases": [
+        "Brown",
+        "D Brown"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "NC"
+    },
+    {
+      "name": "Andy Nilsson",
+      "aliases": [
+        "Nilsson",
+        "A Nilsson"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "NC"
+    },
+    {
+      "name": "Jon Husted",
+      "aliases": [
+        "Husted",
+        "J Husted"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "OH"
+    },
+    {
+      "name": "Sherrod Brown",
+      "aliases": [
+        "Brown",
+        "S Brown"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "OH"
+    },
+    {
+      "name": "Ron Kincaid",
+      "aliases": [
+        "Kincaid",
+        "R Kincaid"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "OH"
+    },
+    {
+      "name": "Lynnea Lau",
+      "aliases": [
+        "Lau",
+        "L Lau"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "OH"
+    },
+    {
+      "name": "Chris Volpe",
+      "aliases": [
+        "Volpe",
+        "C Volpe"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "OH"
+    },
+    {
+      "name": "Greg Levy",
+      "aliases": [
+        "Levy",
+        "G Levy"
+      ],
+      "party": "I",
+      "office": "senate",
+      "state": "OH"
+    },
+    {
+      "name": "Vivek Ramaswamy",
+      "aliases": [
+        "Ramaswamy",
+        "V Ramaswamy"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "OH"
+    },
+    {
+      "name": "Nan Whaley",
+      "aliases": [
+        "Whaley",
+        "N Whaley"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "OH"
+    },
+    {
+      "name": "Markwayne Mullin",
+      "aliases": [
+        "Mullin",
+        "M Mullin"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "OK"
+    },
+    {
+      "name": "Gentner Drummond",
+      "aliases": [
+        "Drummond",
+        "G Drummond"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "OK"
+    },
+    {
+      "name": "Chip Keating",
+      "aliases": [
+        "Keating",
+        "C Keating"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "OK"
+    },
+    {
+      "name": "Charles McCall",
+      "aliases": [
+        "McCall",
+        "C McCall"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "OK"
+    },
+    {
+      "name": "Mike Mazzei",
+      "aliases": [
+        "Mazzei",
+        "M Mazzei"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "OK"
+    },
+    {
+      "name": "Jake Merrick",
+      "aliases": [
+        "Merrick",
+        "J Merrick"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "OK"
+    },
+    {
+      "name": "Cyndi Munson",
+      "aliases": [
+        "Munson",
+        "C Munson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "OK"
+    },
+    {
+      "name": "Jeff Merkley",
+      "aliases": [
+        "Merkley",
+        "J Merkley"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "OR"
+    },
+    {
+      "name": "Joe Johnson",
+      "aliases": [
+        "Johnson",
+        "J Johnson"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "OR"
+    },
+    {
+      "name": "Tina Kotek",
+      "aliases": [
+        "Kotek",
+        "T Kotek"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "OR"
+    },
+    {
+      "name": "Christine Drazan",
+      "aliases": [
+        "Drazan",
+        "C Drazan"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "OR"
+    },
+    {
+      "name": "John Fetterman",
+      "aliases": [
+        "Fetterman",
+        "J Fetterman"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "PA"
+    },
+    {
+      "name": "Josh Shapiro",
+      "aliases": [
+        "Shapiro",
+        "J Shapiro"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "PA"
+    },
+    {
+      "name": "Stacy Garrity",
+      "aliases": [
+        "Garrity",
+        "S Garrity"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "PA"
+    },
+    {
+      "name": "Lindsey Graham",
+      "aliases": [
+        "Graham",
+        "L Graham"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Paul Dans",
+      "aliases": [
+        "Dans",
+        "P Dans"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Mark Lynch",
+      "aliases": [
+        "Lynch",
+        "M Lynch"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Annie Andrews",
+      "aliases": [
+        "Andrews",
+        "A Andrews"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Brandon Brown",
+      "aliases": [
+        "Brown",
+        "B Brown"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Catherine Fleming Bruce",
+      "aliases": [
+        "Bruce",
+        "C Bruce",
+        "Fleming Bruce"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Kyle Freeman",
+      "aliases": [
+        "Freeman",
+        "K Freeman"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Christopher Giracello",
+      "aliases": [
+        "Giracello",
+        "C Giracello"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "SC"
+    },
+    {
+      "name": "Pamela Evette",
+      "aliases": [
+        "Evette",
+        "P Evette"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SC"
+    },
+    {
+      "name": "Josh Kimbrell",
+      "aliases": [
+        "Kimbrell",
+        "J Kimbrell"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SC"
+    },
+    {
+      "name": "Nancy Mace",
+      "aliases": [
+        "Mace",
+        "N Mace"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SC"
+    },
+    {
+      "name": "Ralph Norman",
+      "aliases": [
+        "Norman",
+        "R Norman"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SC"
+    },
+    {
+      "name": "Alan Wilson",
+      "aliases": [
+        "Wilson",
+        "A Wilson"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SC"
+    },
+    {
+      "name": "Jermaine Johnson",
+      "aliases": [
+        "Johnson",
+        "J Johnson"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "SC"
+    },
+    {
+      "name": "Mullins McLeod",
+      "aliases": [
+        "McLeod",
+        "M McLeod"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "SC"
+    },
+    {
+      "name": "Mike Rounds",
+      "aliases": [
+        "Rounds",
+        "M Rounds"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "SD"
+    },
+    {
+      "name": "Dusty Johnson",
+      "aliases": [
+        "Johnson",
+        "D Johnson"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SD"
+    },
+    {
+      "name": "Jon Hansen",
+      "aliases": [
+        "Hansen",
+        "J Hansen"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SD"
+    },
+    {
+      "name": "Larry Rhoden",
+      "aliases": [
+        "Rhoden",
+        "L Rhoden"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "SD"
+    },
+    {
+      "name": "Robert Arnold",
+      "aliases": [
+        "Arnold",
+        "R Arnold"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "SD"
+    },
+    {
+      "name": "Bill Hagerty",
+      "aliases": [
+        "Hagerty",
+        "B Hagerty"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "TN"
+    },
+    {
+      "name": "John Rose",
+      "aliases": [
+        "Rose",
+        "J Rose"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "TN"
+    },
+    {
+      "name": "Marsha Blackburn",
+      "aliases": [
+        "Blackburn",
+        "M Blackburn"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "TN"
+    },
+    {
+      "name": "Monty Fritts",
+      "aliases": [
+        "Fritts",
+        "M Fritts"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "TN"
+    },
+    {
+      "name": "Carnita Atwater",
+      "aliases": [
+        "Atwater",
+        "C Atwater"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TN"
+    },
+    {
+      "name": "Jerri Green",
+      "aliases": [
+        "Green",
+        "J Green"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TN"
+    },
+    {
+      "name": "Tim Cyr",
+      "aliases": [
+        "Cyr",
+        "T Cyr"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TN"
+    },
+    {
+      "name": "Adam Kurtz",
+      "aliases": [
+        "Kurtz",
+        "A Kurtz"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TN"
+    },
+    {
+      "name": "John Cornyn",
+      "aliases": [
+        "Cornyn",
+        "J Cornyn"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "TX"
+    },
+    {
+      "name": "Ken Paxton",
+      "aliases": [
+        "Paxton",
+        "K Paxton"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "TX"
+    },
+    {
+      "name": "Wesley Hunt",
+      "aliases": [
+        "Hunt",
+        "W Hunt"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "TX"
+    },
+    {
+      "name": "Colin Allred",
+      "aliases": [
+        "Allred",
+        "C Allred"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "TX"
+    },
+    {
+      "name": "Jasmine Crockett",
+      "aliases": [
+        "Crockett",
+        "J Crockett"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "TX"
+    },
+    {
+      "name": "James Talarico",
+      "aliases": [
+        "Talarico",
+        "J Talarico"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "TX"
+    },
+    {
+      "name": "Greg Abbott",
+      "aliases": [
+        "Abbott",
+        "G Abbott"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Chris Bell",
+      "aliases": [
+        "Bell",
+        "C Bell"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Gina Hinojosa",
+      "aliases": [
+        "Hinojosa",
+        "G Hinojosa"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Nick Pappas",
+      "aliases": [
+        "Pappas",
+        "N Pappas"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Megan Tehseldar",
+      "aliases": [
+        "Tehseldar",
+        "M Tehseldar"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Andrew White",
+      "aliases": [
+        "White",
+        "A White"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Bobby Cole",
+      "aliases": [
+        "Cole",
+        "B Cole"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Ben Flores",
+      "aliases": [
+        "Flores",
+        "B Flores"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "TX"
+    },
+    {
+      "name": "Mark Warner",
+      "aliases": [
+        "Warner",
+        "M Warner"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "VA"
+    },
+    {
+      "name": "Kim Farrington",
+      "aliases": [
+        "Farrington",
+        "K Farrington"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "VA"
+    },
+    {
+      "name": "Bryce Reeves",
+      "aliases": [
+        "Reeves",
+        "B Reeves"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "VA"
+    },
+    {
+      "name": "Jason Reynolds",
+      "aliases": [
+        "Reynolds",
+        "J Reynolds"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "VA"
+    },
+    {
+      "name": "Shelley Moore Capito",
+      "aliases": [
+        "Capito",
+        "S Capito",
+        "Moore Capito"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Derrick Evans",
+      "aliases": [
+        "Evans",
+        "D Evans"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Alexander Gaaserud",
+      "aliases": [
+        "Gaaserud",
+        "A Gaaserud"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Tom Willis",
+      "aliases": [
+        "Willis",
+        "T Willis"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Zach Shrewsbury",
+      "aliases": [
+        "Shrewsbury",
+        "Z Shrewsbury"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Thornton Cooper",
+      "aliases": [
+        "Cooper",
+        "T Cooper"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Rachel Fetty Anderson",
+      "aliases": [
+        "Anderson",
+        "R Anderson",
+        "Fetty Anderson"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Jeffrey Kessler",
+      "aliases": [
+        "Kessler",
+        "J Kessler"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Rio Phillips",
+      "aliases": [
+        "Phillips",
+        "R Phillips"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "WV"
+    },
+    {
+      "name": "Sara Rodriguez",
+      "aliases": [
+        "Rodriguez",
+        "S Rodriguez"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "WI"
+    },
+    {
+      "name": "David Crowley",
+      "aliases": [
+        "Crowley",
+        "D Crowley"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "WI"
+    },
+    {
+      "name": "Francesca Hong",
+      "aliases": [
+        "Hong",
+        "F Hong"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "WI"
+    },
+    {
+      "name": "Melissa Hughes",
+      "aliases": [
+        "Hughes",
+        "M Hughes"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "WI"
+    },
+    {
+      "name": "Kelda Roys",
+      "aliases": [
+        "Roys",
+        "K Roys"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "WI"
+    },
+    {
+      "name": "Tom Tiffany",
+      "aliases": [
+        "Tiffany",
+        "T Tiffany"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "WI"
+    },
+    {
+      "name": "Josh Schoemann",
+      "aliases": [
+        "Schoemann",
+        "J Schoemann"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "WI"
+    },
+    {
+      "name": "Jimmy Skovgard",
+      "aliases": [
+        "Skovgard",
+        "J Skovgard"
+      ],
+      "party": "R",
+      "office": "senate",
+      "state": "WY"
+    },
+    {
+      "name": "Eric Barlow",
+      "aliases": [
+        "Barlow",
+        "E Barlow"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "WY"
+    },
+    {
+      "name": "Brent Bien",
+      "aliases": [
+        "Bien",
+        "B Bien"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "WY"
+    },
+    {
+      "name": "Jack Reed",
+      "aliases": [
+        "Reed",
+        "J Reed"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "RI"
+    },
+    {
+      "name": "Connor Burbridge",
+      "aliases": [
+        "Burbridge",
+        "C Burbridge"
+      ],
+      "party": "D",
+      "office": "senate",
+      "state": "RI"
+    },
+    {
+      "name": "Dan McKee",
+      "aliases": [
+        "McKee",
+        "D McKee"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Helena Foulkes",
+      "aliases": [
+        "Foulkes",
+        "H Foulkes"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Gregory Stevens",
+      "aliases": [
+        "Stevens",
+        "G Stevens"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Gina Raimondo",
+      "aliases": [
+        "Raimondo",
+        "G Raimondo"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Aaron Guckian",
+      "aliases": [
+        "Guckian",
+        "A Guckian"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Elaine Pelino",
+      "aliases": [
+        "Pelino",
+        "E Pelino"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Robert Raimondo",
+      "aliases": [
+        "Raimondo",
+        "R Raimondo"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Ashley Kalus",
+      "aliases": [
+        "Kalus",
+        "A Kalus"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "RI"
+    },
+    {
+      "name": "Phil Scott",
+      "aliases": [
+        "Scott",
+        "P Scott"
+      ],
+      "party": "R",
+      "office": "governor",
+      "state": "VT"
+    },
+    {
+      "name": "Charity Clark",
+      "aliases": [
+        "Clark",
+        "C Clark"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "VT"
+    },
+    {
+      "name": "Mike Pieciak",
+      "aliases": [
+        "Pieciak",
+        "M Pieciak"
+      ],
+      "party": "D",
+      "office": "governor",
+      "state": "VT"
+    },
+    {
+      "name": "Dean Roy",
+      "aliases": [
+        "Roy",
+        "D Roy"
+      ],
+      "party": "F",
+      "office": "governor",
+      "state": "VT"
+    }
+  ]
+}

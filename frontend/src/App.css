@@ -77,6 +77,16 @@
     --font-heading: 'Poppins', sans-serif;
     --font-body: 'Inter', sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+
+    /* Election Tracker (theme-aware) */
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--primary);
+    --accent-secondary: var(--primary);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
   }
 
   /* --- THEMES --- */
@@ -127,6 +137,15 @@
     --md-italic-color: #a7b0c0;
     --md-quote-color: #9ec5ff;
     --md-quote-border: #3b4a64;
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--primary);
+    --accent-secondary: var(--primary);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
   }
 
   /* WhatsApp Theme (Authentic Dark) */
@@ -176,6 +195,15 @@
     --md-italic-color: #bfc8cc;
     --md-quote-color: #9de0d6;
     --md-quote-border: #2d3b43;
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--primary);
+    --accent-secondary: var(--primary);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
   }
 
   /* Messenger Theme (Premium Dark + Gradient) */
@@ -231,6 +259,15 @@
     --md-italic-color: #cbd5e1;
     --md-quote-color: #93c5fd;
     --md-quote-border: #2f3336;
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--primary);
+    --accent-secondary: var(--primary);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
   }
 
   /* Cyberpunk Theme (Neon, High Contrast) */
@@ -281,6 +318,15 @@
     --md-italic-color: #7dd3fc;
     --md-quote-color: #22d3ee;
     --md-quote-border: #0e7490;
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--primary);
+    --accent-secondary: var(--primary);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
   }
 
   /* Claude Theme - Light Mode (Actual claude.ai colors) */
@@ -341,6 +387,15 @@
     --md-italic-color: #6b7280;
     --md-quote-color: #b45309;
     --md-quote-border: #d6d3d1;
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--primary);
+    --accent-secondary: var(--primary);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
   }
 
   /* Prevent browser autofill from forcing light backgrounds in themed inputs */

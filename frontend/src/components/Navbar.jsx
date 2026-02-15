@@ -15,7 +15,8 @@ import {
   Fingerprint,
   Palette,
   Power,
-  RotateCw
+  RotateCw,
+  Vote
 } from 'lucide-react';
 
 const Navbar = ({ toggleSidebar }) => {
@@ -62,7 +63,8 @@ const Navbar = ({ toggleSidebar }) => {
     { id: 'memory', label: 'Memory', icon: <BookOpen className="mr-2 h-4 w-4" /> },
     { id: 'modeltester', label: 'Model Tester', icon: <Zap className="mr-2 h-4 w-4" /> },
     { id: 'codeeditor', label: 'Code Editor', icon: <Code className="mr-2 h-4 w-4" /> },
-    { id: 'forensics', label: 'Forensics', icon: <Fingerprint className="mr-2 h-4 w-4" /> }
+    { id: 'forensics', label: 'Forensics', icon: <Fingerprint className="mr-2 h-4 w-4" /> },
+    { id: 'election', label: 'Elections', icon: <Vote className="mr-2 h-4 w-4" /> }
   ];
 
   return (

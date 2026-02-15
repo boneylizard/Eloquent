@@ -55,6 +55,8 @@ import uuid
 from .tts_client import TTSClient  # Use TTS client instead of direct service
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 import re
 from .model_manager import ModelManager
 from . import inference
@@ -76,6 +78,14 @@ import requests
 from io import BytesIO
 import base64
 from . import character_intelligence
+from .election_data_service import election_service, normalize_rtwh_polls
+from .election_ai_service import election_ai_service
+from .election_db import election_db
+from . import election_simulation
+from . import election_forecast
+from . import ballotpedia_scraper
+from . import votehub_service
+from . import rcp_service
 # Configure logging BEFORE importing modules that use it
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -478,11 +488,13 @@ router = APIRouter()   # Re-initialize router to avoid conflicts
 base_dir = Path(__file__).parent
 static_dir = base_dir / "static"
 generated_images_dir = static_dir / "generated_images" # Define the subdirectory path
+summaries_dir = static_dir / "summaries"
 
 # Ensure both directories exist
 try:
     static_dir.mkdir(parents=True, exist_ok=True)
     generated_images_dir.mkdir(parents=True, exist_ok=True)
+    summaries_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Static directory ensured: {static_dir.resolve()}")
     logger.info(f"Generated images directory ensured: {generated_images_dir.resolve()}")
 except OSError as e:
@@ -616,6 +628,8 @@ async def synthesize_speech(
 # Assume app.state.model_manager is initialized in lifespan
 
     # No need to do anything here, as the lifespan will handle cleanup
+# --- Election Tracker (first duplicate removed; DB-backed endpoints registered later) ---
+
 @router.get("/system/gpu_info")
 async def get_gpu_info(request: Request):
     """Return GPU count and single GPU mode status."""
@@ -2361,6 +2375,30 @@ async def lifespan(app: FastAPI):
     except Exception as rag_error:
         logger.error(f"Error initializing RAG system: {rag_error}", exc_info=True)
         app.state.rag_available = False
+
+    # Election tracker: SQLite DB + background scheduler
+    try:
+        await election_db.initialize()
+        election_scheduler = AsyncIOScheduler()
+
+        async def _job_votehub():
+            await votehub_service.refresh_votehub_all()
+        async def _job_rcp():
+            await rcp_service.refresh_rcp_all()
+        async def _job_rtwh_house():
+            await _refresh_racetothewh(["house"])
+
+        election_scheduler.add_job(_job_votehub, IntervalTrigger(minutes=30), id="votehub")
+        election_scheduler.add_job(_job_rcp, IntervalTrigger(minutes=30), id="rcp")
+        election_scheduler.add_job(_job_rtwh_house, IntervalTrigger(hours=2), id="rtwh_house")
+        election_scheduler.start()
+        app.state.election_scheduler = election_scheduler
+        asyncio.create_task(votehub_service.refresh_votehub_all())
+        asyncio.create_task(rcp_service.refresh_rcp_all())
+        logger.info("Election DB and scheduler started")
+    except Exception as e:
+        logger.warning("Election scheduler init failed: %s", e)
+        app.state.election_scheduler = None
     
     # Initialize Forensic Linguistics Service
     try:
@@ -2393,6 +2431,9 @@ async def lifespan(app: FastAPI):
 
     # Shutdown logic
     logger.info(f"Application lifespan shutdown on port {port}...")
+    if getattr(app.state, "election_scheduler", None):
+        app.state.election_scheduler.shutdown()
+        logger.info("Election scheduler stopped")
     if hasattr(app.state, 'model_manager'):
         await app.state.model_manager.unload_all_models()
         logger.info("Models unloaded.")
@@ -8111,6 +8152,821 @@ async def update_settings(data: dict = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
     
 # These endpoints are now handled in document_routes.py
+
+# --- Election Tracker Endpoints ---
+
+async def _refresh_racetothewh(race_types: Optional[List[str]] = None):
+    """Scrape RaceToTheWH and upsert to DB. If race_types is None, does senate/governor/house; else only those."""
+    types = race_types if race_types is not None else ["senate", "governor", "house"]
+    for rt in types:
+        try:
+            election_service.clear_poll_cache(rt)
+            data = await election_service.get_polling_data(rt)
+            if data.get("polls"):
+                normalized = normalize_rtwh_polls(data, rt)
+                n = await election_db.upsert_polls(normalized)
+                await election_db.log_fetch("racetothewh", rt, n)
+        except Exception as e:
+            logger.error("RTWH refresh failed for %s: %s", rt, e)
+            await election_db.log_fetch("racetothewh", rt, 0, status="error", error_message=str(e))
+
+
+async def _refresh_all_sources(race_type: Optional[str] = None):
+    """Trigger refresh from all sources; if race_type given, only run relevant fetchers."""
+    if not race_type:
+        asyncio.create_task(votehub_service.refresh_votehub_all())
+        asyncio.create_task(rcp_service.refresh_rcp_all())
+        asyncio.create_task(_refresh_racetothewh())
+        return
+    if race_type in ("approval", "generic_ballot"):
+        asyncio.create_task(votehub_service.refresh_votehub_all())
+        return
+    if race_type in ("senate", "governor"):
+        asyncio.create_task(rcp_service.refresh_rcp_all())
+    if race_type == "house":
+        asyncio.create_task(_refresh_racetothewh(["house"]))
+
+
+@router.get("/election/polls")
+async def get_election_polls(
+    race_type: str = Query(..., description="Type of race: senate, governor, house, president, generic_ballot"),
+    state: Optional[str] = Query(None, description="State (e.g., 'georgia')")
+):
+    """Serve polls from SQLite. Senate/governor = RCP only; house = RTWH only (RCP house is generic ballot); approval/generic_ballot = VoteHub only."""
+    if race_type in ("approval", "generic_ballot"):
+        sources = ["votehub"]
+    elif race_type in ("senate", "governor"):
+        sources = ["rcp"]
+    elif race_type == "house":
+        sources = ["racetothewh"]
+    else:
+        sources = None
+    # Polls tab: senate/governor = last 10 weeks; house = 1 year (RTTWH has fewer polls, show full list)
+    days_back = 365 if race_type == "house" else 70
+    polls = await election_db.get_polls(race_type=race_type, state=state, limit=500, sources=sources, days_back=days_back)
+    metadata = await election_db.get_race_metadata(race_type, state)
+    if not polls:
+        asyncio.create_task(_refresh_all_sources(race_type))
+        return {
+            "race_type": race_type,
+            "polls": [],
+            "metadata": metadata,
+            "status": "refreshing",
+            "message": "No cached data. Fetching now — refresh in 30 seconds.",
+        }
+    last_updated = await election_db.get_last_fetch_time(race_type, sources=sources)
+    if sources:
+        sources_list = [s for s in sources if s in ("votehub", "rcp", "racetothewh")]
+    else:
+        sources_list = await election_db.get_sources_for_race(race_type)
+    return {
+        "race_type": race_type,
+        "polls": polls,
+        "metadata": metadata,
+        "last_updated": last_updated,
+        "sources": sources_list or (sources if sources else []),
+    }
+
+
+@router.post("/election/polls/refresh")
+async def election_polls_refresh(race_type: Optional[str] = Query(None, description="Optional race type to refresh")):
+    """Manual refresh. Senate/governor = RCP; house = RCP + RTWH. Returns counts so you can see what was stored."""
+    if race_type in ("senate", "governor"):
+        try:
+            counts = await rcp_service.refresh_rcp_all()
+            gov = counts.get("governor", 0)
+            sen = counts.get("senate", 0)
+            house = counts.get("house", 0)
+            parts = [f"{gov} governor" if gov else None, f"{sen} senate" if sen else None, f"{house} house" if house else None]
+            msg = "Stored: " + ", ".join(p for p in parts if p) if any(parts) else "No new polls stored."
+            return {"status": "ok", "message": msg, "counts": counts}
+        except Exception as e:
+            logger.error("RCP refresh failed: %s", e)
+            return {"status": "error", "message": str(e)}
+    if race_type == "house":
+        try:
+            election_service.clear_poll_cache("house")
+            await _refresh_racetothewh(["house"])
+        except Exception as e:
+            logger.error("House refresh failed: %s", e)
+            return {"status": "error", "message": str(e)}
+        return {"status": "ok", "message": "Refresh complete. Refetch polls to see updated data."}
+    asyncio.create_task(_refresh_all_sources(race_type))
+    return {"status": "refresh_started"}
+
+
+@router.get("/election/debug/governor-pipeline")
+async def election_debug_governor_pipeline():
+    """Run RCP governor scrape and compare to what get_polls returns. Use to see why poll count is low."""
+    from . import rcp_service
+    try:
+        scraped = await rcp_service.fetch_rcp_polls("governor")
+        scraped_count = len(scraped)
+    except Exception as e:
+        return {"error": str(e), "step": "fetch_rcp_polls"}
+    served = await election_db.get_polls(race_type="governor", limit=500, sources=["rcp"], days_back=70)
+    served_count = len(served)
+    return {
+        "scraped_count": scraped_count,
+        "served_count": served_count,
+        "message": f"RCP scrape returned {scraped_count} governor polls. GET /election/polls (last 70 days / 10 weeks) returns {served_count}. If scraped_count is low, the parser or table selection is wrong. If served_count is low, the DB filter or dedupe is dropping rows.",
+    }
+
+
+@router.get("/election/debug/house-pipeline")
+async def election_debug_house_pipeline():
+    """Run RTTWH house scrape and compare to what get_polls returns (last 365 days). Use to see why poll count is low."""
+    try:
+        election_service.clear_poll_cache("house")
+        data = await election_service.get_polling_data("house")
+        scraped_count = len(data.get("polls") or [])
+    except Exception as e:
+        return {"error": str(e), "step": "get_polling_data"}
+    served = await election_db.get_polls(race_type="house", limit=500, sources=["racetothewh"], days_back=365)
+    served_count = len(served)
+    return {
+        "scraped_count": scraped_count,
+        "served_count": served_count,
+        "message": f"RTTWH scrape returned {scraped_count} house polls. GET /election/polls (last 365 days) returns {served_count}. If scraped_count is low, the parser or table selection is wrong. If served_count is low, the DB filter or dedupe is dropping rows.",
+    }
+
+
+@router.get("/election/debug")
+async def election_debug(
+    race_type: str = Query("governor", description="race_type to inspect"),
+    scrape: int = Query(0, description="1 = also run RTWH scrape and return first 5 raw polls"),
+):
+    """Inspect what the API serves and (optionally) what the RTWH scraper returns. Use to fix display bugs."""
+    polls = await election_db.get_polls(race_type=race_type, limit=15, sources=None)
+    db_sample = []
+    for p in polls[:10]:
+        db_sample.append({
+            "source": p.get("source"),
+            "race": p.get("race") or p.get("race_key"),
+            "pollster": p.get("pollster"),
+            "margin": p.get("margin"),
+            "results": p.get("results"),
+            "results_key_count": len(p.get("results") or {}),
+        })
+    out = {
+        "race_type": race_type,
+        "db_poll_count": len(polls),
+        "db_sample": db_sample,
+        "message": "db_sample = what GET /election/polls returns. Each results should have 2 keys for two columns.",
+    }
+    if scrape and race_type in ("senate", "governor", "house"):
+        try:
+            election_service.clear_poll_cache(race_type)
+            data = await election_service.get_polling_data(race_type)
+            raw = (data.get("polls") or [])[:5]
+            out["scraped_sample"] = [
+                {"race": p.get("race"), "margin": p.get("margin"), "results": p.get("results"), "results_key_count": len(p.get("results") or {})}
+                for p in raw
+            ]
+            out["scrape_message"] = "scraped_sample = what the parser produced before DB. Compare to db_sample."
+        except Exception as e:
+            out["scrape_error"] = str(e)
+    return out
+
+
+@router.get("/election/debug/context")
+async def election_debug_context():
+    """Return the full context sent to AI agents in Elections (fact sheet, roster, system prompts). Use to inspect exactly what your agents receive."""
+    from .election_ai_service import (
+        _get_fact_sheet_context,
+        DEFAULT_SYSTEM_PROMPT,
+        NEWS_SYSTEM_PROMPT,
+    )
+    fact_sheet = _get_fact_sheet_context()
+    return {
+        "fact_sheet_and_roster": fact_sheet,
+        "fact_sheet_and_roster_length_chars": len(fact_sheet),
+        "system_prompt_polling": DEFAULT_SYSTEM_PROMPT,
+        "system_prompt_news": NEWS_SYSTEM_PROMPT,
+        "note": "Polling: user message = fact_sheet_and_roster (first) + polling JSON + 'User question: ...'. News: user message = fact_sheet_and_roster (first) + 'Date: ...' + 'User request: ...'. Suggested questions: user message = fact_sheet_and_roster (first) + '---' + generate-5-questions prompt.",
+    }
+
+
+@router.get("/election/trends")
+async def get_election_trends(
+    race_type: str = Query(..., description="Type of race: president, senate, approval"),
+    days: int = Query(90, ge=1, le=365, description="Days of trend data"),
+):
+    """Return time-series polling averages for charting."""
+    rows = await election_db.get_trend_data(race_type, days)
+    return {"race_type": race_type, "days": days, "trend": rows}
+
+
+@router.post("/election/assistant")
+async def election_assistant(payload: dict = Body(...)):
+    """AI assistant for elections: uses polling context + web search tools."""
+    message = (payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    result = await election_ai_service.ask(
+        message=message,
+        race_type=payload.get("race_type"),
+        metadata=payload.get("metadata"),
+        polls=payload.get("polls"),
+        model=payload.get("model"),
+        temperature=payload.get("temperature", 0.2),
+        max_tokens=payload.get("max_tokens", 900)
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+@router.get("/election/historical")
+async def get_historical_results(
+    year: Optional[str] = Query(None, description="Election year"),
+    race_type: Optional[str] = Query(None, description="Type of race")
+):
+    return await election_service.get_historical_data(year, race_type)
+
+@router.get("/election/news")
+async def get_election_news(
+    query: str = Query("", description="Search query for news; empty uses default."),
+    model: Optional[str] = Query(None, description="Model or endpoint id for agent-driven news search.")
+):
+    return await election_service.get_election_news(query, model)
+
+@router.get("/election/approval")
+async def get_approval_rating():
+    return await election_service.get_polling_data("approval")
+
+
+@router.get("/election/candidates")
+async def get_election_candidates():
+    """Return 2026 candidate roster (name, aliases, party, state, office) for frontend lookup and AI context."""
+    from .election_candidates import get_candidates
+    return {"candidates": get_candidates(), "meta": {"source": "2026_candidates.json"}}
+
+
+def _summarize_polls_for_questions(polls: list, metadata: dict, race_type: str) -> str:
+    """Compact text summary of polls for question-generation prompt."""
+    if not polls:
+        return "No polls available."
+    lines = [f"Total polls: {len(polls)}"]
+    if metadata.get("candidates"):
+        lines.append(f"Candidates: {', '.join(metadata['candidates'])}")
+    for p in polls[:10]:
+        pollster = p.get("pollster", "?")
+        margin = p.get("margin") or p.get("lead") or ""
+        race = p.get("race", "") or p.get("race_key", "")
+        added = p.get("added") or p.get("date_added") or ""
+        lines.append(f"- {pollster}: {race} {margin}" + (f" ({added})" if added else ""))
+    if len(polls) > 10:
+        lines.append(f"... and {len(polls) - 10} more polls")
+    return "\n".join(lines)
+
+
+@router.post("/election/questions")
+async def generate_election_questions(request: Request):
+    """Generate contextual AI questions based on current polling data."""
+    body = await request.json()
+    race_type = body.get("race_type", "senate")
+    polls = body.get("polls", [])
+    metadata = body.get("metadata", {})
+    model = body.get("model")
+    regenerate = body.get("regenerate", False)
+    import hashlib
+    context_hash = hashlib.sha256(
+        json.dumps({"race_type": race_type, "poll_count": len(polls)}, sort_keys=True).encode()
+    ).hexdigest()[:12]
+    if not regenerate:
+        cached = await election_db.get_cached_questions(race_type, context_hash)
+        if cached:
+            return {"questions": cached, "cached": True}
+    api_endpoint = election_ai_service._resolve_endpoint(model)
+    if not api_endpoint:
+        return {"questions": [], "error": "No model configured"}
+    poll_summary = _summarize_polls_for_questions(polls, metadata, race_type)
+    from .election_ai_service import _get_fact_sheet_context
+    fact_sheet = _get_fact_sheet_context()
+    prompt = (
+        f"Based on this polling data, generate exactly 5 insightful questions that a user would want to ask about these polls.\n\n"
+        f"**Race Type:** {race_type}\n**Poll Summary:**\n{poll_summary}\n\n"
+        "Generate questions that explore: 1) Who is leading and by how much 2) How the race has shifted recently "
+        "3) Which pollsters show different results 4) What demographics or states matter 5) Historical context. "
+        'Format: Each question on its own line, starting with "Q: ". Keep under 15 words each. Be specific to the data.'
+    )
+    # Candidate roster and fact sheet first so the AI has them before generating questions
+    user_content = prompt
+    if fact_sheet:
+        user_content = (
+            "2026 election research and candidate roster (use for context on key races, candidates, and who is D vs R):\n\n"
+            + fact_sheet
+            + "\n\n---\n\n"
+            + prompt
+        )
+    try:
+        response = await election_ai_service._call_api(
+            api_endpoint=api_endpoint,
+            messages=[{"role": "user", "content": user_content}],
+            tools=[],
+            temperature=0.8,
+            max_tokens=400,
+        )
+        content = (response.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        questions = [
+            line.replace("Q: ", "").replace("**Q:**", "").strip()
+            for line in content.split("\n")
+            if line.strip().startswith("Q:") or line.strip().startswith("**Q:**")
+        ]
+        questions = [q for q in questions if len(q) > 10][:5]
+        if questions:
+            await election_db.cache_questions(race_type, context_hash, questions)
+        return {"questions": questions, "cached": False}
+    except Exception as e:
+        logger.error("Question generation failed: %s", e)
+        return {"questions": [], "error": str(e)}
+
+
+# In-memory cache for Monte Carlo simulation results (key = cache_key from election_simulation)
+_election_simulation_cache: Dict[str, Any] = {}
+
+
+@router.get("/election/map")
+async def get_election_map(race_type: str = Query("senate", description="Race type for map")):
+    """Get user map data and state-level averages only from the same polls as the Polls tab (no other DB aggregate)."""
+    user_data = await election_db.get_all_map_data(race_type)
+    if race_type in ("senate", "governor"):
+        sources = ["rcp"]
+    elif race_type == "house":
+        sources = ["racetothewh"]
+    else:
+        sources = None
+    # Use last 18 months and high limit so map averages and trends keep using older polls as new ones arrive
+    polls = await election_db.get_polls(race_type=race_type, limit=2000, sources=sources, days_back=548) if race_type in ("senate", "governor", "house") else []
+    scraped = election_service.compute_state_averages_from_polls(polls, use_quality_weights=True)
+    return {"user_data": user_data, "scraped_averages": scraped}
+
+
+@router.get("/election/simulation/results")
+async def get_simulation_results(race_type: str = Query("senate", description="senate, governor, or house")):
+    """Return cached simulation results if available. Call POST /election/simulation/run to populate."""
+    if race_type not in ("senate", "governor", "house"):
+        return {"error": "race_type must be senate, governor, or house", "result": None}
+    entry = _election_simulation_cache.get(race_type)
+    if entry:
+        return {
+            "result": entry["result"],
+            "last_updated_ts": entry.get("ts"),
+            "n_simulations": entry.get("n_simulations"),
+        }
+    return {"result": None, "message": "No cached simulation. Run simulation first."}
+
+
+@router.post("/election/simulation/run")
+async def run_election_simulation(
+    race_type: str = Query("senate", description="senate, governor, or house"),
+    n_simulations: int = Query(10000, ge=1000, le=50000, description="Number of Monte Carlo runs"),
+    use_calibration: bool = Query(True, description="Apply special/off-year calibration shift"),
+    calibration_weight: float = Query(1.0, ge=0.0, le=2.0, description="Scale for calibration swing (0=ignore, 1=full, 0.5=half). How much 2024→now swing influences the baseline."),
+    use_sophisticated_forecast: bool = Query(True, description="Quality-weighted polls + subtle fundamentals prior"),
+    fundamental_weight_base: float = Query(
+        election_forecast.FUNDAMENTAL_WEIGHT_BASE_DEFAULT,
+        ge=0.0,
+        le=0.5,
+        description="Prior influence on state mean (e.g. 0.05–0.20). Exposed for tuning.",
+    ),
+    time_decay_curve: str = Query(
+        election_forecast.TIME_DECAY_CURVE_DEFAULT,
+        description="Prior time curve: 'decay' (prior fades as election nears) or 'flat'.",
+    ),
+    state_lean_multiplier: float = Query(
+        election_forecast.STATE_LEAN_MULTIPLIER_DEFAULT,
+        ge=0.0,
+        le=2.0,
+        description="Scale for state partisan lean (0=ignore, 1=full). Exposed for tuning.",
+    ),
+):
+    """Run Monte Carlo simulation. State means = polls + subtle fundamentals prior (no flattening).
+    Prior params are exposed for tuning; they are not modified during the run.
+    Note: First request after server start is often 10–15s (DB/import cold start); subsequent runs
+    are fast (~0.1s sim). Every run executes the full simulation; there is no cache read for POST."""
+    if race_type not in ("senate", "governor", "house"):
+        raise HTTPException(status_code=400, detail="race_type must be senate, governor, or house")
+    if time_decay_curve not in ("decay", "flat"):
+        time_decay_curve = election_forecast.TIME_DECAY_CURVE_DEFAULT
+    sources = ["racetothewh"] if race_type == "house" else ["rcp"]
+    polls = await election_db.get_polls(race_type=race_type, limit=2000, sources=sources, days_back=548)
+    state_averages = election_service.compute_state_averages_from_polls(
+        polls, use_quality_weights=use_sophisticated_forecast
+    )
+    if not state_averages:
+        return {"error": "No state polling averages available", "result": None}
+
+    import logging
+    _log = logging.getLogger(__name__)
+    run_id = uuid.uuid4().hex[:12]  # unique per run so client can verify backend actually ran
+    _log.info(
+        "election/simulation/run: starting run_id=%s race_type=%s n_simulations=%s states=%s use_calibration=%s",
+        run_id, race_type, n_simulations, len(state_averages), use_calibration,
+    )
+
+    calibration_entries = election_simulation.load_calibration_for_analysis() if use_calibration else None
+    calibration_n = 0
+    calibration_swing_pts: Optional[float] = None
+    if calibration_entries:
+        swing_sum, swing_w = 0.0, 0.0
+        for e in calibration_entries:
+            s = e.get("swing_toward_d")
+            w = float(e.get("weight", 1.0))
+            if s is not None and w > 0:
+                try:
+                    swing_sum += float(s) * w
+                    swing_w += w
+                except (TypeError, ValueError):
+                    pass
+        if swing_w > 0:
+            calibration_n = len([e for e in calibration_entries if e.get("swing_toward_d") is not None])
+            calibration_swing_pts = round(swing_sum / swing_w, 2)
+
+    # Combined calibration: generic ballot + approval + special elections (quality-weighted for GB and approval)
+    calibration_swing_effective: Optional[float] = None
+    calibration_combined_meta: Optional[Dict[str, Any]] = None
+    approval_data: Optional[Dict[str, Any]] = None
+    generic_ballot_data: Optional[Dict[str, Any]] = None
+    if use_calibration:
+        approval_data, generic_ballot_data = await asyncio.gather(
+            election_service.get_polling_data("approval"),
+            election_service.get_polling_data("generic_ballot"),
+        )
+        gb_dem_share, gb_n, _ = election_service.compute_quality_weighted_generic_ballot(generic_ballot_data or {})
+        approval_net, app_n, _ = election_service.compute_quality_weighted_approval(approval_data or {})
+        effective_shift, calibration_combined_meta = election_forecast.compute_combined_calibration_shift(
+            generic_ballot_dem_share=gb_dem_share,
+            approval_net=approval_net,
+            special_election_swing_pts=calibration_swing_pts,
+            calibration_weight=calibration_weight,
+            president_party="R",
+            race_type=race_type,
+        )
+        calibration_swing_effective = round(effective_shift, 2) if effective_shift != 0 else None
+
+    forecast_metadata = None
+    if use_sophisticated_forecast:
+        if approval_data is None and generic_ballot_data is None:
+            approval_data, generic_ballot_data = await asyncio.gather(
+                election_service.get_polling_data("approval"),
+                election_service.get_polling_data("generic_ballot"),
+            )
+        fundamentals_share, fund_meta = election_forecast.compute_fundamentals_national_share(
+            approval_data, generic_ballot_data, calibration_entries,
+            calibration_swing_weight=calibration_weight,
+        )
+        days = election_forecast.days_to_election()
+        # Prior: small state-level nudge. Polls stay primary; state differentiation preserved.
+        adjusted_averages = {}
+        prior_sample: Optional[Dict[str, Any]] = None
+        for state, avg in state_averages.items():
+            dem = avg.get("dem_avg")
+            gop = avg.get("gop_avg") or avg.get("rep_avg")
+            if dem is not None and gop is not None and (dem + gop) > 0:
+                poll_dem_share = dem / (dem + gop) * 100.0
+                adjustment_pts, adj_meta = election_forecast.compute_fundamentals_prior_adjustment(
+                    poll_dem_share,
+                    fundamentals_share,
+                    state,
+                    fundamental_weight_base=fundamental_weight_base,
+                    days_to_election=days,
+                    state_lean_multiplier=state_lean_multiplier,
+                    time_decay_curve=time_decay_curve,
+                )
+                final_dem_share = poll_dem_share + adjustment_pts
+                final_dem_share = max(0.0, min(100.0, final_dem_share))
+                if prior_sample is None:
+                    prior_sample = {"state": state, **adj_meta}
+                adjusted_averages[state] = {
+                    **avg,
+                    "dem_avg": round(final_dem_share, 2),
+                    "gop_avg": round(100.0 - final_dem_share, 2),
+                }
+            else:
+                adjusted_averages[state] = avg
+        state_averages = adjusted_averages
+        # Dynamic uncertainty: sigma scales with poll count, quality, and time to election
+        base_sigma = 2.5
+        poll_counts = [v.get("poll_count") or 0 for v in state_averages.values()]
+        confs = [v.get("pollster_confidence") for v in state_averages.values() if v.get("pollster_confidence") is not None]
+        avg_poll_count = sum(poll_counts) / len(poll_counts) if poll_counts else 0
+        avg_pollster_conf = sum(confs) / len(confs) if confs else 0.5
+        sigma_quality = election_forecast.sigma_from_data_quality(
+            int(round(avg_poll_count)), avg_pollster_conf, days, base_sigma=base_sigma
+        )
+        quality_sigma_multiplier = sigma_quality / base_sigma
+        forecast_metadata = {
+            "fundamentals_dem_share": fund_meta.get("dem_share"),
+            "fundamentals_components": fund_meta.get("components"),
+            "days_to_election": days,
+            "sigma_quality": round(sigma_quality, 2),
+            "quality_sigma_multiplier": round(quality_sigma_multiplier, 3),
+            "prior_params": {
+                "fundamental_weight_base": fundamental_weight_base,
+                "time_decay_curve": time_decay_curve,
+                "state_lean_multiplier": state_lean_multiplier,
+            },
+            "prior_adjustment_sample": prior_sample,
+        }
+    else:
+        quality_sigma_multiplier = None
+
+    # Apply combined calibration (GB + approval + special elections) to state means.
+    if use_calibration and calibration_swing_effective is not None and calibration_swing_effective != 0:
+        for state, avg in list(state_averages.items()):
+            dem = avg.get("dem_avg")
+            gop = avg.get("gop_avg") or avg.get("rep_avg")
+            if dem is not None and gop is not None and (dem + gop) > 0:
+                new_dem = max(0.0, min(100.0, float(dem) + calibration_swing_effective))
+                state_averages[state] = {
+                    **avg,
+                    "dem_avg": round(new_dem, 2),
+                    "gop_avg": round(100.0 - new_dem, 2),
+                }
+
+    result = election_simulation.run_and_cache(
+        state_averages, race_type=race_type, n_simulations=n_simulations,
+        cache=_election_simulation_cache, cache_key=race_type,
+        use_calibration=use_calibration,
+        use_systematic_error=use_sophisticated_forecast,
+        quality_sigma_multiplier=quality_sigma_multiplier,
+    )
+    _log.info(
+        "election/simulation/run: completed run_id=%s race_type=%s elapsed_sec=%s races_included=%s",
+        run_id, race_type, result.get("elapsed_sec"), result.get("races_included"),
+    )
+    out = {
+        "result": result,
+        "run_id": run_id,
+        "last_updated_ts": _election_simulation_cache.get(race_type, {}).get("ts"),
+        "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "race_type": race_type,
+        "n_simulations": n_simulations,
+        "use_calibration": use_calibration,
+        "timing_note": "First run after server start is often slower (cold start); each run runs the full simulation.",
+    }
+    if use_calibration:
+        out["calibration_n"] = calibration_n
+        out["calibration_weight"] = calibration_weight
+        if calibration_swing_pts is not None:
+            out["calibration_swing_pts"] = calibration_swing_pts
+        if calibration_swing_effective is not None:
+            out["calibration_swing_effective"] = calibration_swing_effective
+        if calibration_combined_meta:
+            out["calibration_combined_shift"] = calibration_combined_meta.get("combined_shift")
+            out["calibration_components"] = calibration_combined_meta.get("components", {})
+            out["calibration_weights_used"] = calibration_combined_meta.get("weights_used", {})
+    if forecast_metadata:
+        out["forecast_metadata"] = forecast_metadata
+    return out
+
+
+@router.get("/election/simulation/calibration")
+async def get_simulation_calibration():
+    """List calibration entries that have 2024 R margin and swing data (only these are used for analysis)."""
+    entries = election_simulation.load_calibration_for_analysis()
+    return {"entries": entries}
+
+
+class CalibrationEntryCreate(BaseModel):
+    label: str = ""
+    type: str = "special"
+    state: str
+    date: str
+    dem_actual_pct: float
+    poll_avg_pct: Optional[float] = None  # when set, used for overperformance shift; omit when no pre-election polls
+    rep_actual_pct: Optional[float] = None
+    weight: float = 1.0
+    region: Optional[str] = None
+    note: Optional[str] = None
+    trump_2024_margin: Optional[float] = None  # 2024 pres margin in region (+ = Trump won by X)
+    swing_toward_d: Optional[float] = None     # midterm swing (positive = D gained vs 2024)
+
+
+@router.post("/election/simulation/calibration")
+async def add_simulation_calibration(body: CalibrationEntryCreate):
+    """Add a calibration result. Only entries with poll_avg_pct contribute to simulation shift (D overperformance)."""
+    entry = election_simulation.add_calibration_entry(
+        label=body.label,
+        entry_type=body.type,
+        state=body.state,
+        date=body.date,
+        dem_actual_pct=body.dem_actual_pct,
+        poll_avg_pct=body.poll_avg_pct,
+        weight=body.weight,
+        region=body.region,
+        note=body.note,
+        trump_2024_margin=body.trump_2024_margin,
+        swing_toward_d=body.swing_toward_d,
+        rep_actual_pct=body.rep_actual_pct,
+    )
+    return {"entry": entry, "message": "Added. Re-run simulation to apply."}
+
+
+@router.delete("/election/simulation/calibration/{entry_id}")
+async def delete_simulation_calibration(entry_id: str):
+    """Remove a calibration entry by id."""
+    ok = election_simulation.delete_calibration_entry(entry_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Calibration entry not found")
+    return {"status": "ok"}
+
+
+@router.get("/election/simulation/calibration/ballotpedia-scrape")
+async def ballotpedia_scrape(
+    since_nov_2025: bool = True,
+    include_governors: bool = True,
+    include_federal: bool = True,
+    include_state_leg: bool = True,
+):
+    """Scrape Ballotpedia for off-year/special results: federal House/Senate, VA/NJ governors, and state house/senate specials (e.g. TX Senate 9). Returns list only; does not modify calibration."""
+    results = ballotpedia_scraper.scrape_all(
+        since_nov_2025=since_nov_2025,
+        include_governors=include_governors,
+        include_federal=include_federal,
+        include_state_leg=include_state_leg,
+    )
+    return {"results": results, "count": len(results)}
+
+
+@router.post("/election/simulation/calibration/ballotpedia-import")
+async def ballotpedia_import_to_calibration(since_nov_2025: bool = True):
+    """Run Ballotpedia scrape and add new results into calibration (by label+date). Returns scraped list, added, and skipped."""
+    out = ballotpedia_scraper.run_and_import_to_calibration(since_nov_2025=since_nov_2025, merge=True)
+    return out
+
+
+@router.post("/election/simulation/calibration/ballotpedia-import-stream")
+async def ballotpedia_import_stream(since_nov_2025: bool = True):
+    """Stream progress (SSE) while scraping Ballotpedia and importing to calibration. Events: progress (current, total, message), then done (added, skipped, scraped_count)."""
+    import queue as queue_module
+    q = queue_module.Queue()
+
+    def run():
+        try:
+            def cb(current: int, total: int, message: str):
+                q.put({"type": "progress", "current": current, "total": total, "message": message})
+            out = ballotpedia_scraper.run_and_import_to_calibration(
+                since_nov_2025=since_nov_2025, merge=True, progress_callback=cb
+            )
+            q.put({
+                "type": "done",
+                "added": len(out.get("added") or []),
+                "skipped": len(out.get("skipped") or []),
+                "scraped_count": len(out.get("scraped") or []),
+            })
+        except Exception as e:
+            q.put({"type": "done", "error": str(e)})
+
+    thread = threading.Thread(target=run)
+    thread.start()
+
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        while True:
+            item = await loop.run_in_executor(None, q.get)
+            yield f"data: {json.dumps(item)}\n\n"
+            if item.get("type") == "done":
+                break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/election/simulation/calibration/refresh-2024-state-margins")
+async def refresh_2024_state_margins():
+    """Refresh 2024 baseline: fetch county CSV from tonmcg repo, aggregate by state, write pres_2024_state_margins.json. Governor calibration rows use it for 2024 vs now (margin + swing)."""
+    from .pres_2024_county_loader import write_pres_2024_state_margins_json, load_pres_2024_state_margins
+    loop = asyncio.get_event_loop()
+    path = await loop.run_in_executor(None, write_pres_2024_state_margins_json)
+    margins = load_pres_2024_state_margins()
+    return {"status": "ok", "path": str(path), "states": len(margins), "sample": {k: margins[k] for k in ["VA", "NJ", "TX"] if k in margins}}
+
+
+@router.post("/election/simulation/calibration/refresh-va-2024-districts")
+async def refresh_va_2024_districts():
+    """Fetch VPAP 2024 presidential results by VA House district, write state_leg_2024_presidential_margins.json (VA_House). VA House calibration rows then get 2024 R margin and Swing (D) from district-level data."""
+    from .vpap_2024_loader import write_va_house_to_state_leg_margins
+    loop = asyncio.get_event_loop()
+    path = await loop.run_in_executor(None, write_va_house_to_state_leg_margins)
+    return {"status": "ok", "path": str(path), "message": "VA House 2024 district data loaded from VPAP. Reload calibration list to see 2024 margin and swing."}
+
+
+@router.post("/election/simulation/calibration/refresh-va-nj-2024-districts")
+async def refresh_va_nj_2024_districts():
+    """Load VA House 2024 from VPAP; NJ Assembly when a district-level source exists. Writes state_leg_2024_presidential_margins.json."""
+    from .vpap_2024_loader import write_va_house_to_state_leg_margins, fetch_nj_assembly_2024_if_available
+    loop = asyncio.get_event_loop()
+    path = await loop.run_in_executor(None, write_va_house_to_state_leg_margins)
+    nj_loaded = await loop.run_in_executor(None, fetch_nj_assembly_2024_if_available)
+    if nj_loaded:
+        message = "VA House and NJ Assembly 2024 district data loaded. Reload calibration list to see 2024 margin and swing."
+    else:
+        message = "VA House 2024 loaded from VPAP. NJ Assembly: no public district-level source available yet (—)."
+    return {"status": "ok", "path": str(path), "message": message}
+
+
+@router.put("/election/map/{state}")
+async def update_election_map(state: str, request: Request):
+    """User updates polling data for a state."""
+    body = await request.json()
+    await election_db.upsert_map_data(
+        state=state.upper(),
+        race_type=body.get("race_type", "senate"),
+        candidate_1_name=body.get("candidate_1_name"),
+        candidate_1_party=body.get("candidate_1_party"),
+        candidate_1_pct=body.get("candidate_1_pct"),
+        candidate_2_name=body.get("candidate_2_name"),
+        candidate_2_party=body.get("candidate_2_party"),
+        candidate_2_pct=body.get("candidate_2_pct"),
+        margin=body.get("margin"),
+        source_note=body.get("source_note"),
+    )
+    return {"status": "ok"}
+
+
+@router.delete("/election/map/{state}")
+async def delete_election_map(state: str, race_type: str = Query("senate")):
+    """Remove user map data for a state."""
+    await election_db.delete_map_data(state.upper(), race_type)
+    return {"status": "ok"}
+
+
+# --- Conversation summaries (JSON files in static/summaries) ---
+class SummaryCreate(BaseModel):
+    title: str
+    content: str
+
+
+@router.get("/summaries")
+async def list_summaries():
+    """List all saved summary JSON files."""
+    out = []
+    if not summaries_dir.exists():
+        return out
+    for p in summaries_dir.glob("*.json"):
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                out.append({
+                    "id": data.get("id", p.stem),
+                    "title": data.get("title", p.stem),
+                    "content": data.get("content", ""),
+                    "date": data.get("date", ""),
+                })
+        except Exception as e:
+            logger.warning(f"Skip invalid summary file {p}: {e}")
+    out.sort(key=lambda x: x.get("date") or "", reverse=True)
+    return out
+
+
+@router.post("/summaries", status_code=201)
+async def create_summary(body: SummaryCreate):
+    """Save a new summary as a JSON file in static/summaries."""
+    summary_id = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S") + "_" + str(uuid.uuid4())[:8]
+    payload = {
+        "id": summary_id,
+        "title": body.title or f"Summary {datetime.datetime.utcnow().isoformat()}",
+        "content": body.content or "",
+        "date": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    path = summaries_dir / f"{summary_id}.json"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return payload
+
+
+@router.get("/summaries/{summary_id}")
+async def get_summary(summary_id: str):
+    """Get one summary by id (filename without .json)."""
+    if ".." in summary_id or "/" in summary_id or "\\" in summary_id:
+        raise HTTPException(status_code=400, detail="Invalid summary id")
+    path = summaries_dir / f"{summary_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Summary not found")
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@router.delete("/summaries/{summary_id}")
+async def delete_summary(summary_id: str):
+    """Delete a summary JSON file."""
+    if ".." in summary_id or "/" in summary_id or "\\" in summary_id:
+        raise HTTPException(status_code=400, detail="Invalid summary id")
+    path = summaries_dir / f"{summary_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Summary not found")
+    path.unlink()
+    return {"status": "deleted", "id": summary_id}
+
 
 # mount the "generate" router
 app.include_router(router)

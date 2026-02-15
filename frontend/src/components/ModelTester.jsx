@@ -123,36 +123,30 @@ const ModelTester = () => {
     }
   }, [PRIMARY_API_URL]);
 
-  const judgeSingleResponseWithApiModel = useCallback(async (prompt, response, judgeModelName) => {
+  const judgeSingleResponseWithApiModel = useCallback(async (prompt, response, judgeModelName, judgeModelGpu = 0, characterSystemPrompt = null) => {
     const endpointInfo = (settings.customApiEndpoints || []).find(e => e.id === judgeModelName);
     if (!endpointInfo) {
       throw new Error(`API Endpoint configuration for ${judgeModelName} not found.`);
     }
 
-    const apiUrl = endpointInfo.url.replace(/\/$/, '');
-    const apiKey = endpointInfo.apiKey;
+    const apiUrl = (judgeModelGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL).replace(/\/$/, '');
 
-    const judgePrompt = `You are a STRICT evaluation system. Rate this response using this exact format:
-SCORE: [number 1-100]
-REASON: [brief critical assessment]
-
-PROMPT: "${prompt}"
-RESPONSE: "${response}"
-
-Respond with ONLY the score and reason.`;
+    const systemContent = characterSystemPrompt
+      ? `${characterSystemPrompt}\n\n${prompt}`
+      : "You are a strict, impartial AI model evaluator.";
 
     const payload = {
-      model: endpointInfo.name, // Use the configured model name for the API
-      messages: [{ role: "user", content: judgePrompt }],
+      model: judgeModelName, // Use endpoint id; backend will route to configured API
+      messages: [
+        { role: "system", content: systemContent },
+        { role: "user", content: characterSystemPrompt ? "Evaluate the response." : prompt }
+      ],
       temperature: 0.3,
       max_tokens: 150,
       stream: false,
     };
 
     const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
 
     try {
       const response = await fetch(`${apiUrl}/v1/chat/completions`, {
@@ -171,7 +165,7 @@ Respond with ONLY the score and reason.`;
       console.error(`Error judging single response with API model ${judgeModelName}:`, error);
       return `SCORE: 50\nREASON: Error during API judging: ${error.message}`;
     }
-  }, [settings.customApiEndpoints]);
+  }, [settings.customApiEndpoints, PRIMARY_API_URL, SECONDARY_API_URL]);
 
   const getModelDisplayName = useCallback((modelName, character, paramLabel = '') => {
     let displayName = modelName;
@@ -231,20 +225,22 @@ Respond with ONLY the score and reason.`;
     return basePrompt;
   }, [buildSystemPrompt]);
 
-  const judgeWithApiModel = useCallback(async (prompt, judgeModelName) => {
+  const judgeWithApiModel = useCallback(async (prompt, judgeModelName, judgeModelGpu = 0, characterSystemPrompt = null) => {
     const endpointInfo = (settings.customApiEndpoints || []).find(e => e.id === judgeModelName);
     if (!endpointInfo) {
       throw new Error(`API Endpoint configuration for ${judgeModelName} not found.`);
     }
 
-    const apiUrl = endpointInfo.url.replace(/\/$/, ''); // Ensure no trailing slash
-    const apiKey = endpointInfo.apiKey;
+    const apiUrl = (judgeModelGpu === 0 ? PRIMARY_API_URL : SECONDARY_API_URL).replace(/\/$/, '');
+    const systemContent = characterSystemPrompt
+      ? `${characterSystemPrompt}\n\n${prompt}`
+      : "You are a strict, impartial AI model evaluator.";
 
     const payload = {
-      model: endpointInfo.name, // Use the model name specified in the endpoint config
+      model: judgeModelName, // Use endpoint id; backend will route to configured API
       messages: [
-        { role: "system", content: "You are a strict, impartial AI model evaluator." },
-        { role: "user", content: prompt }
+        { role: "system", content: systemContent },
+        { role: "user", content: characterSystemPrompt ? "Evaluate the responses." : prompt }
       ],
       temperature: 0.3,
       max_tokens: 150,
@@ -254,9 +250,6 @@ Respond with ONLY the score and reason.`;
     const headers = {
       'Content-Type': 'application/json',
     };
-    if (apiKey) {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
 
     try {
       const response = await fetch(`${apiUrl}/v1/chat/completions`, {
@@ -276,7 +269,7 @@ Respond with ONLY the score and reason.`;
       console.error(`Error judging with API model ${judgeModelName}:`, error);
       return `Error: ${error.message}`;
     }
-  }, [settings.customApiEndpoints]);
+  }, [settings.customApiEndpoints, PRIMARY_API_URL, SECONDARY_API_URL]);
 
   const loadModelForPurpose = useCallback(async (purpose, modelName, gpuId, contextLength = 4096) => {
     setIsLoadingPurpose(prev => ({ ...prev, [purpose]: true }));
@@ -1156,11 +1149,11 @@ Respond with ONLY the score and reason.`;
   // Generate response from model
   const isApiModel = (modelId) => modelId && modelId.startsWith('endpoint-');
 
-  const generateApiResponse = useCallback(async (modelName, prompt, apiUrl) => {
+  const generateApiResponse = useCallback(async (modelName, prompt, apiUrl, systemPrompt = null) => {
     const payload = {
       model: modelName,
       messages: [
-        { role: "system", content: "You are a helpful and direct AI assistant." },
+        { role: "system", content: systemPrompt || "You are a helpful and direct AI assistant." },
         { role: "user", content: prompt }
       ],
       temperature: 0.7,
@@ -1194,13 +1187,8 @@ Respond with ONLY the score and reason.`;
     };
 
     if (isApiModel(modelName)) {
-      // For API models, if character is provided, prepend character context to the prompt
-      let finalPrompt = prompt;
-      if (character) {
-        const characterSystemPrompt = buildSystemPrompt(character);
-        finalPrompt = `${characterSystemPrompt}\n\nUser: ${prompt}\n\nAssistant:`;
-      }
-      return generateApiResponse(modelName, finalPrompt, apiUrl);
+      const characterSystemPrompt = character ? buildSystemPrompt(character) : null;
+      return generateApiResponse(modelName, prompt, apiUrl, characterSystemPrompt);
     }
 
     // For local models, build the full prompt with character context if provided
@@ -1245,11 +1233,13 @@ Respond with ONLY the score and reason.`;
 
     const getSingleJudgment = async (jModel, jGpu, jCharacter) => {
       const judgePrompt = buildJudgePrompt(prompt, response, jCharacter, customJudgingCriteria);
+      const judgePromptNoCharacter = buildJudgePrompt(prompt, response, null, customJudgingCriteria);
+      const characterSystemPrompt = jCharacter ? buildSystemPrompt(jCharacter) : null;
 
       // Check if the judge model is an API endpoint
       if (isApiModel(jModel)) {
         console.log(`⚖️ Judging single response with API Model: ${jModel}${jCharacter ? ` (as ${jCharacter.name})` : ''}`);
-        return await judgeSingleResponseWithApiModel(judgePrompt, response, jModel);
+        return await judgeSingleResponseWithApiModel(judgePromptNoCharacter, response, jModel, jGpu, characterSystemPrompt);
       }
 
       // Otherwise, use the existing local model logic
@@ -1345,17 +1335,19 @@ Respond with ONLY the score and reason.`;
       }
       return null;
     }
-  }, [PRIMARY_API_URL, SECONDARY_API_URL, userProfile, judgeSingleResponseWithApiModel, buildJudgePrompt, customJudgingCriteria, isApiModel]);
+  }, [PRIMARY_API_URL, SECONDARY_API_URL, userProfile, judgeSingleResponseWithApiModel, buildJudgePrompt, buildSystemPrompt, customJudgingCriteria, isApiModel]);
 
   // Judge response quality using secondary model
   const judgeWithModel = useCallback(async (prompt, response1, response2, model1Name, model2Name, judgeModel, judgeModelGpu, secondaryJudgeModel = null, secondaryJudgeModelGpu = null, judgeCharacter = null, secondaryJudgeCharacter = null) => {
     const getJudgment = async (jModel, jGpu, jCharacter) => {
       const judgePrompt = buildJudgePrompt(prompt, null, jCharacter, customJudgingCriteria, true, response1, response2, model1Name, model2Name);
+      const judgePromptNoCharacter = buildJudgePrompt(prompt, null, null, customJudgingCriteria, true, response1, response2, model1Name, model2Name);
+      const characterSystemPrompt = jCharacter ? buildSystemPrompt(jCharacter) : null;
 
       // Check if the judge model is an API endpoint
       if (isApiModel(jModel)) {
         console.log(`⚖️ Judging with API Model: ${jModel}${jCharacter ? ` (as ${jCharacter.name})` : ''}`);
-        return await judgeWithApiModel(judgePrompt, jModel);
+        return await judgeWithApiModel(judgePromptNoCharacter, jModel, jGpu, characterSystemPrompt);
       }
 
       // Otherwise, use the existing local model logic
@@ -1451,7 +1443,7 @@ Respond with ONLY the score and reason.`;
       }
       throw error;
     }
-  }, [PRIMARY_API_URL, SECONDARY_API_URL, reconcileJudgments, judgeWithApiModel, buildJudgePrompt, customJudgingCriteria, isApiModel]);
+  }, [PRIMARY_API_URL, SECONDARY_API_URL, reconcileJudgments, judgeWithApiModel, buildJudgePrompt, buildSystemPrompt, customJudgingCriteria, isApiModel]);
 
 
   // Update ELO ratings
