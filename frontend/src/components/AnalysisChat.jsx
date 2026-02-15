@@ -189,19 +189,15 @@ You can now discuss this comparison with me. What would you like to explore?`;
   };
 
 const generateApiResponse = useCallback(async (modelName, prompt, apiUrl) => {
-    // Find the endpoint configuration
-    // NOTE: You may need to pass customApiEndpoints as a prop to AnalysisChat
-    // or access it from settings/ragSettings depending on your app structure
-    const endpointInfo = (ragSettings?.customApiEndpoints || []).find(e => e.id === modelName);
-    if (!endpointInfo) {
-        throw new Error(`API Endpoint configuration for ${modelName} not found. Please check your API endpoint settings.`);
+    if (!apiUrl) {
+        throw new Error('No API URL available for this request. Check your primary/secondary API URL settings.');
     }
 
-    const baseUrl = endpointInfo.url.replace(/\/$/, ''); // Remove trailing slash
-    const apiKey = endpointInfo.apiKey;
+    // Route API models through the backend OpenAI-compat layer
+    const baseUrl = apiUrl.replace(/\/$/, '');
 
     const payload = {
-        model: endpointInfo.name, // Use the configured model name for the API
+        model: modelName, // Use endpoint id; backend will map to configured model
         messages: [
             { role: "system", content: "You are a helpful and direct AI assistant." },
             { role: "user", content: prompt }
@@ -212,12 +208,9 @@ const generateApiResponse = useCallback(async (modelName, prompt, apiUrl) => {
     };
 
     const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) {
-        headers['Authorization'] = `Bearer ${apiKey}`;
-    }
 
     console.log(`🌐 [AnalysisChat API] Sending request to: ${baseUrl}/v1/chat/completions`);
-    console.log(`🌐 [AnalysisChat API] Model: ${endpointInfo.name}`);
+    console.log(`🌐 [AnalysisChat API] Model: ${modelName}`);
 
     try {
         const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -236,7 +229,7 @@ const generateApiResponse = useCallback(async (modelName, prompt, apiUrl) => {
         console.error(`Error generating API response from ${modelName}:`, error);
         throw error;
     }
-}, [ragSettings?.customApiEndpoints]);
+}, []);
 
 const generateResponse = async (purposeKey, prompt) => {
   console.log('generateResponse called with purpose:', purposeKey);
@@ -252,8 +245,8 @@ const generateResponse = async (purposeKey, prompt) => {
   // Check if this is an API endpoint
   if (isApiModel(modelName)) {
     console.log(`🌐 [AnalysisChat] Using API endpoint: ${modelName}`);
-    // For API endpoints, we don't need a specific API URL since it's configured in the endpoint
-    return await generateApiResponse(modelName, prompt, null);
+    const apiUrl = gpuId === 0 ? primaryApiUrl : secondaryApiUrl;
+    return await generateApiResponse(modelName, prompt, apiUrl);
   }
   
   // Original local model logic
@@ -931,17 +924,10 @@ Format: Each question on a new line starting with "Q: "`;
     if (isApiModel(questionModel)) {
       // Use API endpoint for question generation
       console.log(`🌐 [AnalysisChat Questions] Using API endpoint: ${questionModel}`);
-      
-      const endpointInfo = (ragSettings?.customApiEndpoints || []).find(e => e.id === questionModel);
-      if (!endpointInfo) {
-        throw new Error(`API Endpoint configuration for ${questionModel} not found.`);
-      }
-
-      const baseUrl = endpointInfo.url.replace(/\/$/, '');
-      const apiKey = endpointInfo.apiKey;
+      const baseUrl = questionApiUrl.replace(/\/$/, '');
 
       const payload = {
-        model: endpointInfo.name,
+        model: questionModel, // Use endpoint id; backend maps to configured model
         messages: [{ role: "user", content: prompt }],
         temperature: 0.8,
         max_tokens: 400,
@@ -949,9 +935,6 @@ Format: Each question on a new line starting with "Q: "`;
       };
 
       const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) {
-        headers['Authorization'] = `Bearer ${apiKey}`;
-      }
 
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
@@ -1046,7 +1029,7 @@ Format: Each question on a new line starting with "Q: "`;
   } finally {
     setIsGeneratingQuestions(false);
   }
-}, [selectedResult, modelPurposes, secondaryApiUrl, primaryApiUrl, messages, isGeneratingQuestions, formatModelName, ragSettings?.customApiEndpoints, ragSettings?.contextLength]);
+}, [selectedResult, modelPurposes, secondaryApiUrl, primaryApiUrl, messages, isGeneratingQuestions, formatModelName, ragSettings?.contextLength]);
 const streamResponse = async (response, messageId) => {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

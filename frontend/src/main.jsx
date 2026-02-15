@@ -2,7 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { AppProvider } from './contexts/AppContext'; // Named import!
-import { ThemeProvider } from "./components/ThemeProvider"; // Named import!
+
 import { BrowserRouter } from 'react-router-dom'; // Import
 import { setupFetchInterceptor } from './utils/auth-interceptor';
 
@@ -15,9 +15,7 @@ root.render(
   <React.StrictMode>
     <BrowserRouter> {/* Wrap your App */}
       <AppProvider>
-        <ThemeProvider>
-          <App />
-        </ThemeProvider>
+        <App />
       </AppProvider>
     </BrowserRouter>
   </React.StrictMode>

@@ -3774,16 +3774,7 @@ Return ONLY valid JSON:
       console.error("Error loading settings from localStorage:", error);
     }
   }, []); // Empty dependency array: run only once on mount
-  useEffect(() => {
-    try {
-      const savedSummary = localStorage.getItem('eloquent-active-summary');
-      if (savedSummary) {
-        setActiveContextSummary(savedSummary);
-      }
-    } catch (error) {
-      console.error("Error loading active summary from localStorage:", error);
-    }
-  }, []);
+  // Active summary is no longer restored from localStorage; it's session-only to avoid leaking context between chats.
   useEffect(() => {
     if (activeContextSummary) {
       console.log(`[Summary] Active summary set (${activeContextSummary.length} chars)`);
@@ -3869,9 +3860,9 @@ Return ONLY valid JSON:
       const data = await response.json();
       const summaryText = data.text || data.choices?.[0]?.text || "";
 
-      // 3. Save automatically
+      // 3. Save to backend (static/summaries JSON)
       const title = `Story - ${new Date().toLocaleString()}`;
-      const saved = saveSummary(title, summaryText.trim());
+      const saved = await saveSummary(title, summaryText.trim());
 
       return saved;
 

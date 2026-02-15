@@ -32,7 +32,7 @@ const DEFAULT_CHARACTER = {
   chat_role: 'npc', // NEW field
 };
 
-const CharacterEditor = () => {
+const CharacterEditor = ({ initialCharacter = null, onSave }) => {
   const {
     characters = [],
     activeCharacter,
@@ -43,43 +43,46 @@ const CharacterEditor = () => {
     PRIMARY_API_URL,
   } = useApp();
 
+  // Prefer activeCharacter (e.g. from Edit button in Saved Characters list) so that clicking Edit on a card loads that character; otherwise use initialCharacter from parent (CharacterManager)
+  const effectiveCharacter = (activeCharacter !== undefined && activeCharacter !== null) ? activeCharacter : initialCharacter;
+
   const [isImporting, setIsImporting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const importFileRef = useRef(null);
   const [character, setCharacter] = useState({ ...DEFAULT_CHARACTER });
-  const [isCreatingNew, setIsCreatingNew] = useState(!activeCharacter);
+  const [isCreatingNew, setIsCreatingNew] = useState(!effectiveCharacter);
   const [newLoreEntries, setNewLoreEntries] = useState(''); // Temp state for adding keywords
 
-  // Effect to load active character or reset form
+  // Effect to load character from context or initialCharacter, or reset form for create
   useEffect(() => {
-    if (activeCharacter) {
+    const source = effectiveCharacter;
+    if (source) {
       setIsCreatingNew(false);
       setCharacter({
         ...DEFAULT_CHARACTER,
-        ...activeCharacter,
-        // Ensure arrays exist even if loaded data is missing them
-        example_dialogue: ensureArray(activeCharacter.example_dialogue).length > 0
-          ? ensureArray(activeCharacter.example_dialogue)
+        ...source,
+        example_dialogue: ensureArray(source.example_dialogue).length > 0
+          ? ensureArray(source.example_dialogue)
           : DEFAULT_CHARACTER.example_dialogue,
-        loreEntries: ensureArray(activeCharacter.loreEntries),
-        avatar: activeCharacter.avatar || null,
+        loreEntries: ensureArray(source.loreEntries),
+        avatar: source.avatar || null,
       });
     } else {
       setIsCreatingNew(true);
       setCharacter({ ...DEFAULT_CHARACTER });
     }
-  }, [activeCharacter]);
+  }, [effectiveCharacter]);
 
   // Effect to sync with characters list changes (for updates from duplicates, etc.)
   useEffect(() => {
-    if (activeCharacter && activeCharacter.id) {
-      const updatedCharacter = characters.find(c => c.id === activeCharacter.id);
-      if (updatedCharacter && JSON.stringify(updatedCharacter) !== JSON.stringify(activeCharacter)) {
+    if (effectiveCharacter && effectiveCharacter.id) {
+      const updatedCharacter = characters.find(c => c.id === effectiveCharacter.id);
+      if (updatedCharacter && JSON.stringify(updatedCharacter) !== JSON.stringify(effectiveCharacter)) {
         console.log('Character updated in library, refreshing editor view');
         setActiveCharacter(updatedCharacter);
       }
     }
-  }, [characters, activeCharacter, setActiveCharacter]);
+  }, [characters, effectiveCharacter, setActiveCharacter]);
 
   // Handle importing character cards
   const handleImportCard = useCallback(async (event) => {
@@ -312,6 +315,9 @@ const CharacterEditor = () => {
 
       console.log("Character saved via context:", savedCharacter.name, "with ID:", savedCharacter.id);
       alert("Character saved successfully!");
+      if (typeof onSave === 'function') {
+        onSave(savedCharacter);
+      }
     } catch (error) {
       console.error("Failed to save character via context:", error);
       alert("Failed to save character.");

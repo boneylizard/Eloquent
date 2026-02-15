@@ -12,9 +12,7 @@ const CharacterManager = ({ onSelectCharacter }) => {
     duplicateCharacter,
     applyCharacter,
     PRIMARY_API_URL,
-    setCharacter,
     setActiveCharacter,
-    setIsCreatingNew,
     buildSystemPrompt
   } = useApp();
 
@@ -121,6 +119,7 @@ const CharacterManager = ({ onSelectCharacter }) => {
   };
 
   const handleEditCharacter = (character) => {
+    setActiveCharacter(character);
     setEditingCharacter(character);
     setActiveView('edit');
   };
@@ -192,7 +191,10 @@ const CharacterManager = ({ onSelectCharacter }) => {
 
               <button
                 className="create-btn"
-                onClick={() => setActiveView('create')}
+                onClick={() => {
+                  setActiveCharacter(null);
+                  setActiveView('create');
+                }}
               >
                 + Create New Character
               </button>

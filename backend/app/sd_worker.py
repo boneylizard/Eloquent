@@ -105,30 +105,51 @@ class SDWorkerClient:
         self._ensure_worker()
         args = args or {}
 
-        try:
-            conn = Client(self._address, authkey=self._authkey)
-        except Exception as exc:
-            self._ensure_worker()
-            raise RuntimeError(f"SD worker unavailable: {exc}") from exc
-
-        try:
-            conn.send({"cmd": cmd, "args": args})
-            response = conn.recv()
-        except Exception as exc:
-            conn.close()
-            self._ensure_worker()
-            raise RuntimeError(f"SD worker request failed: {exc}") from exc
-        finally:
+        last_exc = None
+        for attempt in range(2):
             try:
-                conn.close()
-            except Exception:
-                pass
+                conn = Client(self._address, authkey=self._authkey)
+            except Exception as exc:
+                last_exc = exc
+                self._ensure_worker()
+                if attempt == 1:
+                    raise RuntimeError(f"SD worker unavailable: {exc}") from exc
+                continue
 
-        if not response.get("ok"):
-            error = response.get("error", "Unknown worker error")
-            raise RuntimeError(error)
+            try:
+                conn.send({"cmd": cmd, "args": args})
+                response = conn.recv()
+            except (ConnectionResetError, BrokenPipeError, EOFError) as exc:
+                last_exc = exc
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._ensure_worker()
+                if attempt == 1:
+                    raise RuntimeError(f"SD worker request failed: {exc}") from exc
+                continue
+            except Exception as exc:
+                last_exc = exc
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._ensure_worker()
+                raise RuntimeError(f"SD worker request failed: {exc}") from exc
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
-        return response.get("result")
+            if not response.get("ok"):
+                error = response.get("error", "Unknown worker error")
+                raise RuntimeError(error)
+
+            return response.get("result")
+
+        raise RuntimeError(f"SD worker request failed after retry: {last_exc}")
 
     def load_model(self, model_path: str, gpu_id: int = 0):
         return self._request("load_model", {"model_path": model_path, "gpu_id": gpu_id})
