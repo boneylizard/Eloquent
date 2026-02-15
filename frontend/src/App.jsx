@@ -19,6 +19,7 @@ import ModelTester from './components/ModelTester';
 import ForensicLinguistics from './components/ForensicLinguistics';
 import CodeEditorOverlay from './components/CodeEditorOverlay';
 import ElectionTracker from './components/ElectionTracker';
+import ChessTab from './components/ChessTab';
 
 import LoginOverlay from './components/LoginOverlay';
 import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
@@ -84,6 +85,8 @@ function AppContent() {
         return <CharacterManager />;
       case 'election':
         return <ElectionTracker />;
+      case 'chess':
+        return <ChessTab />;
       case 'settings':
         // Pass theme state and toggle function to Settings
         return <Settings

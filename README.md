@@ -29,6 +29,7 @@ Optional cloud APIs for when you want them. Your choice.
 | **Multi-character roleplay** | Settings → enable Multi-Role → add characters to roster |
 | **Test models** | Model Tester → import prompts → run A/B with ELO ratings |
 | **Edit code with AI** | Load Devstral → Code Editor → set project directory |
+| **Play chess (AI + personality)** | Chess tab in navbar (Stockfish installed automatically by `install.bat`) |
 | **Clone a voice** | Settings → Audio → Chatterbox Turbo → upload reference |
 
 ---
@@ -261,6 +262,9 @@ Port conflicts are handled automatically - the frontend discovers actual ports.
 2. Click roster button → add characters
 3. Set talkativeness weights and voices
 4. Optionally enable narrator
+
+### Chess (Stockfish)
+The **Chess** tab uses Stockfish for analysis. **Fresh installs:** `install.bat` runs the Stockfish installer automatically (downloads the official Windows build into `tools/stockfish/`). If that step failed (e.g. no network), run `install_stockfish.bat` or `python scripts/install_stockfish.py` from the repo root. You can also install [Stockfish](https://stockfishchess.org/download/) manually and set **STOCKFISH_PATH** to the `stockfish.exe` path. Then open the Chess tab, set ELO and personality, and play as White; the AI plays Black with optional LLM commentary.
 
 ---
 

@@ -87,6 +87,16 @@
     --accent-secondary: var(--primary);
     --bg-secondary: var(--card);
     --bg-tertiary: var(--muted);
+
+    /* Chess UI tokens */
+    --chess-board-light: #f0d9b5;
+    --chess-board-dark: #b58863;
+    --chess-panel-bg: var(--card);
+    --chess-panel-border: rgba(13, 13, 13, 0.1);
+    --chess-panel-shadow: 0 12px 24px rgba(0, 0, 0, 0.08);
+    --chess-eval-track: rgba(13, 13, 13, 0.08);
+    --chess-eval-dark: rgba(13, 13, 13, 0.28);
+    --chess-eval-light: var(--primary);
   }
 
   /* --- THEMES --- */
@@ -388,6 +398,15 @@
     --md-quote-color: #b45309;
     --md-quote-border: #d6d3d1;
 
+    /* Chess UI - Claude tuning */
+    --chess-board-light: #f7e8d4;
+    --chess-board-dark: #c78958;
+    --chess-panel-bg: #fffdf8;
+    --chess-panel-border: rgba(31, 30, 29, 0.18);
+    --chess-panel-shadow: 0 14px 26px rgba(31, 30, 29, 0.12);
+    --chess-eval-track: rgba(31, 30, 29, 0.12);
+    --chess-eval-dark: rgba(31, 30, 29, 0.32);
+
     --bg-primary: var(--background);
     --text-primary: var(--foreground);
     --text-secondary: var(--muted-foreground);
@@ -545,6 +564,105 @@
     transition: background-color 0.3s ease, color 0.3s ease;
     /* Smooth theming */
   }
+}
+
+/* Chess tab styling */
+.chess-tab {
+  --chess-panel-radius: calc(var(--radius) * 0.75);
+}
+
+.chess-toolbar {
+  background: var(--chess-panel-bg);
+  border: 1px solid var(--chess-panel-border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  box-shadow: var(--chess-panel-shadow);
+}
+
+.chess-board-frame {
+  width: var(--chess-board-size);
+  max-width: 100%;
+  border-radius: calc(var(--radius) * 0.6);
+  box-shadow: var(--chess-panel-shadow);
+  outline: 1px solid var(--chess-panel-border);
+  overflow: hidden;
+  background: var(--chess-panel-bg);
+}
+
+.chess-eval-track {
+  width: 0.75rem;
+  height: var(--chess-board-size);
+  background: var(--chess-eval-track);
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--chess-panel-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.chess-eval-segment {
+  width: 100%;
+}
+
+.chess-eval-segment--white {
+  background: var(--chess-eval-light);
+}
+
+.chess-eval-segment--black {
+  background: var(--chess-eval-dark);
+}
+
+.chess-eval-label {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  font-weight: 600;
+}
+
+.chess-eval-label-top {
+  top: -1.1rem;
+}
+
+.chess-eval-label-bottom {
+  bottom: -1.1rem;
+}
+
+.chess-eval-score {
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-weight: 600;
+}
+
+.chess-panel {
+  background: var(--chess-panel-bg);
+  border: 1px solid var(--chess-panel-border);
+  border-radius: var(--chess-panel-radius);
+  box-shadow: var(--chess-panel-shadow);
+}
+
+.chess-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.chess-panel-title::before {
+  content: "";
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.08);
 }
 
 /* Custom scrollbar - now using variables if needed, or keeping standard muted look */
