@@ -129,5 +129,16 @@ if exist frontend (
     echo ERROR: 'frontend' folder not found. Skipping npm install.
 )
 
+REM --- 12. Install Stockfish for Chess tab (optional; non-fatal) ---
+echo.
+echo Installing Stockfish for Chess tab...
+python scripts\install_stockfish.py
+if errorlevel 1 (
+    echo WARNING: Stockfish install failed ^(network or GitHub^). Chess tab will ask you to install manually or set STOCKFISH_PATH.
+) else (
+    echo Stockfish installed to tools\stockfish\
+)
+
+echo.
 echo Eloquent installation complete.
 pause

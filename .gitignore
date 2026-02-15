@@ -53,6 +53,9 @@ backend/app/static/document_store/
 litellm.yaml
 settings.json
 
+# Stockfish (downloaded by scripts/install_stockfish.py; optional)
+tools/stockfish/
+
 # Model files (too large for git)
 *.gguf
 *.bin

@@ -10,7 +10,8 @@ import {
   ChevronRight,
   UserCircle,
   BookOpen,
-  Cpu
+  Cpu,
+  Swords
 } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from './ui/select';
@@ -75,6 +76,7 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
     { id: 'chat', label: 'Chat', icon: <MessageSquare className="w-5 h-5" /> },
     { id: 'documents', label: 'Documents', icon: <FileText className="w-5 h-5" /> },
     { id: 'characters', label: 'Characters', icon: <UserCircle className="w-5 h-5" /> },
+    { id: 'chess', label: 'Chess', icon: <Swords className="w-5 h-5" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> },
     { id: 'memory', label: 'Memory', icon: <BookOpen className="w-5 h-5" /> }
   ];

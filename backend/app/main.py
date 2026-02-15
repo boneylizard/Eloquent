@@ -86,6 +86,8 @@ from . import election_forecast
 from . import ballotpedia_scraper
 from . import votehub_service
 from . import rcp_service
+from .chess_engine import chess_engine_service
+from . import chess_ai_service
 # Configure logging BEFORE importing modules that use it
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -2431,6 +2433,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown logic
     logger.info(f"Application lifespan shutdown on port {port}...")
+    await chess_engine_service.close()
     if getattr(app.state, "election_scheduler", None):
         app.state.election_scheduler.shutdown()
         logger.info("Election scheduler stopped")
@@ -8966,6 +8969,282 @@ async def delete_summary(summary_id: str):
         raise HTTPException(status_code=404, detail="Summary not found")
     path.unlink()
     return {"status": "deleted", "id": summary_id}
+
+
+# --- Chess tab: engine + AI move selection ---
+@router.get("/chess/status")
+async def chess_status():
+    """Return whether Stockfish is available and default ELO range."""
+    path = chess_engine_service.get_engine_path()
+    return {
+        "available": path is not None,
+        "engine_path": path if path else None,
+        "elo_min": 800,
+        "elo_max": 3000,
+        "personalities": chess_ai_service.PERSONALITIES,
+    }
+
+
+@router.post("/chess/analyze")
+async def chess_analyze(payload: dict = Body(...)):
+    """Analyze position: FEN -> top N moves with evals and classifications."""
+    fen = (payload.get("fen") or "").strip()
+    if not fen:
+        raise HTTPException(status_code=400, detail="fen is required")
+    multipv = max(1, min(10, int(payload.get("multipv", 5))))
+    elo = payload.get("elo")
+    if elo is not None:
+        elo = max(800, min(3000, int(elo)))
+    try:
+        result = await chess_engine_service.analyze_position(
+            fen=fen,
+            multipv=multipv,
+            elo=elo,
+            analysis_time=float(payload.get("analysis_time", 0.5)),
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/chess/ai-move")
+async def chess_ai_move(request: Request, payload: dict = Body(...)):
+    """Get engine candidates, then AI chooses move and returns commentary."""
+    fen = (payload.get("fen") or "").strip()
+    if not fen:
+        raise HTTPException(status_code=400, detail="fen is required")
+    elo = max(800, min(3000, int(payload.get("elo", 1600))))
+    personality = (payload.get("personality") or "balanced").lower()
+    if personality not in chess_ai_service.PERSONALITIES:
+        personality = "balanced"
+    use_llm = payload.get("use_llm", True)
+    model_name = payload.get("model_name")
+
+    try:
+        analysis = await chess_engine_service.analyze_position(
+            fen=fen,
+            multipv=5,
+            elo=elo,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    candidates = analysis.get("candidates", [])
+    if not candidates:
+        return {
+            "move_uci": None,
+            "move_san": None,
+            "commentary": "No legal moves.",
+            "evaluation_cp": None,
+            "candidates": [],
+            "game_over": analysis.get("is_game_over"),
+            "result": analysis.get("result"),
+        }
+
+    if analysis.get("is_game_over"):
+        return {
+            "move_uci": None,
+            "move_san": None,
+            "commentary": "Game over.",
+            "evaluation_cp": analysis.get("evaluation_cp"),
+            "candidates": candidates,
+            "game_over": True,
+            "result": analysis.get("result"),
+        }
+
+    model_manager = getattr(request.app.state, "model_manager", None)
+    use_api = chess_ai_service.is_api_endpoint(model_name) if model_name else False
+    if use_llm and model_name and (model_manager or use_api):
+        logger.info("Chess AI: calling LLM for move selection (model=%s, elo=%s, personality=%s)", model_name, elo, personality)
+        selection = await chess_ai_service.select_move_with_llm(
+            model_manager=model_manager,
+            model_name=model_name,
+            candidates=candidates,
+            elo=elo,
+            personality=personality,
+            fen=fen,
+            turn=analysis.get("turn", "white"),
+            game_context=payload.get("game_context"),
+            move_history=payload.get("move_history") or [],
+        )
+        logger.info("Chess AI: chosen move=%s commentary=%s", selection.get("move_san"), (selection.get("commentary") or "")[:120])
+    else:
+        if use_llm and model_name and not use_api and not model_manager:
+            logger.warning("Chess AI: no model_manager and model %s is not an API endpoint; using rule-based fallback", model_name)
+        selection = chess_ai_service.select_move_without_llm(
+            candidates=candidates,
+            elo=elo,
+            personality=personality,
+        )
+
+    return {
+        "move_uci": selection.get("move_uci"),
+        "move_san": selection.get("move_san"),
+        "commentary": selection.get("commentary"),
+        "evaluation_cp": selection.get("evaluation_cp"),
+        "candidates": candidates,
+        "chosen_index": selection.get("index"),
+        "game_over": False,
+        "result": None,
+    }
+
+
+@router.post("/chess/validate-move")
+async def chess_validate_move(payload: dict = Body(...)):
+    fen = (payload.get("fen") or "").strip()
+    move_uci = (payload.get("move_uci") or "").strip()
+    if not fen or not move_uci:
+        raise HTTPException(status_code=400, detail="fen and move_uci required")
+    result = await chess_engine_service.validate_move(fen, move_uci)
+    return result
+
+
+@router.post("/chess/game-commentary")
+async def chess_game_commentary(request: Request, payload: dict = Body(...)):
+    """Get AI commentary on a finished game (move history + result)."""
+    move_history = payload.get("move_history") or []
+    result = (payload.get("result") or "*").strip()
+    model_name = payload.get("model_name")
+    model_manager = getattr(request.app.state, "model_manager", None)
+    commentary = await chess_ai_service.get_game_commentary(
+        model_manager=model_manager,
+        model_name=model_name,
+        move_history=move_history,
+        result=result,
+    )
+    return {"commentary": commentary}
+
+
+@router.post("/chess/analyze-game")
+async def chess_analyze_game(request: Request, payload: dict = Body(...)):
+    """Analyze the final position with the engine and optionally get AI summary."""
+    fen = (payload.get("fen") or "").strip()
+    if not fen:
+        raise HTTPException(status_code=400, detail="fen required")
+    try:
+        analysis = await chess_engine_service.analyze_position(fen=fen, multipv=1, elo=None)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400 if isinstance(e, ValueError) else 503, detail=str(e))
+    final_eval = analysis.get("evaluation_cp")
+    summary = ""
+    model_name = payload.get("model_name")
+    model_manager = getattr(request.app.state, "model_manager", None)
+    move_history = payload.get("move_history") or []
+    result = (payload.get("result") or "*").strip()
+    if (model_name and (model_manager or is_api_endpoint(model_name))) and (move_history or result != "*"):
+        if isinstance(move_history, list):
+            moves_text = " ".join(
+                (m.get("san", m) if isinstance(m, dict) else m) for m in move_history[:60]
+            )
+        else:
+            moves_text = str(move_history)[:500]
+        prompt = f"Final position (result {result}). Moves: {moves_text}. In one or two sentences, what was the decisive factor or key moment?"
+        try:
+            if is_api_endpoint(model_name):
+                endpoint_config = get_configured_endpoint(model_name)
+                if endpoint_config:
+                    request_data = {
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 80,
+                        "temperature": 0.4,
+                    }
+                    endpoint_config, url, prepared_data = prepare_endpoint_request(model_name, request_data)
+                    response_json = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, prepared_data)
+                    if response_json.get("choices") and response_json["choices"]:
+                        msg = response_json["choices"][0].get("message") or response_json["choices"][0]
+                        summary = (msg.get("content") or msg.get("text") or "").strip()
+            elif model_manager:
+                from . import inference
+                response = await inference.generate_text(
+                    model_manager=model_manager,
+                    model_name=model_name,
+                    prompt=prompt,
+                    max_tokens=80,
+                    temperature=0.4,
+                    gpu_id=0,
+                )
+                summary = (response.get("choices", [{}])[0].get("text") if isinstance(response, dict) else response) or ""
+        except Exception as e:
+            logger.warning("Chess analyze-game AI summary failed: %s", e)
+    return {"summary": summary, "final_eval": final_eval, "candidates": analysis.get("candidates", [])[:3]}
+
+
+@router.post("/chess/analyze-game-full")
+async def chess_analyze_game_full(request: Request, payload: dict = Body(...)):
+    """Analyze every position in the game with the engine; optionally add AI commentary per move. Returns moves with scores for replay."""
+    move_history = payload.get("move_history") or []
+    result = (payload.get("result") or "*").strip()
+    model_name = payload.get("model_name")
+    add_commentary = payload.get("add_commentary", True)
+    if not move_history:
+        raise HTTPException(status_code=400, detail="move_history required")
+    import chess
+    san_list = []
+    for m in move_history:
+        if isinstance(m, dict):
+            san_list.append((m.get("san") or m.get("move") or "").strip())
+        else:
+            san_list.append(str(m).strip())
+    san_list = [s for s in san_list if s]
+    board = chess.Board()
+    positions = [{"move_index": 0, "san": None, "side": None, "fen_after": board.fen()},]
+    for i, san in enumerate(san_list):
+        try:
+            move = board.push_san(san)
+            side = "w" if board.turn == chess.BLACK else "b"
+            positions.append({
+                "move_index": i + 1,
+                "san": san,
+                "side": side,
+                "fen_after": board.fen(),
+            })
+        except ValueError:
+            break
+    moves_with_evals = []
+    for i, pos in enumerate(positions):
+        fen = pos["fen_after"]
+        try:
+            analysis = await chess_engine_service.analyze_position(
+                fen=fen, multipv=1, elo=None, analysis_time=0.25
+            )
+            eval_cp = analysis.get("evaluation_cp")
+            if eval_cp is not None and abs(eval_cp) <= 100:
+                eval_cp = round(eval_cp * 100)
+        except (ValueError, RuntimeError):
+            eval_cp = None
+        moves_with_evals.append({
+            "move_index": pos["move_index"],
+            "san": pos["san"],
+            "side": pos["side"],
+            "fen_after": fen,
+            "evaluation_cp": eval_cp,
+        })
+    if add_commentary and model_name and (getattr(request.app.state, "model_manager", None) or chess_ai_service.is_api_endpoint(model_name)):
+        model_manager = getattr(request.app.state, "model_manager", None)
+        only_with_move = [m for m in moves_with_evals if m["san"]]
+        if only_with_move:
+            comments = await chess_ai_service.get_per_move_commentary(
+                model_manager=model_manager,
+                model_name=model_name,
+                moves_with_evals=only_with_move,
+                result=result,
+            )
+            idx = 0
+            for m in moves_with_evals:
+                if m["san"] is not None:
+                    m["commentary"] = comments[idx] if idx < len(comments) else ""
+                    idx += 1
+                else:
+                    m["commentary"] = None
+    else:
+        for m in moves_with_evals:
+            m["commentary"] = None
+    return {"moves": moves_with_evals, "result": result}
 
 
 # mount the "generate" router
