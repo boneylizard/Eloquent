@@ -6,6 +6,19 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 2026-02-15
+
+### Added
+
+* **Chess**: New **Chess** section — play against an AI opponent powered by Stockfish and your chosen LLM.
+  * **Gameplay**: Move by drag-and-drop or **tap-to-move** (tap a piece, then tap a destination square; works on mobile for both colors). Choose to play as **White** or **Black**; the board flips so your pieces are always at the bottom and the AI plays the opposite side. Save and load games (your side choice is saved with the game).
+  * **Strength and style**: Adjustable strength (ELO 800–3000) and personality — balanced, aggressive, positional, defensive, or romantic. Optional **Coach** mode: the AI teaches while it plays, with a warm, conversational tone and level-appropriate hints; coach and all personalities are side-aware (they know whether they are White or Black and comment correctly).
+  * **Analysis**: Optional eval bar (shown from your perspective when you play Black), engine top moves, and full principal-variation lines. After the game: request AI game commentary and/or full engine analysis with per-move evals and optional AI comments; step-through replay through the analysed game.
+  * **Backend**: Uses Stockfish (set `STOCKFISH_PATH` or install locally). AI move choice and commentary use the app’s primary LLM (local or API). Optional TTS to speak commentary aloud.
+* **Elections — Simulations tab**: New **Simulations** tab in the Elections section. Run Monte Carlo-style election simulations for **Senate**, **Governor**, or **House** races. Configure number of simulations and optional calibration; view state-by-state win probabilities (D/R), Dem majority likelihood, and run time. Calibration uses historical results (e.g. Ballotpedia import, VA/NJ 2024 districts). Map view shows the same race type when the Simulations tab is active; results panel shows state table and summary stats.
+
+---
+
 ## 2026-02-13
 
 ### Added
