@@ -32,7 +32,7 @@ import time
 import sys
 import json
 import re
-import pkg_resources
+
 import socket
 import struct
 import pickle
