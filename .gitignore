@@ -85,7 +85,13 @@ vram_snapshots.json
 
 # User data
 backend/app/user_memories/
+backend/user_memories/
+user_memories/
+
+# Static folders (all subdirectories)
+backend/app/static/
 backend/static/
+static/
 
 # Test files
 backend/app/test_*.py

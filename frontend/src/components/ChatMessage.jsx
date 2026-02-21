@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Loader2, X, PlayCircle as PlayIcon, RotateCcw } from 'lucide-react';
@@ -18,9 +18,7 @@ const ChatMessage = memo(({
     isTranscribing,
     isPlayingAudio,
     editingMessageId,
-    editingMessageContent,
     editingBotMessageId,
-    editingBotMessageContent,
     primaryCharacter,
     secondaryCharacter,
     userProfile,
@@ -37,14 +35,12 @@ const ChatMessage = memo(({
     // Handlers
     onEditUserMessage,
     onCancelEdit,
-    onChangeEditingMessageContent,
     onSaveEditedMessage,
     onRegenerateFromEditedPrompt,
     onDeleteMessage,
 
     onEditBotMessage,
     onCancelBotEdit,
-    onChangeEditingBotMessageContent,
     onSaveBotMessage,
     onGenerateVariant,
     onContinueGeneration,
@@ -54,6 +50,17 @@ const ChatMessage = memo(({
 
     formatModelName,
 }) => {
+    // Local state for edit textareas so typing doesn't re-render parent (avoids lag)
+    const [localUserEditContent, setLocalUserEditContent] = useState(msg.role === 'user' ? msg.content : '');
+    const [localBotEditContent, setLocalBotEditContent] = useState(content);
+
+    useEffect(() => {
+      if (editingMessageId === msg.id && msg.role === 'user') setLocalUserEditContent(msg.content);
+    }, [editingMessageId, msg.id, msg.role, msg.content]);
+
+    useEffect(() => {
+      if (editingBotMessageId === msg.id) setLocalBotEditContent(content);
+    }, [editingBotMessageId, msg.id, content]);
 
     // --- Avatar Rendering Logic ---
     const renderAvatar = (message, apiUrl, activeCharacter) => {
@@ -189,8 +196,8 @@ const ChatMessage = memo(({
                         // Edit mode for user messages
                         <div className="space-y-2">
                             <Textarea
-                                value={editingMessageContent}
-                                onChange={(e) => onChangeEditingMessageContent(e.target.value)}
+                                value={localUserEditContent}
+                                onChange={(e) => setLocalUserEditContent(e.target.value)}
                                 className="w-full resize-none bg-background border-input"
                                 rows={3}
                                 autoFocus
@@ -206,8 +213,8 @@ const ChatMessage = memo(({
                                 <Button
                                     variant="default"
                                     size="sm"
-                                    onClick={() => onSaveEditedMessage(msg.id, editingMessageContent)}
-                                    disabled={!editingMessageContent.trim()}
+                                    onClick={() => onSaveEditedMessage(msg.id, localUserEditContent)}
+                                    disabled={!localUserEditContent.trim()}
                                 >
                                     Save
                                 </Button>
@@ -215,10 +222,10 @@ const ChatMessage = memo(({
                                     variant="secondary"
                                     size="sm"
                                     onClick={() => {
-                                        onSaveEditedMessage(msg.id, editingMessageContent);
-                                        setTimeout(() => onRegenerateFromEditedPrompt(msg.id, editingMessageContent), 100);
+                                        onSaveEditedMessage(msg.id, localUserEditContent);
+                                        setTimeout(() => onRegenerateFromEditedPrompt(msg.id, localUserEditContent), 100);
                                     }}
-                                    disabled={!editingMessageContent.trim() || isGenerating}
+                                    disabled={!localUserEditContent.trim() || isGenerating}
                                 >
                                     Save & Regenerate
                                 </Button>
@@ -234,7 +241,7 @@ const ChatMessage = memo(({
                                         variant="ghost"
                                         size="icon"
                                         className="h-9 w-9 md:h-6 md:w-6"
-                                        onClick={() => onEditUserMessage(msg.id, msg.content)}
+                                        onClick={() => onEditUserMessage(msg.id)}
                                         title="Edit message"
                                     >
                                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -364,8 +371,8 @@ const ChatMessage = memo(({
                             {editingBotMessageId === msg.id ? (
                                 <div className="space-y-2 mb-2">
                                     <Textarea
-                                        value={editingBotMessageContent}
-                                        onChange={(e) => onChangeEditingBotMessageContent(e.target.value)}
+                                        value={localBotEditContent}
+                                        onChange={(e) => setLocalBotEditContent(e.target.value)}
                                         className="w-full resize-none bg-background border-input min-h-[120px]"
                                         rows={6}
                                         autoFocus
@@ -381,8 +388,8 @@ const ChatMessage = memo(({
                                         <Button
                                             variant="default"
                                             size="sm"
-                                            onClick={() => onSaveBotMessage(msg.id, editingBotMessageContent)}
-                                            disabled={!editingBotMessageContent.trim()}
+                                            onClick={() => onSaveBotMessage(msg.id, localBotEditContent)}
+                                            disabled={!localBotEditContent.trim()}
                                         >
                                             Save Edit
                                         </Button>

@@ -542,6 +542,8 @@ const AppProvider = ({ children }) => {
     narratorName: 'Narrator',
     narratorInstructions: 'Describe scene transitions and world details briefly. Keep narration concise and avoid speaking for the user.',
     narratorAvatar: null,
+    chessHistorianAvatar: null,
+    chessHistorianPersonaPrompt: null,
     sttEnabled: false,
     streamResponses: true,
     sttEngine: "whisper",
@@ -563,6 +565,7 @@ const AppProvider = ({ children }) => {
     mdH2Font: '',
     mdH3Font: '',
     performanceMode: false,
+
     admin_password: "", // <-- Password for remote access
   });
   useEffect(() => {
@@ -2722,7 +2725,7 @@ Return ONLY valid JSON:
 
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
-    const { authorNote = null, webSearchEnabled = false, speakerCharacterId = null } = options;
+    const { authorNote = null, webSearchEnabled = false, speakerCharacterId = null, requestPurpose = null } = options;
     const speakerCharacter = await resolveSpeakerCharacter(text, recentMessages, { speakerCharacterId });
     const systemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, { includeAuthorNote: false });
     console.log(`[Summary] Attaching summaryContext to generateReply: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
@@ -2753,7 +2756,8 @@ Return ONLY valid JSON:
       authorNote: applyAuthorNoteTags(authorNote || (settings.authorNote && settings.authorNote.trim()) || null, speakerCharacter) || undefined,
       summaryContext: summaryContextForRequest,
       memoryEnabled: true,
-      stream: streamResponses
+      stream: streamResponses,
+      request_purpose: requestPurpose || undefined
     };
 
     let attempts = 0;
@@ -3760,12 +3764,18 @@ Return ONLY valid JSON:
   }, [conversations, characters, setActiveConversation, setMessages, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights, setMultiRoleContext]);
   // Add this effect after your other useEffect blocks in AppContext.jsx
   useEffect(() => {
-    // Load settings from localStorage on component mount
+    // Load settings from localStorage on component mount; merge with defaults so new keys get default values
     try {
       const savedSettings = localStorage.getItem('Eloquent-settings');
+      const defaults = {
+
+        streamResponses: true,
+        // add other new keys here when needed
+      };
       if (savedSettings) {
         const parsedSettings = JSON.parse(savedSettings);
         setSettings(currentSettings => ({
+          ...defaults,
           ...currentSettings,
           ...parsedSettings
         }));

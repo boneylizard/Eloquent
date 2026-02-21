@@ -57,6 +57,7 @@ depyf
 dill
 diskcache
 Distance
+deep-translator
 distro
 dlinfo
 dnspython
@@ -345,6 +346,7 @@ win32_setctime
 wrapt
 xxhash
 yarl
+yfinance
 zipp
 zlib-state
 zope.event

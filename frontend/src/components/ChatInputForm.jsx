@@ -1,11 +1,13 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Loader2, Send, ArrowLeft } from 'lucide-react';
 import SimpleChatImageButton from './SimpleChatImageButton';
 import ChatImageUploadButton from './ChatImageUploadButton';
 
-const ChatInputForm = ({
+// Local input state so typing never re-renders parent Chat (fixes lag as chat grows).
+// Parent can set/append value via ref for STT and StoryTracker inject.
+const ChatInputForm = forwardRef(({
   onSubmit,
   isGenerating,
   isModelLoading,
@@ -14,13 +16,21 @@ const ChatInputForm = ({
   agentConversationActive,
   primaryModel,
   webSearchEnabled,
-  inputValue,
-  setInputValue,
   performanceMode,
   onBack,
   canGoBack
-}) => {
+}, ref) => {
+  const [inputValue, setInputValue] = useState('');
   const inputRef = useRef(null);
+
+  useImperativeHandle(ref, () => ({
+    setValue(text) {
+      setInputValue(String(text ?? ''));
+    },
+    appendValue(text) {
+      setInputValue(prev => prev + (prev ? '\n\n' : '') + (text ?? ''));
+    }
+  }), []);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -30,7 +40,7 @@ const ChatInputForm = ({
   };
 
   const handleSubmit = (e) => {
-    e.preventDefault();
+    e?.preventDefault?.();
     const trimmedValue = inputValue.trim();
     if (trimmedValue) {
       onSubmit(trimmedValue);
@@ -123,6 +133,8 @@ const ChatInputForm = ({
       </Button>
     </form>
   );
-};
+});
+
+ChatInputForm.displayName = 'ChatInputForm';
 
 export default ChatInputForm;

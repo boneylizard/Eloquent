@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -18,15 +18,11 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   primaryCharacter,
   secondaryCharacter,
   editingMessageId,
-  editingMessageContent,
-  setEditingMessageContent,
   handleSaveEditedMessage,
   handleCancelEdit,
   handleEditUserMessage,
   handleRegenerateFromEditedPrompt,
   editingBotMessageId,
-  editingBotMessageContent,
-  setEditingBotMessageContent,
   handleEditBotMessage,
   handleSaveBotMessage,
   handleCancelBotEdit,
@@ -44,6 +40,10 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   formatModelName,
   isGenerating
 }) {
+  const [localUserEditContent, setLocalUserEditContent] = useState(msg.role === 'user' ? msg.content : '');
+  useEffect(() => {
+    if (editingMessageId === msg.id && msg.role === 'user') setLocalUserEditContent(msg.content);
+  }, [editingMessageId, msg.id, msg.role, msg.content]);
 
   // Image Message Type
   if (msg.type === 'image') {
@@ -86,8 +86,8 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
             {editingMessageId === msg.id ? (
               <div className="space-y-3">
                 <textarea
-                  value={editingMessageContent}
-                  onChange={(e) => setEditingMessageContent(e.target.value)}
+                  value={localUserEditContent}
+                  onChange={(e) => setLocalUserEditContent(e.target.value)}
                   className="w-full min-h-[100px] bg-black/40 border border-blue-500/50 rounded p-3 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                   autoFocus
                 />
@@ -95,12 +95,12 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                   <Button variant="ghost" size="sm" onClick={handleCancelEdit}>
                     Cancel
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleSaveEditedMessage(msg.id, editingMessageContent)}>
+                  <Button variant="outline" size="sm" onClick={() => handleSaveEditedMessage(msg.id, localUserEditContent)}>
                     Save
                   </Button>
                   <Button variant="default" size="sm" onClick={() => {
-                    handleSaveEditedMessage(msg.id, editingMessageContent);
-                    setTimeout(() => handleRegenerateFromEditedPrompt(msg.id, editingMessageContent), 100);
+                    handleSaveEditedMessage(msg.id, localUserEditContent);
+                    setTimeout(() => handleRegenerateFromEditedPrompt(msg.id, localUserEditContent), 100);
                   }}>
                     Save & Regenerate
                   </Button>
@@ -111,7 +111,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs text-blue-300 font-medium">You</span>
                   <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-6 w-6 text-gray-400 hover:text-white" onClick={() => handleEditUserMessage(msg.id, msg.content)}>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 text-gray-400 hover:text-white" onClick={() => handleEditUserMessage(msg.id)}>
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </Button>
                     <Button variant="ghost" size="icon" className="h-6 w-6 text-gray-400 hover:text-white" onClick={() => handleRegenerateFromEditedPrompt(msg.id)} disabled={isGenerating}>

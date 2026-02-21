@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo, inputRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useApp } from '../contexts/AppContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages } from 'lucide-react';
 import { getSummaries, deleteSummary } from '../utils/summaryUtils';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -39,6 +39,7 @@ import ForensicLinguistics from './ForensicLinguistics';
 import StoryTracker, { getStoryTrackerContext } from './StoryTracker';
 import ChoiceGenerator from './ChoiceGenerator';
 import ControlPanel from './ControlPanel';
+import AuthorsNotePanel from './AuthorsNotePanel';
 import { getBackendUrl } from '../config/api';
 import { useMemory } from '../contexts/MemoryContext';
 
@@ -106,21 +107,19 @@ const Chat = ({ layoutMode }) => {
   const [agentTurns, setAgentTurns] = useState(3);
   const audioPlaybackRef = useRef({ context: null, source: null });
   const [editingMessageId, setEditingMessageId] = useState(null);
-  const [editingMessageContent, setEditingMessageContent] = useState('');
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [showFloatingControls, setShowFloatingControls] = useState(true);
   const [regeneratingMessageData, setRegeneratingMessageData] = useState(null);
   const [manuallyStoppedAudio, setManuallyStoppedAudio] = useState(false);
   const [autoplayPaused, setAutoplayPaused] = useState(false);
   const messagesEndRef = useRef(null);
-  const [inputValue, setInputValue] = useState('');
+  const chatInputFormRef = useRef(null);
   const [showAllMessages, setShowAllMessages] = useState(false);
   const [isFocusModeActive, setIsFocusModeActive] = useState(false);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState(null);
   const prevMessageCount = useRef(messages.length);
   const [skippedMessageIds, setSkippedMessageIds] = useState(new Set());
   const [editingBotMessageId, setEditingBotMessageId] = useState(null);
-  const [editingBotMessageContent, setEditingBotMessageContent] = useState('');
   const [setIsStreamingStopped] = useState(false);
   const [codeEditorEnabled, setCodeEditorEnabled] = useState(false);
   const [showForensicLinguistics, setShowForensicLinguistics] = useState(false);
@@ -375,23 +374,17 @@ const Chat = ({ layoutMode }) => {
     }
   }, [messages, isGenerating, primaryModel, PRIMARY_API_URL, setMessages, generateUniqueId, activeCharacter]);
 
-  // Author's Note helper functions
-  const countTokens = (text) => Math.ceil(text.length / 4);
-
-  const handleAuthorNoteChange = (value) => {
-    const tokenCount = countTokens(value);
-    if (tokenCount <= 150) {
-      setAuthorNote(value);
-      localStorage.setItem('eloquent-author-note', value);
-    }
-  };
+  // Author's Note: sync from AuthorsNotePanel (debounced there to avoid typing lag)
+  const handleAuthorNoteSync = useCallback((value) => {
+    setAuthorNote(value);
+    if (value) localStorage.setItem('eloquent-author-note', value);
+    else localStorage.removeItem('eloquent-author-note');
+  }, []);
 
   const clearAuthorNote = () => {
     setAuthorNote('');
     localStorage.removeItem('eloquent-author-note');
   };
-
-  const getAuthorNoteTokenCount = () => countTokens(authorNote);
 
   // Story Tracker auto-detect handler
   const handleAnalyzeStory = async () => {
@@ -449,7 +442,7 @@ const Chat = ({ layoutMode }) => {
 
   const handleMicClick = () => {
     if (audioError) setAudioError(null);
-    if (isRecording) stopRecording(setInputValue);
+    if (isRecording) stopRecording((text) => chatInputFormRef.current?.setValue?.(text));
     else startRecording();
   };
 
@@ -475,21 +468,18 @@ const Chat = ({ layoutMode }) => {
     if (!newContent.trim()) return;
     setMessages(prev => prev.map(msg => msg.id === messageId ? { ...msg, content: newContent.trim() } : msg));
     setEditingMessageId(null);
-    setEditingMessageContent('');
   }, [setMessages]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingMessageId(null);
-    setEditingMessageContent('');
   }, []);
 
   const handleDeleteMessage = useCallback((id) => {
     setMessages(prev => prev.filter(m => m.id !== id));
   }, [setMessages]);
 
-  const handleEditUserMessage = useCallback((messageId, currentContent) => {
+  const handleEditUserMessage = useCallback((messageId) => {
     setEditingMessageId(messageId);
-    setEditingMessageContent(currentContent);
   }, []);
 
   const handleRegenerateFromEditedPrompt = useCallback(async (userMessageId, overrideContent = null) => {
@@ -694,8 +684,34 @@ const Chat = ({ layoutMode }) => {
   }, [isCallModeActive, startCallMode, stopCallMode]);
 
   const handleRefineCharacter = useCallback(async () => {
-    // ... [Original Logic] ...
-  }, [generatedCharacter, characterFeedback, messages, isGeneratingCharacter, PRIMARY_API_URL]);
+    if (!generatedCharacter || !characterFeedback?.trim() || isGeneratingCharacter) return;
+    setIsGeneratingCharacter(true);
+    try {
+      const res = await fetch(`${PRIMARY_API_URL}/character/refine-generated`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          character_json: generatedCharacter,
+          feedback: characterFeedback.trim(),
+          original_messages: messages.slice(-30),
+          model_name: primaryModel,
+          gpu_id: 0,
+        }),
+      });
+      const result = await res.json();
+      if (result.status === 'success' && result.character_json) {
+        setGeneratedCharacter(result.character_json);
+        setCharacterFeedback('');
+      } else {
+        alert(result.error || 'Refinement failed');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Refinement failed');
+    } finally {
+      setIsGeneratingCharacter(false);
+    }
+  }, [generatedCharacter, characterFeedback, messages, isGeneratingCharacter, PRIMARY_API_URL, primaryModel]);
 
   const handleAutoAnalyzeImage = useCallback(async (imageMessage) => {
     // ... [Original Logic] ...
@@ -1012,6 +1028,12 @@ const Chat = ({ layoutMode }) => {
     }
   }, [isGenerating, messages, messageVariants, settings, generateReply, authorNote, webSearchEnabled, startStreamingTTS, playTTS, abortController, setAbortController, getTtsOverridesForMessageId]);
 
+  /** Strip leading <think>.../think> block from bot responses for display */
+  const filterThinkBlock = useCallback((text) => {
+    if (!text || typeof text !== 'string') return text;
+    return text.replace(/^\s*` <think>[\s\S]*?\/think>\s*/i, '').trimStart();
+  }, []);
+
   const getCurrentVariantContent = useCallback((messageId, originalContent) => {
     const variants = messageVariants[messageId];
     if (!variants || variants.length === 0) return originalContent;
@@ -1086,10 +1108,8 @@ const Chat = ({ layoutMode }) => {
   }, [audioQueue, isAutoplaying, settings.ttsSpeed, setAudioQueue, setIsAutoplaying]);
 
   const handleEditBotMessage = useCallback((messageId) => {
-    const currentContent = getCurrentVariantContent(messageId, messages.find(m => m.id === messageId)?.content || '');
     setEditingBotMessageId(messageId);
-    setEditingBotMessageContent(currentContent);
-  }, [messages, getCurrentVariantContent]);
+  }, []);
 
   const handleSaveBotMessage = useCallback((messageId, newContent) => {
     if (!newContent.trim()) return;
@@ -1104,12 +1124,10 @@ const Chat = ({ layoutMode }) => {
     // Update global message state
     setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: newContent.trim() } : m));
     setEditingBotMessageId(null);
-    setEditingBotMessageContent('');
   }, [currentVariantIndex, setMessages]);
 
   const handleCancelBotEdit = useCallback(() => {
     setEditingBotMessageId(null);
-    setEditingBotMessageContent('');
   }, []);
 
   const handleContinueGeneration = useCallback(async (messageId) => {
@@ -1127,9 +1145,9 @@ const Chat = ({ layoutMode }) => {
     setAbortController(newController);
 
     // Prompt the model to continue based on the conversation so far, INCLUDING the partial message.
-    // We mark the last message as 'isPrefill' so formatPrompt knows to leave it open-ended.
+    // Use currentContent so the prompt ends with the exact partial text; mark as isPrefill so formatPrompt leaves it open-ended.
     const history = messages.slice(0, msgIndex + 1).map((m, i) =>
-      i === msgIndex ? { ...m, isPrefill: true } : m
+      i === msgIndex ? { ...m, content: currentContent, isPrefill: true } : m
     );
 
     try {
@@ -1177,7 +1195,7 @@ const Chat = ({ layoutMode }) => {
         "Continue",
         history,
         onTokenCorrect,
-        { authorNote, webSearchEnabled: false, speakerCharacterId: targetCharacterId } // No web search for validation
+        { authorNote, webSearchEnabled: false, speakerCharacterId: targetCharacterId, requestPurpose: 'continuation' }
       );
 
       if (settings?.streamResponses) endStreamingTTS();
@@ -1339,14 +1357,12 @@ const Chat = ({ layoutMode }) => {
           <ChatMessage
             key={msg.id}
             msg={msg}
-            content={getCurrentVariantContent(msg.id, msg.content)}
+            content={msg.role === 'bot' ? filterThinkBlock(getCurrentVariantContent(msg.id, msg.content)) : getCurrentVariantContent(msg.id, msg.content)}
             isGenerating={isGenerating}
             isTranscribing={isTranscribing}
             isPlayingAudio={isPlayingAudio}
             editingMessageId={editingMessageId}
-            editingMessageContent={editingMessageContent}
             editingBotMessageId={editingBotMessageId}
-            editingBotMessageContent={editingBotMessageContent}
             primaryCharacter={primaryCharacter}
             secondaryCharacter={secondaryCharacter}
             userProfile={userProfile}
@@ -1362,14 +1378,12 @@ const Chat = ({ layoutMode }) => {
 
             onEditUserMessage={handleEditUserMessage}
             onCancelEdit={handleCancelEdit}
-            onChangeEditingMessageContent={setEditingMessageContent}
             onSaveEditedMessage={handleSaveEditedMessage}
             onRegenerateFromEditedPrompt={handleRegenerateFromEditedPrompt}
             onDeleteMessage={handleDeleteMessage}
 
             onEditBotMessage={handleEditBotMessage}
             onCancelBotEdit={handleCancelBotEdit}
-            onChangeEditingBotMessageContent={setEditingBotMessageContent}
             onSaveBotMessage={handleSaveBotMessage}
             onGenerateVariant={handleGenerateVariant}
             onContinueGeneration={handleContinueGeneration}
@@ -1392,9 +1406,7 @@ const Chat = ({ layoutMode }) => {
     isTranscribing,
     isPlayingAudio,
     editingMessageId,
-    editingMessageContent,
     editingBotMessageId,
-    editingBotMessageContent,
     primaryCharacter,
     secondaryCharacter,
     userProfile,
@@ -1406,6 +1418,7 @@ const Chat = ({ layoutMode }) => {
     PRIMARY_API_URL,
     regenerationQueue,
     ttsEnabled,
+    filterThinkBlock,
     getCurrentVariantContent,
     getVariantCount,
     formatModelName,
@@ -1422,8 +1435,6 @@ const Chat = ({ layoutMode }) => {
     navigateVariant,
     handleSpeakerClick,
     handleRegenerateImage,
-    setEditingMessageContent,
-    setEditingBotMessageContent,
     setShowAllMessages
   ]);
 
@@ -1938,25 +1949,13 @@ const Chat = ({ layoutMode }) => {
         </div>
       )}
 
-      {/* Author's Note Panel (Existing) */}
-      {showAuthorNote && (
-        <div className="border-t border-border bg-orange-50 dark:bg-orange-950/20">
-          <div className="max-w-4xl mx-auto px-4 py-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="font-bold text-sm text-orange-600">Author's Note</span>
-              <span className="text-xs text-muted-foreground">{getAuthorNoteTokenCount()}/150 tokens</span>
-            </div>
-            <Textarea
-              value={authorNote}
-              onChange={(e) => handleAuthorNoteChange(e.target.value)}
-              placeholder="Author's note..."
-              className="w-full resize-none bg-background text-sm"
-              rows={2}
-            />
-            <Button size="sm" variant="ghost" onClick={() => setShowAuthorNote(false)} className="w-full mt-1 text-xs">Close Note</Button>
-          </div>
-        </div>
-      )}
+      {/* Author's Note Panel - local state + debounced sync to avoid typing lag */}
+      <AuthorsNotePanel
+        visible={showAuthorNote}
+        initialValue={authorNote}
+        onSync={handleAuthorNoteSync}
+        onClose={() => setShowAuthorNote(false)}
+      />
 
       {/* Input Area */}
       <div className="border-t border-border bg-muted/5">
@@ -1968,6 +1967,7 @@ const Chat = ({ layoutMode }) => {
             isRecording={isRecording}
             isTranscribing={isTranscribing}
           />
+
 
           <div className="flex items-center gap-2">
             {ttsEnabled && (
@@ -2029,6 +2029,7 @@ const Chat = ({ layoutMode }) => {
       <div className="border-t border-border">
         <div className="max-w-4xl mx-auto">
           <ChatInputForm
+            ref={chatInputFormRef}
             onSubmit={handleSubmit}
             isGenerating={isGenerating}
             isModelLoading={isModelLoading}
@@ -2037,8 +2038,6 @@ const Chat = ({ layoutMode }) => {
             agentConversationActive={agentConversationActive}
             primaryModel={primaryModel}
             webSearchEnabled={webSearchEnabled}
-            inputValue={inputValue}
-            setInputValue={setInputValue}
             performanceMode={performanceMode}
             onBack={handleBack}
             canGoBack={messages.length > 0 && messages.some(m => m.role === 'user')}
@@ -2046,24 +2045,96 @@ const Chat = ({ layoutMode }) => {
         </div>
       </div>
 
-      {/* Overlays (Character Preview, Call Mode, etc.) remain unchanged */}
+      {/* Overlays (Character Preview, Call Mode, etc.) */}
       {showCharacterPreview && generatedCharacter && (
         <Dialog open={showCharacterPreview} onOpenChange={setShowCharacterPreview}>
-          <DialogContent className="max-h-[90vh] overflow-y-auto w-[95vw] md:w-[90vw] max-w-4xl">
-            <div className="space-y-4">
-              <h3 className="font-bold text-lg">Generated Character: {generatedCharacter.name}</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-muted p-2 rounded">
-                  <p className="font-semibold">Description</p>
-                  <p className="text-sm">{generatedCharacter.description}</p>
+          <DialogContent className="max-h-[90vh] overflow-hidden flex flex-col w-[95vw] md:w-[90vw] max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>{generatedCharacter.name || 'Unnamed Character'}</DialogTitle>
+            </DialogHeader>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+              {/* Top row: Avatar + Persona summary */}
+              <div className="flex gap-4 items-start">
+                <div className="flex-shrink-0">
+                  {characterImageUrl ? (
+                    <img src={characterImageUrl} alt="Avatar" className="w-16 h-16 rounded-lg object-cover border border-border" />
+                  ) : (
+                    <div className="w-16 h-16 rounded-lg bg-muted flex items-center justify-center text-muted-foreground text-xs">No image</div>
+                  )}
+                  <Button variant="outline" size="sm" className="mt-2 w-full" onClick={() => handleGenerateCharacterImage(false)} disabled={isGeneratingCharacterImage}>
+                    {isGeneratingCharacterImage ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                    Portrait
+                  </Button>
                 </div>
-                {/* ... more character details ... */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-muted-foreground mb-1">Persona</p>
+                  <p className="text-sm whitespace-pre-wrap line-clamp-4">{generatedCharacter.description || '—'}</p>
+                </div>
               </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setShowCharacterPreview(false)}>Cancel</Button>
-                <Button onClick={handleSaveCharacter}>Save</Button>
-              </DialogFooter>
+
+              {/* Feedback + Refine */}
+              <div className="border rounded-lg p-3 bg-muted/30">
+                <Label className="text-xs font-medium">Feedback (what to change)</Label>
+                <Textarea
+                  value={characterFeedback}
+                  onChange={(e) => setCharacterFeedback(e.target.value)}
+                  placeholder="e.g. Make them more sarcastic, add a backstory about..."
+                  className="mt-1 min-h-[60px] text-sm resize-none"
+                />
+                <Button size="sm" className="mt-2" onClick={handleRefineCharacter} disabled={!characterFeedback?.trim() || isGeneratingCharacter}>
+                  {isGeneratingCharacter ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
+                  Refine with feedback
+                </Button>
+              </div>
+
+              {/* Full details – compact sections */}
+              <div className="space-y-2 text-sm">
+                {generatedCharacter.model_instructions && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-0.5">Model Instructions</p>
+                    <p className="whitespace-pre-wrap border-b border-border/50 pb-2">{generatedCharacter.model_instructions}</p>
+                  </div>
+                )}
+                {generatedCharacter.scenario && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-0.5">Scenario</p>
+                    <p className="whitespace-pre-wrap border-b border-border/50 pb-2">{generatedCharacter.scenario}</p>
+                  </div>
+                )}
+                {generatedCharacter.first_message && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-0.5">Greeting</p>
+                    <p className="whitespace-pre-wrap border-b border-border/50 pb-2">{generatedCharacter.first_message}</p>
+                  </div>
+                )}
+                {Array.isArray(generatedCharacter.example_dialogue) && generatedCharacter.example_dialogue.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-0.5">Example Dialogue</p>
+                    <div className="space-y-1 border-b border-border/50 pb-2">
+                      {generatedCharacter.example_dialogue.map((turn, i) => (
+                        <p key={i}><span className="font-medium">{turn.role === 'user' ? 'User' : generatedCharacter.name || 'Char'}:</span> {turn.content}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {Array.isArray(generatedCharacter.loreEntries) && generatedCharacter.loreEntries.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-0.5">Lore</p>
+                    <div className="space-y-1">
+                      {generatedCharacter.loreEntries.map((entry, i) => (
+                        <p key={i} className="text-muted-foreground">{entry.content}{entry.keywords?.length ? ` [${entry.keywords.join(', ')}]` : ''}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
+
+            <DialogFooter className="border-t pt-4 mt-2 flex-shrink-0">
+              <Button variant="outline" onClick={() => setShowCharacterPreview(false)}>Cancel</Button>
+              <Button onClick={handleSaveCharacter}>Save Character</Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
@@ -2086,14 +2157,11 @@ const Chat = ({ layoutMode }) => {
           getVariantCount={getVariantCount}
           navigateVariant={navigateVariant}
           editingMessageId={editingMessageId}
-          editingMessageContent={editingMessageContent}
-          setEditingMessageContent={setEditingMessageContent}
           handleSaveEditedMessage={handleSaveEditedMessage}
           handleCancelEdit={handleCancelEdit}
           handleEditUserMessage={handleEditUserMessage}
           handleRegenerateFromEditedPrompt={handleRegenerateFromEditedPrompt}
           editingBotMessageId={editingBotMessageId}
-          editingBotMessageContent={editingBotMessageContent}
           handleEditBotMessage={handleEditBotMessage}
           handleSaveBotMessage={handleSaveBotMessage}
           handleCancelBotEdit={handleCancelBotEdit}
@@ -2124,7 +2192,7 @@ const Chat = ({ layoutMode }) => {
           isRecording={isRecording}
           isTranscribing={isTranscribing}
           onStartRecording={startRecording}
-          onStopRecording={() => stopRecording(setInputValue)}
+          onStopRecording={() => stopRecording((text) => chatInputFormRef.current?.setValue?.(text))}
           PRIMARY_API_URL={PRIMARY_API_URL}
           onOpenStoryTracker={() => setShowStoryTracker(true)}
           onOpenChoiceGenerator={() => setShowChoiceGenerator(true)}
@@ -2146,7 +2214,7 @@ const Chat = ({ layoutMode }) => {
         messages={messages}
         onAnalyze={handleAnalyzeStory}
         isAnalyzing={isAnalyzingStory}
-        onInjectContext={(context) => setInputValue(prev => prev + (prev ? '\n\n' : '') + context)}
+        onInjectContext={(context) => chatInputFormRef.current?.appendValue?.(context)}
         activeCharacter={activeCharacter}
       />
 

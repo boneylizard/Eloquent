@@ -20,17 +20,17 @@ logger = logging.getLogger(__name__)
 PERSONALITIES = ["balanced", "aggressive", "positional", "defensive", "romantic", "coach"]
 
 # ELO-based selection weights: (top_move_weight, spread over top N)
-# At 2400+: almost always top move; at 1200: spread over top 5 with mistakes
+# Higher spread at lower ELO so we pick from more candidates (including weaker moves)
 def _elo_selection_weights(elo: int) -> tuple:
     if elo >= 2400:
         return (0.92, 1)   # 92% top move
     if elo >= 2000:
-        return (0.80, 2)
+        return (0.80, 3)
     if elo >= 1600:
-        return (0.65, 3)
+        return (0.65, 5)
     if elo >= 1200:
-        return (0.45, 4)
-    return (0.30, 5)  # 1200 and below: more variance
+        return (0.45, 7)
+    return (0.30, 10)  # 1200 and below: spread over up to 10 candidates
 
 
 def _pick_candidate_index_by_elo(candidates: List[Dict], elo: int) -> int:
@@ -104,52 +104,39 @@ def select_move_without_llm(
     }
 
 
+# --- TIER 1: Anti-hallucination principle. LLMs cannot "see" or evaluate chess; only translate engine output. ---
+
 def _coach_system(elo: int, turn: str) -> str:
-    """System prompt for the Coach persona: teaches while playing, funny, good personality."""
+    """System prompt for Coach: translate engine output only; no own chess analysis."""
     turn = (turn or "black").strip().lower()
     ai_side = "White" if turn in ("w", "white") else "Black"
     student_side = "Black" if turn in ("w", "white") else "White"
-    level_note = (
-        "You're playing at a high level—use strong moves but still explain the ideas so your student learns."
-        if elo >= 2000
-        else "You're playing at an intermediate level—mix in some instructive second-best moves so the student sees alternatives and learns."
-        if elo >= 1400
-        else "You're playing at a learner-friendly level—prioritise clear, principled moves and occasional 'teaching moments' where a slightly weaker move illustrates an idea."
-    )
     return (
-        f"You are a chess coach with a warm, funny personality. You're playing as {ai_side} against a student ({student_side}). Your job is to TEACH while you play: explain ideas in plain language (development, control of the centre, king safety, tactics), praise good moves, gently point out what could be improved, and keep the tone encouraging and light. Use humour when it fits—puns, gentle teasing, or dry wit—but never be mean. "
-        + level_note
-        + f" You receive the engine's PV lines; use them to pick a move at this strength, then in your commentary: (1) briefly react to {student_side}'s last move (good / risky / interesting), (2) say what you're playing and WHY in teaching terms (e.g. 'I'm developing and contesting the centre' or 'Taking the pawn would leave my king open, so I'm playing solidly'), (3) add a one-line tip or observation. Keep it to two or three short sentences. Sound like a likeable coach, not a textbook."
+        f"You are a chess coach playing as {ai_side} against a student ({student_side}). Your ONLY job is to turn the engine's data into friendly, plain-English commentary.\n\n"
+        "CRITICAL: You do NOT evaluate the position yourself. You cannot 'see' the board—FEN is just text to you. You MUST only describe what the engine report says: the evaluation (who is better and by how much), the best move the engine suggests, and the main line (principal variation) the engine gives. Explain that in simple, teaching language. Do NOT add your own chess judgments, suggestions, or evaluations. Do NOT invent tactics or plans the engine did not show. If the engine says 'best move X, eval +0.5', you say something like 'The engine likes this move and thinks White is a bit better; the main idea is …' using only the PV the engine provided.\n\n"
+        "Keep it to two or three short sentences. Warm, encouraging tone; you can react briefly to the opponent's last move in terms of what the engine evaluation implies (e.g. 'that move left you slightly worse according to the engine'). Sound like a coach, not a textbook."
     )
 
 
 def _chess_character_system(personality: str, elo: int, turn: str) -> str:
-    """System prompt: chess-playing character with a style; natural, varied commentary."""
+    """System prompt: translate engine output into character voice; no own analysis."""
     if personality == "coach":
         return _coach_system(elo, turn)
     turn = (turn or "black").strip().lower()
     ai_side = "White" if turn in ("w", "white") else "Black"
     opponent_side = "Black" if turn in ("w", "white") else "White"
-    strength_note = (
-        "At this strength you almost always play the engine's top move."
-        if elo >= 2200
-        else "At this strength you usually prefer the best move but sometimes choose a good alternative."
-        if elo >= 1600
-        else "At this strength you mix strong and decent moves; you can choose a slightly weaker move if it fits your style."
-    )
     style = {
-        "aggressive": "You are an aggressive chess character: you favour captures, checks, and tactical shots and like to create threats. When moves are close in evaluation, you prefer the one that opens the game or pressures the opponent.",
-        "positional": "You are a positional chess character: you favour development, structure, and long-term advantages. When close in evaluation, you prefer the move that strengthens your position.",
-        "defensive": "You are a solid, defensive chess character: you prefer safe moves that consolidate. You keep the position under control.",
-        "romantic": "You are a romantic chess character: you enjoy speculative sacrifices and bold ideas when the engine shows they're playable.",
-        "balanced": "You are a balanced chess character: you mix solid play with tactical awareness.",
+        "aggressive": "You sound aggressive and like tactics.",
+        "positional": "You sound positional and strategic.",
+        "defensive": "You sound solid and cautious.",
+        "romantic": "You sound bold and speculative when the engine allows it.",
+        "balanced": "You sound balanced.",
     }
-    base = style.get(personality, style["balanced"])
+    voice = style.get(personality, style["balanced"])
     return (
-        base
-        + f" You are playing as {ai_side}. You receive the engine's full principal variation (PV) lines: each line shows the first move, its evaluation, and the full sequence of moves the engine expects. Use these lines to see what will happen after each candidate move and why they are rated differently. "
-        + strength_note
-        + f"\n\nCommentary rules: Sound like a human commentator, not a template. You may refer to the resulting positions or why one line is preferred over another. React to {opponent_side}'s move or the position if you like, then say what you're playing and why—in a natural, conversational way. Never use a fixed formula. Keep it to one or two short sentences, but make it real analysis."
+        f"You are a chess commentator. You are playing as {ai_side} (opponent: {opponent_side}). Your ONLY job is to turn the engine's data into short, natural commentary in your style ({voice}).\n\n"
+        "CRITICAL: You do NOT evaluate the position yourself. You cannot 'see' the board. You MUST only explain what the engine report says: the evaluation (who is better, by how much), the best move, and the principal variation (PV) the engine gives. Put that in plain English in 1–2 sentences. Do NOT add your own chess analysis, evaluations, or suggestions. Do NOT invent moves or plans not in the engine output. Only translate: 'The engine says …' into conversational language.\n\n"
+        "Example: if the engine says move Nf3, eval +0.3, PV Nf3 d5 d4 …, you might say 'Playing Nf3—the engine gives White a small edge and suggests this main line.' Do not claim to see threats or ideas the engine did not show."
     )
 
 
@@ -182,11 +169,18 @@ async def select_move_with_llm(
     move_history: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
     """
-    Use LLM to choose among candidates and generate natural language commentary.
-    If model_manager/model_name not available or generation fails, falls back to select_move_without_llm.
+    Pick move by ELO (same distribution as non-LLM path), then use LLM only for commentary.
+    This keeps play strength at the set rating instead of letting the LLM always pick the best move.
     """
     if not candidates:
         return select_move_without_llm(candidates, elo, personality)
+
+    # Choose move by ELO so strength is enforced regardless of LLM
+    chosen_idx = _pick_candidate_index_by_elo(candidates, elo)
+    chosen = candidates[chosen_idx]
+    chosen_san = (chosen.get("move_san") or "").strip()
+    eval_pawns = (chosen.get("score_cp") / 100.0) if chosen.get("score_cp") is not None else None
+    eval_str = f"{eval_pawns:+.2f}" if eval_pawns is not None else "?"
 
     recent = _format_recent_moves(move_history or [])
     opponent_last = ""
@@ -200,7 +194,7 @@ async def select_move_with_llm(
             opponent_last = san
 
     lines = [
-        "Current position and engine analysis:",
+        "Current position:",
         f"FEN: {fen}",
         f"Side to move: {turn}. Your ELO: {elo}. Style: {personality}.",
     ]
@@ -208,44 +202,41 @@ async def select_move_with_llm(
         lines.append(f"Recent moves: {recent}.")
     if opponent_last:
         lines.append(f"{opponent_side}'s last move: {opponent_last}.")
+    lines.append("")
+    lines.append("Engine analysis (evaluations in pawns; positive = better for side to move). Top alternatives:")
+    for i, c in enumerate(candidates[:6]):
+        ep = (c.get("score_cp") / 100.0) if c.get("score_cp") is not None else None
+        es = f"{ep:+.2f}" if ep is not None else "?"
+        pv_san = c.get("pv_san") or []
+        pv_str = " → ".join(pv_san) if pv_san else (c.get("move_san") or "?")
+        mark = "  ← YOUR MOVE" if i == chosen_idx else ""
+        lines.append(f"  {i+1}. {c.get('move_san', '?')} ({es}): {pv_str}{mark}")
     lines.extend([
         "",
-        "Engine principal variation (PV) lines. Each line shows the first move, evaluation (in pawns, from Black's view negative = better for White), and the full sequence the engine expects:",
+        f"The move you are playing: {chosen_san}. Engine evaluation for this move: {eval_str} pawns (positive = better for the side to move).",
+        "",
+        "TASK: In 1–3 short sentences, explain in plain English what the engine data above says: what the evaluation means (who is better and by how much), and what the principal variation (PV) shows will likely happen. Do NOT add your own chess analysis or evaluations. Only translate the engine's numbers and lines into readable, in-character commentary.",
     ])
-    for i, c in enumerate(candidates[:6]):
-        # Eval in pawns for readability (score_cp is centipawns)
-        eval_pawns = (c.get("score_cp") / 100.0) if c.get("score_cp") is not None else None
-        eval_str = f"{eval_pawns:+.2f}" if eval_pawns is not None else "?"
-        pv_san = c.get("pv_san") or []
-        pv_str = " → ".join(pv_san) if pv_san else c.get("move_san", "?")
-        lines.append(f"Line {i+1}: {c.get('move_san', '?')}({eval_str})")
-        lines.append(pv_str)
-    lines.append("")
-    lines.append(
-        "Reply with exactly two lines.\n"
-        "LINE 1: Only the move you choose, in SAN (e.g. Nf3 or exd5). Nothing else.\n"
-        "LINE 2: Short, natural commentary. You can refer to the lines above and why you chose this move over the others. Conversational; no fixed formula."
-    )
     if game_context:
         lines.insert(3, f"Context: {game_context}")
     prompt = "\n".join(lines)
     system_prompt = _chess_character_system(personality, elo, turn)
 
-    # Log full PV lines sent to the AI
-    engine_lines_log = []
-    for i, c in enumerate(candidates[:6]):
-        eval_pawns = (c.get("score_cp") / 100.0) if c.get("score_cp") is not None else None
-        eval_str = f"{eval_pawns:+.2f}" if eval_pawns is not None else "?"
-        pv_san = c.get("pv_san") or []
-        pv_str = " → ".join(pv_san) if pv_san else c.get("move_san", "?")
-        engine_lines_log.append(f"Line {i+1}: {c.get('move_san', '?')}({eval_str})")
-        engine_lines_log.append(pv_str)
     logger.info(
-        "Chess AI: full PV lines sent to LLM:\n%s",
-        "\n".join(engine_lines_log) if engine_lines_log else " (no candidates)",
+        "Chess AI (in-game): playing move %s (candidate %d of %d), requesting LLM commentary for this move only.",
+        chosen_san,
+        chosen_idx + 1,
+        len(candidates),
     )
 
-    fallback = select_move_without_llm(candidates, elo, personality)
+    fallback = {
+        "index": chosen_idx,
+        "move_uci": chosen.get("move_uci"),
+        "move_san": chosen_san,
+        "commentary": f"Played {chosen_san}.",
+        "candidate": chosen,
+        "evaluation_cp": chosen.get("score_cp"),
+    }
     if not model_name:
         return fallback
 
@@ -296,34 +287,24 @@ async def select_move_with_llm(
         if not text:
             return fallback
 
-        # Parse first line for SAN move
-        first_line = text.split("\n")[0].strip()
-        commentary = "\n".join(text.split("\n")[1:]).strip() or first_line
-        # Try to match SAN to a candidate
-        chosen_san = first_line.split(".")[-1].strip()  # in case of "1. Nf3"
-        idx = 0
-        for i, c in enumerate(candidates):
-            if c.get("move_san") and c.get("move_san").strip().upper() == chosen_san.upper():
-                idx = i
-                break
-            if chosen_san.upper() in (c.get("move_san") or "").upper():
-                idx = i
-                break
-        cand = candidates[idx]
+        # Full response is commentary (move was already chosen by ELO)
+        commentary = text.strip() or fallback.get("commentary", "")
         return {
-            "index": idx,
-            "move_uci": cand.get("move_uci"),
-            "move_san": cand.get("move_san"),
-            "commentary": commentary or fallback.get("commentary", ""),
-            "candidate": cand,
-            "evaluation_cp": cand.get("score_cp"),
+            "index": chosen_idx,
+            "move_uci": chosen.get("move_uci"),
+            "move_san": chosen_san,
+            "commentary": commentary,
+            "candidate": chosen,
+            "evaluation_cp": chosen.get("score_cp"),
         }
     except Exception as e:
         logger.warning("Chess AI LLM fallback: %s", e)
         return fallback
 
 
-GAME_COMMENTARY_SYSTEM = """You are a chess commentator. In 2-4 short sentences, summarize the game: who won and how (e.g. checkmate, resignation), and one notable point (opening, tactic, or endgame). Be concise and avoid repetition."""
+GAME_COMMENTARY_SYSTEM = """You are a chess writer summarizing a game that has ALREADY been played. You are an observer, not a player. Write in a clear, instructive style (like Chernev).
+
+CRITICAL: You do NOT evaluate positions yourself. You only have the move list and the result. Base your summary ONLY on: (1) the result and how the game ended (checkmate, resignation, draw), (2) the sequence of moves—you may describe what happened (e.g. "White opened the centre", "Black resigned in a lost endgame") but do NOT invent evaluations like "White was winning" unless the result makes that obvious. Stick to describing the moves and the outcome. In 3–5 sentences: how the game was decided, one or two concrete moments from the move list, and a brief takeaway. Do not add your own chess judgment about who was better at move 15, etc."""
 
 
 async def get_game_commentary(
@@ -336,7 +317,7 @@ async def get_game_commentary(
     if not move_history:
         return ""
     moves_text = " ".join(f"{m.get('side', '')} {m.get('san', '')}" for m in move_history[:80])
-    prompt = f"Game result: {result}\nMoves (side san): {moves_text.strip()}\n\nSummarize the game in 2-4 short sentences."
+    prompt = f"This game has already been played. Result: {result}\nMoves: {moves_text.strip()}\n\nWrite a short Chernev-style summary (3–5 sentences): how the game was decided, one or two key moments, and an instructive takeaway."
     fallback = ""
     try:
         if model_name and is_api_endpoint(model_name):
@@ -350,7 +331,7 @@ async def get_game_commentary(
                     {"role": "system", "content": GAME_COMMENTARY_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                "max_tokens": 150,
+                "max_tokens": 280,
                 "temperature": 0.5,
             }
             endpoint_config, url, prepared_data = prepare_endpoint_request(model_name, request_data)
@@ -368,7 +349,7 @@ async def get_game_commentary(
                 model_manager=model_manager,
                 model_name=model_name,
                 prompt=GAME_COMMENTARY_SYSTEM + "\n\n" + prompt,
-                max_tokens=150,
+                max_tokens=280,
                 temperature=0.5,
                 gpu_id=0,
             )
@@ -383,7 +364,19 @@ async def get_game_commentary(
     return fallback
 
 
-PER_MOVE_COMMENTARY_SYSTEM = """You are a chess analyst. Given a list of moves with their engine evaluations (in pawns, from White's view: positive = White better, negative = Black better), reply with exactly one short comment per move. Comments can be: good move, inaccuracy, mistake, blunder, development, tactical, positional, etc. Keep each to a few words. Output format: one line per move, numbered 1, 2, 3, ... with only the comment after the number (e.g. "1. Good development" or "2. Inaccuracy - weakens d5")."""
+PER_MOVE_COMMENTARY_SYSTEM = """You are a strong chess expert annotating a game that has ALREADY been played. You are an observer. Annotate each move in the list only; do not add moves like "resigns" or stop early.
+
+CRITICAL:
+1. **Adopt the evaluation as YOUR OWN opinion.** Do not say "The engine says White is better." Say "White has a clear advantage," "I prefer Black's position," or "This move is a mistake."
+2. **Explain the chess reasons.** Use the provided engine evaluation (in pawns; positive = White better) to form your opinion, but explain it using chess concepts (control of center, open lines, king safety, rapid development). checking the eval change to decide if a move was good or bad.
+3. **Be natural and instructive.** Wrtie 1-3 short, clear sentences per move in the style of a human commentator like Irving Chernev.
+
+Output format: exactly one block per move, numbered 1., 2., 3., ... up to the last move. Each number on its own line, then your annotation. Do not skip numbers. Do not add move numbers beyond the list."""
+
+
+
+# Max moves to annotate in one call (longer games get annotations for first N only; rest get empty string)
+PER_MOVE_ANNOTATION_LIMIT = 80
 
 
 async def get_per_move_commentary(
@@ -392,17 +385,24 @@ async def get_per_move_commentary(
     moves_with_evals: List[Dict],
     result: str,
 ) -> List[str]:
-    """Get one short AI comment per move. moves_with_evals: list of {san, side, evaluation_cp}. Returns list of strings, same length."""
+    """Get one AI comment per move in the style of Irving Chernev. moves_with_evals: list of {san, side, evaluation_cp}. Returns list of strings, same length."""
     if not moves_with_evals:
         return []
+    moves_to_annotate = moves_with_evals[:PER_MOVE_ANNOTATION_LIMIT]
+    n_annotate = len(moves_to_annotate)
     lines = []
-    for i, m in enumerate(moves_with_evals[:60]):
+    for i, m in enumerate(moves_to_annotate):
         san = m.get("san") or "?"
         side = m.get("side", "w")
         cp = m.get("evaluation_cp")
         pawns = f"{cp / 100:+.2f}" if cp is not None else "?"
         lines.append(f"  {i + 1}. {side} {san} (eval {pawns})")
-    prompt = f"Game result: {result}\nMoves with evaluations:\n" + "\n".join(lines) + "\n\nReply with one short comment per move, numbered 1 to " + str(len(moves_with_evals)) + "."
+    prompt = (
+        f"The game result was: {result}. This game has already been played; you are annotating it as an observer.\n\n"
+        f"Moves with engine evaluations (eval in pawns; positive = White better):\n"
+        + "\n".join(lines)
+        + f"\n\nAnnotate exactly these {n_annotate} moves. Reply with move number 1. then your annotation (1–3 sentences in Chernev style), then 2. then your annotation, and so on up to {n_annotate}. Do not add any move (e.g. no 'resigns'). Do not skip any number from 1 to {n_annotate}."
+    )
     fallback = [""] * len(moves_with_evals)
     try:
         if model_name and is_api_endpoint(model_name):
@@ -415,8 +415,8 @@ async def get_per_move_commentary(
                     {"role": "system", "content": PER_MOVE_COMMENTARY_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
-                "max_tokens": 400,
-                "temperature": 0.3,
+                "max_tokens": 6000,
+                "temperature": 0.35,
             }
             endpoint_config, url, prepared_data = prepare_endpoint_request(model_name, request_data)
             response_json = await forward_to_configured_endpoint_non_streaming(
@@ -432,26 +432,50 @@ async def get_per_move_commentary(
                 model_manager=model_manager,
                 model_name=model_name,
                 prompt=PER_MOVE_COMMENTARY_SYSTEM + "\n\n" + prompt,
-                max_tokens=400,
-                temperature=0.3,
+                max_tokens=6000,
+                temperature=0.35,
                 gpu_id=0,
             )
-            text = (response.get("choices", [{}])[0].get("text") if isinstance(response, dict) else response) or ""
+            if isinstance(response, dict):
+                choice = (response.get("choices") or [{}])[0] if response.get("choices") else {}
+                text = (choice.get("content") or choice.get("text") or "").strip()
+            else:
+                text = (response or "").strip()
         else:
             return fallback
+        if not text:
+            logger.warning("Chess per-move commentary: empty model response")
+            return fallback
+        # Parse numbered annotations; each can be multi-line (Chernev-style 1–3 sentences)
         comments = []
+        current = []
         for line in text.split("\n"):
-            line = line.strip()
-            if not line:
+            line_stripped = line.strip()
+            if not line_stripped:
+                if current:
+                    comments.append(" ".join(current).strip())
+                    current = []
                 continue
-            if line[0].isdigit():
-                rest = line.lstrip("0123456789.").strip()
-                comments.append(rest)
+            # New move number at start of line (e.g. "1.", "2.", "12.")
+            if line_stripped[0].isdigit():
+                if current:
+                    comments.append(" ".join(current).strip())
+                rest = line_stripped.lstrip("0123456789").lstrip(".) \t:").strip()
+                current = [rest] if rest else []
             else:
-                comments.append(line)
+                current.append(line_stripped)
+        if current:
+            comments.append(" ".join(current).strip())
+        # Pad to requested length; we only annotated first n_annotate moves
+        while len(comments) < n_annotate:
+            comments.append("")
+        comments = comments[:n_annotate]
+        # Pad to full game length (moves beyond limit get no annotation)
         while len(comments) < len(moves_with_evals):
             comments.append("")
-        return comments[: len(moves_with_evals)]
+        result = comments[: len(moves_with_evals)]
+        logger.info("Chess per-move commentary: got %d comments for %d moves (Chernev style)", len(result), len(moves_with_evals))
+        return result
     except Exception as e:
         logger.warning("Chess per-move commentary failed: %s", e)
     return fallback
