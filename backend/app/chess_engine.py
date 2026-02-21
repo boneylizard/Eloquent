@@ -39,6 +39,8 @@ def _default_stockfish_paths():
 MULTIPV_COUNT = 5
 ANALYSIS_TIME = 0.5  # seconds per position for analysis
 ELO_MIN, ELO_MAX = 800, 3000
+# Stockfish rejects UCI_Elo below 1320; we clamp when sending to engine (move selection still uses user ELO)
+STOCKFISH_ELO_MIN = 1320
 
 
 def _find_stockfish() -> Optional[str]:
@@ -179,18 +181,20 @@ class ChessEngineService:
         options: Dict[str, Any] = {}
         if elo_clamped is not None:
             options["UCI_LimitStrength"] = True
-            options["UCI_Elo"] = elo_clamped
+            options["UCI_Elo"] = max(STOCKFISH_ELO_MIN, elo_clamped)
         else:
             options["UCI_LimitStrength"] = False
 
         limit = chess.engine.Limit(time=analysis_time)
         try:
-            infos = await engine.analyse(
-                board,
-                limit,
-                multipv=multipv,
-                options=options,
-            )
+            # UCI allows only one analysis at a time per engine; serialize to avoid CommandState.NEW assertion
+            async with self._lock:
+                infos = await engine.analyse(
+                    board,
+                    limit,
+                    multipv=multipv,
+                    options=options,
+                )
         except Exception as e:
             logger.exception("Engine analysis failed")
             raise RuntimeError(f"Engine analysis failed: {e}") from e

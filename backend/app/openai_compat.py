@@ -305,6 +305,12 @@ def prepare_endpoint_request(model_name: str, request_data: dict):
     return endpoint_config, url, request_data
 
 
+def _resolve_redirect_url(base: str, location: str) -> str:
+    """Resolve a possibly relative Location header to an absolute URL."""
+    from urllib.parse import urljoin
+    return urljoin(base.rstrip("/") + "/", location)
+
+
 async def forward_to_configured_endpoint_streaming(endpoint_config: dict, url: str, request_data: dict):
     """Forward OpenAI streaming request to the configured custom endpoint.
     
@@ -332,15 +338,52 @@ async def forward_to_configured_endpoint_streaming(endpoint_config: dict, url: s
     logger.info(f"[OpenAI Compat] Request body keys: {list(request_data.keys())}")
     
     try:
-        # Note: verify=False is for debugging SSL issues - remove in production if not needed
-        async with httpx.AsyncClient(timeout=150.0, follow_redirects=True, verify=True) as client:
+        # follow_redirects=False so we can re-POST on 301/302 (default follow would change POST→GET and cause 405)
+        async with httpx.AsyncClient(timeout=150.0, follow_redirects=False, verify=True) as client:
             logger.info(f"[OpenAI Compat] Initiating POST to {url}...")
             async with client.stream("POST", url, headers=headers, json=request_data) as response:
                 logger.info(f"[OpenAI Compat] Got response status: {response.status_code}")
+                if response.status_code in (301, 302, 307, 308):
+                    location = response.headers.get("location")
+                    await response.aread()  # consume body before closing
+                    if location:
+                        redirect_url = _resolve_redirect_url(url, location)
+                        logger.info(f"[OpenAI Compat] Following redirect (preserving POST): {url} -> {redirect_url}")
+                        # Re-POST to redirect URL (one hop only)
+                        async with client.stream("POST", redirect_url, headers=headers, json=request_data) as redir_response:
+                            if redir_response.status_code != 200:
+                                err = await redir_response.aread()
+                                error_msg = f"Remote API error ({redir_response.status_code}): {err.decode()}"
+                                logger.error(f"[OpenAI Compat] {error_msg}")
+                                yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'api_error', 'code': redir_response.status_code}})}\n\n"
+                                yield "data: [DONE]\n\n"
+                                return
+                            chunk_count = 0
+                            async for chunk in redir_response.aiter_raw():
+                                chunk_count += 1
+                                if chunk_count % 50 == 0:
+                                    logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
+                                try:
+                                    chunk_str = chunk.decode('utf-8')
+                                    if chunk_count == 1:
+                                        logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
+                                    if "error" in chunk_str.lower() and '"message":' in chunk_str:
+                                        logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
+                                except Exception:
+                                    pass
+                                yield chunk
+                            logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
+                    else:
+                        error_msg = f"Redirect with no Location header ({response.status_code})"
+                        logger.error(f"[OpenAI Compat] {error_msg}")
+                        yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'api_error', 'code': response.status_code}})}\n\n"
+                        yield "data: [DONE]\n\n"
+                    return
                 if response.status_code != 200:
                     error_text = await response.aread()
-                    # Yield error as SSE event instead of raising (can't raise mid-stream)
                     error_msg = f"Remote API error ({response.status_code}): {error_text.decode()}"
+                    if response.status_code == 405:
+                        logger.error(f"[OpenAI Compat] 405 Method Not Allowed. Location header: {response.headers.get('location')}. If the API worked in a fresh chat, the server may be redirecting long requests and the client was sending GET after redirect.")
                     logger.error(f"[OpenAI Compat] {error_msg}")
                     error_event = {
                         "error": {
@@ -358,25 +401,19 @@ async def forward_to_configured_endpoint_streaming(endpoint_config: dict, url: s
                     chunk_count += 1
                     if chunk_count % 50 == 0:
                         logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
-                    
-                    # Log the actual data for debugging (at debug level)
                     try:
                         chunk_str = chunk.decode('utf-8')
                         if chunk_count == 1:
                             logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
-                        
-                        # Check for error data even in 200 OK responses
                         if "error" in chunk_str.lower() and '"message":' in chunk_str:
                             logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
-                    except:
+                    except Exception:
                         pass
-                        
                     yield chunk
-                
                 logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
                     
     except httpx.RequestError as e:
-        logger.error(f"[OpenAI Compat] Connection error to {url}: {type(e).__name__}: {e}", exc_info=True)
+        logger.warning("[OpenAI Compat] Connection error to %s: %s", url, type(e).__name__)
         # Yield error as SSE event
         error_event = {
             "error": {
@@ -427,22 +464,44 @@ async def forward_to_configured_endpoint_non_streaming(endpoint_config: dict, ur
     char_count = sum(len(m.get('content', '')) for m in request_data.get('messages', []))
     logger.info(f"[OpenAI Compat] Outgoing API Payload: {msg_count} messages, ~{char_count} chars")
     
-    try:
-        async with httpx.AsyncClient(timeout=150.0, follow_redirects=True) as client:
-            response = await client.post(url, headers=headers, json=request_data)
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code, 
-                    detail=f"Remote API error from {base_url}: {response.text}"
+    last_error = None
+    max_attempts = 3
+    retry_delay_sec = 5.0
+    for attempt in range(max_attempts):
+        try:
+            async with httpx.AsyncClient(timeout=150.0, follow_redirects=False) as client:
+                response = await client.post(url, headers=headers, json=request_data)
+                if response.status_code in (301, 302, 307, 308):
+                    location = response.headers.get("location")
+                    if location:
+                        url = _resolve_redirect_url(url, location)
+                        logger.info(f"[OpenAI Compat] Following redirect (preserving POST) -> {url}")
+                        response = await client.post(url, headers=headers, json=request_data)
+                if response.status_code != 200:
+                    if response.status_code == 405:
+                        logger.error("[OpenAI Compat] 405 Method Not Allowed. If the API worked in a fresh chat, the server may be redirecting and the client was sending GET after redirect.")
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Remote API error from {base_url}: {response.text}"
+                    )
+                return response.json()
+        except httpx.RequestError as e:
+            last_error = e
+            if attempt < max_attempts - 1:
+                logger.warning(
+                    "[OpenAI Compat] Connection error (attempt %d/%d), retrying in %.0fs: %s",
+                    attempt + 1, max_attempts, retry_delay_sec, type(e).__name__
                 )
-            return response.json()
-                    
-    except httpx.RequestError as e:
-        logger.error(f"[OpenAI Compat] Connection error to {url}: {type(e).__name__}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=502, 
-            detail=f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(e).__name__}: {str(e)}"
-        )
+                await asyncio.sleep(retry_delay_sec)
+            else:
+                logger.warning(
+                    "[OpenAI Compat] Connection failed after %d attempts: %s",
+                    max_attempts, type(e).__name__
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(last_error).__name__}: {str(last_error)}"
+                ) from last_error
 def convert_messages_to_prompt(messages: List[ChatMessage], model_name: str) -> str:
     """Convert OpenAI messages to Eloquent prompt format"""
     # Extract system message if present

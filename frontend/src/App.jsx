@@ -20,6 +20,7 @@ import ForensicLinguistics from './components/ForensicLinguistics';
 import CodeEditorOverlay from './components/CodeEditorOverlay';
 import ElectionTracker from './components/ElectionTracker';
 import ChessTab from './components/ChessTab';
+import MarketSimTab from './components/MarketSimTab';
 
 import LoginOverlay from './components/LoginOverlay';
 import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
@@ -87,6 +88,8 @@ function AppContent() {
         return <ElectionTracker />;
       case 'chess':
         return <ChessTab />;
+      case 'market-sim':
+        return <MarketSimTab />;
       case 'settings':
         // Pass theme state and toggle function to Settings
         return <Settings

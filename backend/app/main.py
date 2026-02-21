@@ -88,6 +88,12 @@ from . import votehub_service
 from . import rcp_service
 from .chess_engine import chess_engine_service
 from . import chess_ai_service
+from .auth_routes import auth_router
+from .chess_auth_db import chess_auth_db
+try:
+    from .market_sim.routes import router as market_sim_router
+except ModuleNotFoundError:
+    market_sim_router = None
 # Configure logging BEFORE importing modules that use it
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -338,7 +344,7 @@ class GenerateRequest(BaseModel):
     directProfileInjection: bool = False # <-- ADD THIS
     prompt: str
     model_name: str
-    max_tokens: int = 1024
+    max_tokens: int = 4096
     temperature: float = 0.7
     top_p: float = 0.9
     top_k: int = 40
@@ -483,6 +489,17 @@ router = APIRouter()   # Re-initialize router to avoid conflicts
 
 
 
+
+# --- Startup Events ---
+from .download_book import ensure_chess_book_background
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Application starting up...")
+    # Trigger background check/download of chess book
+    ensure_chess_book_background()
+
+# --- Static Files Setup ---
 
 # --- Static Files Setup ---
 # Define the base static directory path
@@ -2400,6 +2417,13 @@ async def lifespan(app: FastAPI):
         logger.info("Election DB and scheduler started")
     except Exception as e:
         logger.warning("Election scheduler init failed: %s", e)
+
+    # Chess OAuth (Lichess/Chess.com) and imported games DB
+    try:
+        await chess_auth_db.initialize()
+        logger.info("Chess auth DB initialized")
+    except Exception as e:
+        logger.warning("Chess auth DB init failed: %s", e)
         app.state.election_scheduler = None
     
     # Initialize Forensic Linguistics Service
@@ -3800,6 +3824,17 @@ async def generate_character_from_conversation_endpoint(
         gpu_id = data.get("gpu_id")  # Optional override
         use_api = data.get("use_api", False)  # Whether to use external API
         api_endpoint = data.get("api_endpoint")  # API endpoint info
+
+        # Auto-detect API endpoints: route to API path when model_name is an endpoint
+        if model_name and is_api_endpoint(model_name):
+            use_api = True
+            if not api_endpoint:
+                api_endpoint = get_configured_endpoint(model_name)
+            if not api_endpoint:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"API endpoint '{model_name}' not found or disabled in settings."
+                )
         
         # Determine GPU. Default to 0 (primary chat GPU) for character creation.
         if gpu_id is None:
@@ -3944,22 +3979,31 @@ Apply the user's feedback to improve the character while keeping all good elemen
 **REFINED CHARACTER JSON:**
 """
 
-        # Generate refined character using your existing inference module
-        from . import inference
-        response = await inference.generate_text(
-            model_manager=model_manager,
-            model_name=data.get("model_name"),
-            prompt=refinement_prompt,
-            max_tokens=2048,
-            temperature=0.3,
-            top_p=0.9,
-            top_k=40,
-            repetition_penalty=1.1,
-            stop_sequences=["</character>", "---"],
-            gpu_id=gpu_id
-        )
-        
-        # Extract refined JSON
+        model_name = data.get("model_name")
+        use_api = model_name and is_api_endpoint(model_name)
+        api_endpoint = data.get("api_endpoint")
+        if use_api and not api_endpoint:
+            api_endpoint = get_configured_endpoint(model_name)
+        if use_api and not api_endpoint:
+            raise HTTPException(status_code=400, detail=f"API endpoint '{model_name}' not found or disabled in settings.")
+
+        if use_api and api_endpoint:
+            response = await character_intelligence.generate_with_api(refinement_prompt, api_endpoint)
+        else:
+            from . import inference
+            response = await inference.generate_text(
+                model_manager=model_manager,
+                model_name=model_name,
+                prompt=refinement_prompt,
+                max_tokens=2048,
+                temperature=0.3,
+                top_p=0.9,
+                top_k=40,
+                repetition_penalty=1.1,
+                stop_sequences=["</character>", "---"],
+                gpu_id=gpu_id
+            )
+
         refined_json = character_intelligence.extract_json_from_response(response)
         
         if refined_json:
@@ -4710,7 +4754,8 @@ async def generate(
     memory_port = 8000 if SINGLE_GPU_MODE else 8001
     
     # Log the purpose of the request (user_chat or title_generation)
-    logger.info(f"➡️ Entering /generate endpoint. Purpose: {body.request_purpose or 'user_chat'}")
+    _translate = getattr(body, "translate_chinese_to_english", False)
+    logger.info(f"➡️ [generate] translate_chinese_to_english={_translate} (request flag). Purpose: {body.request_purpose or 'user_chat'}")
 
     # 1) GPU & token settings (No changes here)
     gpu_id = body.gpu_id if body.gpu_id is not None else getattr(request.app.state, 'default_gpu', 0)
@@ -4840,7 +4885,7 @@ async def generate(
 
     # 5) Fetch memory context (ONLY for user chats, not for title generation or direct injection)
     memory_context_for_llm = "" # Initialize
-    if body.request_purpose not in ["title_generation", "model_judging", "model_testing"] and not body.directProfileInjection:
+    if body.request_purpose not in ["title_generation", "model_judging", "model_testing", "continuation"] and not body.directProfileInjection:
         if user_id:
             logger.info(f"🧠 Attempting to fetch memory context for user '{user_id}' using input: '{input_for_memory_retrieval}'")
             try:
@@ -4880,7 +4925,7 @@ async def generate(
     if memory_context_for_llm: # Prepend memory if available
         interaction_components.append("RELEVANT USER INFORMATION:\n" + memory_context_for_llm)
 
-    if summary_context and body.request_purpose not in ["title_generation", "model_judging", "model_testing"]:
+    if summary_context and body.request_purpose not in ["title_generation", "model_judging", "model_testing", "continuation"]:
         interaction_components.append("[PREVIOUS STORY SUMMARY]:\n" + summary_context + "\n[End of Summary]")
 
     # 7) Optionally integrate RAG (ONLY for user chats)
@@ -4909,7 +4954,7 @@ async def generate(
         logger.info("🔍 RAG not enabled for this user chat request.")
 
     # 7.5) Optionally integrate Web Search (NEW)
-    if body.use_web_search and body.request_purpose not in ["title_generation", "model_testing", "model_judging"]:
+    if body.use_web_search and body.request_purpose not in ["title_generation", "model_testing", "model_judging", "continuation"]:
         # Determine search query - use custom query if provided, otherwise use user's query
         search_query = body.web_search_query if body.web_search_query else user_query_from_split
         
@@ -4960,13 +5005,13 @@ async def generate(
                 logger.error(f"❌ Conversation RAG error: {e}")
         
     # 8.5) Add Author's Note if provided (custom session instructions)
-    if body.authorNote and body.authorNote.strip() and body.request_purpose not in ["title_generation", "model_testing", "model_judging"]:
+    if body.authorNote and body.authorNote.strip() and body.request_purpose not in ["title_generation", "model_testing", "model_judging", "continuation"]:
         author_note_text = body.authorNote.strip()
         interaction_components.append(f"[AUTHOR'S NOTE - Writing style guidance for this response]\n{author_note_text}")
         logger.info(f"📝 Added Author's Note to prompt: '{author_note_text[:50]}...'")
 
     # 8.6) Add Anti-Repetition instructions if enabled
-    if body.anti_repetition_mode and body.request_purpose not in ["title_generation", "model_testing", "model_judging"]:
+    if body.anti_repetition_mode and body.request_purpose not in ["title_generation", "model_testing", "model_judging", "continuation"]:
         anti_rep_instruction = """[VARIETY GUIDANCE]
 Each response should feel fresh and unique. Avoid:
 - Reusing paragraph structures or openings from your previous messages
@@ -4978,7 +5023,7 @@ Vary your sentence structure and word choices naturally."""
 
     # Add the actual user query LAST.
     # If user_query_from_split is "Generate a title...", it doesn't make sense to prefix it with "User Query:" again for the LLM.
-    if body.request_purpose in ["title_generation", "model_testing", "model_judging"]:
+    if body.request_purpose in ["title_generation", "model_testing", "model_judging", "continuation"]:
         interaction_components.append(user_query_from_split)
     else:
         interaction_components.append(f"User Query: {user_query_from_split}")
@@ -5005,6 +5050,10 @@ Vary your sentence structure and word choices naturally."""
     else:
         # No system prompt - just use interaction block
         llm_prompt = f"{final_interaction_block.strip()}\n\nAssistant:"
+    # Continuation: use the client prompt as-is so the model continues from partial assistant text.
+    if body.request_purpose == "continuation":
+        llm_prompt = original_client_prompt
+        logger.info(f"[generate] Continuation: using client prompt as-is ({len(llm_prompt)} chars)")
     # 10) Log the final prompt sent to LLM
     logger.info(f"[generate] FULL LLM PROMPT ({len(llm_prompt)} chars) >>>\n{llm_prompt}\n<<<")
 
@@ -5042,6 +5091,13 @@ Vary your sentence structure and word choices naturally."""
                 )
                 # Clean and return like non-streaming
                 clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
+                if body.translate_chinese_to_english:
+                    if contains_chinese(clean_llm_response):
+                        logger.info("[Translate] Streaming vision: translating %s chars (Chinese detected)", len(clean_llm_response))
+                        clean_llm_response = do_translate_chinese_to_english(clean_llm_response)
+                        logger.info("[Translate] Streaming vision: done")
+                    else:
+                        logger.info("[Translate] Streaming vision: translate on but no Chinese in response (%s chars), skipping", len(clean_llm_response))
                 yield f"data: {json.dumps({'text': clean_llm_response})}\n\n"
                 yield f"data: {json.dumps({'done': True})}\n\n"  # Signal end of stream to client 
             else:
@@ -5128,53 +5184,39 @@ Vary your sentence structure and word choices naturally."""
                         
                         logger.info(f"[generate] Forwarding {body.model_name} to {endpoint_config['name']} at {url}")
                         
-                        # Stream from the API endpoint
-                        # The forward_to_configured_endpoint_streaming function yields raw bytes in SSE format
-                        # We need to buffer them, parse OpenAI format, and convert to frontend format
+                        # Stream from the API endpoint (original logic: split on \n\n only)
                         buffer = b""
                         async for chunk_bytes in forward_to_configured_endpoint_streaming(endpoint_config, url, request_data):
-                            # Accumulate bytes in buffer
                             if isinstance(chunk_bytes, bytes):
                                 buffer += chunk_bytes
                             else:
                                 buffer += chunk_bytes.encode('utf-8') if isinstance(chunk_bytes, str) else b""
-                            
-                            # Process complete SSE messages (separated by \n\n)
                             while b'\n\n' in buffer:
                                 message, buffer = buffer.split(b'\n\n', 1)
                                 if not message.strip():
                                     continue
-                                
                                 try:
                                     message_str = message.decode('utf-8', errors='ignore')
-                                    # SSE format: "data: {...}\n" or just "data: {...}"
                                     lines = message_str.split('\n')
                                     for line in lines:
                                         if line.startswith("data: "):
                                             json_str = line[6:].strip()
                                             if json_str == "[DONE]":
                                                 continue
-                                            
                                             try:
                                                 chunk_data = json.loads(json_str)
-                                                
-                                                # Extract content from OpenAI format: {"choices": [{"delta": {"content": "..."}}]}
                                                 content = ""
                                                 if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
                                                     delta = chunk_data["choices"][0].get("delta", {})
-                                                    content = delta.get("content", "")
-                                                
-                                                # Convert to frontend format: {"text": "..."}
+                                                    content = delta.get("content", "") or delta.get("reasoning", "")
                                                 if content:
                                                     streamed_content_accumulator.append(content)
-                                                    # Yield in the format the frontend expects
                                                     yield f"data: {json.dumps({'text': content})}\n\n"
                                             except json.JSONDecodeError:
-                                                # If it's not JSON, might be an error message - forward as-is
                                                 if json_str:
                                                     yield f"data: {json_str}\n\n"
                                 except Exception as e:
-                                    logger.debug(f"Error processing API chunk: {e}")
+                                    logger.debug("Error processing API stream message: %s", e)
                         
                         # Yield done message after API streaming completes
                         yield f"data: {json.dumps({'done': True})}\n\n"
@@ -5197,7 +5239,19 @@ Vary your sentence structure and word choices naturally."""
                                 # If parsing fails, just append the raw token
                                 streamed_content_accumulator.append(token)
                             
-                            yield token
+                            if not body.translate_chinese_to_english:
+                                yield token
+                        
+                        # When translate_chinese_to_english: yield full translated response in one event
+                        if body.translate_chinese_to_english and streamed_content_accumulator:
+                            full_text = "".join(streamed_content_accumulator)
+                            if contains_chinese(full_text):
+                                logger.info("[Translate] Streaming local: translating %s chars (Chinese detected)", len(full_text))
+                                full_text = do_translate_chinese_to_english(full_text)
+                                logger.info("[Translate] Streaming local: done")
+                            else:
+                                logger.info("[Translate] Streaming local: translate on but no Chinese in response (%s chars)", len(full_text))
+                            yield f"data: {json.dumps({'text': full_text})}\n\n"
                     
                     yield f"data: {json.dumps({'done': True})}\n\n"
                 except Exception as stream_exc:
@@ -5216,7 +5270,7 @@ Vary your sentence structure and word choices naturally."""
 
             if body.directProfileInjection:
                 logger.info(f"🌀 Direct profile injection enabled. Stream complete.")
-            elif is_title_generation_request or body.request_purpose in ["model_testing", "model_judging"]:
+            elif is_title_generation_request or body.request_purpose in ["model_testing", "model_judging", "continuation"]:
                 logger.info(f"🌀 {body.request_purpose} stream complete. Skipping memory detection and storage.")
             elif not current_user_id:
                 logger.warning(f"🧠 Stream complete. Skipping detect_and_store: No current_user_id available.")
@@ -5407,12 +5461,19 @@ Vary your sentence structure and word choices naturally."""
         # 12) Post-process LLM output
         logger.info(f"🔄 Raw LLM output length (non-streaming): {len(llm_output_raw_text)} characters")
         clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
+        if body.translate_chinese_to_english:
+            if contains_chinese(clean_llm_response):
+                logger.info("[Translate] Non-streaming: translating %s chars (Chinese detected)", len(clean_llm_response))
+                clean_llm_response = do_translate_chinese_to_english(clean_llm_response)
+                logger.info("[Translate] Non-streaming: done")
+            else:
+                logger.info("[Translate] Non-streaming: translate on but no Chinese in response (%s chars), skipping", len(clean_llm_response))
         
         # 13) Schedule memory detection and storage (for non-streaming user chats)
         if body.directProfileInjection:
             logger.info("🧠 Direct Profile Injection is ON. Skipping memory creation task (non-streaming).")
-        elif body.request_purpose in ["title_generation", "model_testing", "model_judging"]:
-            logger.info("🌀 Title generation request (non-streaming). Skipping memory detection.")
+        elif body.request_purpose in ["title_generation", "model_testing", "model_judging", "continuation"]:
+            logger.info("🌀 Title generation / continuation request (non-streaming). Skipping memory detection.")
         elif not user_id:
             logger.warning(f"🧠 Memory detection/storage skipped (non-streaming): No user_id available. (Purpose: {body.request_purpose or 'user_chat'})")
         else:
@@ -9025,7 +9086,7 @@ async def chess_ai_move(request: Request, payload: dict = Body(...)):
     try:
         analysis = await chess_engine_service.analyze_position(
             fen=fen,
-            multipv=5,
+            multipv=10,
             elo=elo,
         )
     except ValueError as e:
@@ -9081,11 +9142,16 @@ async def chess_ai_move(request: Request, payload: dict = Body(...)):
             personality=personality,
         )
 
+    # Engine returns evaluation in pawns; normalize to centipawns for the frontend eval bar
+    eval_cp = selection.get("evaluation_cp")
+    if eval_cp is not None and abs(eval_cp) <= 20:
+        eval_cp = round(eval_cp * 100)
+
     return {
         "move_uci": selection.get("move_uci"),
         "move_san": selection.get("move_san"),
         "commentary": selection.get("commentary"),
-        "evaluation_cp": selection.get("evaluation_cp"),
+        "evaluation_cp": eval_cp,
         "candidates": candidates,
         "chosen_index": selection.get("index"),
         "game_over": False,
@@ -9207,48 +9273,220 @@ async def chess_analyze_game_full(request: Request, payload: dict = Body(...)):
             break
     moves_with_evals = []
     for i, pos in enumerate(positions):
-        fen = pos["fen_after"]
+        fen_after = pos["fen_after"]
         try:
-            analysis = await chess_engine_service.analyze_position(
-                fen=fen, multipv=1, elo=None, analysis_time=0.25
+            analysis_after = await chess_engine_service.analyze_position(
+                fen=fen_after, multipv=1, elo=None, analysis_time=0.25
             )
-            eval_cp = analysis.get("evaluation_cp")
+            eval_cp = analysis_after.get("evaluation_cp")
             if eval_cp is not None and abs(eval_cp) <= 100:
                 eval_cp = round(eval_cp * 100)
+            candidates_after = analysis_after.get("candidates") or []
+            continuation_pv_san = candidates_after[0].get("pv_san") if candidates_after else None
         except (ValueError, RuntimeError):
             eval_cp = None
+            continuation_pv_san = None
+
+        best_move_san = None
+        best_move_pv_san = None
+        best_eval_cp = None
+        judgment = "best"
+        if i >= 1:
+            fen_before = positions[i - 1]["fen_after"]
+            try:
+                analysis_before = await chess_engine_service.analyze_position(
+                    fen=fen_before, multipv=2, elo=None, analysis_time=0.3
+                )
+                cands = analysis_before.get("candidates") or []
+                if cands:
+                    b = chess.Board(fen_before)
+                    best = cands[0]
+                    best_move_san = best.get("move_san")
+                    best_move_pv_san = best.get("pv_san")
+                    be = best.get("score_cp")  # pawns, from side-to-move's view
+                    if be is not None:
+                        if b.turn == chess.BLACK:
+                            be = -be
+                        best_eval_cp = round(be * 100)
+                    else:
+                        best_eval_cp = None
+                    played = (pos.get("san") or "").strip()
+                    if best_move_san and played and played != best_move_san and best_eval_cp is not None and eval_cp is not None:
+                        side = pos.get("side") or "w"
+                        if side == "w":
+                            loss_cp = best_eval_cp - eval_cp
+                        else:
+                            loss_cp = eval_cp - best_eval_cp
+                        if loss_cp >= 150:
+                            judgment = "blunder"
+                        elif loss_cp >= 75:
+                            judgment = "mistake"
+                        elif loss_cp >= 25:
+                            judgment = "inaccuracy"
+            except (ValueError, RuntimeError):
+                pass
+
         moves_with_evals.append({
             "move_index": pos["move_index"],
             "san": pos["san"],
             "side": pos["side"],
-            "fen_after": fen,
+            "fen_after": fen_after,
             "evaluation_cp": eval_cp,
+            "continuation_pv_san": continuation_pv_san,
+            "best_move_san": best_move_san,
+            "best_move_pv_san": best_move_pv_san,
+            "best_eval_cp": best_eval_cp,
+            "judgment": judgment,
         })
+    for m in moves_with_evals:
+        m["commentary"] = None
     if add_commentary and model_name and (getattr(request.app.state, "model_manager", None) or chess_ai_service.is_api_endpoint(model_name)):
         model_manager = getattr(request.app.state, "model_manager", None)
         only_with_move = [m for m in moves_with_evals if m["san"]]
         if only_with_move:
-            comments = await chess_ai_service.get_per_move_commentary(
-                model_manager=model_manager,
-                model_name=model_name,
-                moves_with_evals=only_with_move,
-                result=result,
-            )
+            # One huge request (e.g. 80 moves, 6k tokens out) often hits server/proxy timeouts and
+            # disconnects regardless of which model is used. Chunk so each request finishes in ~30s.
+            COMMENTARY_CHUNK_SIZE = 25
+            all_comments = []
+            for start in range(0, len(only_with_move), COMMENTARY_CHUNK_SIZE):
+                chunk = only_with_move[start : start + COMMENTARY_CHUNK_SIZE]
+                try:
+                    chunk_comments = await chess_ai_service.get_per_move_commentary(
+                        model_manager=model_manager,
+                        model_name=model_name,
+                        moves_with_evals=chunk,
+                        result=result,
+                    )
+                    all_comments.extend(chunk_comments[: len(chunk)])
+                except Exception as e:
+                    logger.warning("Per-move commentary chunk %d-%d failed: %s", start, start + len(chunk), type(e).__name__)
+                    all_comments.extend([""] * len(chunk))
             idx = 0
             for m in moves_with_evals:
                 if m["san"] is not None:
-                    m["commentary"] = comments[idx] if idx < len(comments) else ""
+                    m["commentary"] = all_comments[idx] if idx < len(all_comments) else ""
                     idx += 1
-                else:
-                    m["commentary"] = None
-    else:
-        for m in moves_with_evals:
-            m["commentary"] = None
     return {"moves": moves_with_evals, "result": result}
+
+
+@router.post("/chess/deep-analysis")
+async def chess_deep_analysis(request: Request, payload: dict = Body(...)):
+    """
+    Tier 2: Research what strong players/sources say about the current position.
+    Uses Lichess Opening Explorer + web search; synthesizes with citations.
+    Does NOT ask the LLM to evaluate the position—only to summarize external sources.
+    """
+    fen = (payload.get("fen") or "").strip()
+    if not fen:
+        raise HTTPException(status_code=400, detail="fen required")
+    move_history = payload.get("move_history") or []
+    model_name = payload.get("model_name")
+
+    engine_eval_str = None
+    best_move = None
+    pv_san = None
+    try:
+        analysis = await chess_engine_service.analyze_position(
+            fen=fen, multipv=1, elo=None, analysis_time=0.4
+        )
+        eval_cp = analysis.get("evaluation_cp")
+        if eval_cp is not None:
+            if abs(eval_cp) <= 100:
+                eval_cp = eval_cp * 100
+            engine_eval_str = f"{eval_cp:+.0f} cp" if eval_cp is not None else None
+        cands = analysis.get("candidates") or []
+        if cands:
+            best_move = cands[0].get("move_san")
+            pv_san = cands[0].get("pv_san")
+    except (ValueError, RuntimeError):
+        pass
+
+    async def web_search_fn(q: str, max_results: int = 5) -> str:
+        from .web_search_service import perform_web_search
+        return await perform_web_search(q, max_results)
+
+    model_manager = getattr(request.app.state, "model_manager", None)
+    from . import chess_research_agent
+    result = await chess_research_agent.run_deep_analysis(
+        fen=fen,
+        engine_eval=engine_eval_str,
+        best_move=best_move,
+        pv_san=pv_san,
+        move_history=move_history,
+        web_search_fn=web_search_fn,
+        model_manager=model_manager,
+        model_name=model_name,
+    )
+    return result
+
+
+@router.post("/chess/historian/chat")
+async def chess_historian_chat(request: Request, payload: dict = Body(...)):
+    """Chat with the Chess Historian (research, stories, can return PGN to load)."""
+    messages = payload.get("messages") or []
+    model_name = payload.get("model_name")
+
+    async def web_search_fn(q: str, max_results: int = 5) -> str:
+        from .web_search_service import perform_web_search
+        return await perform_web_search(q, max_results)
+
+    model_manager = getattr(request.app.state, "model_manager", None)
+    from . import chess_historian
+    persona_prompt = payload.get("persona_prompt")
+    result = await chess_historian.chat(
+        messages=messages,
+        model_manager=model_manager,
+        model_name=model_name,
+        request=request,
+        web_search_fn=web_search_fn,
+        persona_prompt=persona_prompt,
+    )
+    return result
+
+
+@router.post("/chess/historian/fact")
+async def chess_historian_fact(request: Request, payload: dict = Body(...)):
+    """Get one short chess history fact (e.g. for 30s idle ticker). Uses web search so facts are researched, not hallucinated. Send recent_facts to avoid repetition."""
+    model_name = payload.get("model_name")
+    recent_facts = payload.get("recent_facts")
+    if recent_facts is not None and not isinstance(recent_facts, list):
+        recent_facts = [str(recent_facts)] if recent_facts else []
+    model_manager = getattr(request.app.state, "model_manager", None)
+
+    async def web_search_fn(q: str, max_results: int = 6) -> str:
+        from .web_search_service import perform_web_search
+        return await perform_web_search(q, max_results)
+
+    from . import chess_historian
+    fact_text = await chess_historian.random_fact(
+        model_manager=model_manager,
+        model_name=model_name,
+        request=request,
+        recent_facts=recent_facts,
+        search_context=None,
+        web_search_fn=web_search_fn,
+    )
+    return {"fact": fact_text or ""}
+
+
+@router.post("/chess/historian/persona")
+async def chess_historian_persona(request: Request, payload: dict = Body(...)):
+    """Generate a short persona description for the Chess Historian (AI describes its own style)."""
+    model_name = payload.get("model_name")
+    model_manager = getattr(request.app.state, "model_manager", None)
+    from . import chess_historian
+    persona_text = await chess_historian.generate_persona(
+        model_manager=model_manager,
+        model_name=model_name,
+        request=request,
+    )
+    return {"persona": (persona_text or "").strip() or "I'm the Chess Historian—warm, curious, and full of stories about players, games, and the history of the game."}
 
 
 # mount the "generate" router
 app.include_router(router)
+app.include_router(auth_router)
+app.include_router(market_sim_router)
 
 # mount your memory endpoints under the "/memory" prefix
 app.include_router(memory_router, prefix="/memory")

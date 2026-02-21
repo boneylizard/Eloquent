@@ -10,7 +10,7 @@ import { AlertTriangle, Image, Loader2, X, Sparkles, Info, Video } from 'lucide-
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import * as Path from 'path-browserify';
 
-const SimpleChatImageButton = () => {
+const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose }) => {
     const {
         sdStatus,
         checkSdStatus,
@@ -27,7 +27,7 @@ const SimpleChatImageButton = () => {
         generateVideo, // NEW
     } = useApp();
 
-    const [isDialogOpen, setIsDialogOpen] = useState(false);
+    const [isDialogOpen, setIsDialogOpen] = useState(!!defaultOpen);
     const [prompt, setPrompt] = useState('');
     const [negativePrompt, setNegativePrompt] = useState('');
     const [width, setWidth] = useState(512);
@@ -452,6 +452,16 @@ const SimpleChatImageButton = () => {
             }, selectedGpuId);
 
             if (responseData && Array.isArray(responseData.image_urls) && responseData.image_urls.length > 0) {
+                if (onImageGenerated) {
+                    onImageGenerated(responseData.image_urls[0]);
+                    setIsDialogOpen(false);
+                    onClose?.();
+                    setPrompt('');
+                    setNegativePrompt('');
+                    clearProgressPolling();
+                    setImageProgress(null);
+                    return;
+                }
                 responseData.image_urls.forEach(imageUrl => {
                     // Generate message ID first
                     const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 7)}-img`;
@@ -508,6 +518,7 @@ const SimpleChatImageButton = () => {
             setPrompt('');
             setNegativePrompt('');
             setIsDialogOpen(false);
+            onClose?.();
         } catch (err) {
             console.error('Error during image generation process:', err);
             setMessages(prev => [
@@ -526,15 +537,17 @@ const SimpleChatImageButton = () => {
 
     return (
         <>
-            <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded-full p-0"
-                title="Generate Image"
-                onClick={() => setIsDialogOpen(true)}
-            >
-                <Image className="h-4 w-4" />
-            </Button>
+            {!defaultOpen && (
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full p-0"
+                    title="Generate Image"
+                    onClick={() => setIsDialogOpen(true)}
+                >
+                    <Image className="h-4 w-4" />
+                </Button>
+            )}
 
             {isDialogOpen && createPortal(
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -547,7 +560,7 @@ const SimpleChatImageButton = () => {
                                 <h3 className="text-lg font-semibold">EloDiffusion Generator</h3>
                                 <p className="text-sm text-muted-foreground">Configure and generate an image.</p>
                             </div>
-                            <Button variant="ghost" size="icon" className="-mt-1 -mr-2" onClick={() => setIsDialogOpen(false)}>
+                            <Button variant="ghost" size="icon" className="-mt-1 -mr-2" onClick={() => { setIsDialogOpen(false); onClose?.(); }}>
                                 <X className="h-4 w-4" />
                             </Button>
 

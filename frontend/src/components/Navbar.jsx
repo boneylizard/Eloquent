@@ -17,7 +17,8 @@ import {
   Power,
   RotateCw,
   Vote,
-  Swords
+  Swords,
+  TrendingUp
 } from 'lucide-react';
 
 const Navbar = ({ toggleSidebar }) => {
@@ -66,7 +67,8 @@ const Navbar = ({ toggleSidebar }) => {
     { id: 'modeltester', label: 'Model Tester', icon: <Zap className="mr-2 h-4 w-4" /> },
     { id: 'codeeditor', label: 'Code Editor', icon: <Code className="mr-2 h-4 w-4" /> },
     { id: 'forensics', label: 'Forensics', icon: <Fingerprint className="mr-2 h-4 w-4" /> },
-    { id: 'election', label: 'Elections', icon: <Vote className="mr-2 h-4 w-4" /> }
+    { id: 'election', label: 'Elections', icon: <Vote className="mr-2 h-4 w-4" /> },
+    { id: 'market-sim', label: 'Market Simulator', icon: <TrendingUp className="mr-2 h-4 w-4" /> }
   ];
 
   return (

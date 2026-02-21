@@ -7,7 +7,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus } from 'lucide-react';;
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import SimpleChatImageButton from './SimpleChatImageButton';
 import ChatImageUploadButton from './ChatImageUploadButton';
@@ -30,14 +30,11 @@ const FocusModeOverlay = ({
   getVariantCount,
   navigateVariant,
   editingMessageId,
-  editingMessageContent,
-  setEditingMessageContent,
   handleSaveEditedMessage,
   handleCancelEdit,
   handleEditUserMessage,
   handleRegenerateFromEditedPrompt,
   editingBotMessageId,
-  editingBotMessageContent,
   handleEditBotMessage,
   handleSaveBotMessage,
   handleCancelBotEdit,
@@ -206,14 +203,11 @@ const lastMessageAvatars = useMemo(() => {
       primaryCharacter={primaryCharacter}
       secondaryCharacter={secondaryCharacter}
       editingMessageId={editingMessageId}
-      editingMessageContent={editingMessageContent}
-      setEditingMessageContent={setEditingMessageContent}
       handleSaveEditedMessage={handleSaveEditedMessage}
       handleCancelEdit={handleCancelEdit}
       handleEditUserMessage={handleEditUserMessage}
       handleRegenerateFromEditedPrompt={handleRegenerateFromEditedPrompt}
       editingBotMessageId={editingBotMessageId}
-      editingBotMessageContent={editingBotMessageContent}
       handleEditBotMessage={handleEditBotMessage}
       handleSaveBotMessage={handleSaveBotMessage}
       handleCancelBotEdit={handleCancelBotEdit}
@@ -252,4 +246,4 @@ const lastMessageAvatars = useMemo(() => {
   );
 };
 
-export default FocusModeOverlay;
+export default React.memo(FocusModeOverlay);
