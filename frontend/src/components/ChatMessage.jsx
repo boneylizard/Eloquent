@@ -1,6 +1,5 @@
 import React, { memo, useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import { Loader2, X, PlayCircle as PlayIcon, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -9,6 +8,7 @@ import remarkDialogueQuotes from '@/utils/remarkDialogueQuotes';
 import { cn } from '@/lib/utils';
 import SimpleChatImageMessage from './SimpleChatImageMessage';
 import CodeBlock from './CodeBlock';
+import MessageEditField from './MessageEditField';
 import { getBackendUrl } from '../config/api';
 
 const ChatMessage = memo(({
@@ -30,6 +30,7 @@ const ChatMessage = memo(({
     variantIndex,
     PRIMARY_API_URL,
     regenerationQueue,
+    isRegenerationRunning,
     ttsEnabled,
 
     // Handlers
@@ -47,21 +48,10 @@ const ChatMessage = memo(({
     onNavigateVariant,
     onSpeakerClick,
     onRegenerateImage,
+    onCancelRegenerations,
 
     formatModelName,
 }) => {
-    // Local state for edit textareas so typing doesn't re-render parent (avoids lag)
-    const [localUserEditContent, setLocalUserEditContent] = useState(msg.role === 'user' ? msg.content : '');
-    const [localBotEditContent, setLocalBotEditContent] = useState(content);
-
-    useEffect(() => {
-      if (editingMessageId === msg.id && msg.role === 'user') setLocalUserEditContent(msg.content);
-    }, [editingMessageId, msg.id, msg.role, msg.content]);
-
-    useEffect(() => {
-      if (editingBotMessageId === msg.id) setLocalBotEditContent(content);
-    }, [editingBotMessageId, msg.id, content]);
-
     // --- Avatar Rendering Logic ---
     const renderAvatar = (message, apiUrl, activeCharacter) => {
         const avatarSource = message.avatar || (message.role === 'bot' && !message.characterId && activeCharacter?.avatar);
@@ -165,7 +155,7 @@ const ChatMessage = memo(({
                 {msg.role !== 'user' && renderAvatar(msg, PRIMARY_API_URL, msg.modelId === 'primary' ? primaryCharacter : secondaryCharacter)}
 
                 <div className={cn("flex-1 min-w-0", msg.role === 'user' ? 'order-first' : '')}>
-                    <SimpleChatImageMessage message={msg} onRegenerate={onRegenerateImage} regenerationQueue={regenerationQueue} />
+                    <SimpleChatImageMessage message={msg} onRegenerate={onRegenerateImage} regenerationQueue={regenerationQueue} onCancelRegenerations={onCancelRegenerations} isRegenerationRunning={isRegenerationRunning} />
                 </div>
 
                 {msg.role === 'user' && renderUserAvatar(msg)}
@@ -193,44 +183,17 @@ const ChatMessage = memo(({
                 {/* USER MESSAGE EDIT FUNCTIONALITY */}
                 {msg.role === 'user' ? (
                     editingMessageId === msg.id ? (
-                        // Edit mode for user messages
-                        <div className="space-y-2">
-                            <Textarea
-                                value={localUserEditContent}
-                                onChange={(e) => setLocalUserEditContent(e.target.value)}
-                                className="w-full resize-none bg-background border-input"
-                                rows={3}
-                                autoFocus
-                            />
-                            <div className="flex gap-2 justify-end">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={onCancelEdit}
-                                >
-                                    Cancel
-                                </Button>
-                                <Button
-                                    variant="default"
-                                    size="sm"
-                                    onClick={() => onSaveEditedMessage(msg.id, localUserEditContent)}
-                                    disabled={!localUserEditContent.trim()}
-                                >
-                                    Save
-                                </Button>
-                                <Button
-                                    variant="secondary"
-                                    size="sm"
-                                    onClick={() => {
-                                        onSaveEditedMessage(msg.id, localUserEditContent);
-                                        setTimeout(() => onRegenerateFromEditedPrompt(msg.id, localUserEditContent), 100);
-                                    }}
-                                    disabled={!localUserEditContent.trim() || isGenerating}
-                                >
-                                    Save & Regenerate
-                                </Button>
-                            </div>
-                        </div>
+                        <MessageEditField
+                            initialValue={msg.content}
+                            messageId={msg.id}
+                            onSave={onSaveEditedMessage}
+                            onCancel={onCancelEdit}
+                            onSaveAndRegenerate={onRegenerateFromEditedPrompt}
+                            rows={3}
+                            saveLabel="Save"
+                            showSaveAndRegenerate
+                            disabledSaveAndRegenerate={isGenerating}
+                        />
                     ) : (
                         // Display mode for user messages with edit button
                         <div className="relative group">
@@ -369,32 +332,16 @@ const ChatMessage = memo(({
                         <div className="relative group">
                             {/* Show edit mode if this message is being edited */}
                             {editingBotMessageId === msg.id ? (
-                                <div className="space-y-2 mb-2">
-                                    <Textarea
-                                        value={localBotEditContent}
-                                        onChange={(e) => setLocalBotEditContent(e.target.value)}
-                                        className="w-full resize-none bg-background border-input min-h-[120px]"
-                                        rows={6}
-                                        autoFocus
-                                    />
-                                    <div className="flex gap-2 justify-end">
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            onClick={onCancelBotEdit}
-                                        >
-                                            Cancel
-                                        </Button>
-                                        <Button
-                                            variant="default"
-                                            size="sm"
-                                            onClick={() => onSaveBotMessage(msg.id, localBotEditContent)}
-                                            disabled={!localBotEditContent.trim()}
-                                        >
-                                            Save Edit
-                                        </Button>
-                                    </div>
-                                </div>
+                                <MessageEditField
+                                    initialValue={content}
+                                    messageId={msg.id}
+                                    onSave={onSaveBotMessage}
+                                    onCancel={onCancelBotEdit}
+                                    rows={6}
+                                    saveLabel="Save Edit"
+                                    className="mb-2"
+                                    textareaClassName="min-h-[120px]"
+                                />
                             ) : (
                                 <>
                                     {/* Variant navigation - only show if there are multiple variants */}

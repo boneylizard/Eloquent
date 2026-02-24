@@ -1260,24 +1260,26 @@ class ModelManager:
         return info
 
         
-    async def find_suitable_model(self, gpu_id=None):  # Still async def
+    async def find_suitable_model(self, gpu_id=None, quiet=False):  # Still async def
         """
         Find the first available model loaded on the specified GPU.
         Ensures thread-safe access to the loaded_models dictionary.
-        (Simplified: Removed keyword-based prioritization entirely)
+        quiet: if True, use DEBUG for "no model" and diagnostic logs (avoids noise when no memory model is loaded).
         """
-        logging.info(f"[DIAGNOSTIC] find_suitable_model called for GPU {gpu_id}. Checking state within lock.")  # Updated log
+        if not quiet:
+            logging.info(f"[DIAGNOSTIC] find_suitable_model called for GPU {gpu_id}. Checking state within lock.")
 
         # Force memory agent tasks to ALWAYS default to GPU 1 (the 4060 Ti)
         target_gpu_id = 1 if gpu_id is None else gpu_id
-        logging.info(f"Forcing memory agent to look for a model on GPU {target_gpu_id}")
+        if not quiet:
+            logging.info(f"Forcing memory agent to look for a model on GPU {target_gpu_id}")
         suitable_model_name = None # Variable to hold the result
 
         # --- Acquire the lock before reading the shared dictionary ---
         async with self.lock:
-            # Log the state *inside* the lock for accurate debugging
             current_loaded_state_inside_lock = list(self.loaded_models.keys())
-            logging.info(f"[DIAGNOSTIC] Inside lock for find_suitable_model (GPU {target_gpu_id}). Current loaded: {current_loaded_state_inside_lock}")
+            if not quiet:
+                logging.info(f"[DIAGNOSTIC] Inside lock for find_suitable_model (GPU {target_gpu_id}). Current loaded: {current_loaded_state_inside_lock}")
 
             # Make a temporary copy of keys to iterate over safely (optional but safer if modifying)
             current_keys = list(self.loaded_models.keys())
@@ -1298,7 +1300,10 @@ class ModelManager:
 
         # Logging and return happen outside the lock
         if suitable_model_name is None:
-            logging.warning(f"No model found loaded on GPU {target_gpu_id}")
+            if quiet:
+                logging.debug(f"No model found loaded on GPU {target_gpu_id}")
+            else:
+                logging.warning(f"No model found loaded on GPU {target_gpu_id}")
             return None
 
         return suitable_model_name

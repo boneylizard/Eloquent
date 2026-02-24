@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Standalone ASR Audio-to-Text Transcriber
-Uses Eloquent's NVIDIA Parakeet (or Whisper) STT engine to transcribe
+Uses NVIDIA Parakeet (English), Parakeet-ZH (Chinese), or Whisper to transcribe
 audio/video files to .txt. Supports MP4, WAV, MP3, and other common formats.
 
 Usage:
   python -m backend.app.asr_transcriber recording.mp4
   python -m backend.app.asr_transcriber video.mp4 -o transcript.txt
   python -m backend.app.asr_transcriber audio.wav --engine whisper
+  python -m backend.app.asr_transcriber chinese_audio.wav --engine parakeet-zh
 
 Run from project root with: python -m backend.app.asr_transcriber <audio_or_video_file>
 """
@@ -104,9 +105,9 @@ async def main() -> int:
     )
     parser.add_argument(
         "--engine", "-e",
-        choices=["parakeet", "whisper"],
+        choices=["parakeet", "parakeet-zh", "whisper"],
         default="parakeet",
-        help="STT engine (default: parakeet)",
+        help="STT engine: parakeet (English), parakeet-zh (Chinese), whisper (default: parakeet)",
     )
     args = parser.parse_args()
 

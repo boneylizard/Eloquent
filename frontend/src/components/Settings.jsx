@@ -518,7 +518,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
       handleChange(settingKey, data.directory);
     } catch (error) {
       console.error('Directory picker failed:', error);
-      alert(`Directory picker failed: ${error.message}`);
+      const isNetworkError = !error.message || /failed to fetch|network error|load failed/i.test(String(error.message));
+      const message = isNetworkError
+        ? 'Could not reach the backend. If the backend window closed or crashed, restart the app, then try again. You can also type or paste the folder path manually.'
+        : `Directory picker failed: ${error.message}`;
+      alert(message);
     } finally {
       setDirectoryPickerKey(null);
     }
@@ -1906,13 +1910,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         id="stt-engine"
                         value={localSettings.sttEngine || 'whisper'}
                         onValueChange={async (value) => {
-                          if (value === 'parakeet') {
-                            handleChange('sttEngine', value);
-                            updateSettings({ sttEngine: value });
-                          } else {
-                            handleChange('sttEngine', value);
-                            updateSettings({ sttEngine: value });
-                          }
+                          handleChange('sttEngine', value);
+                          updateSettings({ sttEngine: value });
                         }}
                       >
                         <SelectTrigger className="w-full md:max-w-xs">
@@ -1921,7 +1920,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                         <SelectContent>
                           <SelectItem value="whisper">OpenAI Whisper</SelectItem>
                           <SelectItem value="whisper3">Whisper 3 Turbo</SelectItem>
-                          <SelectItem value="parakeet">NVIDIA Parakeet</SelectItem>
+                          <SelectItem value="parakeet">NVIDIA Parakeet (English)</SelectItem>
+                          <SelectItem value="parakeet-zh">NVIDIA Parakeet (Chinese)</SelectItem>
                         </SelectContent>
                       </Select>
 
@@ -1946,11 +1946,24 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general' }) => {
                           setIsInstallingEngine(true);
                           try {
                             await fetch(`${PRIMARY_API_URL}/stt/install-engine?engine=parakeet&force=true`, { method: 'POST' });
-                            alert('Parakeet engine installed successfully!');
+                            alert('Parakeet (English) installed successfully!');
                           } catch (e) { alert('Failed'); } finally { setIsInstallingEngine(false); }
                         }}
                       >
-                        Force Install Parakeet
+                        Force Install Parakeet (English)
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          setIsInstallingEngine(true);
+                          try {
+                            await fetch(`${PRIMARY_API_URL}/stt/install-engine?engine=parakeet-zh`, { method: 'POST' });
+                            alert('Parakeet (Chinese) installed successfully!');
+                          } catch (e) { alert('Failed'); } finally { setIsInstallingEngine(false); }
+                        }}
+                      >
+                        Force Install Parakeet (Chinese)
                       </Button>
                       <Button
                         variant="outline"

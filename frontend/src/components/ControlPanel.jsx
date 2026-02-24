@@ -58,6 +58,8 @@ const ControlPanel = ({
     setIsFocusModeActive,
     updateSettings,
     handleCreateSummary,
+    availableSummaries = [],
+    handleAppendToSummary,
     handleGenerateCharacter,
     setShowAuthorNote,
     setShowStoryTracker,
@@ -210,11 +212,31 @@ const ControlPanel = ({
                                 size="icon"
                                 className="h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors"
                                 onClick={handleCreateSummary}
-                                disabled={isSummarizing || messages.length < 2}
+                                disabled={isSummarizing || isGenerating || messages.length < 2}
                                 title="Summarize current conversation"
                             >
                                 {isSummarizing ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />}
                             </Button>
+                            {availableSummaries.length > 0 && messages.length >= 2 && (
+                                <select
+                                    className="h-9 w-full px-2 text-xs border rounded bg-background text-muted-foreground"
+                                    value=""
+                                    onChange={(e) => {
+                                        const id = e.target.value;
+                                        e.target.value = '';
+                                        if (!id) return;
+                                        const summary = availableSummaries.find(s => s.id === id);
+                                        if (summary) handleAppendToSummary(summary);
+                                    }}
+                                    disabled={isGenerating}
+                                    title="Append current chat to an existing summary"
+                                >
+                                    <option value="">Append to...</option>
+                                    {availableSummaries.map(s => (
+                                        <option key={s.id} value={s.id}>{s.title.length > 20 ? s.title.slice(0, 20) + '…' : s.title}</option>
+                                    ))}
+                                </select>
+                            )}
 
                             <Button
                                 variant={charButtonState.variant === "outline" ? "ghost" : charButtonState.variant} // Normalize to ghost

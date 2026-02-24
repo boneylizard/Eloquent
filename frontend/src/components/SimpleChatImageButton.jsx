@@ -255,7 +255,12 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
 
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`Server responded with ${response.status}: ${errorText}`);
+                let message = errorText;
+                try {
+                    const parsed = JSON.parse(errorText);
+                    if (parsed?.detail) message = typeof parsed.detail === 'string' ? parsed.detail : JSON.stringify(parsed.detail);
+                } catch (_) { /* use raw errorText */ }
+                throw new Error(message);
             }
 
             // DIRECT STATE UPDATE: This is the critical fix.

@@ -4,7 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages, Brain } from 'lucide-react';
 import { getSummaries, deleteSummary } from '../utils/summaryUtils';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -67,6 +67,7 @@ const Chat = ({ layoutMode }) => {
     activeModel, primaryModel, secondaryModel, dualModeEnabled, setDualModeEnabled, buildSystemPrompt, formatPrompt, cleanModelOutput, botMsg, abortController, setAbortController,
     messages, setMessages, sendMessage, sendDualMessage, isGenerating, isModelLoading,
     createNewConversation, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateReply, fetchMemoriesFromAgent, fetchTriggeredLore, isStreamingStopped, handleStopGeneration,
+    conversations, setConversations,
     // Character info
     characters,
     activeCharacter, primaryCharacter, secondaryCharacter,
@@ -83,7 +84,7 @@ const Chat = ({ layoutMode }) => {
     // Audio / STT / TTS flags & functions
     sttEnabled, ttsEnabled, isRecording, isTranscribing, primaryIsAPI, secondaryIsAPI,
     isPlayingAudio, playTTS, getTtsOverridesForCharacterId, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, ttsSubtitleCue,
-    startRecording, stopRecording, MEMORY_API_URL, ttsClient, setAudioQueue, setIsAutoplaying,
+    startRecording, stopRecording, MEMORY_API_URL, lastAgenticMemoryFeedback, lastAgenticRunStatus, setLastAgenticRunStatus, ttsClient, setAudioQueue, setIsAutoplaying,
     // Avatar sizes
     userAvatarSize, characterAvatarSize, speechDetected, audioQueue, isAutoplaying, callModeRecording,
     // User profile
@@ -91,7 +92,7 @@ const Chat = ({ layoutMode }) => {
     // Settings
     settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode, setIsCallModeActive,
     backgroundImage, // Add backgroundImage from context
-    generateConversationSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
+    generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
     capturePromptSubmissionTime, // Latency monitoring
     unlockAudioContext, // Unlocker
     generateCallModeFollowUp
@@ -99,6 +100,7 @@ const Chat = ({ layoutMode }) => {
   const { profiles, activeProfileId, switchProfile } = useMemory();
   const performanceMode = settings?.performanceMode === true;
   const PERFORMANCE_MESSAGE_LIMIT = 80;
+  const agenticMemoryOn = activeConversation && (conversations.find(c => c.id === activeConversation)?.agenticMemoryEnabled ?? false);
 
   // Local state for the input field
   const [messageVariants, setMessageVariants] = useState({}); // Store variants by message ID
@@ -141,6 +143,8 @@ const Chat = ({ layoutMode }) => {
   const [regenerationQueue, setRegenerationQueue] = useState(0);
   const regenerationQueueRef = useRef([]);
   const regenerationProcessingRef = useRef(false);
+  const regenerationAbortControllerRef = useRef(null);
+  const [isRegenerationRunning, setIsRegenerationRunning] = useState(false);
   const [showCustomPrompt, setShowCustomPrompt] = useState(false);
   const streamingTtsMessageIdRef = useRef(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -321,6 +325,20 @@ const Chat = ({ layoutMode }) => {
       alert("Failed to create summary. Check console/logs.");
     }
   };
+
+  const handleAppendToSummary = async (summary) => {
+    if (!summary?.content || isGenerating) return;
+    const result = await generateAppendedSummary(summary);
+    if (result) {
+      const list = await getSummaries();
+      setAvailableSummaries(list);
+      setActiveContextSummary(result.content);
+      alert(`Summary updated and saved: ${result.title}`);
+    } else {
+      alert("Failed to append to summary. Check console/logs.");
+    }
+  };
+
   const clearSummaryContext = () => {
     setActiveContextSummary(null);
   };
@@ -763,7 +781,7 @@ const Chat = ({ layoutMode }) => {
     }
   }, [PRIMARY_API_URL, setMessages]);
 
-  const runRegenerationTask = useCallback(async (queueItem) => {
+  const runRegenerationTask = useCallback(async (queueItem, signal) => {
     const imageParams = queueItem?.imageParams;
     if (!imageParams?.prompt?.trim()) {
       return;
@@ -791,7 +809,7 @@ const Chat = ({ layoutMode }) => {
         seed: imageParams.seed ?? -1,
         model: imageParams.model || '',
         checkpoint: imageParams.model || ''
-      }, gpuId);
+      }, gpuId, signal ? { signal } : {});
 
       if (responseData && Array.isArray(responseData.image_urls) && responseData.image_urls.length > 0) {
         responseData.image_urls.forEach((imageUrl) => {
@@ -860,6 +878,7 @@ const Chat = ({ layoutMode }) => {
         ]);
       }
     } catch (err) {
+      if (err?.name === 'AbortError') return; // User cancelled
       console.error('Error regenerating image:', err);
       setMessages(prev => [
         ...prev,
@@ -885,18 +904,32 @@ const Chat = ({ layoutMode }) => {
   const processRegenerationQueue = useCallback(async () => {
     if (regenerationProcessingRef.current) return;
     regenerationProcessingRef.current = true;
+    const controller = new AbortController();
+    regenerationAbortControllerRef.current = controller;
+    setIsRegenerationRunning(true);
 
     try {
       while (regenerationQueueRef.current.length > 0) {
         const nextItem = regenerationQueueRef.current[0];
-        await runRegenerationTask(nextItem);
+        await runRegenerationTask(nextItem, controller.signal);
+        if (controller.signal.aborted) break;
         regenerationQueueRef.current.shift();
         setRegenerationQueue(regenerationQueueRef.current.length);
       }
     } finally {
       regenerationProcessingRef.current = false;
+      regenerationAbortControllerRef.current = null;
+      setIsRegenerationRunning(false);
     }
   }, [runRegenerationTask]);
+
+  const cancelRegenerations = useCallback(() => {
+    regenerationAbortControllerRef.current?.abort();
+    regenerationQueueRef.current = [];
+    setRegenerationQueue(0);
+    regenerationProcessingRef.current = false;
+    setIsRegenerationRunning(false);
+  }, []);
 
   const handleRegenerateImage = useCallback((imageParams) => {
     if (!imageParams?.prompt?.trim()) {
@@ -1390,6 +1423,8 @@ const Chat = ({ layoutMode }) => {
             onNavigateVariant={navigateVariant}
             onSpeakerClick={handleSpeakerClick}
             onRegenerateImage={handleRegenerateImage}
+            onCancelRegenerations={cancelRegenerations}
+            isRegenerationRunning={isRegenerationRunning}
 
             formatModelName={formatModelName}
           />
@@ -1417,7 +1452,9 @@ const Chat = ({ layoutMode }) => {
     currentVariantIndex,
     PRIMARY_API_URL,
     regenerationQueue,
+    isRegenerationRunning,
     ttsEnabled,
+    cancelRegenerations,
     filterThinkBlock,
     getCurrentVariantContent,
     getVariantCount,
@@ -1900,6 +1937,8 @@ const Chat = ({ layoutMode }) => {
           setIsFocusModeActive={setIsFocusModeActive}
           updateSettings={updateSettings}
           handleCreateSummary={handleCreateSummary}
+          availableSummaries={availableSummaries}
+          handleAppendToSummary={handleAppendToSummary}
           handleGenerateCharacter={handleGenerateCharacter}
           setShowAuthorNote={setShowAuthorNote}
           setShowStoryTracker={setShowStoryTracker}
@@ -2022,10 +2061,51 @@ const Chat = ({ layoutMode }) => {
               >
                 <BookOpen size={16} />
               </Button>
+
+              {/* Agentic memory: toggle + status from backend (so UI reflects reality) */}
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant={agenticMemoryOn ? "secondary" : "ghost"}
+                  size="icon"
+                  className={cn("h-8 w-8 text-muted-foreground hover:text-primary", agenticMemoryOn && "bg-secondary text-secondary-foreground")}
+                  onClick={() => {
+                    if (!activeConversation) return;
+                    const next = !(conversations.find(c => c.id === activeConversation)?.agenticMemoryEnabled);
+                    console.log('🧠 Agentic memory: toggled to', next ? 'ON' : 'OFF', 'for this chat');
+                    if (!next) setLastAgenticRunStatus(null);
+                    setConversations(prev => prev.map(c => c.id === activeConversation ? { ...c, agenticMemoryEnabled: next } : c));
+                  }}
+                  title={agenticMemoryOn ? "Agentic memory on (AI saves insights about you for this character)" : "Agentic memory off — click to enable"}
+                >
+                  <Brain size={16} />
+                </Button>
+                <span
+                  className={cn(
+                    "text-xs tabular-nums",
+                    !agenticMemoryOn && "text-muted-foreground",
+                    agenticMemoryOn && lastAgenticRunStatus !== 'error' && "text-primary font-medium",
+                    agenticMemoryOn && lastAgenticRunStatus === 'error' && "text-destructive font-medium"
+                  )}
+                  title={agenticMemoryOn ? "Backend status: ran = last reply was processed; error = backend failed" : "Agentic memory off for this chat"}
+                >
+                  {agenticMemoryOn
+                    ? (lastAgenticRunStatus === 'error' ? "On · error" : lastAgenticRunStatus === 'ok' ? "On · ran" : "On · —")
+                    : "Off"}
+                </span>
+              </div>
             </div>
           </div>
         </div>
       </div>
+      {lastAgenticMemoryFeedback && (
+        <div className="border-t border-border bg-emerald-500/10 dark:bg-emerald-950/30 px-4 py-1.5">
+          <div className="max-w-4xl mx-auto text-center">
+            <span className="text-xs text-emerald-700 dark:text-emerald-300">
+              🧠 Memory: +{lastAgenticMemoryFeedback.added} insight(s) saved for {lastAgenticMemoryFeedback.characterName}
+            </span>
+          </div>
+        </div>
+      )}
       <div className="border-t border-border">
         <div className="max-w-4xl mx-auto">
           <ChatInputForm
@@ -2171,6 +2251,8 @@ const Chat = ({ layoutMode }) => {
           isPlayingAudio={isPlayingAudio}
           handleSpeakerClick={handleSpeakerClick}
           handleRegenerateImage={handleRegenerateImage}
+          onCancelRegenerations={cancelRegenerations}
+          isRegenerationRunning={isRegenerationRunning}
           regenerationQueue={regenerationQueue}
           currentVariantIndex={currentVariantIndex}
           formatModelName={formatModelName}

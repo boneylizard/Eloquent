@@ -208,7 +208,7 @@ except Exception as e:
 from .sd_worker import SDWorkerClient
 from .upscale_manager import UpscaleManager
 import random
-from .web_search_service import perform_web_search
+from .web_search_service import perform_web_search, perform_smart_web_search
 from .openai_compat import router as openai_router, is_api_endpoint, get_configured_endpoint, forward_to_configured_endpoint_streaming, forward_to_configured_endpoint_non_streaming, prepare_endpoint_request
 import pynvml
 from .devstral_service import devstral_service, DevstralService
@@ -969,43 +969,48 @@ del "%~f0"
 
 @router.post("/system/select-directory")
 async def select_directory(data: SelectDirectoryRequest = Body(...)):
-    """Open a native directory picker on the server and return the selected path."""
-    try:
-        from tkinter import Tk, filedialog
-    except Exception as exc:
-        logger.error(f"Directory picker unavailable: {exc}")
+    """Open a native directory picker on the server and return the selected path.
+    Runs the picker in a subprocess so a Tk crash cannot kill the backend."""
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "tk_directory_picker.py"
+    if not script_path.is_file():
+        logger.error(f"Directory picker script not found: {script_path}")
         raise HTTPException(status_code=500, detail="Directory picker is unavailable on this system.")
 
-    def _open_dialog():
-        root = Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-
-        options = {}
-        if data.title:
-            options["title"] = data.title
-        if data.initial_directory and os.path.isdir(data.initial_directory):
-            options["initialdir"] = data.initial_directory
-
-        selected = filedialog.askdirectory(**options)
-        try:
-            root.destroy()
-        except Exception:
-            pass
-        return selected
+    stdin_payload = json.dumps({
+        "title": data.title,
+        "initial_directory": data.initial_directory,
+    })
 
     try:
-        directory = await asyncio.to_thread(_open_dialog)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(script_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(script_path.parent),
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=stdin_payload.encode("utf-8")),
+            timeout=300.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Directory picker timed out")
+        raise HTTPException(status_code=500, detail="Directory picker timed out.")
     except Exception as exc:
-        logger.error(f"Directory picker failed: {exc}", exc_info=True)
+        logger.error(f"Directory picker subprocess failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to open directory picker.")
 
+    if proc.returncode == 1:
+        return {"status": "cancelled"}
+    if proc.returncode != 0:
+        err = (stderr or b"").decode("utf-8", errors="replace").strip() or "Unknown error"
+        logger.error(f"Directory picker error (code {proc.returncode}): {err}")
+        raise HTTPException(status_code=500, detail=f"Directory picker failed: {err}")
+
+    directory = (stdout or b"").decode("utf-8", errors="replace").strip()
     if not directory:
         return {"status": "cancelled"}
-
     return {"status": "success", "directory": directory}
 @router.post("/models/update-gpu-mode")
 async def update_gpu_mode(
@@ -2484,6 +2489,8 @@ async def load_stt_engine_endpoint(data: dict = Body(...)):
             stt_service.load_whisper_model()
         elif engine == "parakeet":
             stt_service.load_parakeet_model()
+        elif engine == "parakeet-zh":
+            stt_service.load_parakeet_zh_model()
         else:
             raise HTTPException(status_code=400, detail=f"Unknown STT engine: {engine}")
 
@@ -4105,26 +4112,31 @@ async def install_stt_engine(engine: str = Query(...)):
     if engine == "parakeet":
         try:
             from .stt_service import load_parakeet_model
-            
             logger.info("Starting Parakeet installation...")
-            # This will trigger the automatic installation in load_parakeet_model
             model = load_parakeet_model()
-            
             if model:
                 logger.info("Parakeet installation successful!")
                 return {"status": "success", "message": "Parakeet installed successfully"}
             else:
                 logger.error("Parakeet installation failed - model is None")
-                return JSONResponse(
-                    status_code=500, 
-                    content={"status": "error", "message": "Failed to install Parakeet"}
-                )
+                return JSONResponse(status_code=500, content={"status": "error", "message": "Failed to install Parakeet"})
         except Exception as e:
             logger.error(f"Error installing Parakeet: {e}", exc_info=True)
-            return JSONResponse(
-                status_code=500,
-                content={"status": "error", "message": str(e)}
-            )
+            return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+    elif engine == "parakeet-zh":
+        try:
+            from .stt_service import load_parakeet_zh_model
+            logger.info("Starting Parakeet-ZH (Chinese) installation...")
+            model = load_parakeet_zh_model()
+            if model:
+                logger.info("Parakeet-ZH installation successful!")
+                return {"status": "success", "message": "Parakeet (Chinese) installed successfully"}
+            else:
+                logger.error("Parakeet-ZH installation failed - model is None")
+                return JSONResponse(status_code=500, content={"status": "error", "message": "Failed to install Parakeet (Chinese)"})
+        except Exception as e:
+            logger.error(f"Error installing Parakeet-ZH: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
     else:
         logger.warning(f"Unknown engine requested for installation: {engine}")
         return JSONResponse(
@@ -4204,11 +4216,18 @@ async def sd_local_load_model(data: dict, request: Request):
         raise HTTPException(status_code=500, detail="SD model directory not configured on backend.")
 
     full_model_path = str(Path(sd_model_dir) / model_filename)
-    
-    success = sd_manager.load_model(full_model_path, gpu_id=gpu_id)
+    try:
+        success = sd_manager.load_model(full_model_path, gpu_id=gpu_id)
+    except RuntimeError as load_err:
+        raise HTTPException(status_code=500, detail=str(load_err))
+    except Exception as load_err:
+        from .sd_manager import SDLoadError
+        if isinstance(load_err, SDLoadError):
+            raise HTTPException(status_code=500, detail=str(load_err))
+        raise
     if success:
         return {
-            "status": "success", 
+            "status": "success",
             "message": f"Model loaded: {full_model_path} on GPU {gpu_id}"
         }
     else:
@@ -4548,7 +4567,8 @@ async def detect_and_store(
             det_json = None # Initialize
             try:
                 det_json = detect_resp.json()
-                logger.info(f"🧠 Successfully parsed JSON response from /memory/detect_intent")
+                if det_json.get("status") != "skipped":
+                    logger.info(f"🧠 Successfully parsed JSON response from /memory/detect_intent")
             except json.JSONDecodeError as parse_error: # More specific exception
                 logger.error(f"🧠 JSONDecodeError parsing /memory/detect_intent response: {parse_error}. Response text: '{detect_resp.text[:200]}...'")
                 # Attempt to load from text if direct .json() fails and text might be valid JSON
@@ -4571,7 +4591,9 @@ async def detect_and_store(
                 logger.error("🧠 Could not obtain valid JSON from /memory/detect_intent response. Aborting memory storage.")
                 return
 
-            logger.info(f"🧠 /memory/detect_intent status: {det_json.get('status')}, detection_result preview: '{str(det_json.get('detection_result'))[:100]}...'")
+            det_status = det_json.get("status")
+            if det_status != "skipped":
+                logger.info(f"🧠 /memory/detect_intent status: {det_status}, detection_result preview: '{str(det_json.get('detection_result'))[:100]}...'")
 
             if det_json.get("status") == "success" and "MEMORY_DETECTED: YES" in det_json.get("detection_result", ""):
                 detection_result_text = det_json.get("detection_result", "")
@@ -4641,7 +4663,10 @@ async def detect_and_store(
                 except Exception as add_error: # Catch-all for other errors during the add attempt
                     logger.error(f"🧠 Unexpected error during /memory/add: {add_error}", exc_info=True)
             else:
-                logger.info("🧠 No memory detected by /memory/detect_intent, or status was not success.")
+                if det_status == "skipped":
+                    logger.debug("🧠 Memory intent skipped (no local model for detection).")
+                else:
+                    logger.info("🧠 No memory detected by /memory/detect_intent, or status was not success.")
     except httpx.RequestError as client_req_error: # For network errors, timeouts for /memory/detect_intent
         logger.error(f"🧠 Request error calling /memory/detect_intent: {client_req_error}")
     except Exception as e: # Catch-all for other errors in the main try block
@@ -4754,8 +4779,7 @@ async def generate(
     memory_port = 8000 if SINGLE_GPU_MODE else 8001
     
     # Log the purpose of the request (user_chat or title_generation)
-    _translate = getattr(body, "translate_chinese_to_english", False)
-    logger.info(f"➡️ [generate] translate_chinese_to_english={_translate} (request flag). Purpose: {body.request_purpose or 'user_chat'}")
+    logger.info(f"➡️ [generate] Purpose: {body.request_purpose or 'user_chat'}")
 
     # 1) GPU & token settings (No changes here)
     gpu_id = body.gpu_id if body.gpu_id is not None else getattr(request.app.state, 'default_gpu', 0)
@@ -4954,16 +4978,18 @@ async def generate(
         logger.info("🔍 RAG not enabled for this user chat request.")
 
     # 7.5) Optionally integrate Web Search (NEW)
+    # When web search is on, intelligently parse the user message into search intent/queries
+    # (smart search optimizes the prompt for true meaning; falls back to basic optimization if no LLM is set)
     if body.use_web_search and body.request_purpose not in ["title_generation", "model_testing", "model_judging", "continuation"]:
-        # Determine search query - use custom query if provided, otherwise use user's query
-        search_query = body.web_search_query if body.web_search_query else user_query_from_split
-        
-        logger.info(f"🌐 Performing web search for: '{search_query[:100]}...'")
+        # Use explicit query if provided; otherwise derive from user message via intent-aware parsing
+        search_input = body.web_search_query if body.web_search_query else user_query_from_split
+        logger.info(f"🌐 Performing smart web search (intent-aware) for: '{search_input[:100]}...'")
         try:
-            web_search_context = await perform_web_search(search_query, max_results=5)
+            smart_result = await perform_smart_web_search(search_input, max_results=5, use_optimization=True)
+            web_search_context = smart_result.formatted_context
             if web_search_context and "No results found" not in web_search_context:
                 interaction_components.append(web_search_context)
-                logger.info(f"🌐 Added web search results to interaction block")
+                logger.info(f"🌐 Added web search results (queries: {smart_result.optimized_queries}) to interaction block")
             else:
                 logger.info(f"🌐 Web search returned no useful results")
         except Exception as e:
@@ -5091,13 +5117,6 @@ Vary your sentence structure and word choices naturally."""
                 )
                 # Clean and return like non-streaming
                 clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
-                if body.translate_chinese_to_english:
-                    if contains_chinese(clean_llm_response):
-                        logger.info("[Translate] Streaming vision: translating %s chars (Chinese detected)", len(clean_llm_response))
-                        clean_llm_response = do_translate_chinese_to_english(clean_llm_response)
-                        logger.info("[Translate] Streaming vision: done")
-                    else:
-                        logger.info("[Translate] Streaming vision: translate on but no Chinese in response (%s chars), skipping", len(clean_llm_response))
                 yield f"data: {json.dumps({'text': clean_llm_response})}\n\n"
                 yield f"data: {json.dumps({'done': True})}\n\n"  # Signal end of stream to client 
             else:
@@ -5239,19 +5258,7 @@ Vary your sentence structure and word choices naturally."""
                                 # If parsing fails, just append the raw token
                                 streamed_content_accumulator.append(token)
                             
-                            if not body.translate_chinese_to_english:
-                                yield token
-                        
-                        # When translate_chinese_to_english: yield full translated response in one event
-                        if body.translate_chinese_to_english and streamed_content_accumulator:
-                            full_text = "".join(streamed_content_accumulator)
-                            if contains_chinese(full_text):
-                                logger.info("[Translate] Streaming local: translating %s chars (Chinese detected)", len(full_text))
-                                full_text = do_translate_chinese_to_english(full_text)
-                                logger.info("[Translate] Streaming local: done")
-                            else:
-                                logger.info("[Translate] Streaming local: translate on but no Chinese in response (%s chars)", len(full_text))
-                            yield f"data: {json.dumps({'text': full_text})}\n\n"
+                            yield token
                     
                     yield f"data: {json.dumps({'done': True})}\n\n"
                 except Exception as stream_exc:
@@ -5461,14 +5468,7 @@ Vary your sentence structure and word choices naturally."""
         # 12) Post-process LLM output
         logger.info(f"🔄 Raw LLM output length (non-streaming): {len(llm_output_raw_text)} characters")
         clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
-        if body.translate_chinese_to_english:
-            if contains_chinese(clean_llm_response):
-                logger.info("[Translate] Non-streaming: translating %s chars (Chinese detected)", len(clean_llm_response))
-                clean_llm_response = do_translate_chinese_to_english(clean_llm_response)
-                logger.info("[Translate] Non-streaming: done")
-            else:
-                logger.info("[Translate] Non-streaming: translate on but no Chinese in response (%s chars), skipping", len(clean_llm_response))
-        
+
         # 13) Schedule memory detection and storage (for non-streaming user chats)
         if body.directProfileInjection:
             logger.info("🧠 Direct Profile Injection is ON. Skipping memory creation task (non-streaming).")
@@ -6774,8 +6774,16 @@ async def sd_local_load_model(data: dict, request: Request):
         raise HTTPException(status_code=500, detail="SD model directory not configured on backend.")
 
     full_model_path = str(Path(sd_model_dir) / model_filename)
-
-    success = sd_manager.load_model(full_model_path)
+    try:
+        success = sd_manager.load_model(full_model_path)
+    except RuntimeError as load_err:
+        # Worker returns load failure as RuntimeError(message); always surface so user sees it and knows worker was restarted
+        raise HTTPException(status_code=500, detail=str(load_err))
+    except Exception as load_err:
+        from .sd_manager import SDLoadError
+        if isinstance(load_err, SDLoadError):
+            raise HTTPException(status_code=500, detail=str(load_err))
+        raise
     if success:
         return {"status": "success", "message": f"Model loaded: {full_model_path}"}
     else:

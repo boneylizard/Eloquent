@@ -82,6 +82,23 @@ class SDWorkerClient:
         self._lock = threading.Lock()
         self._ensure_worker()
 
+    def _restart_worker(self):
+        """Kill the worker process so the next request gets a fresh one. Use after load_model fails."""
+        with self._lock:
+            if self._process is not None:
+                try:
+                    if self._process.is_alive():
+                        self._process.terminate()
+                        self._process.join(timeout=10)
+                        if self._process.is_alive():
+                            self._process.kill()
+                            self._process.join(timeout=5)
+                except Exception as e:
+                    logger.warning(f"Error stopping SD worker: {e}")
+                self._process = None
+                self._address = None
+                logger.info("SD worker stopped; next request will start a new process.")
+
     def _ensure_worker(self):
         with self._lock:
             if self._process and self._process.is_alive() and self._address:
@@ -125,6 +142,10 @@ class SDWorkerClient:
                     conn.close()
                 except Exception:
                     pass
+                try:
+                    self._restart_worker()
+                except Exception:
+                    pass
                 self._ensure_worker()
                 if attempt == 1:
                     raise RuntimeError(f"SD worker request failed: {exc}") from exc
@@ -145,6 +166,12 @@ class SDWorkerClient:
 
             if not response.get("ok"):
                 error = response.get("error", "Unknown worker error")
+                # After load_model or generate_image failure the worker's native state may be corrupted; restart so next request gets a fresh process
+                if cmd in ("load_model", "generate_image"):
+                    try:
+                        self._restart_worker()
+                    except Exception as restart_exc:
+                        logger.warning(f"Failed to restart SD worker after {cmd} error: {restart_exc}")
                 raise RuntimeError(error)
 
             return response.get("result")

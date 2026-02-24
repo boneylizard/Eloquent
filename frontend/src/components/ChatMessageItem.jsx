@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,6 +6,7 @@ import remarkSoftBreaks from '@/utils/remarkSoftBreaks';
 import remarkDialogueQuotes from '@/utils/remarkDialogueQuotes';
 import CodeBlock from './CodeBlock';
 import SimpleChatImageMessage from './SimpleChatImageMessage';
+import MessageEditField from './MessageEditField';
 import { Button } from '@/components/ui/button';
 import { Loader2, PlayCircle as PlayIcon, RotateCcw } from 'lucide-react';
 
@@ -32,6 +33,8 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   isPlayingAudio,
   handleSpeakerClick,
   handleRegenerateImage,
+  onCancelRegenerations,
+  isRegenerationRunning,
   regenerationQueue,
   getCurrentVariantContent,
   getVariantCount,
@@ -40,11 +43,6 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   formatModelName,
   isGenerating
 }) {
-  const [localUserEditContent, setLocalUserEditContent] = useState(msg.role === 'user' ? msg.content : '');
-  useEffect(() => {
-    if (editingMessageId === msg.id && msg.role === 'user') setLocalUserEditContent(msg.content);
-  }, [editingMessageId, msg.id, msg.role, msg.content]);
-
   // Image Message Type
   if (msg.type === 'image') {
     return (
@@ -59,7 +57,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           </div>
         )}
         <div className="flex-1">
-          <SimpleChatImageMessage message={msg} onRegenerate={handleRegenerateImage} regenerationQueue={regenerationQueue} />
+          <SimpleChatImageMessage message={msg} onRegenerate={handleRegenerateImage} regenerationQueue={regenerationQueue} onCancelRegenerations={onCancelRegenerations} isRegenerationRunning={isRegenerationRunning} />
         </div>
         {msg.role === 'user' && <div className="flex-shrink-0">{renderUserAvatar(msg)}</div>}
       </div>
@@ -84,28 +82,18 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           // User Message Content
           <div className="bg-blue-900/20 p-4 rounded-lg border border-blue-500/30">
             {editingMessageId === msg.id ? (
-              <div className="space-y-3">
-                <textarea
-                  value={localUserEditContent}
-                  onChange={(e) => setLocalUserEditContent(e.target.value)}
-                  className="w-full min-h-[100px] bg-black/40 border border-blue-500/50 rounded p-3 text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  autoFocus
-                />
-                <div className="flex justify-end gap-2">
-                  <Button variant="ghost" size="sm" onClick={handleCancelEdit}>
-                    Cancel
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleSaveEditedMessage(msg.id, localUserEditContent)}>
-                    Save
-                  </Button>
-                  <Button variant="default" size="sm" onClick={() => {
-                    handleSaveEditedMessage(msg.id, localUserEditContent);
-                    setTimeout(() => handleRegenerateFromEditedPrompt(msg.id, localUserEditContent), 100);
-                  }}>
-                    Save & Regenerate
-                  </Button>
-                </div>
-              </div>
+              <MessageEditField
+                initialValue={msg.content}
+                messageId={msg.id}
+                onSave={handleSaveEditedMessage}
+                onCancel={handleCancelEdit}
+                onSaveAndRegenerate={handleRegenerateFromEditedPrompt}
+                rows={4}
+                saveLabel="Save"
+                showSaveAndRegenerate
+                disabledSaveAndRegenerate={isGenerating}
+                textareaClassName="min-h-[100px] bg-black/40 border border-blue-500/50 text-white text-sm focus:ring-blue-500"
+              />
             ) : (
               <>
                 <div className="flex items-center justify-between mb-2">

@@ -17,6 +17,15 @@ from PIL import Image  # ADDED for Image type
 
 logger = logging.getLogger(__name__)
 
+# Windows error 0xc000001d = STATUS_ILLEGAL_INSTRUCTION (CPU doesn't support instructions used by native lib)
+WINERROR_ILLEGAL_INSTRUCTION = 0xC000001D  # unsigned; on OSError often seen as winerror -1073741795
+
+
+class SDLoadError(Exception):
+    """Raised when model load fails with a user-actionable message (e.g. CPU compatibility, use ComfyUI)."""
+    pass
+
+
 class ADetailerProcessor:
     def __init__(self):
         self.detectors = {}  # Cache loaded models
@@ -746,6 +755,24 @@ class SDManager:
             self.loaded_models.pop(gpu_id, None)
             self.current_model_paths.pop(gpu_id, None)
             self.model_info.pop(gpu_id, None)
+
+            err_msg = str(e).lower()
+            # Windows 0xc000001d = illegal instruction (native lib built for AVX2 etc.; CPU may not support it)
+            winerr = getattr(e, "winerror", None)
+            if isinstance(e, OSError) and (winerr == WINERROR_ILLEGAL_INSTRUCTION or winerr == -1073741795):
+                raise SDLoadError(
+                    "This Stable Diffusion engine failed due to a CPU instruction error (0xc000001d). "
+                    "The built-in engine uses GPU for generation, but its native code requires CPU instructions (e.g. AVX2) that your processor does not support. "
+                    "Use ComfyUI instead: set Image Engine to 'ComfyUI' in Settings and run ComfyUI (e.g. your portable) on port 8188; "
+                    "you can use the same checkpoint there."
+                ) from e
+            # Access violation, privileged instruction, or other native crash: worker will be restarted by client
+            if "access violation" in err_msg or "privileged instruction" in err_msg:
+                raise SDLoadError(
+                    "The built-in Stable Diffusion engine crashed (native error). "
+                    "The worker will be restarted automatically so you can try again. "
+                    "For fewer crashes, use ComfyUI: set Image Engine to 'ComfyUI' in Settings and run ComfyUI on port 8188."
+                ) from e
             return False
     
     def is_loaded(self) -> bool:

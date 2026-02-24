@@ -207,7 +207,7 @@ Optional cloud APIs for when you want them. Your choice.
 - Windows 10/11 (64-bit)
 - NVIDIA GPU with CUDA support
 - Python 3.11 or 3.12
-- Node.js v21.7.3 (recommended)
+- Node.js v21.7.3 (recommended). Node 22 is untested; if the backend window closes when you use **Browse** for model/directory settings, try Node 21.7.3 or type the folder path manually.
 
 ### VRAM Guide
 

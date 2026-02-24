@@ -180,21 +180,48 @@ Respond in this exact JSON format only, no other text:
             return self._basic_query_optimization(user_prompt)
     
     def _basic_query_optimization(self, user_prompt: str) -> tuple[List[str], str]:
-        """Basic query optimization without LLM - removes common filler words."""
-        # Remove common question starters
-        cleaned = user_prompt.lower()
-        removals = [
-            r'^(can you |could you |please |i want to know |tell me |what is |what are |how do |how does |how can |why is |why are |where is |where are |when is |when did )',
-            r'\?$',
-            r'^(search for |look up |find |google )',
+        """Parse the user's true meaning into search-friendly query/queries (no LLM)."""
+        text = user_prompt.strip()
+        if not text:
+            return [user_prompt], "general search"
+        lower = text.lower()
+
+        # Intent patterns: map conversational phrasing -> search intent (query suffix or full query)
+        # Order matters: more specific first
+        intent_rewrites = [
+            (r"^(?:what'?s?|what is) the latest (?:on|about|with)\s+(.+)$", r"\1 latest news"),
+            (r"^(?:any )?latest (?:on|about|news? about)\s+(.+)$", r"\1 latest"),
+            (r"^how (?:do i|can i|to)\s+(.+)$", r"how to \1"),
+            (r"^who is\s+(.+)$", r"\1"),
+            (r"^what (?:do you think about|is your take on)\s+(.+)$", r"\1"),
+            (r"^(?:tell me |find |search for |look up |google )(.+)$", r"\1"),
+            (r"^(?:can you |could you |please )(?:tell me |find |search |look up )?(.+)$", r"\1"),
+            (r"^(?:what is|what are|why is|why are|where is|when is)\s+(.+)$", r"\1"),
+            (r"^anything (?:about|on)\s+(.+)$", r"\1"),
+            (r"^(?:explain|describe)\s+(.+)$", r"\1"),
+            (r"^news (?:about|on)\s+(.+)$", r"\1 news"),
         ]
+        for pattern, repl in intent_rewrites:
+            m = re.match(pattern, lower, re.IGNORECASE)
+            if m:
+                cleaned = re.sub(pattern, repl, lower, count=1, flags=re.IGNORECASE)
+                cleaned = cleaned.strip().rstrip("?")
+                if cleaned:
+                    return [cleaned], "intent-based search"
+                break
+
+        # Generic cleanup: remove leading filler and trailing "?"
+        removals = [
+            r"^(?:can you |could you |please |i want to know |tell me |what is |what are |how do |how does |how can |why is |why are |where is |where are |when is |when did )",
+            r"\?+$",
+            r"^(?:search for |look up |find |google )",
+        ]
+        cleaned = lower
         for pattern in removals:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-        
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.strip()
         if not cleaned:
-            cleaned = user_prompt
-            
+            cleaned = text.strip().rstrip("?")
         return [cleaned], "general search"
     
     def _decode_duckduckgo_redirect(self, url: str) -> str:

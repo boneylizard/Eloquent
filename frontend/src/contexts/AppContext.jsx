@@ -11,7 +11,8 @@ import { ttsClient } from '../utils/apiCall';
 import { processAntiRepetition } from '../utils/antiRepetition';
 
 
-const AppContext = createContext(null);
+const defaultAppContextValue = { activeTab: 'chat', setActiveTab: () => {} };
+const AppContext = createContext(defaultAppContextValue);
 const logPromptSample = (prompt, maxLength = 500) => {
   const sample = prompt.length > maxLength ?
     prompt.substring(0, maxLength) + '...' :
@@ -338,6 +339,8 @@ const AppProvider = ({ children }) => {
   const [dualModeEnabled, setDualModeEnabled] = useState(false);
   const [agentConversationActive, setAgentConversationActive] = useState(false);
   const [autoMemoryEnabled, setAutoMemoryEnabled] = useState(true); // Default to enabled
+  const [lastAgenticMemoryFeedback, setLastAgenticMemoryFeedback] = useState(null); // { added, characterName } when agentic memory adds insights
+  const [lastAgenticRunStatus, setLastAgenticRunStatus] = useState(null); // 'ok' | 'error' | null — reflects whether backend actually ran (so UI doesn't lie)
   const [autoDeleteChats, setAutoDeleteChats] = useState(false); // Default to false
   // avatar sizing for chat
   const [userAvatarSize] = useState(64);
@@ -409,6 +412,9 @@ const AppProvider = ({ children }) => {
   // Refs for avatar canvases
   const primaryAvatarRef = useRef(null);
   const secondaryAvatarRef = useRef(null);
+  /** Refs updated every render so async sendMessage always reads latest (fixes "only works in new chats"). */
+  const conversationsRef = useRef([]);
+  const activeConversationRef = useRef(null);
   const [conversations, setConversations] = useState([]);
   const [activeConversation, setActiveConversation] = useState(null);
   const [activeCharacterIds, setActiveCharacterIds] = useState([]);
@@ -417,6 +423,16 @@ const AppProvider = ({ children }) => {
 
   const [messages, setMessages] = useState([]);
   const [taskProgress, setTaskProgress] = useState({ progress: 0, status: '', active: false });
+
+  // Refs updated every render so async sendMessage reads latest conversation/flag (no effect timing issues)
+  conversationsRef.current = conversations;
+  activeConversationRef.current = activeConversation;
+
+  // Clear backend run status when switching chats so "ran" / "error" isn't from a different chat
+  useEffect(() => {
+    setLastAgenticRunStatus(null);
+  }, [activeConversation]);
+
   const deleteConversation = useCallback((id) => {
     try {
       // Update state first
@@ -682,7 +698,10 @@ const AppProvider = ({ children }) => {
       try {
         const savedConversations = localStorage.getItem('Eloquent-conversations');
         if (savedConversations) {
-          const parsedConversations = JSON.parse(savedConversations);
+          const parsedConversations = JSON.parse(savedConversations).map(c => ({
+            ...c,
+            agenticMemoryEnabled: c.agenticMemoryEnabled === true
+          }));
           setConversations(parsedConversations);
 
           const lastActiveId = localStorage.getItem('Eloquent-active-conversation');
@@ -1167,7 +1186,8 @@ const AppProvider = ({ children }) => {
   }, [PRIMARY_API_URL]);
 
   // 2. Generate image via POST - supports Local SD, A1111, and ComfyUI
-  const generateImage = useCallback(async (prompt, opts, gpuId = 0) => {
+  // optional 4th arg: { signal } for AbortController (cancel in-flight request)
+  const generateImage = useCallback(async (prompt, opts, gpuId = 0, options = {}) => {
     console.log(`Starting image generation for GPU ${gpuId} with prompt:`, prompt);
     console.log("Image generation options:", opts);
 
@@ -1298,11 +1318,13 @@ const AppProvider = ({ children }) => {
       console.log("Using image engine:", imageEngine);
       console.log("API URL:", endpoint);
 
-      const res = await fetch(endpoint, {
+      const fetchOpts = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
+      };
+      if (options.signal) fetchOpts.signal = options.signal;
+      const res = await fetch(endpoint, fetchOpts);
 
       if (!res.ok) {
         const errorText = await res.text();
@@ -1768,6 +1790,67 @@ const AppProvider = ({ children }) => {
     [autoMemoryEnabled, userProfile, memoryContext, MEMORY_API_URL]
   );
 
+  const processAgenticMemoryIfEnabled = useCallback(
+    async (userId, character, userMessage, aiResponse, agenticEnabled, apiOptions = null) => {
+      const charName = character?.name || 'Character';
+      const charId = character?.id || null;
+      // One clear log every time so you can see what activates or blocks it
+      if (!agenticEnabled) {
+        console.log('🧠 Agentic memory: OFF for this chat (Brain icon not enabled).');
+        return;
+      }
+      if (!userId) {
+        console.warn('🧠 Agentic memory: ON but SKIPPED — no user id (need userProfile.id or Memory profile selected).');
+        return;
+      }
+      if (!character?.id) {
+        console.warn('🧠 Agentic memory: ON but SKIPPED — no character id (speaker was null or has no id). Character:', charName);
+        return;
+      }
+      const url = `${MEMORY_API_URL}/memory/agentic/process`;
+      console.warn('🧠 Agentic memory: FETCHING', url, '| user_id=', userId?.slice?.(0, 12), '| character_id=', charId?.slice?.(0, 12));
+      const body = {
+        user_id: userId,
+        character_id: character.id,
+        character_name: charName,
+        user_message: userMessage,
+        ai_response: aiResponse
+      };
+      if (apiOptions?.useApi && apiOptions?.apiBaseUrl && apiOptions?.modelName) {
+        body.use_api = true;
+        body.api_base_url = apiOptions.apiBaseUrl;
+        body.model_name = apiOptions.modelName;
+      }
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => res.statusText);
+          console.error('🧠 Agentic memory: backend failed', res.status, errText);
+          setLastAgenticRunStatus('error');
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        const added = data.added ?? 0;
+        setLastAgenticRunStatus('ok'); // UI can show backend actually ran
+        if (added > 0) {
+          console.log(`🧠 Agentic memory: saved ${added} insight(s) for ${charName}`);
+          setLastAgenticMemoryFeedback({ added, characterName: charName });
+          setTimeout(() => setLastAgenticMemoryFeedback(null), 5000);
+        } else {
+          console.log(`🧠 Agentic memory: backend ran for ${charName} — no new insights`);
+        }
+      } catch (err) {
+        console.error('🧠 Agentic memory: backend error', err);
+        setLastAgenticRunStatus('error');
+      }
+    },
+    [MEMORY_API_URL]
+  );
+
   // ----------------------------------
   // Model Management
   // ----------------------------------
@@ -1944,7 +2027,8 @@ const AppProvider = ({ children }) => {
       activeCharacterWeights: defaultActiveWeights,
       multiRoleContext: '',
       created: new Date().toISOString(),
-      requiresTitle: true
+      requiresTitle: true,
+      agenticMemoryEnabled: false
     };
     console.log('🔍 [DEBUG] New conversation has requiresTitle flag:', conv.requiresTitle);
     setConversations(prev => [...prev, conv]);
@@ -2305,6 +2389,13 @@ const AppProvider = ({ children }) => {
       ]);
 
       await observeConversationWithAgent(text, `${pRes.text}\n\n${sRes.text}`);
+      const userIdDual = userProfile?.id || memoryContext?.activeProfileId;
+      const activeIdDual = activeConversationRef.current;
+      const agenticOnDual = (conversationsRef.current.find(c => c.id === activeIdDual)?.agenticMemoryEnabled) === true;
+      const apiOptsDual = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
+      console.log('🧠 Agentic memory:', agenticOnDual ? 'ON' : 'OFF', '| userId:', userIdDual ? 'set' : 'MISSING', '| speakers: primary + secondary');
+      processAgenticMemoryIfEnabled(userIdDual, primaryCharacter, text, pText, agenticOnDual, apiOptsDual);
+      processAgenticMemoryIfEnabled(userIdDual, secondaryCharacter, text, sText, agenticOnDual, apiOptsDual);
 
       // Auto-play TTS for BOTH messages if enabled
       if (settings.ttsAutoPlay && settings.ttsEnabled) {
@@ -2319,7 +2410,7 @@ const AppProvider = ({ children }) => {
     } finally {
       setIsGenerating(false);
     }
-  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, settings, observeConversationWithAgent, summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags]);
+  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, memoryContext, settings, observeConversationWithAgent, processAgenticMemoryIfEnabled, summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags]);
 
   const getMultiRoleContextBlock = useCallback(() => {
     if (!settings.multiRoleMode) return '';
@@ -2706,6 +2797,26 @@ Return ONLY valid JSON:
         }).join('\n');
         contextToAdd += `\n\n[WORLD KNOWLEDGE - Essential lore guidance for this response]\n${loreBlock}`;
       }
+      // Optional agentic memory: when enabled for this chat (use refs so it matches post-reply processing)
+      if (activeConversationRef.current && character?.id) {
+        const conv = conversationsRef.current.find(c => c.id === activeConversationRef.current);
+        if (conv?.agenticMemoryEnabled) {
+          const userId = userProfile?.id || (typeof memoryContext !== 'undefined' ? memoryContext?.activeProfileId : null);
+          if (userId) {
+            try {
+              const res = await fetch(`${MEMORY_API_URL}/memory/agentic?user_id=${encodeURIComponent(userId)}&character_id=${encodeURIComponent(character.id)}`);
+              if (res.ok) {
+                const data = await res.json();
+                if (data.formatted_context && data.formatted_context.trim()) {
+                  contextToAdd += '\n\n' + data.formatted_context.trim();
+                }
+              }
+            } catch (err) {
+              console.error('🧠 [Agentic memory] fetch error:', err);
+            }
+          }
+        }
+      }
     }
 
     systemMsg += contextToAdd;
@@ -2721,7 +2832,7 @@ Return ONLY valid JSON:
     const hasSummary = systemMsg.includes('[PREVIOUS STORY SUMMARY]');
     console.log(`[Summary] System prompt includes summary: ${hasSummary}`);
     return systemMsg;
-  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt, buildNarratorSystemPrompt, buildRoleplayRosterBlock, getRoleplayUserName, getMultiRoleContextBlock, applyAuthorNoteTags]);
+  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt, buildNarratorSystemPrompt, buildRoleplayRosterBlock, getRoleplayUserName, getMultiRoleContextBlock, applyAuthorNoteTags, activeConversation, conversations]);
 
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
@@ -2959,6 +3070,7 @@ Return ONLY valid JSON:
     PRIMARY_API_URL, SECONDARY_API_URL
   ]);
   const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNote = null) => {
+    console.warn('🧠 sendMessage ENTRY — if you do not see this when you hit Send, you are not using this code path.');
     // Can't send without a model
     if (!primaryModel) {
       console.warn("📩 [SEND] No model loaded, cannot send message");
@@ -3138,15 +3250,20 @@ Return ONLY valid JSON:
                 }
                 try {
                   const parsed = JSON.parse(dataStr);
-                  if (parsed.text) {
-                    accumulated += parsed.text;
+                  let content = parsed.text;
+                  if (content == null && parsed.choices?.[0]?.delta) {
+                    const delta = parsed.choices[0].delta;
+                    content = delta.content ?? delta.reasoning ?? '';
+                  }
+                  if (content) {
+                    accumulated += content;
                     const partial = cleanModelOutput(accumulated);
                     const newTextChunk = partial.slice(lastSentContent.length);
                     if (newTextChunk) addStreamingText(newTextChunk);
                     lastSentContent = partial;
                     setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: partial } : m));
                   }
-                  if (parsed.done) {
+                  if (parsed.done || parsed.choices?.[0]?.finish_reason) {
                     llmStreamComplete = true;
                     break;
                   }
@@ -3156,6 +3273,7 @@ Return ONLY valid JSON:
             }
 
             const finalCleaned = cleanModelOutput(accumulated);
+            console.log('🧠 Stream done. accumulated length:', accumulated.length, 'finalCleaned length:', finalCleaned.length);
             if (primaryIsAPI && !finalCleaned && attempts < maxAttempts) {
               console.warn("⚠️ [Auto-Retry] Empty response from API, retrying...");
               if (streamResponses) endStreamingTTS();
@@ -3164,6 +3282,12 @@ Return ONLY valid JSON:
 
             setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: finalCleaned, isStreaming: false } : m));
             observeConversationWithAgent(text, finalCleaned);
+            const activeId = activeConversationRef.current;
+            const agenticOn = (conversationsRef.current.find(c => c.id === activeId)?.agenticMemoryEnabled) === true;
+            const apiOpts = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
+            const userIdForAgentic = userProfile?.id || memoryContext?.activeProfileId;
+            console.log('🧠 Agentic memory:', agenticOn ? 'ON' : 'OFF', '| userId:', userIdForAgentic ? 'set' : 'MISSING', '| speaker:', speakerCharacter?.name ?? 'MISSING');
+            processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, finalCleaned, agenticOn, apiOpts);
             success = true;
             if (streamResponses) endStreamingTTS();
           } else {
@@ -3175,6 +3299,12 @@ Return ONLY valid JSON:
             }
             setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: cleanedText, isStreaming: false } : m));
             observeConversationWithAgent(text, cleanedText);
+            const activeId = activeConversationRef.current;
+            const agenticOn = (conversationsRef.current.find(c => c.id === activeId)?.agenticMemoryEnabled) === true;
+            const apiOpts = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
+            const userIdForAgentic = userProfile?.id || memoryContext?.activeProfileId;
+            console.log('🧠 Agentic memory:', agenticOn ? 'ON' : 'OFF', '| userId:', userIdForAgentic ? 'set' : 'MISSING', '| speaker:', speakerCharacter?.name ?? 'MISSING');
+            processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, cleanedText, agenticOn, apiOpts);
             success = true;
 
             // Trigger TTS if autoplay is on
@@ -3211,7 +3341,7 @@ Return ONLY valid JSON:
     activeConversation, primaryModel, messages, conversations, settings, userCharacter,
     userProfile?.id, PRIMARY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, MEMORY_API_URL,
     formatPrompt, cleanModelOutput, generateChatTitle, memoryContext, resolveSpeakerCharacter,
-    observeConversationWithAgent, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext,
+    observeConversationWithAgent, processAgenticMemoryIfEnabled, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext,
     summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags
   ]);
 
@@ -3648,24 +3778,24 @@ Return ONLY valid JSON:
     };
   }, [PRIMARY_API_URL, settings?.customApiEndpoints]);
 
-  // Update the current conversation when messages change
+  // Update the current conversation when messages change (explicitly keep agenticMemoryEnabled so it's never dropped)
   useEffect(() => {
     if (!activeConversation || messages.length === 0) return;
 
     setConversations(prev => prev.map(conv =>
       conv.id === activeConversation
-        ? { ...conv, messages: messages }
+        ? { ...conv, messages, agenticMemoryEnabled: conv.agenticMemoryEnabled }
         : conv
     ));
   }, [messages, activeConversation]);
 
-  // Save all conversations to localStorage
+  // Save all conversations to localStorage (explicitly keep agenticMemoryEnabled)
   useEffect(() => {
     if (conversations.length === 0) return;
 
     const updatedConversations = conversations.map(conv =>
       conv.id === activeConversation
-        ? { ...conv, messages: messages }
+        ? { ...conv, messages, agenticMemoryEnabled: conv.agenticMemoryEnabled }
         : conv
     );
 
@@ -3682,7 +3812,10 @@ Return ONLY valid JSON:
       try {
         const savedConversations = localStorage.getItem('Eloquent-conversations');
         if (savedConversations) {
-          const parsedConversations = JSON.parse(savedConversations);
+          const parsedConversations = JSON.parse(savedConversations).map(c => ({
+            ...c,
+            agenticMemoryEnabled: c.agenticMemoryEnabled === true
+          }));
           setConversations(parsedConversations);
 
           // Load active conversation if available
@@ -3885,7 +4018,66 @@ Return ONLY valid JSON:
 
   }, [primaryModel, messages, PRIMARY_API_URL]);
 
+  /**
+   * Append an existing summary with new details from the current conversation.
+   * Produces one updated summary (old + new) and saves it as a new file.
+   * @param {{ id: string, title: string, content: string }} existingSummary - The summary to append to
+   * @returns {Promise<{ id: string, title: string, content: string }|null>} Saved summary or null on failure
+   */
+  const generateAppendedSummary = useCallback(async (existingSummary) => {
+    if (!primaryModel || !messages?.length || !existingSummary?.content) return null;
+    const existingContent = typeof existingSummary.content === 'string' ? existingSummary.content : '';
+    const existingTitle = existingSummary.title || 'Summary';
+    if (!existingContent.trim()) return null;
 
+    setIsGenerating(true);
+    try {
+      const chatHistory = messages.map(m => `${m.role === 'user' ? 'User' : (m.characterName || 'Character')}: ${m.content}`).join('\n');
+      const appendPrompt = `You have an existing story summary and a new conversation. Merge them into a single updated summary.
+
+Rules:
+- Keep all information from the existing summary.
+- Add or update with new details from the conversation (new events, character developments, setting changes).
+- Use the same style (e.g. bullet points). Do not remove existing points unless the conversation clearly contradicts them.
+- Output only the updated summary, no preamble.
+
+EXISTING SUMMARY:
+${existingContent}
+
+NEW CONVERSATION:
+${chatHistory}
+
+UPDATED SUMMARY:`;
+
+      const response = await fetch(`${PRIMARY_API_URL}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_name: primaryModel,
+          prompt: appendPrompt,
+          max_tokens: 600,
+          temperature: 0.3,
+          gpu_id: 0,
+          stop: ['\n\nUser:', '\n\nCharacter:']
+        })
+      });
+
+      if (!response.ok) throw new Error("Failed to generate appended summary");
+
+      const data = await response.json();
+      const summaryText = (data.text || data.choices?.[0]?.text || "").trim();
+      if (!summaryText) return null;
+
+      const title = `${existingTitle} + update ${new Date().toLocaleString()}`;
+      const saved = await saveSummary(title, summaryText);
+      return saved;
+    } catch (e) {
+      console.error("Appended summary generation failed:", e);
+      return null;
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [primaryModel, messages, PRIMARY_API_URL]);
 
   const contextValue = useMemo(() => ({
     messages,
@@ -3988,6 +4180,9 @@ Return ONLY valid JSON:
     setAutoMemoryEnabled,
     getRelevantMemories,
     MEMORY_API_URL,
+    lastAgenticMemoryFeedback,
+    lastAgenticRunStatus,
+    setLastAgenticRunStatus,
     addConversationSummary,
     activeTab,
     setActiveTab,
@@ -4061,11 +4256,12 @@ Return ONLY valid JSON:
     TTS_API_URL,
     clearError: () => setApiError(null),
     generateConversationSummary,
+    generateAppendedSummary,
     activeContextSummary,
     setActiveContextSummary,
     unlockAudioContext
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, generateCallModeFollowUp, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, generateCallModeFollowUp, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
   ]);
 
 

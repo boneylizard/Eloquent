@@ -8,7 +8,7 @@ import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo, A
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { useApp } from '../contexts/AppContext';
 
-const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) => {
+const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCancelRegenerations, isRegenerationRunning }) => {
   const { primaryModel, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile, setBackgroundImage } = useApp();
 
   // Existing state
@@ -554,29 +554,43 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
             {/* HIDE Controls if Video */}
             {message.type !== 'video' && (
               <>
-                {/* Regenerate button */}
+                {/* Regenerate / Cancel regeneration */}
                 {onRegenerate && (
-                  <Button
-                    size='sm'
-                    variant='ghost'
-                    onClick={() => onRegenerate({
-                      prompt: message.original_prompt || message.prompt || '',
-                      negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
-                      width: message.original_width || message.width || 512,
-                      height: message.original_height || message.height || 512,
-                      steps: message.original_steps || message.steps || 20,
-                      guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
-                      sampler: message.original_sampler || message.sampler || 'Euler a',
-                      seed: -1,
-                      model: message.original_model || message.model || '',
-                      gpu_id: message.gpuId ?? 0
-                    })}
-                    className='h-8 px-2 text-xs'
-                    title='Regenerate with same parameters'
-                  >
-                    <RotateCcw className='h-3 w-3 mr-1' />
-                    Regenerate {regenerationQueue > 0 && `(${regenerationQueue})`}
-                  </Button>
+                  <>
+                    <Button
+                      size='sm'
+                      variant='ghost'
+                      onClick={() => onRegenerate({
+                        prompt: message.original_prompt || message.prompt || '',
+                        negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
+                        width: message.original_width || message.width || 512,
+                        height: message.original_height || message.height || 512,
+                        steps: message.original_steps || message.steps || 20,
+                        guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
+                        sampler: message.original_sampler || message.sampler || 'Euler a',
+                        seed: -1,
+                        model: message.original_model || message.model || '',
+                        gpu_id: message.gpuId ?? 0
+                      })}
+                      className='h-8 px-2 text-xs'
+                      title='Regenerate with same parameters'
+                    >
+                      <RotateCcw className='h-3 w-3 mr-1' />
+                      Regenerate {regenerationQueue > 0 && `(${regenerationQueue})`}
+                    </Button>
+                    {(regenerationQueue > 0 || isRegenerationRunning) && onCancelRegenerations && (
+                      <Button
+                        size='sm'
+                        variant='ghost'
+                        onClick={onCancelRegenerations}
+                        className='h-8 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10'
+                        title='Cancel regenerations'
+                      >
+                        <X className='h-3 w-3 mr-1' />
+                        Cancel
+                      </Button>
+                    )}
+                  </>
                 )}
 
                 {/* Enhancement controls */}
@@ -965,29 +979,43 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue }) =>
                 </div>
 
                 <div className='flex gap-2 flex-shrink-0'>
-                  {/* Regenerate in viewer */}
+                  {/* Regenerate / Cancel in viewer */}
                   {onRegenerate && (
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      onClick={() => onRegenerate({
-                        prompt: message.original_prompt || message.prompt || '',
-                        negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
-                        width: message.original_width || message.width || 512,
-                        height: message.original_height || message.height || 512,
-                        steps: message.original_steps || message.steps || 20,
-                        guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
-                        sampler: message.original_sampler || message.sampler || 'Euler a',
-                        seed: -1,
-                        model: message.original_model || message.model || '',
-                        gpu_id: message.gpuId ?? 0
-                      })}
-                      className='h-8 px-2 text-xs'
-                      title='Regenerate with same parameters'
-                    >
-                      <RotateCcw className='h-3 w-3 mr-1' />
-                      Regenerate {regenerationQueue > 0 && `(${regenerationQueue})`}
-                    </Button>
+                    <>
+                      <Button
+                        size='sm'
+                        variant='ghost'
+                        onClick={() => onRegenerate({
+                          prompt: message.original_prompt || message.prompt || '',
+                          negative_prompt: message.original_negative_prompt || message.negative_prompt || '',
+                          width: message.original_width || message.width || 512,
+                          height: message.original_height || message.height || 512,
+                          steps: message.original_steps || message.steps || 20,
+                          guidance_scale: message.original_guidance_scale || message.guidance_scale || 7.0,
+                          sampler: message.original_sampler || message.sampler || 'Euler a',
+                          seed: -1,
+                          model: message.original_model || message.model || '',
+                          gpu_id: message.gpuId ?? 0
+                        })}
+                        className='h-8 px-2 text-xs'
+                        title='Regenerate with same parameters'
+                      >
+                        <RotateCcw className='h-3 w-3 mr-1' />
+                        Regenerate {regenerationQueue > 0 && `(${regenerationQueue})`}
+                      </Button>
+                      {(regenerationQueue > 0 || isRegenerationRunning) && onCancelRegenerations && (
+                        <Button
+                          size='sm'
+                          variant='ghost'
+                          onClick={onCancelRegenerations}
+                          className='h-8 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10'
+                          title='Cancel regenerations'
+                        >
+                          <X className='h-3 w-3 mr-1' />
+                          Cancel
+                        </Button>
+                      )}
+                    </>
                   )}
 
                   {message.prompt && (
