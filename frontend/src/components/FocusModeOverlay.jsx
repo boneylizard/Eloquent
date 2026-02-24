@@ -44,6 +44,8 @@ const FocusModeOverlay = ({
   isPlayingAudio,
   handleSpeakerClick,
   handleRegenerateImage,
+  onCancelRegenerations,
+  isRegenerationRunning,
   regenerationQueue,
   currentVariantIndex,
   formatModelName,
@@ -217,6 +219,8 @@ const lastMessageAvatars = useMemo(() => {
       isPlayingAudio={isPlayingAudio}
       handleSpeakerClick={handleSpeakerClick}
       handleRegenerateImage={handleRegenerateImage}
+      onCancelRegenerations={onCancelRegenerations}
+      isRegenerationRunning={isRegenerationRunning}
       regenerationQueue={regenerationQueue}
       getCurrentVariantContent={getCurrentVariantContent}
       getVariantCount={getVariantCount}

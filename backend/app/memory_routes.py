@@ -8,6 +8,7 @@ import os
 import logging
 import traceback
 from . import memory_intelligence
+from . import agentic_memory
 from . import inference  # Import the inference module
 from .model_manager import ModelManager
 from fastapi.responses import JSONResponse
@@ -194,14 +195,14 @@ async def detect_memory_intent_api(
         # Use provided name or find the first one available on GPU 1
         model_to_use = detect_request.model_name
         if not model_to_use:
-            # Use await if find_suitable_model is async
-            model_to_use = await model_manager.find_suitable_model(gpu_id=target_gpu_id)
-
-        logger.info(f"Using model '{model_to_use}' on GPU {target_gpu_id} for intent detection.")
+            model_to_use = await model_manager.find_suitable_model(gpu_id=target_gpu_id, quiet=True)
 
         if not model_to_use:
-            logger.error(f"API /detect_intent: No suitable model found on GPU {target_gpu_id}.")
-            raise HTTPException(status_code=500, detail=f"No suitable memory detection model loaded on GPU {target_gpu_id}")
+            # No local model for memory detection — return success with "no memory" so callers don't log errors
+            logger.debug(f"API /detect_intent: No model on GPU {target_gpu_id}; skipping (returning MEMORY_DETECTED: NO).")
+            return {"status": "skipped", "detection_result": "MEMORY_DETECTED: NO"}
+
+        logger.info(f"Using model '{model_to_use}' on GPU {target_gpu_id} for intent detection.")
 
         # Improved memory detection prompt that's more selective
         memory_detection_prompt = f"""Analyze this user message for personal information:
@@ -1147,6 +1148,96 @@ async def model_based_extraction(
         logger.error(f"Error during model-based extraction for user '{user_id}': {e}", exc_info=True) # Log user_id
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# --- Agentic memory (character-scoped, optional) ---
+class AgenticProcessRequest(BaseModel):
+    user_id: str
+    character_id: str
+    character_name: Optional[str] = None
+    user_message: str
+    ai_response: str
+    use_api: bool = False
+    api_base_url: Optional[str] = None
+    model_name: Optional[str] = None
+
+
+@memory_router.get("/agentic")
+async def get_agentic_memory(
+    user_id: str = Query(...),
+    character_id: str = Query(...),
+):
+    """
+    Get the agentic memory profile for (user_id, character_id).
+    Returns insights list and optional formatted context for injection.
+    """
+    logger.info(f"[Agentic Memory] GET /agentic user_id={user_id!r} character_id={character_id!r}")
+    if not user_id or not character_id:
+        raise HTTPException(status_code=400, detail="user_id and character_id are required")
+    try:
+        profile = agentic_memory.get_agentic_profile(user_id, character_id)
+        formatted = agentic_memory.format_agentic_context(profile["insights"])
+        count = len(profile["insights"])
+        logger.info(f"[Agentic Memory] GET /agentic -> {count} insights, formatted_context={len(formatted)} chars")
+        return {
+            "status": "success",
+            "insights": profile["insights"],
+            "formatted_context": formatted,
+            "count": count,
+        }
+    except Exception as e:
+        logger.error(f"agentic_memory get error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.post("/agentic/process")
+async def process_agentic_memory(
+    request: Request,
+    body: AgenticProcessRequest,
+    background_tasks: BackgroundTasks,
+    model_manager: ModelManager = Depends(get_model_manager_from_state),
+):
+    """
+    Run the agentic memory agent on a user/bot exchange and append new insights
+    to the character-specific profile. Optional; only call when character has
+    agenticMemoryEnabled.
+    """
+    logger.warning("[Agentic Memory] REQUEST RECEIVED at /memory/agentic/process — if you never see this, the frontend is not calling this URL.")
+    logger.info(f"[Agentic Memory] POST /agentic/process user_id={body.user_id!r} character_id={body.character_id!r} char_name={body.character_name!r}")
+    if not body.user_id or not body.character_id:
+        raise HTTPException(status_code=400, detail="user_id and character_id are required")
+    single_gpu_mode = getattr(request.app.state, "single_gpu_mode", False)
+    gpu_id = 0 if single_gpu_mode else 0
+    try:
+        profile = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
+        use_api = body.use_api and body.api_base_url and body.model_name
+        new_insights = await agentic_memory.run_agentic_agent(
+            model_manager=model_manager,
+            user_message=body.user_message,
+            ai_response=body.ai_response,
+            character_name=body.character_name or "Character",
+            existing_insights=profile["insights"],
+            gpu_id=gpu_id,
+            single_gpu_mode=single_gpu_mode,
+            api_base_url=body.api_base_url if use_api else None,
+            api_model_name=body.model_name if use_api else None,
+        )
+        if not new_insights:
+            logger.info(f"[Agentic Memory] POST /agentic/process -> no new insights (agent returned 0)")
+            return {"status": "success", "added": 0, "message": "No new insights"}
+        added = agentic_memory.add_agentic_insights(
+            body.user_id, body.character_id, new_insights
+        )
+        logger.info(f"[Agentic Memory] POST /agentic/process -> added {added} insight(s)")
+        return {
+            "status": "success",
+            "added": added,
+            "message": f"Added {added} insight(s) to character memory.",
+            "insights": new_insights[:10],
+        }
+    except Exception as e:
+        logger.error(f"[Agentic Memory] POST /agentic/process error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # This router will be imported in main.py
 router = memory_router

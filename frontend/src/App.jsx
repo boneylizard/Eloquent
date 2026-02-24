@@ -28,7 +28,11 @@ import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
 // Inner component to access theme context easily
 function AppContent() {
   const { theme, setTheme } = useTheme(); // Use the theme hook here
-  const { activeTab, setActiveTab } = useApp(); // Get active tab from AppContext
+  const appContext = useApp();
+  if (!appContext) {
+    return <div className="p-4">Loading...</div>;
+  }
+  const { activeTab, setActiveTab } = appContext;
   // Default to closed on mobile (< 768px), open on desktop
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768);
   const [showLogin, setShowLogin] = useState(false);

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 whisper_processor = None
 whisper_model = None
 parakeet_model = None
+parakeet_zh_model = None  # NeMo Mandarin Chinese ASR
 
 def get_device():
     """Determines the correct Torch device for the current process."""
@@ -40,6 +41,8 @@ def get_device():
 DEVICE = get_device()
 WHISPER_MODEL_ID = "openai/whisper-large-v3-turbo"
 PARAKEET_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v2"
+# NeMo Conformer-Transducer Large for Mandarin Chinese (16 kHz mono WAV)
+PARAKEET_ZH_MODEL_ID = "nvidia/stt_zh_conformer_transducer_large"
 
 def load_whisper_model():
     """Loads the Processor and Model using transformers if not already loaded."""
@@ -148,6 +151,55 @@ def load_parakeet_model():
     
     return parakeet_model
 
+
+def load_parakeet_zh_model():
+    """Loads the NVIDIA NeMo Mandarin Chinese ASR model (Conformer-Transducer Large)."""
+    global parakeet_zh_model
+    if parakeet_zh_model is None:
+        os.environ.setdefault("NEMO_DISABLE_ONELOGGER", "True")
+        os.environ.setdefault("NEMO_LOGGING_LEVEL", "ERROR")
+        for noisy_logger in [
+            "nemo", "nemo_logging", "torch.distributed", "lhotse", "torio",
+            "pytorch_lightning", "nv_one_logger", "nemo.utils.import_utils",
+        ]:
+            logging.getLogger(noisy_logger).setLevel(logging.ERROR)
+            logging.getLogger(noisy_logger).propagate = False
+
+        try:
+            try:
+                import nemo.collections.asr as nemo_asr
+            except (ImportError, TypeError) as e:
+                logger.info(f"NeMo not found ({e}). Attempting install...")
+                try:
+                    subprocess = __import__("subprocess")
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "nemo_toolkit[asr]"])
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy<2"])
+                    importlib.invalidate_caches()
+                    import nemo.collections.asr as nemo_asr
+                except Exception as install_err:
+                    logger.error(f"Failed to install NeMo: {install_err}")
+                    return None
+
+            try:
+                from nemo.utils import logging as nemo_logging
+                nemo_logging.set_verbosity(nemo_logging.ERROR)
+            except Exception:
+                pass
+
+            logger.info(f"Loading NeMo Chinese ASR model '{PARAKEET_ZH_MODEL_ID}' onto device {DEVICE}...")
+            # EncDecRNNTModel for Conformer-Transducer (not ASRModel)
+            asr_model = nemo_asr.models.EncDecRNNTModel.from_pretrained(model_name=PARAKEET_ZH_MODEL_ID)
+            if DEVICE.startswith("cuda"):
+                asr_model = asr_model.to(DEVICE)
+            parakeet_zh_model = asr_model
+            logger.info(f"NeMo Chinese ASR model '{PARAKEET_ZH_MODEL_ID}' loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load NeMo Chinese ASR model '{PARAKEET_ZH_MODEL_ID}': {e}", exc_info=True)
+            parakeet_zh_model = None
+    return parakeet_zh_model
+
+
 async def transcribe_audio(audio_file_path: str, engine: str = "whisper") -> str:
     """Transcribes audio using the selected STT engine."""
     logger.info(f"Transcribing using engine: {engine}")
@@ -160,6 +212,13 @@ async def transcribe_audio(audio_file_path: str, engine: str = "whisper") -> str
             return await transcribe_with_parakeet(audio_file_path)
         else:
             logger.warning("Parakeet model failed to load, falling back to Whisper")
+            return await transcribe_with_whisper(audio_file_path)
+    elif engine == "parakeet-zh":
+        zh_model = load_parakeet_zh_model()
+        if zh_model:
+            return await transcribe_with_parakeet_zh(audio_file_path)
+        else:
+            logger.warning("Parakeet-ZH (Chinese) model failed to load, falling back to Whisper")
             return await transcribe_with_whisper(audio_file_path)
     else:
         logger.warning(f"Unknown STT engine: {engine}, falling back to Whisper")
@@ -293,10 +352,10 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
         transcripts = []
         for item in result:
             if isinstance(item, str):
-                text = item
+                text = item.strip()
             else:
-                text = getattr(item, "text", None) or getattr(item, "transcript", None) or str(item)
-            text = text.strip()
+                text = getattr(item, "text", None) or getattr(item, "transcript", None)
+                text = text.strip() if isinstance(text, str) else ""
             if text:
                 transcripts.append(text)
 
@@ -320,6 +379,80 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
                 temp_dir.cleanup()
             except Exception:
                 pass
+
+
+async def transcribe_with_parakeet_zh(audio_file_path: str) -> str:
+    """Transcribes audio using the NeMo Mandarin Chinese ASR model (16 kHz mono)."""
+    global parakeet_zh_model
+    if not parakeet_zh_model:
+        raise RuntimeError("Parakeet-ZH (Chinese) model is not loaded.")
+
+    temp_wav_path = None
+    temp_dir = None
+    try:
+        logger.info(f"Loading audio for Parakeet-ZH: {audio_file_path}")
+        audio, sr = librosa.load(audio_file_path, sr=16000, mono=True, duration=None)
+        audio_duration = len(audio) / sr
+        logger.info(f"Parakeet-ZH audio loaded. Sample rate: {sr}, Duration: {audio_duration:.2f}s")
+
+        chunk_paths = []
+        if audio_duration > 30:
+            chunk_size = 20 * sr
+            overlap = 2 * sr
+            temp_dir = tempfile.TemporaryDirectory()
+            for i in range(0, len(audio), chunk_size - overlap):
+                chunk = audio[i:i + chunk_size]
+                if len(chunk) < sr * 1:
+                    continue
+                chunk_path = os.path.join(temp_dir.name, f"chunk_{i}.wav")
+                sf.write(chunk_path, chunk, sr)
+                chunk_paths.append(chunk_path)
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                temp_wav_path = tmp.name
+            sf.write(temp_wav_path, audio, sr)
+            chunk_paths.append(temp_wav_path)
+
+        logger.info(f"Transcribing with Parakeet-ZH ({len(chunk_paths)} chunk(s))")
+        loop = asyncio.get_event_loop()
+        raw_result = await loop.run_in_executor(
+            None,
+            lambda: parakeet_zh_model.transcribe(chunk_paths),
+        )
+        # RNNT transcribe can return (hypotheses, batch_lengths) tuple; use first element
+        if isinstance(raw_result, (list, tuple)) and len(raw_result) == 2:
+            result = raw_result[0]
+        else:
+            result = raw_result if isinstance(raw_result, (list, tuple)) else [raw_result]
+
+        transcripts = []
+        for item in result:
+            # Only use .text or .transcript; never str(item) or we get Hypothesis repr dump
+            text = getattr(item, "text", None) or getattr(item, "transcript", None)
+            if isinstance(text, str):
+                text = text.strip()
+            else:
+                text = ""
+            if text:
+                transcripts.append(text)
+        transcript_text = " ".join(transcripts).strip()
+        logger.info(f"Parakeet-ZH transcription complete. Output length: {len(transcript_text)}")
+        return transcript_text
+    except Exception as e:
+        logger.error(f"Error during Parakeet-ZH transcription: {e}", exc_info=True)
+        raise RuntimeError(f"Parakeet-ZH transcription failed: {str(e)}")
+    finally:
+        if temp_wav_path and os.path.exists(temp_wav_path):
+            try:
+                os.remove(temp_wav_path)
+            except Exception:
+                pass
+        if temp_dir:
+            try:
+                temp_dir.cleanup()
+            except Exception:
+                pass
+
 
 def is_engine_available(engine: str) -> bool:
     """Check if the specified STT engine is available."""
@@ -354,7 +487,25 @@ def is_engine_available(engine: str) -> bool:
         except ImportError:
             logger.info("Import error checking for Parakeet")
             return False
+    elif engine == "parakeet-zh":
+        try:
+            import importlib.util
+            if importlib.util.find_spec("nemo") is None:
+                return False
+            if importlib.util.find_spec("nemo.collections.asr") is None:
+                return False
+            try:
+                import nemo.collections.asr as nemo_asr
+                # EncDecRNNTModel must be available for Chinese model
+                _ = getattr(nemo_asr.models, "EncDecRNNTModel", None)
+                return _ is not None
+            except Exception as e:
+                logger.info(f"Error checking Parakeet-ZH: {e}")
+                return False
+        except ImportError:
+            return False
     return False
+
 
 def list_available_engines() -> list:
     """Returns a list of available STT engines."""
@@ -363,4 +514,6 @@ def list_available_engines() -> list:
         engines.append("whisper")
     if is_engine_available("parakeet"):
         engines.append("parakeet")
+    if is_engine_available("parakeet-zh"):
+        engines.append("parakeet-zh")
     return engines
