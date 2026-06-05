@@ -11,6 +11,11 @@ import httpx
 
 from .openai_compat import get_configured_endpoint, is_api_endpoint
 from .web_search_service import get_web_search_tool_definition, handle_web_search_tool_call
+from .eloquent_agent_tools import (
+    extract_tool_calls_from_text,
+    supports_native_tool_calling as agent_supports_native_tools,
+    execute_eloquent_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,58 +114,10 @@ class ElectionAssistantService:
         return f"{url}/v1/chat/completions"
 
     def _supports_native_tools(self, endpoint: Dict[str, Any]) -> bool:
-        """
-
-Check if endpoint likely supports OpenAI tool calling."""
-        url = (endpoint.get("url") or "").lower()
-        if any(d in url for d in ["deepseek.com", "openai.com", "anthropic.com", "openrouter.ai"]):
-            return True
-        if "localhost" in url or "127.0.0.1" in url or "192.168." in url:
-            return False
-        return True
+        return agent_supports_native_tools(endpoint_cfg=endpoint)
 
     def _extract_text_tool_calls(self, content: str) -> List[Dict[str, Any]]:
-        """Parse tool calls that the model output as text instead of structured tool_calls."""
-        if not content:
-            return []
-        tool_calls = []
-        # Pattern 1: <tool_call> tags
-        tag_pattern = r"<tool_call>\s*({.*?})\s*</tool_call>"
-        for match in re.finditer(tag_pattern, content, re.DOTALL):
-            try:
-                parsed = json.loads(match.group(1))
-                name = parsed.get("name") or parsed.get("function") or "web_search"
-                args = parsed.get("arguments") or parsed.get("parameters") or parsed
-                if isinstance(args, str):
-                    args = json.loads(args) if args.strip() else {}
-                tool_calls.append({
-                    "id": f"parsed_{len(tool_calls)}",
-                    "function": {"name": name, "arguments": json.dumps(args)},
-                })
-            except Exception:
-                pass
-        if not tool_calls:
-            json_pattern = r"```(?:json)?\s*({.*?})\s*```"
-            for match in re.finditer(json_pattern, content, re.DOTALL):
-                try:
-                    parsed = json.loads(match.group(1))
-                    if "query" in parsed or "search" in (parsed.get("name") or "").lower():
-                        name = parsed.get("name", "web_search")
-                        args = parsed.get("arguments") or parsed.get("parameters") or {"query": parsed.get("query", "")}
-                        tool_calls.append({
-                            "id": f"parsed_{len(tool_calls)}",
-                            "function": {"name": name, "arguments": json.dumps(args)},
-                        })
-                except Exception:
-                    pass
-        if not tool_calls:
-            inline_pattern = r'web_search\s*\(\s*(?:query\s*=\s*)?["\'](.+?)["\']\s*\)'
-            for match in re.finditer(inline_pattern, content):
-                tool_calls.append({
-                    "id": f"parsed_{len(tool_calls)}",
-                    "function": {"name": "web_search", "arguments": json.dumps({"query": match.group(1)})},
-                })
-        return tool_calls
+        return extract_tool_calls_from_text(content)
 
     async def _call_api(
         self,
@@ -276,10 +233,7 @@ Check if endpoint likely supports OpenAI tool calling."""
                 except Exception:
                     arguments = {"query": raw_args}
 
-                if tool_name == "web_search":
-                    tool_result = await handle_web_search_tool_call(arguments, max_results=5)
-                else:
-                    tool_result = f"Tool '{tool_name}' is not available."
+                tool_result = await execute_eloquent_tool(tool_name, arguments, max_results=5)
 
                 tool_steps.append({
                     "tool": tool_name,
@@ -391,7 +345,7 @@ Check if endpoint likely supports OpenAI tool calling."""
                 if tool_name == "web_search":
                     tool_result = await handle_web_search_tool_call(arguments, max_results=5, news=True)
                 else:
-                    tool_result = f"Tool '{tool_name}' is not available."
+                    tool_result = await execute_eloquent_tool(tool_name, arguments, max_results=5)
 
                 tool_steps.append({
                     "tool": tool_name,

@@ -1,46 +1,71 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../contexts/AppContext';
 import { useTheme } from './ThemeProvider';
 import { Button } from './ui/button';
 import {
-  Badge,
   Settings,
-  MessageSquare,
-  FileText,
-  UserCircle,
-  BookOpen,
-  Zap,
-  Search,
-  Code,
-  Fingerprint,
   Palette,
   Power,
   RotateCw,
+  MoreVertical,
+  Zap,
+  Code,
+  Fingerprint,
   Vote,
-  Swords,
-  TrendingUp
+  Menu,
+  Pin,
+  PinOff,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
+import { subscribeNanoGptModelsCache, readNanoGptModelsCache } from '../utils/nanoGptModelsCache';
+const EXTRA_TOOLS = [
+  { id: 'modeltester', label: 'Model Tester', icon: Zap },
+  { id: 'codeeditor', label: 'Code Editor', icon: Code },
+  { id: 'forensics', label: 'Forensics', icon: Fingerprint },
+  { id: 'election', label: 'Elections', icon: Vote },
+];
 
-const Navbar = ({ toggleSidebar }) => {
-  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
-  // Get necessary values from AppContext
+const NAVBAR_HEIGHT_CLASS = 'h-12';
+
+const Navbar = ({
+  toggleSidebar,
+  collapsed = false,
+  pinned = false,
+  onTogglePin,
+  reduceMotion = false,
+}) => {
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [catalog, setCatalog] = useState(() => readNanoGptModelsCache().models);
+
   const {
-    loadedModels,
-    activeModel,
-    activeTab,
+    primaryModel,
     setActiveTab,
-    PRIMARY_API_URL
+    openSettingsTab,
+    PRIMARY_API_URL,
   } = useApp();
 
   const { theme, setTheme } = useTheme();
+
+  useEffect(() => {
+    return subscribeNanoGptModelsCache(({ models }) => setCatalog(models));
+  }, []);
+
+  useEffect(() => {
+    if (!overflowOpen) return;
+    const onDoc = (e) => {
+      if (!e.target.closest?.('[data-navbar-overflow]')) setOverflowOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [overflowOpen]);
 
   const handleRestart = async () => {
     if (confirm('Are you sure you want to restart Eloquent?')) {
       try {
         await fetch(`${PRIMARY_API_URL}/system/restart`, { method: 'POST' });
-        // No alert needed as page will loose connection
       } catch (e) {
-        console.error("Restart failed", e);
+        console.error('Restart failed', e);
       }
     }
   };
@@ -49,176 +74,200 @@ const Navbar = ({ toggleSidebar }) => {
     if (confirm('Are you sure you want to shutdown Eloquent?')) {
       try {
         await fetch(`${PRIMARY_API_URL}/system/shutdown`, { method: 'POST' });
-        alert("System shutting down. You can close this window.");
+        alert('System shutting down. You can close this window.');
       } catch (e) {
-        console.error("Shutdown failed", e);
+        console.error('Shutdown failed', e);
       }
     }
   };
 
-  // Define the navigation items that mirror the sidebar
-  const sidebarNavItems = [
-    { id: 'chat', label: 'Chat', icon: <MessageSquare className="mr-2 h-4 w-4" /> },
-    { id: 'documents', label: 'Documents', icon: <FileText className="mr-2 h-4 w-4" /> },
-    { id: 'characters', label: 'Characters', icon: <UserCircle className="mr-2 h-4 w-4" /> },
-    { id: 'chess', label: 'Chess', icon: <Swords className="mr-2 h-4 w-4" /> },
-    { id: 'settings', label: 'Settings', icon: <Settings className="mr-2 h-4 w-4" /> },
-    { id: 'memory', label: 'Memory', icon: <BookOpen className="mr-2 h-4 w-4" /> },
-    { id: 'modeltester', label: 'Model Tester', icon: <Zap className="mr-2 h-4 w-4" /> },
-    { id: 'codeeditor', label: 'Code Editor', icon: <Code className="mr-2 h-4 w-4" /> },
-    { id: 'forensics', label: 'Forensics', icon: <Fingerprint className="mr-2 h-4 w-4" /> },
-    { id: 'election', label: 'Elections', icon: <Vote className="mr-2 h-4 w-4" /> },
-    { id: 'market-sim', label: 'Market Simulator', icon: <TrendingUp className="mr-2 h-4 w-4" /> }
-  ];
+  const isNanoGpt = theme === 'nanogpt';
 
   return (
-    <header className="border-b bg-card">
-      <div className="container flex items-center h-16 px-4">
-        {/* Brand/Logo - with more space */}
-        <div className="flex items-center gap-3 mr-2 lg:mr-8 flex-shrink-0">
-          <img
-            src="/eloquent-logo.png"
-            alt="Eloquent"
-            className="h-9 w-9"
-          />
-          <span className="font-bold text-xl" style={{ fontFamily: 'Poppins, sans-serif' }}>Eloquent</span>
-        </div>
-
-        {/* Desktop Navigation - Hidden on Mobile */}
-        <nav className="hidden lg:flex items-center gap-2 flex-1">
-          {sidebarNavItems.map((item) => (
-            <Button
-              key={item.id}
-              variant={activeTab === item.id ? 'secondary' : 'ghost'}
-              className="px-3 py-1"
-              onClick={() => setActiveTab(item.id)}
-            >
-              {item.icon}
-              {item.label}
-            </Button>
-          ))}
-        </nav>
-
-        {/* Right Side: Status Indicators & Theme Toggle */}
-        <div className="flex items-center gap-4">
-
-          {/* System Controls - Hidden on Mobile */}
-          <div className="hidden lg:flex items-center gap-1 border-r pr-2 mr-2">
-            <Button
-              variant="ghost"
-              size="icon"
-              title="Restart Application"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={handleRestart}
-            >
-              <RotateCw className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              title="Shutdown Application"
-              className="text-muted-foreground hover:text-red-500"
-              onClick={handleShutdown}
-            >
-              <Power className="h-4 w-4" />
-            </Button>
-          </div>
-
-          {/* Theme Selector - Custom Styled or Standard Select */}
-          <div className="flex items-center mr-2">
-            <Palette className="w-4 h-4 mr-2 text-muted-foreground" />
-            <select
-              value={theme}
-              onChange={(e) => setTheme(e.target.value)}
-              className="bg-white text-black border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400 cursor-pointer shadow-sm"
-            >
-              <optgroup label="Base">
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-              </optgroup>
-              <optgroup label="Chat">
-                <option value="whatsapp">WhatsApp</option>
-                <option value="messenger">Messenger</option>
-                <option value="claude">Claude</option>
-              </optgroup>
-              <optgroup label="Vibrant">
-                <option value="cyberpunk">Cyberpunk</option>
-              </optgroup>
-            </select>
-          </div>
-
-          {/* Model Status Badges */}
-          {loadedModels?.length > 0 && (
-            <Badge variant="outline">
-              {loadedModels.length} Model{loadedModels.length !== 1 ? 's' : ''} Loaded
-            </Badge>
-          )}
-          {activeModel && (
-            <Badge variant="secondary">
-              Active: {activeModel.split('/').pop().split('\\').pop().replace(/\.(bin|gguf)$/i, '')}
-            </Badge>
-          )}
-        </div>
-        {/* Mobile Menu Button - Visible on Mobile */}
+    <header
+      className={cn(
+        'fixed top-0 left-0 right-0 z-[60] border-b',
+        NAVBAR_HEIGHT_CLASS,
+        'bg-card/95 backdrop-blur-md supports-[backdrop-filter]:bg-card/90 shadow-sm',
+        isNanoGpt &&
+          'bg-background/95 border-border shadow-[0_8px_30px_rgba(8,6,18,0.45)]',
+        !reduceMotion && 'transition-transform duration-300 ease-in-out',
+        collapsed && '-translate-y-full pointer-events-none',
+      )}
+      aria-hidden={collapsed}
+    >
+      <div className={cn('flex items-center px-3 gap-2 min-w-0', NAVBAR_HEIGHT_CLASS)}>
+        {/* Mobile sidebar */}
         <Button
           variant="ghost"
           size="icon"
-          className="lg:hidden ml-2"
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          className="md:hidden flex-shrink-0 h-9 w-9"
+          onClick={toggleSidebar}
+          title="Open navigation"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="3" y1="12" x2="21" y2="12" />
-            <line x1="3" y1="6" x2="21" y2="6" />
-            <line x1="3" y1="18" x2="21" y2="18" />
-          </svg>
+          <Menu className="h-5 w-5" />
         </Button>
-      </div>
 
-      {/* Mobile Menu Dropdown */}
-      {mobileMenuOpen && (
-        <div className="lg:hidden border-t bg-card p-4 space-y-2 absolute top-16 left-0 right-0 z-50 shadow-lg animate-in slide-in-from-top-2">
-          {sidebarNavItems.map((item) => (
-            <Button
-              key={item.id}
-              variant={activeTab === item.id ? 'secondary' : 'ghost'}
-              className="w-full justify-start"
-              onClick={() => {
-                setActiveTab(item.id);
-                setMobileMenuOpen(false);
-              }}
-            >
-              {item.icon}
-              <span className="ml-2">{item.label}</span>
-            </Button>
-          ))}
-
-          <div className="border-t my-2 pt-2">
-            <div className="text-xs font-semibold text-muted-foreground mb-2 px-2 uppercase tracking-wider">System</div>
-            <Button
-              variant="ghost"
-              className="w-full justify-start text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                handleRestart();
-                setMobileMenuOpen(false);
-              }}
-            >
-              <RotateCw className="mr-2 h-4 w-4" />
-              <span className="ml-2">Restart Eloquent</span>
-            </Button>
-            <Button
-              variant="ghost"
-              className="w-full justify-start text-muted-foreground hover:text-red-500"
-              onClick={() => {
-                handleShutdown();
-                setMobileMenuOpen(false);
-              }}
-            >
-              <Power className="mr-2 h-4 w-4" />
-              <span className="ml-2">Shutdown Eloquent</span>
-            </Button>
-          </div>
+        {/* Brand */}
+        <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
+          <img src="/eloquent-logo.png" alt="Eloquent" className="h-8 w-8" />
+          <span
+            className="font-bold text-lg hidden sm:inline truncate"
+            style={{ fontFamily: 'Poppins, sans-serif' }}
+          >
+            Eloquent
+          </span>
         </div>
-      )}
+
+        {/* Model pill */}
+        <div className="flex-1 flex items-center min-w-0 pl-1 sm:pl-3">
+          <NanoGptModelSelectorPopover
+            className="min-w-0"
+            compact
+            currentModelId={primaryModel}
+            primaryApiUrl={PRIMARY_API_URL}
+            trigger={({ setOpen, display }) => (
+              <button
+                type="button"
+                onClick={() => setOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(120,170,220,0.45)] bg-muted/40 hover:bg-muted/70 px-2.5 py-1 text-xs max-w-full min-w-0 transition-colors"
+                title={
+                  display?.isAutoRouting && display.pool?.length
+                    ? `Auto-routing: ${display.pool.map((p) => p.displayName).join(', ')}`
+                    : 'Change model'
+                }
+              >
+                <span className="flex-shrink-0">{display?.icon || '⬜'}</span>
+                <span className="truncate font-medium">
+                  {display?.shortLabel || 'Select model'}
+                </span>
+              </button>
+            )}
+          />
+        </div>
+
+        {onTogglePin && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              'h-9 w-9 flex-shrink-0',
+              pinned && 'text-primary bg-primary/10',
+            )}
+            title={
+              pinned
+                ? 'Navbar pinned — unpin to auto-hide on scroll'
+                : 'Pin navbar (stays visible while scrolling)'
+            }
+            onClick={onTogglePin}
+            aria-pressed={pinned}
+          >
+            {pinned ? <Pin className="h-4 w-4" /> : <PinOff className="h-4 w-4" />}
+          </Button>
+        )}
+
+        {/* Overflow ⋮ */}
+        <div className="relative flex-shrink-0" data-navbar-overflow>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9"
+            title="More"
+            onClick={() => setOverflowOpen((v) => !v)}
+          >
+            <MoreVertical className="h-5 w-5" />
+          </Button>
+
+          {overflowOpen && (
+            <div className="absolute right-0 top-10 w-56 rounded-lg border bg-card shadow-lg py-1 z-50 animate-in fade-in slide-in-from-top-1">
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex items-center gap-2"
+                onClick={(e) => {
+                  openSettingsTab('general', { forceWindow: e.shiftKey ? true : undefined });
+                  setOverflowOpen(false);
+                }}
+              >
+                <Settings className="h-4 w-4" />
+                Settings
+                <span className="ml-auto text-[10px] text-muted-foreground">⇧ new window</span>
+              </button>
+
+              <div className="px-3 py-2 border-t border-b">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+                  <Palette className="h-3.5 w-3.5" />
+                  Theme
+                </div>
+                <select
+                  value={theme}
+                  onChange={(e) => setTheme(e.target.value)}
+                  className="w-full text-sm rounded border border-input bg-background px-2 py-1"
+                >
+                  <optgroup label="Base">
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                    <option value="nanogpt">NanoGPT</option>
+                  </optgroup>
+                  <optgroup label="Chat">
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="messenger">Messenger</option>
+                    <option value="claude">Claude</option>
+                  </optgroup>
+                  <optgroup label="Vibrant">
+                    <option value="cyberpunk">Cyberpunk</option>
+                  </optgroup>
+                </select>
+              </div>
+
+              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                Tools
+              </div>
+              {EXTRA_TOOLS.map((tool) => {
+                const Icon = tool.icon;
+                return (
+                  <button
+                    key={tool.id}
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex items-center gap-2"
+                    onClick={() => {
+                      setActiveTab(tool.id);
+                      setOverflowOpen(false);
+                    }}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {tool.label}
+                  </button>
+                );
+              })}
+
+              <div className="border-t mt-1 pt-1">
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex items-center gap-2"
+                  onClick={() => {
+                    handleRestart();
+                    setOverflowOpen(false);
+                  }}
+                >
+                  <RotateCw className="h-4 w-4" />
+                  Restart
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex items-center gap-2 text-red-600 dark:text-red-400"
+                  onClick={() => {
+                    handleShutdown();
+                    setOverflowOpen(false);
+                  }}
+                >
+                  <Power className="h-4 w-4" />
+                  Shutdown
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </header>
   );
 };

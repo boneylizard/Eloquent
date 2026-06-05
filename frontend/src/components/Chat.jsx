@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useApp } from '../contexts/AppContext';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages, Brain } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages, Brain, Clock, AudioLines, Replace, ScrollText, MoreVertical, Heart, ShieldAlert } from 'lucide-react';
 import { getSummaries, deleteSummary } from '../utils/summaryUtils';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -26,50 +26,282 @@ import {
   SelectContent,
   SelectItem,
 } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Slider } from '@/components/ui/slider';
 import ChatImageUploadButton from './ChatImageUploadButton';
 import FocusModeOverlay from './FocusModeOverlay';
+import AlignmentPanel from './AlignmentPanel';
 import CallModeOverlay from './CallModeOverlay';
+import { useIntensity } from '../contexts/IntensityContext';
+import { subscribeDualOverlaySync, broadcastDualOverlayMessage, isOverlayWindowOpen } from '../utils/dualOverlayWindow';
+import CompanionPresenceOverlay from './intensity/CompanionPresenceOverlay';
+import CommitmentLock from './intensity/CommitmentLock';
+import SessionHistoryDashboard from './intensity/SessionHistoryDashboard';
+import IntensityControlPanel from './intensity/IntensityControlPanel';
+import PresenceBadge from './intensity/PresenceBadge';
+import VoiceQuickPicker from './VoiceQuickPicker';
 import CodeBlock from './CodeBlock';
 import ChatInputForm from './ChatInputForm';
 import ChatMessage from './ChatMessage';
+import { applyReasoningMetaToBotMessage, stripThinkTags } from '../utils/thinkStreamParser';
+import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
+import NanoGptComposerToolbar from './NanoGptComposerToolbar';
+import {
+  attachApiBotSpeakerMeta,
+  resolveEndpointDisplay,
+  resolvePrimaryEndpointIdForRequest,
+  resolvePrimaryModelDisplay,
+} from '../utils/resolveEndpointDisplay';
+import {
+  createRouteTraceId,
+  extractRouteMetaFromGenerateResult,
+  logRouteTrace,
+  resolveUnifiedRequestRoute,
+} from '../utils/requestRouting';
+import {
+  readNanoGptModelsCache,
+  subscribeNanoGptModelsCache,
+} from '../utils/nanoGptModelsCache';
 import CodeEditorOverlay from './CodeEditorOverlay';
+import BookWriterOverlay from './BookWriterOverlay';
 import ForensicLinguistics from './ForensicLinguistics';
 import StoryTracker, { getStoryTrackerContext } from './StoryTracker';
 import ChoiceGenerator from './ChoiceGenerator';
 import ControlPanel from './ControlPanel';
 import AuthorsNotePanel from './AuthorsNotePanel';
 import { getBackendUrl } from '../config/api';
+import {
+  loadWebSearchMode,
+  saveWebSearchMode,
+  loadWebSearchArticleUrls,
+  saveWebSearchArticleUrls,
+  loadWebSearchSite,
+  saveWebSearchSite,
+  loadWebSearchStrategy,
+  saveWebSearchStrategy,
+  WEB_SEARCH_STRATEGIES,
+  webSearchPathLabel,
+} from '../utils/webSearchResearch';
 import { useMemory } from '../contexts/MemoryContext';
+import * as indexedDbStorage from '../utils/indexedDbStorage';
+import {
+  getActiveCharacterAvatar,
+  getCharacterAvatarList,
+  resolveAvatarDisplayUrl,
+} from '../utils/characterAvatars';
+import CharacterAvatarMedia from './CharacterAvatarMedia';
+import CharacterIntroExperience from './CharacterIntroExperience';
+import {
+  fetchCharacterIntro,
+  getCharacterIntroStatus,
+  isCharacterIntroReady,
+} from '../utils/characterIntro';
+import { CALL_MODE_ABOUT_SYSTEM_PROMPT_MODES } from '../utils/callModeCharacterAbout';
+import {
+  fetchSystemIntro,
+  resolveSystemPersonaCharacter,
+  SYSTEM_INTRO_UI_LABELS,
+  composeLayeredSystemPrompt,
+  isSystemPersonaModeActive,
+} from '../utils/systemPersona';
+
+function escapeRegExp(s) {
+  return s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+/** Literal find/replace for boilerplate stripping (not full regex UX). */
+function applyLiteralReplace(source, find, replace, matchCase, replaceAll) {
+  if (find === '') return source;
+  const rep = replace ?? '';
+  if (matchCase) {
+    if (replaceAll) return source.split(find).join(rep);
+    const i = source.indexOf(find);
+    if (i === -1) return source;
+    return source.slice(0, i) + rep + source.slice(i + find.length);
+  }
+  const flags = replaceAll ? 'gi' : 'i';
+  const re = new RegExp(escapeRegExp(find), flags);
+  if (replaceAll) return source.replace(re, rep);
+  return source.replace(re, rep);
+}
+
+function countOccurrencesInText(source, find, matchCase, replaceAll) {
+  if (!find) return 0;
+  if (matchCase) {
+    if (!replaceAll) return source.includes(find) ? 1 : 0;
+    let n = 0;
+    let pos = 0;
+    while (pos <= source.length) {
+      const i = source.indexOf(find, pos);
+      if (i === -1) break;
+      n += 1;
+      pos = i + find.length;
+    }
+    return n;
+  }
+  const flags = replaceAll ? 'gi' : 'i';
+  const re = new RegExp(escapeRegExp(find), flags);
+  const m = source.match(re);
+  if (!m) return 0;
+  return replaceAll ? m.length : Math.min(1, m.length);
+}
+
+function batchSnippet(text, maxLen = 80) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length <= maxLen) return t || '(empty)';
+  return `${t.slice(0, maxLen)}…`;
+}
+
+/** `[` … `]` spans with no raw `]` inside (repeat passes catch adjacent / layered boilerplate). */
+const BRACKET_SPAN_RE = /\[[^\]]*\]/g;
+
+function stripSquareBracketSpans(source) {
+  let s = source;
+  let removals = 0;
+  for (let round = 0; round < 64; round += 1) {
+    const chunk = s.match(BRACKET_SPAN_RE);
+    if (!chunk?.length) break;
+    removals += chunk.length;
+    s = s.replace(BRACKET_SPAN_RE, '');
+  }
+  return { text: s, removals };
+}
+
+/** Pattern only (no `/flags`); always applied globally. */
+function compileBatchRegex(patternStr) {
+  if (!patternStr || typeof patternStr !== 'string') return null;
+  try {
+    return new RegExp(patternStr, 'g');
+  } catch {
+    return null;
+  }
+}
+
+function countGlobalRegexMatches(text, re) {
+  if (!re?.global) return 0;
+  let n = 0;
+  let m;
+  const copy = new RegExp(re.source, re.flags);
+  copy.lastIndex = 0;
+  while ((m = copy.exec(text)) !== null) {
+    n += 1;
+    if (m[0].length === 0) {
+      if (copy.lastIndex === m.index) copy.lastIndex += 1;
+    }
+  }
+  return n;
+}
 
 // CORRECT PLACEMENT: Component defined at the top level, accepting props.
-const WebSearchControl = ({ webSearchEnabled, setWebSearchEnabled, isGenerating, isRecording, isTranscribing }) => (
+const WebSearchControl = ({
+  webSearchEnabled,
+  setWebSearchEnabled,
+  webSearchMode,
+  setWebSearchMode,
+  webSearchStrategy,
+  setWebSearchStrategy,
+  webSearchArticleUrls,
+  setWebSearchArticleUrls,
+  webSearchSite,
+  setWebSearchSite,
+  searchStatusLabel,
+  isGenerating,
+  isRecording,
+  isTranscribing,
+}) => (
+  <div className="flex flex-col gap-2 min-w-0">
+    <div className="flex flex-wrap items-center gap-2 px-2 py-1 bg-muted/50 rounded-md border">
+      <Switch
+        id="web-search"
+        checked={webSearchEnabled}
+        onCheckedChange={setWebSearchEnabled}
+        disabled={isGenerating || isRecording || isTranscribing}
+      />
+      <Label htmlFor="web-search" className="text-xs flex items-center gap-1 cursor-pointer">
+        <Globe size={14} className={webSearchEnabled ? 'text-blue-500' : 'text-muted-foreground'} />
+        Web Search
+      </Label>
+      {webSearchEnabled && (
+        <>
+          <select
+            className="text-xs rounded border bg-background px-1.5 py-0.5 max-w-[6.5rem]"
+            value={webSearchStrategy || 'auto'}
+            onChange={(e) => setWebSearchStrategy(e.target.value)}
+            disabled={isGenerating || isRecording || isTranscribing}
+            title="Auto: native API search when available, else Eloquent prefetch"
+          >
+            {WEB_SEARCH_STRATEGIES.map((s) => (
+              <option key={s} value={s}>
+                {s === 'auto' ? 'Auto' : s.charAt(0).toUpperCase() + s.slice(1)}
+              </option>
+            ))}
+          </select>
+          <select
+            className="text-xs rounded border bg-background px-1.5 py-0.5 max-w-[7rem]"
+            value={webSearchMode || ''}
+            onChange={(e) => setWebSearchMode(e.target.value)}
+            disabled={isGenerating || isRecording || isTranscribing}
+            title="Normal: DuckDuckGo snippets. Articles/Deep: optional URL list below (not your transcript folder)."
+          >
+            <option value="">Normal</option>
+            <option value="deep">Deep</option>
+            <option value="articles">Articles</option>
+          </select>
+        </>
+      )}
+      {webSearchEnabled && searchStatusLabel && (
+        <span className="text-[10px] text-muted-foreground tabular-nums">{searchStatusLabel}</span>
+      )}
+    </div>
+    {webSearchEnabled && (webSearchMode === 'articles' || webSearchMode === 'deep') && (
+      <div className="flex flex-col gap-1.5 px-2 py-1.5 bg-muted/30 rounded-md border border-dashed text-xs max-w-md">
+        <Label className="text-[10px] text-muted-foreground">Article URLs (optional, one per line)</Label>
+        <Textarea
+          rows={2}
+          className="font-mono text-[10px] min-h-0 py-1"
+          placeholder="https://..."
+          value={webSearchArticleUrls}
+          onChange={(e) => setWebSearchArticleUrls(e.target.value)}
+          disabled={isGenerating || isRecording || isTranscribing}
+        />
+        <Input
+          className="h-7 text-[10px]"
+          placeholder="Site hint e.g. uxmag.com (optional)"
+          value={webSearchSite}
+          onChange={(e) => setWebSearchSite(e.target.value)}
+          disabled={isGenerating || isRecording || isTranscribing}
+        />
+      </div>
+    )}
+  </div>
+);
+
+const TimestampControl = ({ injectTimestamp, setInjectTimestamp, isGenerating, isRecording, isTranscribing }) => (
   <div className="flex items-center gap-2 px-2 py-1 bg-muted/50 rounded-md border">
     <Switch
-      id="web-search"
-      checked={webSearchEnabled}
-      onCheckedChange={setWebSearchEnabled}
+      id="inject-timestamp"
+      checked={injectTimestamp}
+      onCheckedChange={setInjectTimestamp}
       disabled={isGenerating || isRecording || isTranscribing}
     />
-    <Label htmlFor="web-search" className="text-xs flex items-center gap-1">
-      <Globe size={14} className={webSearchEnabled ? 'text-blue-500' : 'text-muted-foreground'} />
-      Web Search
+    <Label htmlFor="inject-timestamp" className="text-xs flex items-center gap-1">
+      <Clock size={14} className={injectTimestamp ? 'text-blue-500' : 'text-muted-foreground'} />
+      Time
     </Label>
   </div>
 );
 
 // Main Chat Component
-const Chat = ({ layoutMode }) => {
+const Chat = ({ layoutMode, scrollContainerRef }) => {
   // Get state and functions from useApp context
   const {
     // Model/Chat state
-    activeModel, primaryModel, secondaryModel, dualModeEnabled, setDualModeEnabled, buildSystemPrompt, formatPrompt, cleanModelOutput, botMsg, abortController, setAbortController,
-    messages, setMessages, sendMessage, sendDualMessage, isGenerating, isModelLoading,
-    createNewConversation, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateReply, fetchMemoriesFromAgent, fetchTriggeredLore, isStreamingStopped, handleStopGeneration,
+    activeModel, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, setPrimaryModel, secondaryModel, dualModeEnabled, setDualModeEnabled, buildSystemPrompt, buildSystemPersonaPrompt, formatPrompt, cleanModelOutput, abortController, setAbortController,
+    messages: messagesRaw, setMessages, sendMessage, sendDualMessage, isGenerating, isModelLoading,
+    createNewConversation, completeCharacterIntro, applyIntroChatTitle, updateCharacterIntro, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateReply, fetchMemoriesFromAgent, fetchTriggeredLore, isStreamingStopped, handleStopGeneration,
     conversations, setConversations,
     // Character info
-    characters,
+    characters, cycleCharacterAvatar,
     activeCharacter, primaryCharacter, secondaryCharacter,
     userCharacter,
     setUserCharacterById,
@@ -83,41 +315,405 @@ const Chat = ({ layoutMode }) => {
     getGenerationSystemPrompt,
     // Audio / STT / TTS flags & functions
     sttEnabled, ttsEnabled, isRecording, isTranscribing, primaryIsAPI, secondaryIsAPI,
-    isPlayingAudio, playTTS, getTtsOverridesForCharacterId, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, ttsSubtitleCue,
-    startRecording, stopRecording, MEMORY_API_URL, lastAgenticMemoryFeedback, lastAgenticRunStatus, setLastAgenticRunStatus, ttsClient, setAudioQueue, setIsAutoplaying,
+    isPlayingAudio, playTTS, getTtsOverridesForCharacterId, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue,
+    startRecording, stopRecording, MEMORY_API_URL, lastAgenticMemoryFeedback, lastAgenticRunStatus, setLastAgenticRunStatus, retryAgenticMemoryForLastTurn, lastAgenticInjectMeta,
+    alignmentData, setAlignmentData, alignmentDetectionEnabled, setAlignmentDetectionEnabled, processAlignmentDetectionIfEnabled,
     // Avatar sizes
-    userAvatarSize, characterAvatarSize, speechDetected, audioQueue, isAutoplaying, callModeRecording,
+    userAvatarSize, characterAvatarSize, speechDetected, callModeRecording,
     // User profile
     userProfile,
     // Settings
-    settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode, setIsCallModeActive,
+    settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode,
     backgroundImage, // Add backgroundImage from context
     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
     capturePromptSubmissionTime, // Latency monitoring
     unlockAudioContext, // Unlocker
-    generateCallModeFollowUp
+    generateCallModeFollowUp,
+    injectTimestamp,
+    setInjectTimestamp,
+    outreachScrollToMessageId,
+    dismissOutreachScrollTarget,
+    storageHydrated,
+    apiError,
+    clearError,
   } = useApp();
+  const intensity = useIntensity();
+  const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
+  const batchEditableBotMessages = useMemo(
+    () =>
+      messages.filter(
+        (m) =>
+          m.role === 'bot' &&
+          m.type !== 'image' &&
+          m.type !== 'video' &&
+          !m.isStreaming
+      ),
+    [messages]
+  );
   const { profiles, activeProfileId, switchProfile } = useMemory();
+
+  useEffect(() => {
+    if (!outreachScrollToMessageId) return undefined;
+    const mid = outreachScrollToMessageId;
+    let cancelled = false;
+    const tryScroll = () => {
+      if (cancelled || typeof document === 'undefined') return false;
+      const el = document.getElementById(`chat-message-${mid}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        dismissOutreachScrollTarget();
+        return true;
+      }
+      return false;
+    };
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        if (tryScroll()) return;
+        if (!messages.some((m) => m.id === mid)) dismissOutreachScrollTarget();
+      });
+    });
+    const retry = setTimeout(() => {
+      if (cancelled) return;
+      if (!tryScroll() && !messages.some((m) => m.id === mid)) dismissOutreachScrollTarget();
+    }, 200);
+    const giveUp = setTimeout(() => {
+      if (!cancelled) dismissOutreachScrollTarget();
+    }, 4000);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(retry);
+      clearTimeout(giveUp);
+    };
+  }, [outreachScrollToMessageId, messages, activeConversation, dismissOutreachScrollTarget]);
   const performanceMode = settings?.performanceMode === true;
   const PERFORMANCE_MESSAGE_LIMIT = 80;
-  const agenticMemoryOn = activeConversation && (conversations.find(c => c.id === activeConversation)?.agenticMemoryEnabled ?? false);
+  const activeConvMeta = useMemo(
+    () => (activeConversation ? conversations.find((c) => c.id === activeConversation) : null),
+    [activeConversation, conversations]
+  );
+  const systemPersonaCharacter = useMemo(
+    () => resolveSystemPersonaCharacter(characters, settings, activeConvMeta),
+    [characters, settings, activeConvMeta]
+  );
+
+  const showSystemIntro = useMemo(
+    () =>
+      activeConvMeta?.systemPersona === true
+      && activeConvMeta?.introPending === true
+      && messages.length === 0
+      && !!systemPersonaCharacter?.id
+      && !primaryCharacter?.id,
+    [
+      activeConvMeta?.systemPersona,
+      activeConvMeta?.introPending,
+      messages.length,
+      systemPersonaCharacter?.id,
+      primaryCharacter?.id,
+    ]
+  );
+
+  const showCharacterIntro = useMemo(
+    () =>
+      !showSystemIntro
+      && settings?.characterIntroEnabled === true
+      && activeConvMeta?.introPending === true
+      && messages.length === 0
+      && !!primaryCharacter?.id,
+    [showSystemIntro, settings?.characterIntroEnabled, activeConvMeta?.introPending, messages.length, primaryCharacter?.id]
+  );
+
+  const showAnyIntro = showSystemIntro || showCharacterIntro;
+  const showFullLanding = messages.length === 0 && !showAnyIntro;
+  const showComposerToolbar = !showFullLanding;
+  const introDisplayCharacter = primaryCharacter || systemPersonaCharacter;
+  const effectiveIntroModel = useMemo(() => {
+    if (primaryModel) return primaryModel;
+    if (!primaryIsAPI || settings?.apiEndpointRoundRobinEnabled !== true) return null;
+    const endpoints = Array.isArray(settings?.customApiEndpoints) ? settings.customApiEndpoints : [];
+    const rotating = endpoints.find((ep) => ep?.enabled !== false && ep?.rotate_enabled !== false && ep?.id);
+    if (rotating?.id) return String(rotating.id);
+    const anyEnabled = endpoints.find((ep) => ep?.enabled !== false && ep?.id);
+    return anyEnabled?.id ? String(anyEnabled.id) : null;
+  }, [primaryModel, primaryIsAPI, settings]);
+
+  const [introLoading, setIntroLoading] = useState(false);
+  const [introResult, setIntroResult] = useState(null);
+  const [introPartialText, setIntroPartialText] = useState('');
+  const [introError, setIntroError] = useState(null);
+  const introAbortRef = useRef(null);
+  const introFetchedForRef = useRef(null);
+  const introConvSyncRef = useRef(null);
+
+  const introFetchKey = useMemo(() => {
+    if (!activeConversation || !introDisplayCharacter?.id || !effectiveIntroModel) return null;
+    const kind = showSystemIntro ? 'system' : 'character';
+    return `${activeConversation}:${kind}:${introDisplayCharacter.id}:${effectiveIntroModel}`;
+  }, [activeConversation, introDisplayCharacter?.id, effectiveIntroModel, showSystemIntro]);
+
+  const introStatus = useMemo(
+    () => getCharacterIntroStatus({ loading: introLoading, error: introError, result: introResult }),
+    [introLoading, introError, introResult]
+  );
+
+
+  const persistCharacterIntro = useCallback(
+    (patch) => {
+      if (!activeConversation || !showAnyIntro) return;
+      updateCharacterIntro(activeConversation, {
+        ...patch,
+        fetchKey: introDisplayCharacter?.id && effectiveIntroModel
+          ? `${showSystemIntro ? 'system:' : ''}${introDisplayCharacter.id}:${effectiveIntroModel}`
+          : patch.fetchKey,
+      });
+    },
+    [activeConversation, showAnyIntro, updateCharacterIntro, introDisplayCharacter?.id, effectiveIntroModel, showSystemIntro]
+  );
+
+  const requestCharacterIntro = useCallback(async ({ forceRefresh = false } = {}) => {
+    if (!showAnyIntro && !forceRefresh) return;
+    if (!effectiveIntroModel || !introDisplayCharacter) return;
+    if (introLoading && !forceRefresh) return;
+
+    introAbortRef.current?.abort?.();
+    const controller = new AbortController();
+    introAbortRef.current = controller;
+
+    if (forceRefresh) {
+      introFetchedForRef.current = null;
+      setIntroResult(null);
+      setIntroPartialText('');
+      persistCharacterIntro({ result: null, error: null, partialText: '', loading: true });
+    }
+
+    setIntroLoading(true);
+    setIntroError(null);
+
+    try {
+      const introMode =
+        settings?.characterIntroSystemPromptMode
+        || settings?.callModeAboutCharacterSystemPromptMode
+        || CALL_MODE_ABOUT_SYSTEM_PROMPT_MODES.full_generation;
+      const introAutoRoutingActive = Boolean(
+        primaryIsAPI && settings?.apiEndpointRoundRobinEnabled === true && !primaryModel,
+      );
+      console.info(
+        `intro_router_state mode=${showSystemIntro ? 'system' : 'character'} auto_enabled=${introAutoRoutingActive} effective_model=${effectiveIntroModel}`,
+      );
+
+      const resolveIntroSystemPrompt = async () => {
+        if (introMode === CALL_MODE_ABOUT_SYSTEM_PROMPT_MODES.character_card) {
+          if (showSystemIntro) {
+            return buildSystemPersonaPrompt(introDisplayCharacter) || null;
+          }
+          const systemPersonaOn = isSystemPersonaModeActive(settings, activeConvMeta);
+          const systemPersonaChar = systemPersonaOn
+            ? resolveSystemPersonaCharacter(characters, settings, activeConvMeta)
+            : null;
+          if (systemPersonaChar && introDisplayCharacter) {
+            return (
+              composeLayeredSystemPrompt(
+                buildSystemPersonaPrompt(systemPersonaChar),
+                buildSystemPrompt(introDisplayCharacter)
+              ) || null
+            );
+          }
+          return buildSystemPrompt(introDisplayCharacter) || null;
+        }
+        if (introMode === CALL_MODE_ABOUT_SYSTEM_PROMPT_MODES.full_generation) {
+          const trigger =
+            introDisplayCharacter?.first_message?.trim()
+            || introDisplayCharacter?.name
+            || (showSystemIntro ? 'new chat system introduction' : 'new chat introduction');
+          return (await getGenerationSystemPrompt(trigger, introDisplayCharacter, null, {
+            includeAuthorNote: false,
+            conversationId: activeConversation,
+          })) || null;
+        }
+        return null;
+      };
+
+      const result = showSystemIntro
+        ? await fetchSystemIntro({
+          apiUrl: PRIMARY_API_URL,
+          modelName: effectiveIntroModel,
+          character: introDisplayCharacter,
+          userProfile,
+          messages: [],
+          settings,
+          signal: controller.signal,
+          onPartial: setIntroPartialText,
+          systemPromptMode: introMode,
+          resolveCharacterSystemPrompt: resolveIntroSystemPrompt,
+        })
+        : await fetchCharacterIntro({
+          apiUrl: PRIMARY_API_URL,
+          modelName: effectiveIntroModel,
+          character: introDisplayCharacter,
+          userProfile,
+          messages: [],
+          settings,
+          signal: controller.signal,
+          onPartial: setIntroPartialText,
+          systemPromptMode: introMode,
+          resolveCharacterSystemPrompt: resolveIntroSystemPrompt,
+        });
+      if (controller.signal.aborted) return;
+      setIntroResult(result);
+      const rawText = result.rawText || '';
+      setIntroPartialText(rawText);
+      persistCharacterIntro({
+        result,
+        partialText: rawText,
+        error: null,
+        loading: false,
+      });
+      if (!isCharacterIntroReady(result)) {
+        const excerpt = (result.rawExcerpt || result.rawText || '').trim();
+        setIntroError(
+          excerpt
+            ? `${showSystemIntro ? 'System overview' : 'Introduction'} could not be fully parsed after several tries. Try again, or regenerate.\n\n${excerpt}${excerpt.length >= 500 ? '…' : ''}`
+            : `${showSystemIntro ? 'System overview' : 'Introduction'} could not be generated after several tries. Try again.`
+        );
+      } else if (activeConversation) {
+        applyIntroChatTitle(activeConversation, result);
+      }
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      const message = err?.message || (showSystemIntro
+        ? 'Failed to generate system introduction'
+        : 'Failed to generate character introduction');
+      setIntroError(message);
+      persistCharacterIntro({ error: message, loading: false });
+    } finally {
+      if (!controller.signal.aborted) setIntroLoading(false);
+    }
+  }, [
+    showAnyIntro,
+    showSystemIntro,
+    primaryModel,
+    primaryIsAPI,
+    effectiveIntroModel,
+    introDisplayCharacter,
+    activeConversation,
+    introLoading,
+    PRIMARY_API_URL,
+    userProfile,
+    settings,
+    buildSystemPrompt,
+    buildSystemPersonaPrompt,
+    getGenerationSystemPrompt,
+    persistCharacterIntro,
+    applyIntroChatTitle,
+  ]);
+
+  useEffect(() => {
+    if (!activeConversation || !showAnyIntro) return;
+    if (!isCharacterIntroReady(introResult)) return;
+    if (activeConvMeta?.characterIntro?.result !== introResult) return;
+    applyIntroChatTitle(activeConversation, introResult);
+  }, [activeConversation, showAnyIntro, introResult, activeConvMeta?.characterIntro?.result, applyIntroChatTitle]);
+
+  const handleRegenerateCharacterIntro = useCallback(() => {
+    if (!showAnyIntro || !effectiveIntroModel) return;
+    requestCharacterIntro({ forceRefresh: true });
+  }, [showAnyIntro, effectiveIntroModel, requestCharacterIntro]);
+
+  useEffect(() => {
+    if (activeConversation === introConvSyncRef.current) return;
+    introConvSyncRef.current = activeConversation;
+    introAbortRef.current?.abort?.();
+
+    const saved = activeConvMeta?.characterIntro;
+    setIntroResult(saved?.result ?? null);
+    setIntroPartialText(saved?.partialText ?? saved?.result?.rawText ?? '');
+    setIntroError(saved?.error ?? null);
+    setIntroLoading(false);
+
+    if (saved?.fetchKey && introFetchKey?.endsWith(`:${saved.fetchKey}`)) {
+      introFetchedForRef.current = introFetchKey;
+    } else {
+      introFetchedForRef.current = null;
+    }
+  }, [activeConversation, activeConvMeta?.characterIntro, introFetchKey]);
+
+  useEffect(() => {
+    if (!showAnyIntro) {
+      introAbortRef.current?.abort?.();
+      setIntroLoading(false);
+      return undefined;
+    }
+    if (!effectiveIntroModel || !introFetchKey) return undefined;
+    if (isCharacterIntroReady(introResult)) {
+      introFetchedForRef.current = introFetchKey;
+      return undefined;
+    }
+    if (introFetchedForRef.current === introFetchKey) return undefined;
+    introFetchedForRef.current = introFetchKey;
+    requestCharacterIntro();
+    return () => introAbortRef.current?.abort?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per conversation+character+model until ready
+  }, [showAnyIntro, introFetchKey, effectiveIntroModel, introResult]);
+
+  useEffect(() => {
+    if (!activeConversation || !showAnyIntro) return;
+    persistCharacterIntro({
+      result: introResult,
+      partialText: introPartialText,
+      error: introError,
+      loading: introLoading,
+    });
+  }, [
+    activeConversation,
+    showAnyIntro,
+    introResult,
+    introPartialText,
+    introError,
+    introLoading,
+    persistCharacterIntro,
+  ]);
 
   // Local state for the input field
   const [messageVariants, setMessageVariants] = useState({}); // Store variants by message ID
   const [currentVariantIndex, setCurrentVariantIndex] = useState({}); // Track which variant is showing
   const [agentTopic, setAgentTopic] = useState('');
   const [agentTurns, setAgentTurns] = useState(3);
-  const audioPlaybackRef = useRef({ context: null, source: null });
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [showModelSelector, setShowModelSelector] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [nanoGptCatalog, setNanoGptCatalog] = useState(() => readNanoGptModelsCache().models);
+
+  useEffect(() => subscribeNanoGptModelsCache(({ models }) => setNanoGptCatalog(models)), []);
   const [showFloatingControls, setShowFloatingControls] = useState(true);
   const [regeneratingMessageData, setRegeneratingMessageData] = useState(null);
   const [manuallyStoppedAudio, setManuallyStoppedAudio] = useState(false);
   const [autoplayPaused, setAutoplayPaused] = useState(false);
   const messagesEndRef = useRef(null);
   const chatInputFormRef = useRef(null);
+  // Updated by NanoGPT model selector; used to gate reasoning / uploads.
+  const nanoGptSelectedModelCapsRef = useRef({});
+  const [nanoGptModelCaps, setNanoGptModelCaps] = useState({});
+  const focusModeInputRef = useRef(null);
   const [showAllMessages, setShowAllMessages] = useState(false);
   const [isFocusModeActive, setIsFocusModeActive] = useState(false);
+  const [toolbarOverflowOpen, setToolbarOverflowOpen] = useState(false);
+
+  // Shared body overflow manager - prevents background scrolling when either overlay is open
+  useEffect(() => {
+    const bothInactive = !isFocusModeActive && !isCallModeActive;
+    if (!bothInactive) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {};
+  }, [isFocusModeActive, isCallModeActive]);
+  const [showAlignmentPanel, setShowAlignmentPanel] = useState(false);
+  const [showSessionDashboard, setShowSessionDashboard] = useState(false);
+  const [showIntensityPanel, setShowIntensityPanel] = useState(false);
+  const [intensityPanelTab, setIntensityPanelTab] = useState('presets');
+  const [showBookWriterOverlay, setShowBookWriterOverlay] = useState(false);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState(null);
   const prevMessageCount = useRef(messages.length);
   const [skippedMessageIds, setSkippedMessageIds] = useState(new Set());
@@ -131,10 +727,53 @@ const Chat = ({ layoutMode }) => {
     suggested_names: [],
     status: 'idle'
   });
+
+  const handleAgenticCleanup = useCallback(async () => {
+    const userId = activeProfileId || userProfile?.id;
+    const charId = activeCharacter?.id;
+    if (!userId || !charId) {
+      console.warn('Agentic cleanup skipped — missing user or character ID.');
+      alert('Agentic cleanup skipped — missing user or character ID.');
+      return;
+    }
+    try {
+      const apiOpts = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
+      const res = await fetch(`${MEMORY_API_URL}/memory/agentic/cleanup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          character_id: charId,
+          character_name: activeCharacter?.name || 'Character',
+          character_profile: {
+            description: activeCharacter?.description || '',
+            scenario: activeCharacter?.scenario || '',
+            model_instructions: activeCharacter?.model_instructions || ''
+          },
+          use_api: apiOpts?.useApi || false,
+          api_base_url: apiOpts?.apiBaseUrl,
+          model_name: apiOpts?.modelName
+        })
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => res.statusText);
+        throw new Error(errText || `Status ${res.status}`);
+      }
+      const data = await res.json();
+      alert(`Agentic cleanup complete. Kept ${data.kept ?? 0}, removed ${data.removed ?? 0}.`);
+    } catch (err) {
+      console.error('Agentic cleanup failed:', err);
+      alert(`Agentic cleanup failed: ${err.message}`);
+    }
+  }, [MEMORY_API_URL, activeCharacter, activeProfileId, userProfile, primaryIsAPI, PRIMARY_API_URL, primaryModel]);
   const [isAnalyzingCharacter, setIsAnalyzingCharacter] = useState(false);
   const [showCharacterPreview, setShowCharacterPreview] = useState(false);
   const [generatedCharacter, setGeneratedCharacter] = useState(null);
   const [isGeneratingCharacter, setIsGeneratingCharacter] = useState(false);
+  const [showCharacterGenFailure, setShowCharacterGenFailure] = useState(false);
+  const [characterGenerationError, setCharacterGenerationError] = useState(null);
+  const [characterGenerationRaw, setCharacterGenerationRaw] = useState('');
+  const [characterPartialJson, setCharacterPartialJson] = useState(null);
   const [characterFeedback, setCharacterFeedback] = useState('');
   const [isGeneratingCharacterImage, setIsGeneratingCharacterImage] = useState(false);
   const [characterImageUrl, setCharacterImageUrl] = useState(null);
@@ -143,11 +782,160 @@ const Chat = ({ layoutMode }) => {
   const [regenerationQueue, setRegenerationQueue] = useState(0);
   const regenerationQueueRef = useRef([]);
   const regenerationProcessingRef = useRef(false);
+
+  const handleSubmit = async (text, attachments = []) => {
+    if (!text?.trim()) return;
+    const images = (attachments || []).filter(a => a.type === 'image' && a.base64).map(a => ({ base64: a.base64, type: a.mimeType || a.type }));
+    await sendMessage(text.trim(), webSearchEnabled, null, images.length ? { images } : {});
+  };
+
+  const handleGenerateVariantRef = useRef(null);
+
+  // Dual overlay state sync with popup Call Mode window
+  useEffect(() => {
+    const unsubscribe = subscribeDualOverlaySync({
+      onCallInput: (input) => {
+        if (isRecording) {
+          stopRecording(async (transcript) => {
+            const cleaned = String(transcript || '').trim();
+            if (cleaned) sendMessage(cleaned);
+          });
+        } else if (input?.trim()) {
+          handleSubmit(input);
+        }
+      },
+      onCallToggleMic: async () => {
+        if (isRecording) {
+          await stopRecording(async (transcript) => {
+            const cleaned = String(transcript || '').trim();
+            if (cleaned) sendMessage(cleaned);
+          });
+        } else {
+          await startRecording();
+        }
+      },
+      onCallStopTts: () => {
+        stopTTS('call_window_stop');
+        handleStopGeneration();
+      },
+      onCallReroll: () => {
+        if (isGenerating || isTranscribing) return;
+        const lastBotMsg = [...messages].reverse().find(m => m.role === 'bot');
+        if (lastBotMsg) {
+          stopTTS('call_window_reroll');
+          handleStopGeneration();
+          handleGenerateVariantRef.current?.(lastBotMsg.id);
+        }
+      },
+      onCallCycleAvatar: () => {},
+      onCallAiContinue: () => {
+        if (isGenerating || isTranscribing) return;
+        stopTTS('call_window_ai_continue');
+        handleStopGeneration();
+        generateCallModeFollowUp?.();
+      },
+      onCallWindowClosed: () => {
+        if (isCallModeActive) {
+          stopCallMode();
+        }
+        if (!isFocusModeActive) {
+          updateSettings({ allowDualOverlay: false });
+        }
+      },
+      onCallStateRequest: () => {
+        broadcastDualOverlayMessage({
+          type: 'dual_state_sync',
+          state: {
+            messages: messages.slice(-50),
+            isGenerating,
+            isPlayingAudio,
+            ttsSubtitleCue: window.__ttsSubtitleCue || null,
+            characters: characters || [],
+            isRecording,
+            isTranscribing
+          }
+        });
+      }
+    });
+
+    return () => unsubscribe();
+  }, [isRecording, stopRecording, startRecording, sendMessage, handleSubmit, isGenerating, isTranscribing, isPlayingAudio, stopTTS, handleStopGeneration, isCallModeActive, stopCallMode, isFocusModeActive, characters, cycleCharacterAvatar, generateCallModeFollowUp, messages, updateSettings]);
+
+  // Broadcast state changes to Call Mode window when both overlays are active
+  useEffect(() => {
+    if (!settings?.allowDualOverlay || !isOverlayWindowOpen()) return;
+
+    const state = {
+      messages: messages.slice(-50),
+      isGenerating,
+      isPlayingAudio,
+      ttsSubtitleCue: window.__ttsSubtitleCue || null,
+      characters: characters || [],
+      isRecording,
+      isTranscribing
+    };
+
+    broadcastDualOverlayMessage({
+      type: 'dual_state_sync',
+      state
+    });
+  }, [messages, isGenerating, isPlayingAudio, characters, isRecording, isTranscribing, settings?.allowDualOverlay]);
   const regenerationAbortControllerRef = useRef(null);
   const [isRegenerationRunning, setIsRegenerationRunning] = useState(false);
   const [showCustomPrompt, setShowCustomPrompt] = useState(false);
   const streamingTtsMessageIdRef = useRef(null);
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(() => {
+    try {
+      return localStorage.getItem('eloquent:webSearchEnabled') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('eloquent:webSearchEnabled', webSearchEnabled ? 'true' : 'false');
+    } catch {
+      /* ignore */
+    }
+  }, [webSearchEnabled]);
+  const [webSearchMode, setWebSearchMode] = useState(loadWebSearchMode);
+  const [webSearchStrategy, setWebSearchStrategy] = useState(loadWebSearchStrategy);
+  const [webSearchArticleUrls, setWebSearchArticleUrls] = useState(loadWebSearchArticleUrls);
+  const [webSearchSite, setWebSearchSite] = useState(loadWebSearchSite);
+  const [liveWebSearchMeta, setLiveWebSearchMeta] = useState(null);
+  useEffect(() => {
+    saveWebSearchMode(webSearchMode);
+  }, [webSearchMode]);
+  useEffect(() => {
+    saveWebSearchArticleUrls(webSearchArticleUrls);
+  }, [webSearchArticleUrls]);
+  useEffect(() => {
+    saveWebSearchSite(webSearchSite);
+  }, [webSearchSite]);
+  useEffect(() => {
+    saveWebSearchStrategy(webSearchStrategy);
+  }, [webSearchStrategy]);
+  useEffect(() => {
+    if (settings?.webSearchStrategy && settings.webSearchStrategy !== webSearchStrategy) {
+      setWebSearchStrategy(settings.webSearchStrategy);
+    }
+  }, [settings?.webSearchStrategy]);
+  useEffect(() => {
+    if (!isGenerating) setLiveWebSearchMeta(null);
+  }, [isGenerating]);
+
+  const searchStatusLabel =
+    webSearchEnabled && isGenerating
+      ? webSearchPathLabel(liveWebSearchMeta || { status: 'searching' })
+      : '';
+
+  const handleWebSearchStrategyChange = useCallback(
+    (value) => {
+      setWebSearchStrategy(value);
+      updateSettings({ webSearchStrategy: value });
+    },
+    [updateSettings]
+  );
   const [characterImageSettings, setCharacterImageSettings] = useState({
     width: 512,
     height: 512,
@@ -169,6 +957,17 @@ const Chat = ({ layoutMode }) => {
   const [showAuthorNote, setShowAuthorNote] = useState(false);
   const [showGroupContext, setShowGroupContext] = useState(false);
   const [showRosterDialog, setShowRosterDialog] = useState(false);
+  const [voiceQuickOpen, setVoiceQuickOpen] = useState(false);
+  const [showBatchBoilerplateDialog, setShowBatchBoilerplateDialog] = useState(false);
+  const [batchBoilerplateFind, setBatchBoilerplateFind] = useState('');
+  const [batchBoilerplateReplace, setBatchBoilerplateReplace] = useState('');
+  const [batchBoilerplateMatchCase, setBatchBoilerplateMatchCase] = useState(false);
+  const [batchBoilerplateReplaceAll, setBatchBoilerplateReplaceAll] = useState(true);
+  const [batchBoilerplateScope, setBatchBoilerplateScope] = useState('all');
+  const [batchBoilerplateSelectedIds, setBatchBoilerplateSelectedIds] = useState([]);
+  /** literal = exact phrase; brackets = remove [...]; regex = JS RegExp pattern (global) */
+  const [batchBoilerplateMode, setBatchBoilerplateMode] = useState('literal');
+  const [batchBoilerplateRegex, setBatchBoilerplateRegex] = useState('');
 
   // Story Tracker and Choice Generator state
   const [showStoryTracker, setShowStoryTracker] = useState(false);
@@ -375,7 +1174,7 @@ const Chat = ({ layoutMode }) => {
           role: 'bot',
           characterId: activeCharacter?.id,
           characterName: activeCharacter?.name,
-          avatar: activeCharacter?.avatar,
+          avatar: getActiveCharacterAvatar(activeCharacter),
           modelId: 'primary',
           type: 'image',
           content: data.generated_prompt,
@@ -416,13 +1215,40 @@ const Chat = ({ layoutMode }) => {
 
       if (!primaryModel) { console.error('Story analysis error: No model loaded'); return; }
 
+      const storyRoute = resolveUnifiedRequestRoute({
+        primaryModel,
+        primaryIsAPI,
+        settings,
+        requestPurpose: 'story_analysis',
+      });
+      const storyTraceId = createRouteTraceId();
+      logRouteTrace({
+        action: 'story_analysis',
+        route: storyRoute,
+        requestPurpose: 'story_analysis',
+        traceId: storyTraceId,
+      });
       const response = await fetch(`${PRIMARY_API_URL}/generate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Router-Trace-Id': storyTraceId,
+        },
         body: JSON.stringify({
-          prompt, model_name: primaryModel, max_tokens: 500, temperature: 0.3, stop: ['\n\n'], stream: true, gpu_id: 0, request_purpose: 'story_analysis'
+          prompt,
+          model_name: storyRoute.effectiveModel || primaryModel,
+          max_tokens: 500,
+          temperature: 0.3,
+          stop: ['\n\n'],
+          stream: true,
+          gpu_id: 0,
+          request_purpose: 'story_analysis',
+          selected_model: storyRoute.selectedModel || undefined,
+          round_robin_enabled: storyRoute.autoEnabled,
         })
       });
+      const routeMeta = extractRouteMetaFromGenerateResult({}, response.headers);
+      if (routeMeta?.traceId || routeMeta?.effectiveModel) setLastRequestRouteMeta(routeMeta);
 
       if (response.ok) {
         // ... [Parsing logic preserved] ...
@@ -458,11 +1284,199 @@ const Chat = ({ layoutMode }) => {
     generateCallModeFollowUp?.();
   }, [generateCallModeFollowUp, handleStopGeneration, isGenerating, isTranscribing, stopTTS]);
 
-  const handleMicClick = () => {
+  const handleMicToggle = useCallback(async (target = 'chat') => {
     if (audioError) setAudioError(null);
-    if (isRecording) stopRecording((text) => chatInputFormRef.current?.setValue?.(text));
-    else startRecording();
-  };
+    const autoSendOnStop = target === 'call' || settings?.sttAutoSendOnStop === true;
+    if (isRecording) {
+      const asrTraceId = `asr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const asrSource = target === 'call' ? 'asr_call_mode' : 'asr_regular';
+      await stopRecording(async (text) => {
+        const cleaned = String(text || '').trim();
+        if (!cleaned) {
+          console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=skip_empty_transcript`);
+          return;
+        }
+        if (autoSendOnStop) {
+          console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=autosend_start transcript_len=${cleaned.length}`);
+          await sendMessage(cleaned);
+          console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=autosend_dispatched`);
+        } else if (target === 'focus') {
+          console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=populate_focus transcript_len=${cleaned.length}`);
+          focusModeInputRef.current?.setValue?.(cleaned);
+        } else {
+          console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=populate_chat_input transcript_len=${cleaned.length}`);
+          chatInputFormRef.current?.setValue?.(cleaned);
+        }
+      });
+    } else {
+      await startRecording();
+    }
+  }, [audioError, isRecording, stopRecording, sendMessage, settings?.sttAutoSendOnStop, startRecording]);
+
+  /** Chat / call / focus — same target rules as keyboard + pedals. */
+  const getMicTargetMode = useCallback(
+    () => (isCallModeActive ? 'call' : isFocusModeActive ? 'focus' : 'chat'),
+    [isCallModeActive, isFocusModeActive]
+  );
+
+  /** One tap starts recording; no hold. Safe to spam from remote (no-ops if already on). */
+  const handleMicStartOnly = useCallback(async () => {
+    if (!sttEnabled || isTranscribing) return;
+    if (isGenerating && !isRecording) return;
+    if (isRecording) return;
+    await handleMicToggle(getMicTargetMode());
+  }, [sttEnabled, isTranscribing, isGenerating, isRecording, handleMicToggle, getMicTargetMode]);
+
+  /** One tap stops, transcribes, and sends (when auto-send on stop is enabled). */
+  const handleMicStopOnly = useCallback(async () => {
+    if (!isRecording) return;
+    await handleMicToggle(getMicTargetMode());
+  }, [isRecording, handleMicToggle, getMicTargetMode]);
+
+  /** Mobile remote: set per-character TTS voice (Kokoro id, Chatterbox clone filename, or "default"). */
+  const handleRemoteSetVoice = useCallback(
+    async (voiceId, characterIdOpt) => {
+      const v = String(voiceId || '').trim();
+      if (!v) return;
+      const roster = (characters || []).filter((c) => (c?.chat_role || 'npc') !== 'user');
+      const cid = String(characterIdOpt || '').trim();
+      let target = null;
+      if (cid) {
+        target = roster.find((c) => c.id === cid) || (characters || []).find((c) => c.id === cid) || null;
+      }
+      if (!target) target = activeCharacter || roster[0] || null;
+      if (!target) return;
+      saveCharacter({ ...target, ttsVoice: v });
+      const ttsEngine = settings?.ttsEngine || 'kokoro';
+      const isChatterbox = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo';
+      if (isChatterbox && v && v !== 'default' && PRIMARY_API_URL) {
+        try {
+          await fetch(`${String(PRIMARY_API_URL).replace(/\/+$/, '')}/tts/save-voice-preference`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice_id: v, engine: ttsEngine }),
+          });
+        } catch (err) {
+          console.warn('[remote voice] save-voice-preference failed', err);
+        }
+      }
+    },
+    [characters, activeCharacter, saveCharacter, settings?.ttsEngine, PRIMARY_API_URL]
+  );
+
+  useEffect(() => {
+    const onRemote = (ev) => {
+      const d = ev?.detail || {};
+      const action = d.action;
+      if (action === 'mic_start') void handleMicStartOnly();
+      else if (action === 'mic_stop') void handleMicStopOnly();
+      else if (action === 'mic_toggle') void handleMicToggle(getMicTargetMode());
+      else if (action === 'set_voice') {
+        void handleRemoteSetVoice(d.voiceId ?? d.voice_id, d.characterId ?? d.character_id);
+      }
+    };
+    window.addEventListener('eloquent-remote', onRemote);
+    return () => window.removeEventListener('eloquent-remote', onRemote);
+  }, [
+    handleMicStartOnly,
+    handleMicStopOnly,
+    handleMicToggle,
+    getMicTargetMode,
+    handleRemoteSetVoice,
+  ]);
+
+  const handleMicClick = useCallback(() => {
+    void handleMicToggle('chat');
+  }, [handleMicToggle]);
+
+  const handleFocusModeMicClick = useCallback(() => {
+    void handleMicToggle('focus');
+  }, [handleMicToggle]);
+
+  useEffect(() => {
+    const downRef = { current: new Set() };
+    const triggeredRef = { current: false };
+    const isInputLike = (el) => {
+      const tag = el?.tagName;
+      if (!tag) return false;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable;
+    };
+    const ctrlDown = () => downRef.current.has('ControlLeft') || downRef.current.has('ControlRight');
+    const altDown = () => downRef.current.has('AltLeft') || downRef.current.has('AltRight');
+    // Simple pedal-friendly mic toggle: Ctrl + Alt + C.
+    const micShortcutFromEvent = (ev) =>
+      ev.code === 'KeyC'
+      && !ev.repeat
+      && (
+        (ev.ctrlKey && ev.altKey)
+        || (ctrlDown() && altDown())
+      );
+    const canToggleMic = () =>
+      sttEnabled
+      && !isTranscribing
+      && (!isGenerating || isRecording);
+    const handleGlobalKeyDown = (event) => {
+      if (event.code) downRef.current.add(event.code);
+      if (!canToggleMic()) return;
+
+      // Pedal combo should work globally (even without text-area focus).
+      if (micShortcutFromEvent(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!triggeredRef.current) {
+          triggeredRef.current = true;
+          void handleMicToggle(getMicTargetMode());
+        }
+        return;
+      }
+
+      // Space should not steal normal typing inside inputs.
+      if (isInputLike(event.target)) return;
+      if (event.key === ' ' && !event.repeat) {
+        event.preventDefault();
+        void handleMicToggle(getMicTargetMode());
+      }
+    };
+    const handleGlobalKeyUp = (event) => {
+      if (event.code) downRef.current.delete(event.code);
+      if (!(ctrlDown() && altDown() && downRef.current.has('KeyC'))) {
+        triggeredRef.current = false;
+      }
+    };
+    const handleBlur = () => {
+      downRef.current.clear();
+      triggeredRef.current = false;
+    };
+
+    // Middle mouse (wheel click) disabled app-wide — too easy to trigger by accident.
+    const handleMiddleMouse = (event) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown, true);
+    window.addEventListener('keyup', handleGlobalKeyUp, true);
+    window.addEventListener('mousedown', handleMiddleMouse, true);
+    window.addEventListener('auxclick', handleMiddleMouse, true);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown, true);
+      window.removeEventListener('keyup', handleGlobalKeyUp, true);
+      window.removeEventListener('mousedown', handleMiddleMouse, true);
+      window.removeEventListener('auxclick', handleMiddleMouse, true);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [sttEnabled, isTranscribing, isGenerating, isRecording, handleMicToggle, isFocusModeActive, getMicTargetMode]);
+
+  useEffect(() => {
+    if (!toolbarOverflowOpen) return;
+    const handlePointerDown = (e) => {
+      if (!e.target.closest?.('[data-chat-toolbar-overflow]')) setToolbarOverflowOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [toolbarOverflowOpen]);
 
   const handleBack = useCallback(() => {
     if (messages.length === 0) return;
@@ -478,7 +1492,6 @@ const Chat = ({ layoutMode }) => {
       }
       return newMessages;
     });
-    if (audioPlaybackRef.current.source) audioPlaybackRef.current.source.stop();
     stopTTS();
   }, [messages, setMessages, setMessageVariants, stopTTS]);
 
@@ -526,15 +1539,22 @@ const Chat = ({ layoutMode }) => {
     const speakerCharacter = await resolveSpeakerCharacter(editedPromptText, slicedMessages);
     const botMsgId = generateUniqueId();
     const ttsOverrides = getTtsOverridesForCharacterId(speakerCharacter?.id);
-    const tempBotMsg = {
+    const tempBotMsg = attachApiBotSpeakerMeta({
       id: botMsgId,
       role: 'bot',
       content: '',
       modelId: 'primary',
       characterId: speakerCharacter?.id,
       characterName: speakerCharacter?.name,
-      avatar: speakerCharacter?.avatar
-    };
+      avatar: getActiveCharacterAvatar(speakerCharacter),
+    }, {
+      speakerCharacter,
+      primaryModel,
+      primaryIsAPI,
+      settings,
+      catalog: nanoGptCatalog,
+      characters,
+    });
 
     setMessages(prev => [...prev, tempBotMsg]);
 
@@ -546,8 +1566,20 @@ const Chat = ({ layoutMode }) => {
       }
 
       let lastProcessedLength = 0;
-      const onToken = (textChunk, currentFullText) => {
-        setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, content: currentFullText } : m));
+      const reasoningEnabled = nanoGptSelectedModelCapsRef.current?.reasoning === true;
+      const reasoningStartedAtMs = reasoningEnabled ? Date.now() : null;
+      const onToken = (textChunk, currentFullText, meta) => {
+        setMessages(prev => prev.map(m => {
+          if (m.id !== botMsgId) return m;
+          return applyReasoningMetaToBotMessage(
+            { ...m, content: currentFullText },
+            {
+              ...meta,
+              reasoningStartedAtMs: meta?.reasoningStartedAtMs ?? m.reasoningStartedAtMs ?? reasoningStartedAtMs,
+            },
+            { capReasoning: reasoningEnabled },
+          );
+        }));
 
         // Calculate the new part of the text that hasn't been sent to TTS yet
         const newPart = currentFullText.slice(lastProcessedLength);
@@ -561,11 +1593,35 @@ const Chat = ({ layoutMode }) => {
         editedPromptText,
         slicedMessages, // History ends with the user message
         onToken,
-        { authorNote, webSearchEnabled, speakerCharacterId: speakerCharacter?.id }
+        {
+          authorNote,
+          webSearchEnabled,
+          speakerCharacterId: speakerCharacter?.id,
+          modelCapabilities: nanoGptSelectedModelCapsRef.current || {},
+          onWebSearchMeta: webSearchEnabled
+            ? (meta) => {
+                setLiveWebSearchMeta(meta);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === botMsgId
+                      ? { ...m, webSearchMeta: meta, webSearchSources: meta?.sources || [] }
+                      : m
+                  )
+                );
+              }
+            : null,
+        }
       );
 
       if (responseText) {
-        setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, content: responseText } : m));
+        setMessages(prev => prev.map(m => m.id === botMsgId ? {
+          ...m,
+          content: responseText,
+          reasoningStreaming: false,
+          reasoningSeconds: (reasoningEnabled && reasoningStartedAtMs)
+            ? Math.max(0, Math.round((Date.now() - reasoningStartedAtMs) / 1000))
+            : null,
+        } : m));
 
         // Finalize TTS if streaming
         if (settings?.streamResponses) {
@@ -574,8 +1630,10 @@ const Chat = ({ layoutMode }) => {
           playTTS(botMsgId, responseText, ttsOverrides);
         }
 
-        // Refresh memories/lore observation (optional but good)
-        // observeConversation(editedPromptText, responseText); 
+        // Ensure agentic memory runs for regenerated responses too
+        setTimeout(() => {
+          retryAgenticMemoryForLastTurn();
+        }, 0);
       }
     } catch (error) {
       console.error("Regeneration error:", error);
@@ -584,7 +1642,12 @@ const Chat = ({ layoutMode }) => {
       setIsGenerating(false);
       setAbortController(null);
     }
-  }, [isGenerating, messages, setMessages, setIsGenerating, resolveSpeakerCharacter, generateReply, settings, webSearchEnabled, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, generateUniqueId, getTtsOverridesForCharacterId]);
+  }, [
+    isGenerating, messages, setMessages, setIsGenerating, resolveSpeakerCharacter, generateReply,
+    settings, webSearchEnabled, authorNote, startStreamingTTS, playTTS, abortController,
+    setAbortController, generateUniqueId, getTtsOverridesForCharacterId, primaryModel, primaryIsAPI,
+    nanoGptCatalog, characters,
+  ]);
 
   const generateCharacterImagePrompt = useCallback((character) => {
     if (!character) return '';
@@ -625,17 +1688,130 @@ const Chat = ({ layoutMode }) => {
     }
   }, [audioError, isPlayingAudio, stopTTS, playTTS, getTtsOverridesForMessageId]);
 
+  const splitTextIntoTtsChunks = useCallback((text) => {
+    if (!text || typeof text !== 'string') return [];
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized) return [];
+    const chunks = normalized.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+    return (chunks || []).map(chunk => chunk.trim()).filter(Boolean);
+  }, []);
+
+  const handleChunkedSpeakerClick = useCallback((messageId, text) => {
+    if (audioError) setAudioError(null);
+    if (isPlayingAudio === messageId) {
+      if (isStreamingTtsPaused) {
+        resumeStreamingTTS();
+      } else {
+        pauseStreamingTTS();
+      }
+      return;
+    }
+    if (isPlayingAudio) return;
+
+    const chunks = splitTextIntoTtsChunks(text);
+    if (!chunks.length) return;
+
+    startStreamingTTS(messageId, getTtsOverridesForMessageId(messageId), { bypassAutoplayGate: true });
+    chunks.forEach(chunk => addStreamingText(chunk, { immediate: true }));
+    endStreamingTTS();
+  }, [
+    audioError,
+    isPlayingAudio,
+    stopTTS,
+    isStreamingTtsPaused,
+    pauseStreamingTTS,
+    resumeStreamingTTS,
+    splitTextIntoTtsChunks,
+    startStreamingTTS,
+    getTtsOverridesForMessageId,
+    addStreamingText,
+    endStreamingTTS
+  ]);
+
+  const triggerManualFastQueuePlayback = useCallback(() => {
+    const lastFinishedBot = [...messages]
+      .reverse()
+      .find(
+        (m) =>
+          m?.role === 'bot' &&
+          typeof m?.content === 'string' &&
+          m.content.trim().length > 0 &&
+          !m?.isStreaming
+      );
+    if (!lastFinishedBot) return;
+    handleChunkedSpeakerClick(lastFinishedBot.id, lastFinishedBot.content);
+  }, [messages, handleChunkedSpeakerClick]);
+
+  useEffect(() => {
+    // Pedal-friendly shortcuts:
+    // 1) Ctrl + Alt + X => hard stop autoplay TTS
+    // 2) Ctrl + Alt + V => manual fast-queue playback for latest completed bot response
+    const isForceStopCombo = (event) =>
+      event.code === 'KeyX' &&
+      event.ctrlKey &&
+      event.altKey;
+
+    const isManualFastQueueCombo = (event) =>
+      event.code === 'KeyV' &&
+      event.ctrlKey &&
+      event.altKey;
+
+    const onKeyDown = (event) => {
+      if (event.repeat) return;
+
+      if (isForceStopCombo(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        // Emergency kill-switch for glitched autoplay/streaming playback.
+        try { handleStopGeneration(); } catch (_) {}
+        try { stopStreamingTTS(); } catch (_) {}
+        try { stopTTS(); } catch (_) {}
+        return;
+      }
+
+      if (isManualFastQueueCombo(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        triggerManualFastQueuePlayback();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [handleStopGeneration, stopStreamingTTS, stopTTS, triggerManualFastQueuePlayback]);
+
   const handleAutoPlayToggle = (value) => {
     updateSettings({ ttsAutoPlay: value });
   };
 
+  const primaryModelDisplay = useMemo(
+    () => resolvePrimaryModelDisplay({
+      primaryModel,
+      primaryIsAPI,
+      settings,
+      catalog: nanoGptCatalog,
+    }),
+    [primaryModel, primaryIsAPI, settings, nanoGptCatalog],
+  );
+
   const formatModelName = useCallback((name) => {
     if (!name) return 'None';
+    if (name === primaryModel && primaryIsAPI && primaryModelDisplay?.isAutoRouting) {
+      return primaryModelDisplay.label;
+    }
+    if (name?.startsWith?.('endpoint-')) {
+      const d = resolveEndpointDisplay(name, settings, nanoGptCatalog);
+      if (d) return `${d.icon} ${d.displayName}`;
+    }
     if (name.includes('openai')) return 'OpenAI API';
     let displayName = name.split('/').pop().split('\\').pop();
-    if (displayName.endsWith('.bin') || displayName.endsWith('.gguf')) displayName = displayName.substring(0, displayName.lastIndexOf('.'));
+    if (displayName.endsWith('.bin') || displayName.endsWith('.gguf')) {
+      displayName = displayName.substring(0, displayName.lastIndexOf('.'));
+    }
     return displayName;
-  }, []);
+  }, [primaryModel, primaryIsAPI, primaryModelDisplay, settings, nanoGptCatalog]);
 
   useEffect(() => {
     if (messages && messages.length > 0 && autoAnalyzeImages) {
@@ -651,60 +1827,246 @@ const Chat = ({ layoutMode }) => {
     setShowAllMessages(false);
   }, [performanceMode, activeConversation]);
 
-  // Variant Storage Logic
+  // Variant Storage Logic (IndexedDB to avoid localStorage quota)
   useEffect(() => {
     if (!activeConversation) { setMessageVariants({}); setCurrentVariantIndex({}); return; }
-    try {
-      const key = `LiangLocal-variants-${activeConversation}`;
-      const stored = localStorage.getItem(key);
-      if (stored) {
-        const { messageVariants: v, currentVariantIndex: i } = JSON.parse(stored);
-        setMessageVariants(v || {}); setCurrentVariantIndex(i || {});
-      } else { setMessageVariants({}); setCurrentVariantIndex({}); }
-    } catch (e) { console.error(e); }
+    const key = `LiangLocal-variants-${activeConversation}`;
+    let cancelled = false;
+    indexedDbStorage.getItem(key).then(stored => {
+      if (cancelled) return;
+      try {
+        if (stored) {
+          const { messageVariants: v, currentVariantIndex: i } = JSON.parse(stored);
+          setMessageVariants(v || {}); setCurrentVariantIndex(i || {});
+        } else { setMessageVariants({}); setCurrentVariantIndex({}); }
+      } catch (e) { console.error(e); }
+    });
+    return () => { cancelled = true; };
   }, [activeConversation]);
 
   useEffect(() => {
     if (!activeConversation) return;
-    localStorage.setItem(`LiangLocal-variants-${activeConversation}`, JSON.stringify({ messageVariants, currentVariantIndex }));
+    indexedDbStorage.setItem(`LiangLocal-variants-${activeConversation}`, JSON.stringify({ messageVariants, currentVariantIndex }));
   }, [activeConversation, messageVariants, currentVariantIndex]);
 
-  const handleSubmit = async (text) => {
-    // UNLOCK AUDIO ON INTERACTION
-    if (unlockAudioContext) unlockAudioContext();
+// handleSubmit moved earlier in file
 
-    if (text && !isGenerating) {
-      const shouldUseDual = dualModeEnabled && primaryModel && secondaryModel;
-      if (shouldUseDual) await sendDualMessage(text, webSearchEnabled);
-      else await sendMessage(text, webSearchEnabled, authorNote.trim() || null);
+  const handleBeginCharacterIntro = useCallback(() => {
+    if (!activeConversation) return;
+    completeCharacterIntro(activeConversation, { introResult });
+  }, [activeConversation, completeCharacterIntro, introResult]);
+
+  const persistCharacterGenBackup = useCallback((result) => {
+    try {
+      const payload = {
+        savedAt: new Date().toISOString(),
+        conversationId: activeConversation || null,
+        status: result?.status,
+        error: result?.error,
+        raw: result?.raw_response_excerpt || '',
+        partial: result?.partial_character_json || result?.character_json || null,
+        backupPaths: result?.backup_paths || [],
+      };
+      localStorage.setItem('LiangLocal-character-gen-backup', JSON.stringify(payload));
+    } catch (e) {
+      console.warn('Character gen backup save failed:', e);
     }
-  };
+  }, [activeConversation]);
+
+  const clearCharacterGenFailure = useCallback(() => {
+    setShowCharacterGenFailure(false);
+    setCharacterGenerationError(null);
+    setCharacterGenerationRaw('');
+    setCharacterPartialJson(null);
+  }, []);
 
   const handleGenerateCharacter = useCallback(async () => {
     if (isGeneratingCharacter) return;
     try {
       setIsGeneratingCharacter(true);
+      clearCharacterGenFailure();
+      const createCharacterAutoEnabled = Boolean(
+        primaryIsAPI && settings?.apiEndpointRoundRobinEnabled === true,
+      );
+      const createCharacterSelectedModel = primaryModel || effectiveIntroModel || null;
+      const createCharacterEffectiveModel = primaryIsAPI
+        ? (resolvePrimaryEndpointIdForRequest(
+            createCharacterSelectedModel,
+            primaryIsAPI,
+            settings,
+          ) || createCharacterSelectedModel)
+        : createCharacterSelectedModel;
+      console.info(
+        `create_character_router_state auto_enabled=${createCharacterAutoEnabled} selected_model=${createCharacterSelectedModel || 'none'} effective_model=${createCharacterEffectiveModel || 'none'}`,
+      );
       const response = await fetch(`${PRIMARY_API_URL}/character/generate-from-conversation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: messages.slice(-30), analysis: characterReadiness, model_name: primaryModel })
+        body: JSON.stringify({
+          messages: messages.slice(-30),
+          analysis: characterReadiness,
+          model_name: createCharacterEffectiveModel,
+          selected_model: createCharacterSelectedModel,
+          frontend_round_robin_enabled: createCharacterAutoEnabled,
+          request_purpose: 'create_character',
+          conversation_id: activeConversation || '',
+        }),
       });
-      if (response.ok) {
-        const result = await response.json();
-        setGeneratedCharacter(result.character_json);
-        setShowCharacterPreview(true);
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const errText = result?.detail || result?.error || response.statusText || 'Generation failed';
+        persistCharacterGenBackup({ status: 'error', error: errText, raw_response_excerpt: '' });
+        setCharacterGenerationError(String(errText));
+        setCharacterGenerationRaw('');
+        setCharacterPartialJson(null);
+        setShowCharacterGenFailure(true);
+        return;
       }
-    } catch (e) { console.error(e); } finally { setIsGeneratingCharacter(false); }
-  }, [characterReadiness, messages, isGeneratingCharacter, PRIMARY_API_URL, primaryModel]);
+
+      persistCharacterGenBackup(result);
+
+      const character =
+        result?.character_json ||
+        (result?.status === 'partial' ? result?.partial_character_json : null);
+      if (character && (result?.status === 'success' || result?.status === 'partial')) {
+        setGeneratedCharacter(character);
+        setShowCharacterPreview(true);
+        if (result?.status === 'partial') {
+          setCharacterGenerationError(
+            result?.error || 'Recovered partial character from incomplete model output.'
+          );
+        }
+        return;
+      }
+
+      setCharacterGenerationError(result?.error || 'Could not parse character from model response');
+      setCharacterGenerationRaw(result?.raw_response_excerpt || '');
+      setCharacterPartialJson(result?.partial_character_json || null);
+      setShowCharacterGenFailure(true);
+    } catch (e) {
+      console.error(e);
+      setCharacterGenerationError(e?.message || 'Character generation failed');
+      setShowCharacterGenFailure(true);
+    } finally {
+      setIsGeneratingCharacter(false);
+    }
+  }, [
+    characterReadiness,
+    messages,
+    isGeneratingCharacter,
+    PRIMARY_API_URL,
+    primaryModel,
+    primaryIsAPI,
+    settings,
+    effectiveIntroModel,
+    activeConversation,
+    persistCharacterGenBackup,
+    clearCharacterGenFailure,
+  ]);
+
+  const handleUsePartialCharacter = useCallback(() => {
+    if (!characterPartialJson) return;
+    setGeneratedCharacter(characterPartialJson);
+    setShowCharacterPreview(true);
+    clearCharacterGenFailure();
+  }, [characterPartialJson, clearCharacterGenFailure]);
 
   const handleCallModeToggle = useCallback(async () => {
+    if (settings?.allowDualOverlay) return;
     if (isCallModeActive) await stopCallMode(); else await startCallMode();
-  }, [isCallModeActive, startCallMode, stopCallMode]);
+  }, [isCallModeActive, startCallMode, stopCallMode, settings?.allowDualOverlay]);
+
+  const handleNanoGptCapabilities = useCallback((caps) => {
+    const next = caps || {};
+    nanoGptSelectedModelCapsRef.current = next;
+    setNanoGptModelCaps(next);
+  }, []);
+
+  const handleQuickActionPrompt = useCallback((text) => {
+    try {
+      chatInputFormRef.current?.setValue(text);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const activeComposerMode = isCallModeActive ? 'call' : isFocusModeActive ? 'focus' : 'chat';
+
+  // Dual overlay: popup = Call Mode, main window = Focus Mode.
+  // Never start call mode in the main window when dual overlay is on.
+  const handleDualOverlayChange = useCallback(async (enabled) => {
+    if (enabled) {
+      const { writeCallOverlayState, openCallOverlayWindow } = await import('../utils/dualOverlayWindow');
+      writeCallOverlayState({
+        activeCharacter: activeCharacter || null,
+        characters: (characters || []).map(c => ({ id: c.id, name: c.name, character_order: c.character_order, avatar: c.avatar, avatar_url: c.avatar_url })),
+        primaryApiUrl: PRIMARY_API_URL || '',
+      });
+      openCallOverlayWindow();
+      updateSettings({ allowDualOverlay: true });
+      setIsFocusModeActive(true);
+    } else {
+      if (isCallModeActive) await stopCallMode();
+      const { closeCallOverlayWindow } = await import('../utils/dualOverlayWindow');
+      closeCallOverlayWindow();
+      updateSettings({ allowDualOverlay: false });
+    }
+  }, [stopCallMode, isCallModeActive, updateSettings]);
+
+  const handleComposerModeChange = useCallback(async (mode) => {
+    if (mode === 'focus') {
+      // Toggle focus mode independently of dual overlay or call mode
+      setIsFocusModeActive(prev => !prev);
+      return;
+    }
+    if (mode === 'call') {
+      // When dual overlay is on, the popup already owns call mode
+      if (settings?.allowDualOverlay) return;
+      if (!isCallModeActive) {
+        await startCallMode();
+      } else {
+        await stopCallMode();
+      }
+      return;
+    }
+    if (mode === 'chat') {
+      setIsFocusModeActive(false);
+      if (isCallModeActive) await stopCallMode();
+      updateSettings({ allowDualOverlay: false });
+      return;
+    }
+    if (mode === 'image') {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('eloquent-open-chat-image'));
+      }
+    }
+  }, [isCallModeActive, startCallMode, stopCallMode, setIsFocusModeActive, updateSettings]);
+
+  // Close both overlays at once (for dual-overlay ESC behavior)
+  const handleCloseAllOverlays = useCallback(() => {
+    setIsFocusModeActive(false);
+    if (isCallModeActive) {
+      stopCallMode();
+      updateSettings({ allowDualOverlay: false });
+    }
+  }, [isCallModeActive, stopCallMode, updateSettings]);
 
   const handleRefineCharacter = useCallback(async () => {
     if (!generatedCharacter || !characterFeedback?.trim() || isGeneratingCharacter) return;
     setIsGeneratingCharacter(true);
     try {
+      const refineRoute = resolveUnifiedRequestRoute({
+        primaryModel: primaryModel || effectiveIntroModel,
+        primaryIsAPI,
+        settings,
+        requestPurpose: 'refine_character',
+      });
+      const refineCharacterAutoEnabled = refineRoute.autoEnabled;
+      const refineCharacterSelectedModel = refineRoute.selectedModel || primaryModel || effectiveIntroModel;
+      const refineCharacterEffectiveModel = refineRoute.effectiveModel || refineCharacterSelectedModel;
+      console.info(
+        `refine_character_router_state auto_enabled=${refineCharacterAutoEnabled} selected_model=${refineCharacterSelectedModel || 'none'} effective_model=${refineCharacterEffectiveModel || 'none'}`,
+      );
       const res = await fetch(`${PRIMARY_API_URL}/character/refine-generated`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -712,7 +2074,10 @@ const Chat = ({ layoutMode }) => {
           character_json: generatedCharacter,
           feedback: characterFeedback.trim(),
           original_messages: messages.slice(-30),
-          model_name: primaryModel,
+          model_name: refineCharacterEffectiveModel || primaryModel,
+          selected_model: refineCharacterSelectedModel,
+          frontend_round_robin_enabled: refineCharacterAutoEnabled,
+          request_purpose: 'refine_character',
           gpu_id: 0,
         }),
       });
@@ -729,7 +2094,7 @@ const Chat = ({ layoutMode }) => {
     } finally {
       setIsGeneratingCharacter(false);
     }
-  }, [generatedCharacter, characterFeedback, messages, isGeneratingCharacter, PRIMARY_API_URL, primaryModel]);
+  }, [generatedCharacter, characterFeedback, messages, isGeneratingCharacter, PRIMARY_API_URL, primaryModel, primaryIsAPI, settings, effectiveIntroModel]);
 
   const handleAutoAnalyzeImage = useCallback(async (imageMessage) => {
     // ... [Original Logic] ...
@@ -790,7 +2155,7 @@ const Chat = ({ layoutMode }) => {
     const characterSnapshot = queueItem?.characterSnapshot;
     const characterId = characterSnapshot?.id ?? activeCharacter?.id;
     const characterName = characterSnapshot?.name ?? activeCharacter?.name;
-    const avatar = characterSnapshot?.avatar ?? activeCharacter?.avatar;
+    const avatar = getActiveCharacterAvatar(characterSnapshot) ?? getActiveCharacterAvatar(activeCharacter);
 
     const gpuId = Number.isInteger(imageParams.gpu_id)
       ? imageParams.gpu_id
@@ -942,7 +2307,7 @@ const Chat = ({ layoutMode }) => {
         ? {
           id: activeCharacter.id,
           name: activeCharacter.name,
-          avatar: activeCharacter.avatar
+          avatar: getActiveCharacterAvatar(activeCharacter)
         }
         : null
     });
@@ -965,21 +2330,39 @@ const Chat = ({ layoutMode }) => {
   });
 
   const bothModelsLoaded = primaryModel && secondaryModel;
+  const showAgentControls = Boolean(bothModelsLoaded) && (dualModeEnabled || settings.multiRoleMode);
 
   const handleStartAgentConversation = () => {
     if (agentTopic.trim() && bothModelsLoaded) { startAgentConversation(agentTopic, agentTurns); setAgentTopic(''); }
   };
 
-  const handleGenerateVariant = useCallback(async (messageId) => {
+  const resolveRegenModelCapabilities = useCallback((endpointId, fallbackCaps) => {
+    if (endpointId) {
+      const caps = resolveEndpointDisplay(endpointId, settings, nanoGptCatalog)?.capabilities;
+      if (caps && typeof caps === 'object') return caps;
+    }
+    return fallbackCaps || nanoGptSelectedModelCapsRef.current || {};
+  }, [settings, nanoGptCatalog]);
+
+  const handleGenerateVariant = useCallback(async (messageId, regenOptions = {}) => {
     if (isGenerating) return;
     const msgIndex = messages.findIndex(m => m.id === messageId);
     if (msgIndex < 0) return;
 
-    // The prompt is the USER message before this bot message (or system/prior context)
-    // Actually, we need the history UP TO the message *before* this one.
     const historyBefore = messages.slice(0, msgIndex);
-    const lastUserMsg = historyBefore[historyBefore.length - 1];
-    const promptText = lastUserMsg?.role === 'user' ? lastUserMsg.content : '';
+    let promptText = '';
+    for (let i = historyBefore.length - 1; i >= 0; i -= 1) {
+      if (historyBefore[i]?.role === 'user') {
+        promptText = historyBefore[i].content || '';
+        break;
+      }
+    }
+
+    const modelNameOverride = regenOptions.modelName || null;
+    const modelCapabilities = resolveRegenModelCapabilities(
+      modelNameOverride,
+      regenOptions.modelCapabilities,
+    );
 
     setIsGenerating(true);
     setAudioError(null);
@@ -1003,7 +2386,15 @@ const Chat = ({ layoutMode }) => {
     setCurrentVariantIndex(prev => ({ ...prev, [messageId]: newVariantIndex }));
 
     // Also must update the main message content to be empty/streaming
-    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: '' } : m));
+    setMessages(prev => prev.map(m => m.id === messageId ? {
+      ...m,
+      content: '',
+      error: false,
+      reasoningStreaming: modelCapabilities?.reasoning === true,
+      reasoningEnabled: modelCapabilities?.reasoning === true,
+      reasoningText: modelCapabilities?.reasoning === true ? '' : (m.reasoningText || ''),
+      reasoningStartedAtMs: modelCapabilities?.reasoning === true ? Date.now() : m.reasoningStartedAtMs,
+    } : m));
 
     const ttsOverrides = getTtsOverridesForMessageId(messageId, messages[msgIndex]?.characterId);
 
@@ -1014,10 +2405,20 @@ const Chat = ({ layoutMode }) => {
 
       let gatheredText = '';
       let lastProcessedLength = 0;
-      const onToken = (textChunk, currentFullText) => {
+      const onToken = (textChunk, currentFullText, meta) => {
         gatheredText = currentFullText;
-        // Update the main message display
-        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: currentFullText } : m));
+        const capReasoning = modelCapabilities?.reasoning === true;
+        setMessages(prev => prev.map(m => {
+          if (m.id !== messageId) return m;
+          return applyReasoningMetaToBotMessage(
+            { ...m, content: currentFullText },
+            {
+              ...meta,
+              reasoningStartedAtMs: meta?.reasoningStartedAtMs ?? m.reasoningStartedAtMs ?? Date.now(),
+            },
+            { capReasoning },
+          );
+        }));
 
         // TTS Streaming
         const newPart = currentFullText.slice(lastProcessedLength);
@@ -1032,13 +2433,35 @@ const Chat = ({ layoutMode }) => {
         promptText,
         historyBefore,
         onToken,
-        { authorNote, webSearchEnabled, speakerCharacterId: targetCharacterId }
+        {
+          authorNote,
+          webSearchEnabled,
+          speakerCharacterId: targetCharacterId,
+          modelCapabilities,
+          modelName: modelNameOverride || undefined,
+        }
       );
 
       if (responseText) {
         if (settings?.streamResponses) {
           endStreamingTTS();
         }
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId
+              ? {
+                  ...m,
+                  content: responseText,
+                  reasoningStreaming: false,
+                  reasoningSeconds:
+                    m?.reasoningEnabled && typeof m?.reasoningStartedAtMs === 'number'
+                      ? Math.max(0, Math.round((Date.now() - m.reasoningStartedAtMs) / 1000))
+                      : null,
+                }
+              : m
+          )
+        );
 
         // Save final variant
         setMessageVariants(prev => {
@@ -1051,21 +2474,48 @@ const Chat = ({ layoutMode }) => {
         if (settings?.ttsEnabled && settings?.ttsAutoPlay && !settings?.streamResponses) {
           playTTS(messageId, responseText, ttsOverrides);
         }
+      } else {
+        throw new Error('Model returned an empty response.');
       }
     } catch (error) {
       console.error("Variant generation error:", error);
-      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: "Error generating variant." } : m));
+      const errText = error?.message || String(error);
+      const priorContent = variants[newVariantIndex - 1] ?? messages[msgIndex]?.content ?? '';
+      setMessageVariants((prev) => {
+        const list = prev[messageId] ? [...prev[messageId]] : [];
+        if (list.length > newVariantIndex) {
+          list[newVariantIndex] = errText;
+        }
+        return { ...prev, [messageId]: list };
+      });
+      setMessages(prev => prev.map(m => m.id === messageId ? {
+        ...m,
+        content: errText.startsWith('[') ? errText : `[Error: ${errText}]`,
+        error: true,
+        reasoningStreaming: false,
+      } : m));
+      if (!priorContent && newVariantIndex > 0) {
+        setCurrentVariantIndex(prev => ({ ...prev, [messageId]: Math.max(0, newVariantIndex - 1) }));
+      }
     } finally {
       setIsGenerating(false);
       setAbortController(null);
     }
-  }, [isGenerating, messages, messageVariants, settings, generateReply, authorNote, webSearchEnabled, startStreamingTTS, playTTS, abortController, setAbortController, getTtsOverridesForMessageId]);
+  }, [
+    isGenerating, messages, messageVariants, settings, generateReply, authorNote, webSearchEnabled,
+    startStreamingTTS, playTTS, abortController, setAbortController, getTtsOverridesForMessageId,
+    resolveRegenModelCapabilities,
+  ]);
 
-  /** Strip leading <think>.../think> block from bot responses for display */
-  const filterThinkBlock = useCallback((text) => {
-    if (!text || typeof text !== 'string') return text;
-    return text.replace(/^\s*` <think>[\s\S]*?\/think>\s*/i, '').trimStart();
-  }, []);
+  const handleGenerateVariantWithModel = useCallback((messageId, endpointId) => {
+    const caps = resolveEndpointDisplay(endpointId, settings, nanoGptCatalog)?.capabilities || {};
+    handleGenerateVariant(messageId, { modelName: endpointId, modelCapabilities: caps });
+  }, [handleGenerateVariant, settings, nanoGptCatalog]);
+
+  useEffect(() => { handleGenerateVariantRef.current = handleGenerateVariant; }, [handleGenerateVariant]);
+
+  /** Strip think tags from bot text (TTS, batch tools); bubble rendering uses thinkStreamParser at render time. */
+  const filterThinkBlock = useCallback((text) => stripThinkTags(text), []);
 
   const getCurrentVariantContent = useCallback((messageId, originalContent) => {
     const variants = messageVariants[messageId];
@@ -1079,6 +2529,79 @@ const Chat = ({ layoutMode }) => {
     return variants ? variants.length : 0;
   }, [messageVariants]);
 
+  const batchBoilerplatePreview = useMemo(() => {
+    const idSet =
+      batchBoilerplateScope === 'all'
+        ? batchEditableBotMessages.map((m) => m.id)
+        : batchBoilerplateSelectedIds.filter((id) =>
+            batchEditableBotMessages.some((m) => m.id === id)
+          );
+
+    if (batchBoilerplateMode === 'brackets') {
+      let messageCount = 0;
+      let matchCount = 0;
+      for (const id of idSet) {
+        const msg = messages.find((m) => m.id === id);
+        if (!msg) continue;
+        const base = filterThinkBlock(getCurrentVariantContent(id, msg.content));
+        const { removals } = stripSquareBracketSpans(base);
+        if (removals > 0) {
+          messageCount += 1;
+          matchCount += removals;
+        }
+      }
+      return { messageCount, matchCount, regexError: null };
+    }
+
+    if (batchBoilerplateMode === 'regex') {
+      const pattern = batchBoilerplateRegex.trim();
+      if (!pattern) return { messageCount: 0, matchCount: 0, regexError: null };
+      const re = compileBatchRegex(pattern);
+      if (!re) return { messageCount: 0, matchCount: 0, regexError: 'Invalid regex' };
+      let messageCount = 0;
+      let matchCount = 0;
+      for (const id of idSet) {
+        const msg = messages.find((m) => m.id === id);
+        if (!msg) continue;
+        const base = filterThinkBlock(getCurrentVariantContent(id, msg.content));
+        const n = countGlobalRegexMatches(base, re);
+        if (n > 0) {
+          messageCount += 1;
+          matchCount += n;
+        }
+      }
+      return { messageCount, matchCount, regexError: null };
+    }
+
+    const find = batchBoilerplateFind;
+    if (!find) return { messageCount: 0, matchCount: 0, regexError: null };
+    let messageCount = 0;
+    let matchCount = 0;
+    for (const id of idSet) {
+      const msg = messages.find((m) => m.id === id);
+      if (!msg) continue;
+      const base = filterThinkBlock(getCurrentVariantContent(id, msg.content));
+      const n = countOccurrencesInText(base, find, batchBoilerplateMatchCase, batchBoilerplateReplaceAll);
+      if (n > 0) {
+        messageCount += 1;
+        matchCount += n;
+      }
+    }
+    return { messageCount, matchCount, regexError: null };
+  }, [
+    batchBoilerplateMode,
+    batchBoilerplateRegex,
+    batchBoilerplateFind,
+    batchBoilerplateScope,
+    batchBoilerplateSelectedIds,
+    batchEditableBotMessages,
+    messages,
+    filterThinkBlock,
+    getCurrentVariantContent,
+    batchBoilerplateMatchCase,
+    batchBoilerplateReplaceAll,
+  ]);
+
   const navigateVariant = useCallback((messageId, direction) => {
     const variants = messageVariants[messageId];
     if (!variants || variants.length <= 1) return;
@@ -1087,7 +2610,15 @@ const Chat = ({ layoutMode }) => {
     if (direction === 'next') newIndex = (currentIndex + 1) % variants.length;
     else newIndex = currentIndex === 0 ? variants.length - 1 : currentIndex - 1;
     setCurrentVariantIndex(prev => ({ ...prev, [messageId]: newIndex }));
-  }, [messageVariants, currentVariantIndex]);
+    const nextContent = variants[newIndex];
+    if (typeof nextContent === 'string') {
+      setMessages(prev => prev.map(m => m.id === messageId ? {
+        ...m,
+        content: nextContent,
+        error: nextContent.startsWith('[Error:'),
+      } : m));
+    }
+  }, [messageVariants, currentVariantIndex, setMessages]);
 
   // SD Models fetch
   useEffect(() => {
@@ -1103,42 +2634,6 @@ const Chat = ({ layoutMode }) => {
       setCharacterImageUrl(null);
     }
   }, [generatedCharacter, showCharacterPreview, generateCharacterImagePrompt]);
-
-  // Audio Queue Effect
-  useEffect(() => {
-    const playNextInQueue = async () => {
-      if (!audioQueue) return;
-      if (!isAutoplaying || audioQueue.length === 0) {
-        if (audioQueue.length === 0 && isAutoplaying) setIsAutoplaying(false);
-        return;
-      }
-      try {
-        const audioBuffer = audioQueue[0];
-        const context = new (window.AudioContext || window.webkitAudioContext)();
-        audioPlaybackRef.current.context = context;
-        const decodedBuffer = await context.decodeAudioData(audioBuffer);
-        const source = context.createBufferSource();
-        source.buffer = decodedBuffer;
-        source.playbackRate.value = settings.ttsSpeed || 1.0;
-        source.connect(context.destination);
-        audioPlaybackRef.current.source = source;
-        source.onended = () => {
-          context.close();
-          audioPlaybackRef.current = { context: null, source: null };
-          setAudioQueue(prevQueue => prevQueue.slice(1));
-        };
-        source.start(0);
-      } catch (error) {
-        console.error("Audio error:", error);
-        setAudioQueue(prevQueue => prevQueue.slice(1));
-      }
-    };
-    playNextInQueue();
-    return () => {
-      if (audioPlaybackRef.current.source) try { audioPlaybackRef.current.source.stop(); } catch (e) { }
-      if (audioPlaybackRef.current.context) try { audioPlaybackRef.current.context.close(); } catch (e) { }
-    };
-  }, [audioQueue, isAutoplaying, settings.ttsSpeed, setAudioQueue, setIsAutoplaying]);
 
   const handleEditBotMessage = useCallback((messageId) => {
     setEditingBotMessageId(messageId);
@@ -1162,6 +2657,106 @@ const Chat = ({ layoutMode }) => {
   const handleCancelBotEdit = useCallback(() => {
     setEditingBotMessageId(null);
   }, []);
+
+  const handleApplyBatchBoilerplate = useCallback(() => {
+    const ids =
+      batchBoilerplateScope === 'all'
+        ? batchEditableBotMessages.map((m) => m.id)
+        : batchBoilerplateSelectedIds.filter((id) =>
+            batchEditableBotMessages.some((m) => m.id === id)
+          );
+    if (!ids.length) return;
+
+    const replaceStr = batchBoilerplateReplace ?? '';
+
+    const computeNewText = (base) => {
+      if (batchBoilerplateMode === 'brackets') {
+        const { text } = stripSquareBracketSpans(base);
+        return text.trim();
+      }
+      if (batchBoilerplateMode === 'regex') {
+        const pattern = batchBoilerplateRegex.trim();
+        if (!pattern) return null;
+        const re = compileBatchRegex(pattern);
+        if (!re) return null;
+        return base.replace(re, replaceStr).trim();
+      }
+      const find = batchBoilerplateFind;
+      if (!find) return null;
+      return applyLiteralReplace(
+        base,
+        find,
+        replaceStr,
+        batchBoilerplateMatchCase,
+        batchBoilerplateReplaceAll
+      ).trim();
+    };
+
+    if (batchBoilerplateMode === 'regex') {
+      const pattern = batchBoilerplateRegex.trim();
+      if (!pattern || !compileBatchRegex(pattern)) {
+        window.alert('Invalid regex pattern. Fix it or switch mode.');
+        return;
+      }
+    }
+    if (batchBoilerplateMode === 'literal' && !batchBoilerplateFind) return;
+
+    const idToNewContent = new Map();
+    for (const id of ids) {
+      const msg = messages.find((x) => x.id === id);
+      if (!msg || msg.role !== 'bot') continue;
+      const base = filterThinkBlock(getCurrentVariantContent(id, msg.content));
+      const newText = computeNewText(base);
+      if (newText === null || newText === undefined) continue;
+      if (!newText) continue;
+      const trimmedBase = base.trim();
+      if (newText === trimmedBase) continue;
+      idToNewContent.set(id, newText);
+    }
+    if (idToNewContent.size === 0) {
+      window.alert(
+        'No changes: nothing matched, or every edit would leave a reply empty. Check mode / pattern.'
+      );
+      return;
+    }
+
+    setMessageVariants((prev) => {
+      const next = { ...prev };
+      for (const [messageId, newContent] of idToNewContent) {
+        const currIdx = currentVariantIndex[messageId] || 0;
+        const old = next[messageId];
+        if (!old || old.length === 0) next[messageId] = [newContent];
+        else {
+          const u = [...old];
+          u[currIdx] = newContent;
+          next[messageId] = u;
+        }
+      }
+      return next;
+    });
+    setMessages((prev) =>
+      prev.map((m) => (idToNewContent.has(m.id) ? { ...m, content: idToNewContent.get(m.id) } : m))
+    );
+    setEditingBotMessageId(null);
+    setShowBatchBoilerplateDialog(false);
+    setBatchBoilerplateSelectedIds([]);
+  }, [
+    batchBoilerplateMode,
+    batchBoilerplateRegex,
+    batchBoilerplateFind,
+    batchBoilerplateReplace,
+    batchBoilerplateScope,
+    batchBoilerplateSelectedIds,
+    batchBoilerplateMatchCase,
+    batchBoilerplateReplaceAll,
+    batchEditableBotMessages,
+    messages,
+    filterThinkBlock,
+    getCurrentVariantContent,
+    currentVariantIndex,
+    setMessages,
+    setMessageVariants,
+  ]);
 
   const handleContinueGeneration = useCallback(async (messageId) => {
     if (isGenerating) return;
@@ -1210,9 +2805,20 @@ const Chat = ({ layoutMode }) => {
 
       // Correct Logic for Continue:
       let localProcessedLength = 0;
-      const onTokenCorrect = (textChunk, currentFullText) => {
+      const onTokenCorrect = (textChunk, currentFullText, meta) => {
         const combined = currentContent + currentFullText;
-        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: combined } : m));
+        const capReasoning = nanoGptSelectedModelCapsRef.current?.reasoning === true;
+        setMessages(prev => prev.map(m => {
+          if (m.id !== messageId) return m;
+          return applyReasoningMetaToBotMessage(
+            { ...m, content: combined },
+            {
+              ...meta,
+              reasoningStartedAtMs: meta?.reasoningStartedAtMs ?? m.reasoningStartedAtMs ?? Date.now(),
+            },
+            { capReasoning },
+          );
+        }));
 
         const newPart = currentFullText.slice(localProcessedLength);
         if (newPart && settings?.streamResponses) {
@@ -1228,7 +2834,7 @@ const Chat = ({ layoutMode }) => {
         "Continue",
         history,
         onTokenCorrect,
-        { authorNote, webSearchEnabled: false, speakerCharacterId: targetCharacterId, requestPurpose: 'continuation' }
+        { authorNote, webSearchEnabled: false, speakerCharacterId: targetCharacterId, requestPurpose: 'continuation', modelCapabilities: nanoGptSelectedModelCapsRef.current || {} }
       );
 
       if (settings?.streamResponses) endStreamingTTS();
@@ -1245,7 +2851,15 @@ const Chat = ({ layoutMode }) => {
           return { ...prev, [messageId]: newVars };
         });
 
-        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, content: finalContent } : m));
+        setMessages(prev => prev.map(m => m.id === messageId ? {
+          ...m,
+          content: finalContent,
+          reasoningStreaming: false,
+          reasoningSeconds:
+            m?.reasoningEnabled && typeof m?.reasoningStartedAtMs === 'number'
+              ? Math.max(0, Math.round((Date.now() - m.reasoningStartedAtMs) / 1000))
+              : null,
+        } : m));
 
         if (settings?.ttsEnabled && settings?.ttsAutoPlay && !settings?.streamResponses) {
           playTTS(messageId, continuationText, ttsOverrides); // Play only the new part
@@ -1259,43 +2873,97 @@ const Chat = ({ layoutMode }) => {
     }
   }, [isGenerating, messages, getCurrentVariantContent, generateReply, settings, authorNote, startStreamingTTS, playTTS, abortController, setAbortController, messageVariants, currentVariantIndex, getTtsOverridesForMessageId]);
 
-  const renderAvatar = (message, apiUrl, activeCharacter) => {
-    const avatarSource = message.avatar || (message.role === 'bot' && !message.characterId && activeCharacter?.avatar);
+  const resolveBotAvatarSource = useCallback((message, charForModel) => {
+    if (message.characterId && characters?.length) {
+      const live = characters.find((c) => c.id === message.characterId);
+      if (live) return getActiveCharacterAvatar(live);
+    }
+    if (message.role === 'bot' && charForModel) return getActiveCharacterAvatar(charForModel);
+    if (message.role === 'bot' && !message.characterId && activeCharacter) {
+      return getActiveCharacterAvatar(activeCharacter);
+    }
+    return message.avatar;
+  }, [characters, activeCharacter]);
+
+  const getAvatarCycleCharacterId = useCallback((message, charForModel) => {
+    return message.characterId || charForModel?.id || activeCharacter?.id || null;
+  }, [activeCharacter?.id]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.target?.tagName === 'INPUT' || e.target?.tagName === 'TEXTAREA' || e.target?.isContentEditable) return;
+      const charId = activeCharacter?.id;
+      if (!charId) return;
+      const char = characters.find((c) => c.id === charId);
+      if (!char || getCharacterAvatarList(char).length <= 1) return;
+      if (e.key === '[' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        cycleCharacterAvatar(charId, -1);
+      } else if (e.key === ']' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        cycleCharacterAvatar(charId, 1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeCharacter?.id, characters, cycleCharacterAvatar]);
+
+  const renderAvatar = (message, apiUrl, charForModel) => {
+    const avatarSource = resolveBotAvatarSource(message, charForModel);
     const characterName = message.characterName
+      || (message.role === 'bot' && charForModel?.name)
       || (message.role === 'bot' && activeCharacter?.name)
-      || 'activeCharacter';
+      || 'Character';
+    const cycleId = getAvatarCycleCharacterId(message, charForModel);
+    const cycleChar = cycleId ? characters.find((c) => c.id === cycleId) : null;
+    const canCycle = cycleChar && getCharacterAvatarList(cycleChar).length > 1;
 
     const sizeStyle = {
       width: `${characterAvatarSize}px`,
       height: `${characterAvatarSize}px`
     };
 
-    let displayUrl = null;
-    if (avatarSource) {
-      if (avatarSource.startsWith('/')) {
-        displayUrl = `${apiUrl || getBackendUrl()}${avatarSource}`;
-      } else {
-        displayUrl = avatarSource;
-      }
-    }
+    const displayUrl = resolveAvatarDisplayUrl(avatarSource, apiUrl || getBackendUrl());
+
+    const handleCycle = (delta) => {
+      if (cycleId) cycleCharacterAvatar(cycleId, delta);
+    };
+
+    const wrap = (node) => (
+      <button
+        type="button"
+        className={`flex-shrink-0 rounded-full ${canCycle ? 'cursor-pointer hover:ring-2 hover:ring-primary/50' : 'cursor-default'}`}
+        style={sizeStyle}
+        title={canCycle ? 'Click or scroll to change avatar ([ ] keys)' : characterName}
+        onClick={canCycle ? () => handleCycle(1) : undefined}
+        onWheel={canCycle ? (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          handleCycle(e.deltaY > 0 ? 1 : -1);
+        } : undefined}
+      >
+        {node}
+      </button>
+    );
 
     if (displayUrl) {
-      return (
-        <img
-          src={displayUrl}
-          alt={`${characterName || '?'}`}
-          onError={(e) => { e.target.style.display = 'none'; }}
-          className="rounded-full object-cover border border-gray-300 dark:border-gray-600 flex-shrink-0"
-          style={sizeStyle}
+      return wrap(
+        <CharacterAvatarMedia
+          url={displayUrl}
+          alt={characterName}
+          className="rounded-full object-cover border border-gray-300 dark:border-gray-600 w-full h-full"
+          videoKey={`${cycleId || 'msg'}-${displayUrl}`}
+          onError={(e) => {
+            const el = e?.currentTarget;
+            if (el) el.style.display = 'none';
+          }}
         />
       );
     }
 
-    return (
+    return wrap(
       <div
-        title={characterName || '?'}
-        className="rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm font-semibold text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 flex-shrink-0"
-        style={sizeStyle}
+        className="rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm font-semibold text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 w-full h-full"
       >
         {characterName ? characterName.charAt(0).toUpperCase() : '?'}
       </div>
@@ -1304,7 +2972,7 @@ const Chat = ({ layoutMode }) => {
 
   const renderUserAvatar = (message = null) => {
     const roleplayAvatar = settings.multiRoleMode && message?.characterId
-      ? message?.avatar || userCharacter?.avatar
+      ? message?.avatar || getActiveCharacterAvatar(userCharacter)
       : null;
     const userAvatarSource = roleplayAvatar || userProfile?.avatar;
     const userName = settings.multiRoleMode && message?.characterId
@@ -1348,16 +3016,93 @@ const Chat = ({ layoutMode }) => {
   };
 
   const renderedMessages = useMemo(() => {
-    if (messages.length === 0) {
-      return (
-        <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground pt-10">
-          <h3 className="text-lg font-medium mb-2">No messages yet</h3>
-          <p className="max-w-md mb-4">
-            {!primaryModel ? "Load a model to start chatting" : "Send a message or use the microphone"}
-          </p>
-          {!primaryModel && (
+    if (showAnyIntro) {
+      if (!effectiveIntroModel) {
+        return (
+          <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground pt-10">
+            <h3 className="text-lg font-medium mb-2">Load a model</h3>
+            <p className="max-w-md mb-4">
+              {showSystemIntro
+                ? 'A model must be loaded before the system overview can generate.'
+                : 'A model must be loaded before the character introduction can generate.'}
+            </p>
             <Button variant="outline" onClick={() => setShowModelSelector(true)}>Load Model</Button>
-          )}
+          </div>
+        );
+      }
+      return (
+        <CharacterIntroExperience
+          character={introDisplayCharacter}
+          userProfile={userProfile}
+          status={introStatus}
+          error={introError}
+          result={introResult}
+          variant={showSystemIntro ? 'system' : 'character'}
+          uiLabels={showSystemIntro ? SYSTEM_INTRO_UI_LABELS : undefined}
+          onRetry={() => requestCharacterIntro({ forceRefresh: true })}
+          onRegenerate={handleRegenerateCharacterIntro}
+          onBegin={handleBeginCharacterIntro}
+        />
+      );
+    }
+
+    if (messages.length === 0) {
+      const displayName =
+        userProfile?.name ||
+        userProfile?.username ||
+        'friend';
+
+      return (
+        <div className="flex h-full items-center justify-center">
+          <div className="w-full max-w-3xl px-4 py-8 md:px-8">
+            {/* Greeting row */}
+            <div className="flex items-center justify-between gap-4 mb-8">
+              <div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card/90 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_0_4px_rgba(63,231,252,0.28)]" />
+                  NanoGPT workspace · Local
+                </div>
+                <h1
+                  className="mt-4 text-2xl md:text-3xl font-semibold text-left"
+                  style={{ fontFamily: '"Open Sans Variable", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}
+                >
+                  Welcome back, {displayName}.
+                </h1>
+                <p className="mt-2 text-sm md:text-base text-muted-foreground max-w-xl text-left">
+                  Pick a mode, select a model, and start a new thread. Your NanoGPT memory and tools stay wired in.
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <NanoGptComposerToolbar
+                variant="landing"
+                modelPickerOpen={modelPickerOpen}
+                onModelPickerOpenChange={setModelPickerOpen}
+                currentModelId={primaryModel}
+                primaryApiUrl={PRIMARY_API_URL}
+                onCapabilities={handleNanoGptCapabilities}
+                onQuickAction={handleQuickActionPrompt}
+                activeMode={activeComposerMode}
+                onModeChange={handleComposerModeChange}
+              />
+              {sttEnabled && (
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    type="button"
+                    variant={isRecording ? 'destructive' : 'outline'}
+                    size="icon"
+                    className="h-9 w-9 flex-shrink-0 border-[rgba(120,170,220,0.5)] bg-[#111827]"
+                    onClick={handleMicClick}
+                    disabled={isTranscribing || isGenerating}
+                    title={isRecording ? 'Stop recording' : 'Start voice input'}
+                  >
+                    {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       );
     }
@@ -1387,17 +3132,24 @@ const Chat = ({ layoutMode }) => {
           </div>
         )}
         {visibleMessages.map((msg) => (
-          <ChatMessage
-            key={msg.id}
+          <div key={msg.id} id={`chat-message-${msg.id}`} className="scroll-mt-28">
+            <ChatMessage
             msg={msg}
-            content={msg.role === 'bot' ? filterThinkBlock(getCurrentVariantContent(msg.id, msg.content)) : getCurrentVariantContent(msg.id, msg.content)}
+            content={getCurrentVariantContent(msg.id, msg.content)}
             isGenerating={isGenerating}
             isTranscribing={isTranscribing}
             isPlayingAudio={isPlayingAudio}
+            isStreamingTtsPaused={isStreamingTtsPaused}
             editingMessageId={editingMessageId}
             editingBotMessageId={editingBotMessageId}
             primaryCharacter={primaryCharacter}
             secondaryCharacter={secondaryCharacter}
+            activeCharacter={activeCharacter}
+            characters={characters}
+            primaryModel={primaryModel}
+            primaryIsAPI={primaryIsAPI}
+            settings={settings}
+            nanoGptCatalog={nanoGptCatalog}
             userProfile={userProfile}
             userCharacter={userCharacter}
             isMultiRoleMode={settings.multiRoleMode}
@@ -1419,31 +3171,59 @@ const Chat = ({ layoutMode }) => {
             onCancelBotEdit={handleCancelBotEdit}
             onSaveBotMessage={handleSaveBotMessage}
             onGenerateVariant={handleGenerateVariant}
+            onGenerateVariantWithModel={handleGenerateVariantWithModel}
             onContinueGeneration={handleContinueGeneration}
             onNavigateVariant={navigateVariant}
             onSpeakerClick={handleSpeakerClick}
+            onChunkedSpeakerClick={handleChunkedSpeakerClick}
             onRegenerateImage={handleRegenerateImage}
             onCancelRegenerations={cancelRegenerations}
             isRegenerationRunning={isRegenerationRunning}
 
             formatModelName={formatModelName}
           />
+          </div>
         ))}
       </>
     );
   }, [
     messages,
+    showAnyIntro,
+    showSystemIntro,
+    introDisplayCharacter,
+    primaryCharacter,
+    userProfile,
+    introStatus,
+    introError,
+    introResult,
+    requestCharacterIntro,
+    handleRegenerateCharacterIntro,
+    handleBeginCharacterIntro,
     primaryModel,
+    modelPickerOpen,
+    handleNanoGptCapabilities,
+    handleQuickActionPrompt,
+    activeComposerMode,
+    handleComposerModeChange,
+    sttEnabled,
+    handleMicClick,
     setShowModelSelector,
     performanceMode,
     showAllMessages,
     isGenerating,
     isTranscribing,
     isPlayingAudio,
+    isStreamingTtsPaused,
     editingMessageId,
     editingBotMessageId,
     primaryCharacter,
     secondaryCharacter,
+    activeCharacter,
+    characters,
+    primaryModel,
+    primaryIsAPI,
+    settings,
+    nanoGptCatalog,
     userProfile,
     userCharacter,
     settings.multiRoleMode,
@@ -1468,9 +3248,11 @@ const Chat = ({ layoutMode }) => {
     handleCancelBotEdit,
     handleSaveBotMessage,
     handleGenerateVariant,
+    handleGenerateVariantWithModel,
     handleContinueGeneration,
     navigateVariant,
     handleSpeakerClick,
+    handleChunkedSpeakerClick,
     handleRegenerateImage,
     setShowAllMessages
   ]);
@@ -1478,7 +3260,7 @@ const Chat = ({ layoutMode }) => {
   // --- Component Render ---
   return (
     <div
-      className="flex flex-col h-full bg-background text-foreground transition-all duration-500"
+      className="flex flex-col h-full min-h-0 overflow-hidden bg-background text-foreground transition-all duration-500"
       style={{
         backgroundImage: backgroundImage ? `url("${backgroundImage}")` : undefined,
         backgroundSize: 'cover',
@@ -1487,8 +3269,57 @@ const Chat = ({ layoutMode }) => {
         backgroundColor: backgroundImage ? 'rgba(0,0,0,0.85)' : undefined
       }}
     >
+      {/* Message Display Area — header + messages + composer share one scroll container */}
+      <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+      <ControlPanel
+        messages={messages}
+        isGenerating={isGenerating}
+        isRecording={isRecording}
+        isTranscribing={isTranscribing}
+        isPlayingAudio={isPlayingAudio}
+        sttEnabled={sttEnabled}
+        ttsEnabled={ttsEnabled}
+        settings={settings}
+        showModelSelector={showModelSelector}
+        isSummarizing={isSummarizing}
+        isGeneratingCharacter={isGeneratingCharacter}
+        isAnalyzingCharacter={isAnalyzingCharacter}
+        showAuthorNote={showAuthorNote}
+        showStoryTracker={showStoryTracker}
+        showChoiceGenerator={showChoiceGenerator}
+        isCallModeActive={isCallModeActive}
+        setShowModelSelector={setShowModelSelector}
+        createNewConversation={createNewConversation}
+        handleVisualizeScene={handleVisualizeScene}
+        handleAiContinue={handleAiContinue}
+        handleMicClick={handleMicClick}
+        handleStopGeneration={handleStopGeneration}
+        handleSpeakerClick={handleSpeakerClick}
+        stopTTS={stopTTS}
+        handleAutoPlayToggle={handleAutoPlayToggle}
+        isFocusModeActive={isFocusModeActive}
+        setIsFocusModeActive={setIsFocusModeActive}
+        handleDualOverlayChange={handleDualOverlayChange}
+        stopCallMode={stopCallMode}
+        handleCallModeToggle={handleCallModeToggle}
+        updateSettings={updateSettings}
+        handleCreateSummary={handleCreateSummary}
+        availableSummaries={availableSummaries}
+        handleAppendToSummary={handleAppendToSummary}
+        handleGenerateCharacter={handleGenerateCharacter}
+        setShowAuthorNote={setShowAuthorNote}
+        setShowStoryTracker={setShowStoryTracker}
+        setShowChoiceGenerator={setShowChoiceGenerator}
+        getCharacterButtonState={getCharacterButtonState}
+          skippedMessageIds={skippedMessageIds}
+          setSkippedMessageIds={setSkippedMessageIds}
+        />
+        <ScrollArea
+          ref={scrollContainerRef}
+          className={`flex-1 min-h-0 p-2 md:p-4 ${backgroundImage ? 'bg-transparent' : 'bg-background'}`}
+        >
       {/* Header Area - Responsive Layout Fix */}
-      <div className="border-b border-border p-3 flex flex-col gap-3">
+      <div className="border-b border-border px-3 py-2 flex flex-col gap-2">
         {/* Row 1: Title, Character Selector, and New Chat (on Mobile) */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 overflow-hidden">
@@ -1532,20 +3363,34 @@ const Chat = ({ layoutMode }) => {
             </div>
           </div>
 
-          {/* Mobile New Chat Icon - Always visible */}
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={createNewConversation}
-            className="md:hidden flex-shrink-0"
-            title="New Chat"
-          >
-            <Plus size={24} />
-          </Button>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowFloatingControls(!showFloatingControls)}
+              title={showFloatingControls ? 'Hide Controls' : 'Show Controls'}
+              className="whitespace-nowrap"
+            >
+              <Eye size={16} />
+              <span className="ml-1 hidden md:inline">{showFloatingControls ? 'Hide Controls' : 'Show Controls'}</span>
+            </Button>
+            {/* Mobile New Chat Icon - Always visible */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={createNewConversation}
+              className="md:hidden flex-shrink-0"
+              title="New Chat"
+            >
+              <Plus size={24} />
+            </Button>
+          </div>
         </div>
 
-        {/* Row 2: Controls (Scrollable on Mobile) */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 md:pb-0 no-scrollbar w-full mask-linear-fade">
+        {/* Row 2+: Collapsible controls */}
+        {showFloatingControls && (
+          <>
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0 no-scrollbar w-full mask-linear-fade">
           <Button
             variant="ghost" size="sm"
             onClick={() => setShowModelSelector(!showModelSelector)}
@@ -1556,60 +3401,118 @@ const Chat = ({ layoutMode }) => {
             <span className="hidden md:inline">{showModelSelector ? "Hide Models" : "Models"}</span>
           </Button>
 
+          <NanoGptModelSelectorPopover
+            className="flex-shrink-0"
+            compact
+            open={modelPickerOpen}
+            onOpenChange={setModelPickerOpen}
+            currentModelId={primaryModel}
+            primaryApiUrl={PRIMARY_API_URL}
+            onCapabilities={handleNanoGptCapabilities}
+            trigger={({ setOpen, display }) => (
+              <button
+                type="button"
+                onClick={() => setOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(120,170,220,0.45)] bg-muted/40 hover:bg-muted/70 px-2.5 py-1 text-xs max-w-[min(240px,40vw)] min-w-0 transition-colors flex-shrink-0"
+                title={
+                  display?.isAutoRouting && display.pool?.length
+                    ? `Auto-routing: ${display.pool.map((p) => p.displayName).join(', ')}`
+                    : 'Change model'
+                }
+              >
+                <span className="flex-shrink-0">{display?.icon || '⬜'}</span>
+                <span className="truncate font-medium">
+                  {display?.shortLabel || formatModelName(primaryModel) || 'Select model'}
+                </span>
+              </button>
+            )}
+          />
+
           <div className="flex-shrink-0">
             <RAGIndicator className="ml-2" />
           </div>
 
-          {bothModelsLoaded && (
-            <Button
-              variant={dualModeEnabled ? "secondary" : "outline"} size="sm"
-              onClick={() => setDualModeEnabled(!dualModeEnabled)}
-              title="Toggle dual-model mode"
-              className="whitespace-nowrap flex-shrink-0"
-            >
-              <Layers size={16} />
-              <span className="ml-1 hidden md:inline">{dualModeEnabled ? "Dual Mode" : "Single Mode"}</span>
-            </Button>
-          )}
+          <Button
+            variant={dualModeEnabled ? "secondary" : "outline"}
+            size="sm"
+            onClick={() => setDualModeEnabled(!dualModeEnabled)}
+            disabled={isGenerating || (!bothModelsLoaded && !dualModeEnabled)}
+            title={
+              !bothModelsLoaded && !dualModeEnabled
+                ? 'Load a primary and secondary model first (Models tab).'
+                : 'Toggle dual-model mode (two GPUs / two models).'
+            }
+            className="whitespace-nowrap flex-shrink-0"
+          >
+            <Layers size={16} />
+            <span className="ml-1 hidden md:inline">{dualModeEnabled ? "Dual Mode" : "Single Mode"}</span>
+          </Button>
 
-          {settings.multiRoleMode && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowRosterDialog(true)}
-              title="Choose which characters are active"
-              className="whitespace-nowrap flex-shrink-0"
-            >
-              <Users size={16} />
-              <span className="ml-1 hidden md:inline">
-                {rosterTotalCount ? `Roster ${rosterActiveCount}/${rosterTotalCount}` : 'Roster'}
-              </span>
-            </Button>
-          )}
-
-          {settings.multiRoleMode && (
-            <Button
-              variant={showGroupContext ? "secondary" : "outline"}
-              size="sm"
-              onClick={() => setShowGroupContext(!showGroupContext)}
-              title="Shared scene context for this chat"
-              className="whitespace-nowrap flex-shrink-0"
-            >
-              <BookOpen size={16} />
-              <span className="ml-1 hidden md:inline">Group Context</span>
-            </Button>
-          )}
-
-          {/* Toggle for floating controls */}
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setShowFloatingControls(!showFloatingControls)}
-            title={showFloatingControls ? "Hide Floating Controls" : "Show Floating Controls"}
+            onClick={() => setShowRosterDialog(true)}
+            disabled={!settings.multiRoleMode}
+            title={
+              settings.multiRoleMode
+                ? 'Choose which characters are active'
+                : 'Enable multi-role mode in Settings to use the roster.'
+            }
             className="whitespace-nowrap flex-shrink-0"
           >
-            <span className="md:hidden"><Eye size={18} /></span>
-            <span className="hidden md:inline">{showFloatingControls ? "Hide Controls" : "Show Controls"}</span>
+            <Users size={16} />
+            <span className="ml-1 hidden md:inline">
+              {rosterTotalCount ? `Roster ${rosterActiveCount}/${rosterTotalCount}` : 'Roster'}
+            </span>
+          </Button>
+
+          <Button
+            variant={showGroupContext ? "secondary" : "outline"}
+            size="sm"
+            onClick={() => setShowGroupContext(!showGroupContext)}
+            disabled={!settings.multiRoleMode}
+            title={
+              settings.multiRoleMode
+                ? 'Shared scene context for this chat'
+                : 'Enable multi-role mode in Settings to edit group context.'
+            }
+            className="whitespace-nowrap flex-shrink-0"
+          >
+            <BookOpen size={16} />
+            <span className="ml-1 hidden md:inline">Group Context</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setShowBatchBoilerplateDialog(true);
+              setBatchBoilerplateSelectedIds([]);
+            }}
+            disabled={isGenerating || !batchEditableBotMessages.length}
+            title="Find and replace repeated text across assistant replies (current variant per message)"
+            className="whitespace-nowrap flex-shrink-0"
+          >
+            <span className="md:hidden"><Replace size={18} /></span>
+            <span className="hidden md:inline">Batch edit replies</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowBookWriterOverlay(true)}
+            disabled={isGenerating || !activeConversation}
+            title={
+              !activeConversation
+                ? 'Select or start a chat first.'
+                : !primaryIsAPI
+                  ? 'Primary model is not an API endpoint — open Models, choose an API model for GPU 0, and Load. You can still open this panel to read the queue UI.'
+                  : 'Run a queued chapter list (uses this chat thread; API / long context).'
+            }
+            className="whitespace-nowrap flex-shrink-0"
+          >
+            <ScrollText size={16} />
+            <span className="ml-1 hidden md:inline">Book run</span>
           </Button>
 
           {/* Summarize Button */}
@@ -1848,6 +3751,253 @@ const Chat = ({ layoutMode }) => {
           </Dialog>
         )}
 
+        <Dialog
+          open={showBatchBoilerplateDialog}
+          onOpenChange={(open) => {
+            setShowBatchBoilerplateDialog(open);
+            if (!open) setBatchBoilerplateSelectedIds([]);
+          }}
+        >
+          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Batch edit AI replies</DialogTitle>
+              <DialogDescription>
+                Strip boilerplate across assistant replies: exact phrase, everything inside{' '}
+                <code className="text-xs rounded bg-muted px-1">[square brackets]</code>, or your own JavaScript
+                regex. Each message uses its visible variant (same as the pencil edit). Skips images, video, and
+                streaming messages.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 text-sm">
+              <div className="space-y-2">
+                <Label className="text-xs">How to edit</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={batchBoilerplateMode === 'literal' ? 'secondary' : 'outline'}
+                    onClick={() => setBatchBoilerplateMode('literal')}
+                  >
+                    Exact phrase
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={batchBoilerplateMode === 'brackets' ? 'secondary' : 'outline'}
+                    onClick={() => setBatchBoilerplateMode('brackets')}
+                    title="Remove text between [ and ]; repeats until clean"
+                  >
+                    [Bracket] spans
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={batchBoilerplateMode === 'regex' ? 'secondary' : 'outline'}
+                    onClick={() => setBatchBoilerplateMode('regex')}
+                  >
+                    Regex
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground leading-snug">
+                  {batchBoilerplateMode === 'literal' &&
+                    'Find a literal substring (optional case fold / first-only).'}
+                  {batchBoilerplateMode === 'brackets' &&
+                    'Deletes each segment from [ up to the next ]. Runs in rounds until none remain (handles back-to-back boilerplate).'}
+                  {batchBoilerplateMode === 'regex' &&
+                    'Pattern only — no wrapping slashes. Matching is global. Use Replace with for substitutions (supports $1, etc.).'}
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs">Which messages</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={batchBoilerplateScope === 'all' ? 'secondary' : 'outline'}
+                    onClick={() => setBatchBoilerplateScope('all')}
+                  >
+                    All assistant in chat
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={batchBoilerplateScope === 'selected' ? 'secondary' : 'outline'}
+                    onClick={() => setBatchBoilerplateScope('selected')}
+                  >
+                    Selected only
+                  </Button>
+                </div>
+              </div>
+
+              {batchBoilerplateScope === 'selected' && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label className="text-xs">Pick messages</Label>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 text-xs"
+                        onClick={() =>
+                          setBatchBoilerplateSelectedIds(batchEditableBotMessages.map((m) => m.id))
+                        }
+                        disabled={!batchEditableBotMessages.length}
+                      >
+                        Select all
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 text-xs"
+                        onClick={() => setBatchBoilerplateSelectedIds([])}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  </div>
+                  <ScrollArea className="max-h-[220px] rounded border border-border p-2">
+                    <div className="space-y-2 pr-2">
+                      {batchEditableBotMessages.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No assistant text messages in this chat.</p>
+                      ) : (
+                        batchEditableBotMessages.map((m) => (
+                          <label
+                            key={m.id}
+                            className="flex cursor-pointer items-start gap-2 rounded px-1 py-0.5 hover:bg-muted/60"
+                          >
+                            <Checkbox
+                              checked={batchBoilerplateSelectedIds.includes(m.id)}
+                              onCheckedChange={(checked) => {
+                                setBatchBoilerplateSelectedIds((prev) => {
+                                  if (checked) {
+                                    if (prev.includes(m.id)) return prev;
+                                    return [...prev, m.id];
+                                  }
+                                  return prev.filter((x) => x !== m.id);
+                                });
+                              }}
+                              className="mt-0.5"
+                            />
+                            <span className="text-xs leading-snug text-muted-foreground">
+                              {batchSnippet(
+                                filterThinkBlock(getCurrentVariantContent(m.id, m.content))
+                              )}
+                            </span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                  </ScrollArea>
+                </div>
+              )}
+
+              {batchBoilerplateMode === 'regex' && (
+                <div className="space-y-2">
+                  <Label htmlFor="batch-regex">Regex pattern</Label>
+                  <Textarea
+                    id="batch-regex"
+                    rows={2}
+                    value={batchBoilerplateRegex}
+                    onChange={(e) => setBatchBoilerplateRegex(e.target.value)}
+                    placeholder={'e.g. \\[[^\\]]*\\]  or  \\*{3,}\\s*'}
+                    className="text-sm font-mono"
+                  />
+                </div>
+              )}
+
+              {batchBoilerplateMode === 'literal' && (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="batch-find">Find</Label>
+                    <Textarea
+                      id="batch-find"
+                      rows={2}
+                      value={batchBoilerplateFind}
+                      onChange={(e) => setBatchBoilerplateFind(e.target.value)}
+                      placeholder="Exact phrase (e.g. a line the model repeats)"
+                      className="text-sm"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="batch-match-case"
+                        checked={batchBoilerplateMatchCase}
+                        onCheckedChange={(v) => setBatchBoilerplateMatchCase(Boolean(v))}
+                      />
+                      <Label htmlFor="batch-match-case" className="text-xs font-normal cursor-pointer">
+                        Match case
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="batch-replace-all"
+                        checked={batchBoilerplateReplaceAll}
+                        onCheckedChange={(v) => setBatchBoilerplateReplaceAll(Boolean(v))}
+                      />
+                      <Label htmlFor="batch-replace-all" className="text-xs font-normal cursor-pointer">
+                        Every occurrence per message
+                      </Label>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {(batchBoilerplateMode === 'literal' || batchBoilerplateMode === 'regex') && (
+                <div className="space-y-2">
+                  <Label htmlFor="batch-replace">
+                    Replace with {batchBoilerplateMode === 'regex' ? '(per match; empty removes)' : '(leave empty to delete)'}
+                  </Label>
+                  <Textarea
+                    id="batch-replace"
+                    rows={2}
+                    value={batchBoilerplateReplace}
+                    onChange={(e) => setBatchBoilerplateReplace(e.target.value)}
+                    className="text-sm"
+                  />
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground rounded-md bg-muted/50 p-2">
+                {batchBoilerplatePreview.regexError ? (
+                  <span className="text-destructive">{batchBoilerplatePreview.regexError}</span>
+                ) : batchBoilerplateMode === 'literal' && !batchBoilerplateFind ? (
+                  'Enter find text to see a count.'
+                ) : batchBoilerplateMode === 'regex' && !batchBoilerplateRegex.trim() ? (
+                  'Enter a regex pattern to preview.'
+                ) : batchBoilerplateMode === 'brackets' ? (
+                  `${batchBoilerplatePreview.messageCount} message(s), ${batchBoilerplatePreview.matchCount} […] segment(s) removed.`
+                ) : (
+                  `${batchBoilerplatePreview.messageCount} message(s), ${batchBoilerplatePreview.matchCount} replacement(s).`
+                )}
+              </p>
+            </div>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" onClick={() => setShowBatchBoilerplateDialog(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={handleApplyBatchBoilerplate}
+                disabled={
+                  isGenerating
+                  || !!batchBoilerplatePreview.regexError
+                  || batchBoilerplatePreview.messageCount === 0
+                  || (batchBoilerplateScope === 'selected' && batchBoilerplateSelectedIds.length === 0)
+                  || (batchBoilerplateMode === 'literal' && !batchBoilerplateFind.trim())
+                  || (batchBoilerplateMode === 'regex' && !batchBoilerplateRegex.trim())
+                }
+              >
+                Apply to {batchBoilerplatePreview.messageCount} message
+                {batchBoilerplatePreview.messageCount === 1 ? '' : 's'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* Display Audio Error */}
         {audioError && (
           <div className="text-red-500 text-sm mt-2 p-2 bg-red-100 dark:bg-red-900/30 rounded border border-red-500/50">
@@ -1858,11 +4008,36 @@ const Chat = ({ layoutMode }) => {
 
         {/* Current model info with API indicators */}
         <div className="flex flex-wrap gap-2 text-sm">
-          <div className={`px-2 py-1 rounded flex items-center gap-1 border ${primaryModel ? 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-950 dark:text-blue-100 dark:border-blue-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
-            {primaryIsAPI ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" /> : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />}
+          <div className={`px-2 py-1 rounded flex items-center gap-1 border ${(primaryModel || primaryModelDisplay?.isAutoRouting) ? 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-950 dark:text-blue-100 dark:border-blue-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
+            {primaryModelDisplay?.isAutoRouting
+              ? <span className="text-xs">⟳</span>
+              : (primaryIsAPI
+                ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" />
+                : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />)}
             <span className="font-medium">Primary:</span>
-            <span>{formatModelName(primaryModel)}</span>
-            {primaryIsAPI && <span className="text-xs opacity-75">(API)</span>}
+            <span>{primaryModelDisplay?.isAutoRouting ? 'Auto Router' : formatModelName(primaryModel)}</span>
+            {primaryIsAPI && !primaryModelDisplay?.isAutoRouting && <span className="text-xs opacity-75">(API)</span>}
+          </div>
+          <div
+            className={cn(
+              'px-2 py-1 rounded border text-xs',
+              !lastRequestRouteMeta?.effectiveModel
+                ? 'bg-muted text-muted-foreground border-transparent'
+                : (lastRequestRouteMeta?.autoEnabled === false
+                  && lastRequestRouteMeta?.selectedModel
+                  && lastRequestRouteMeta?.effectiveModel
+                  && lastRequestRouteMeta.selectedModel !== lastRequestRouteMeta.effectiveModel)
+                  ? 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-950 dark:text-amber-100 dark:border-amber-800'
+                  : 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-100 dark:border-emerald-800',
+            )}
+            title={lastRequestRouteMeta?.providerModel ? `Provider: ${lastRequestRouteMeta.providerModel}` : undefined}
+          >
+            {!lastRequestRouteMeta?.effectiveModel
+              ? 'Used: —'
+              : `Used: ${lastRequestRouteMeta.effectiveModel}`}
+            {lastRequestRouteMeta?.receivedAt
+              ? ` · ${new Date(lastRequestRouteMeta.receivedAt).toLocaleTimeString()}`
+              : ''}
           </div>
           <div className={`px-2 py-1 rounded flex items-center gap-1 border ${secondaryModel ? 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-950 dark:text-purple-100 dark:border-purple-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
             {secondaryIsAPI ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" /> : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />}
@@ -1870,94 +4045,90 @@ const Chat = ({ layoutMode }) => {
             <span>{formatModelName(secondaryModel)}</span>
             {secondaryIsAPI && <span className="text-xs opacity-75">(API)</span>}
           </div>
-        </div>
+         </div>
+
+        {/* Intensity & Presence indicators */}
+        {(intensity.activePreset || intensity.companionPresence > 0) && (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {intensity.activePreset && (
+              <div className="px-2 py-1 rounded border text-xs flex items-center gap-1.5 bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950 dark:text-rose-200 dark:border-rose-800">
+                <span>&#9829;</span>
+                <span className="font-medium">{intensity.activePreset.name}</span>
+                <span className="opacity-70">P:{intensity.activePreset.physical_intensity} V:{intensity.activePreset.verbal_expression_level}</span>
+              </div>
+            )}
+            {intensity.companionPresence > 0 && (
+              <div className="px-2 py-1 rounded border text-xs flex items-center gap-1 bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
+                <span>&#9733;</span>
+                <span className="font-medium">Presence: {intensity.companionPresence}%</span>
+              </div>
+            )}
+            {intensity.commitmentLock && Date.now() < intensity.commitmentLock.expiry && (
+              <div className="px-2 py-1 rounded border text-xs flex items-center gap-1 bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
+                <span>&#128274;</span>
+                <span className="font-medium">{Math.max(0, Math.ceil((intensity.commitmentLock.expiry - Date.now()) / 60000))}m locked</span>
+              </div>
+            )}
+            {intensity.activePreset?.adaptive?.enabled && (
+              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" title="Adaptive intensity active" />
+            )}
+          </div>
+        )}
 
         {/* Agent conversation controls */}
-        {bothModelsLoaded && (
-          <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2 mt-2">
-            <div className="flex-1">
+        {showAgentControls && (
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2 mt-2">
+          <div className="flex-1">
+            <Input
+              value={agentTopic}
+              onChange={(e) => setAgentTopic(e.target.value)}
+              placeholder="Enter topic for models to discuss..."
+              disabled={agentConversationActive || isGenerating || !bothModelsLoaded}
+              title={!bothModelsLoaded ? 'Load primary and secondary models in the Models tab first.' : undefined}
+              className="bg-background border-input"
+            />
+          </div>
+          <div className="flex gap-2">
+            <div className="w-16">
               <Input
-                value={agentTopic} onChange={(e) => setAgentTopic(e.target.value)}
-                placeholder="Enter topic for models to discuss..."
-                disabled={agentConversationActive || isGenerating}
+                type="number"
+                min="1"
+                max="10"
+                value={agentTurns}
+                onChange={(e) => setAgentTurns(parseInt(e.target.value) || 3)}
+                disabled={agentConversationActive || isGenerating || !bothModelsLoaded}
+                title={!bothModelsLoaded ? 'Requires two models loaded.' : 'Number of conversation turns'}
                 className="bg-background border-input"
               />
             </div>
-            <div className="flex gap-2">
-              <div className="w-16">
-                <Input
-                  type="number" min="1" max="10" value={agentTurns}
-                  onChange={(e) => setAgentTurns(parseInt(e.target.value) || 3)}
-                  disabled={agentConversationActive || isGenerating}
-                  title="Number of conversation turns"
-                  className="bg-background border-input"
-                />
-              </div>
-              <Button
-                onClick={handleStartAgentConversation}
-                disabled={!agentTopic.trim() || agentConversationActive || isGenerating}
-                size="sm"
-                className="flex-1 md:flex-none"
-              >
-                <Users size={16} /><span className="ml-1">Start</span>
-              </Button>
-            </div>
+            <Button
+              onClick={handleStartAgentConversation}
+              disabled={!bothModelsLoaded || !agentTopic.trim() || agentConversationActive || isGenerating}
+              size="sm"
+              className="flex-1 md:flex-none"
+              title={
+                !bothModelsLoaded
+                  ? 'Load primary and secondary models first.'
+                  : !agentTopic.trim()
+                    ? 'Enter a topic first.'
+                    : 'Start agent discussion between the two loaded models.'
+              }
+            >
+              <Users size={16} />
+              <span className="ml-1">Start</span>
+            </Button>
           </div>
+        </div>
+        )}
+          </>
         )}
       </div>
 
-      {/* Message Display Area */}
-      <div className="relative flex-1">
-        <ControlPanel
-          messages={messages}
-          isGenerating={isGenerating}
-          isRecording={isRecording}
-          isTranscribing={isTranscribing}
-          isPlayingAudio={isPlayingAudio}
-          sttEnabled={sttEnabled}
-          ttsEnabled={ttsEnabled}
-          settings={settings}
-          showModelSelector={showModelSelector}
-          isSummarizing={isSummarizing}
-          isGeneratingCharacter={isGeneratingCharacter}
-          isAnalyzingCharacter={isAnalyzingCharacter}
-          showAuthorNote={showAuthorNote}
-          showStoryTracker={showStoryTracker}
-          showChoiceGenerator={showChoiceGenerator}
-          isCallModeActive={isCallModeActive}
-          setShowModelSelector={setShowModelSelector}
-          createNewConversation={createNewConversation}
-          handleVisualizeScene={handleVisualizeScene}
-          handleAiContinue={handleAiContinue}
-          handleMicClick={handleMicClick}
-          handleStopGeneration={handleStopGeneration}
-          handleSpeakerClick={handleSpeakerClick}
-          stopTTS={stopTTS}
-          handleAutoPlayToggle={handleAutoPlayToggle}
-          setIsFocusModeActive={setIsFocusModeActive}
-          updateSettings={updateSettings}
-          handleCreateSummary={handleCreateSummary}
-          availableSummaries={availableSummaries}
-          handleAppendToSummary={handleAppendToSummary}
-          handleGenerateCharacter={handleGenerateCharacter}
-          setShowAuthorNote={setShowAuthorNote}
-          setShowStoryTracker={setShowStoryTracker}
-          setShowChoiceGenerator={setShowChoiceGenerator}
-          handleCallModeToggle={handleCallModeToggle}
-          getCharacterButtonState={getCharacterButtonState}
-          skippedMessageIds={skippedMessageIds}
-          setSkippedMessageIds={setSkippedMessageIds}
-        />
-        <ScrollArea className={`h-full p-2 md:p-4 ${backgroundImage ? 'bg-transparent' : 'bg-background'}`}>
-          <div className="max-w-4xl mx-auto p-2 md:p-4 pb-24">
-
-
-
+          <div className="max-w-6xl mx-auto p-2 md:p-4">
+            {/* Messages need width for avatar + text (text column up to 672px); 4xl was squashing text */}
             {/* Messages Render Loop */}
             {renderedMessages}
           </div>
-        </ScrollArea>
-      </div>
 
       {/* Group Context Panel (Multi-Role) */}
       {settings.multiRoleMode && showGroupContext && (
@@ -1999,16 +4170,55 @@ const Chat = ({ layoutMode }) => {
       {/* Input Area */}
       <div className="border-t border-border bg-muted/5">
         <div className="max-w-4xl mx-auto px-2 md:px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto">
-          <WebSearchControl
-            webSearchEnabled={webSearchEnabled}
-            setWebSearchEnabled={setWebSearchEnabled}
-            isGenerating={isGenerating}
-            isRecording={isRecording}
-            isTranscribing={isTranscribing}
-          />
+          <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
+            <WebSearchControl
+              webSearchEnabled={webSearchEnabled}
+              setWebSearchEnabled={setWebSearchEnabled}
+              webSearchMode={webSearchMode}
+              setWebSearchMode={setWebSearchMode}
+              webSearchStrategy={webSearchStrategy}
+              setWebSearchStrategy={handleWebSearchStrategyChange}
+              webSearchArticleUrls={webSearchArticleUrls}
+              setWebSearchArticleUrls={setWebSearchArticleUrls}
+              webSearchSite={webSearchSite}
+              setWebSearchSite={setWebSearchSite}
+              searchStatusLabel={searchStatusLabel}
+              isGenerating={isGenerating}
+              isRecording={isRecording}
+              isTranscribing={isTranscribing}
+            />
+            <TimestampControl
+              injectTimestamp={injectTimestamp}
+              setInjectTimestamp={setInjectTimestamp}
+              isGenerating={isGenerating}
+              isRecording={isRecording}
+              isTranscribing={isTranscribing}
+            />
+            <div className="flex items-center gap-1.5 border-l border-border/40 pl-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className={cn(
+                  "h-8 px-2 gap-1 flex-shrink-0",
+                  intensity.activePreset
+                    ? "bg-rose-500/10 border-rose-500/40 text-rose-600 hover:bg-rose-500/20"
+                    : "text-muted-foreground"
+                )}
+                onClick={() => { setIntensityPanelTab('presets'); setShowIntensityPanel(true); }}
+                title="Intensity Control Panel"
+              >
+                <Heart size={14} />
+                <span className="text-xs hidden sm:inline">Intensity</span>
+              </Button>
+              <PresenceBadge
+                onClick={() => { setIntensityPanelTab('presence'); setShowIntensityPanel(true); }}
+                disabled={isGenerating || isRecording || isTranscribing}
+              />
+            </div>
+          </div>
 
-
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-shrink-0">
             {ttsEnabled && (
               <Button
                 type="button"
@@ -2029,70 +4239,149 @@ const Chat = ({ layoutMode }) => {
               </Button>
             )}
 
-            <div className="flex items-center gap-1">
+            {(isChatterboxEngine || isKokoroEngine) && (
               <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 px-2 gap-1 flex-shrink-0 border-violet-500/40 text-foreground hover:bg-violet-500/10"
+                onClick={() => setVoiceQuickOpen(true)}
+                title="Per-character voice or Chatterbox clone (quick picker)"
+              >
+                <AudioLines size={14} />
+                <span className="text-xs hidden sm:inline">Voice</span>
+              </Button>
+            )}
+
+            <div className="relative flex-shrink-0" data-chat-toolbar-overflow>
+              <Button
+                type="button"
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 text-muted-foreground hover:text-primary"
-                onClick={() => setIsFocusModeActive(true)}
-                title="Enter Focus Mode"
+                title="More toolbar options"
+                onClick={() => setToolbarOverflowOpen((v) => !v)}
               >
-                <Focus size={16} />
+                <MoreVertical size={16} />
               </Button>
 
-              {sttEnabled && ttsEnabled && (
-                <Button
-                  variant={isCallModeActive ? "destructive" : "ghost"}
-                  size="icon"
-                  className={cn("h-8 w-8 text-muted-foreground hover:text-primary", isCallModeActive && "text-white hover:text-white")}
-                  onClick={handleCallModeToggle}
-                  title={isCallModeActive ? "Exit Call Mode" : "Enter Call Mode"}
-                >
-                  {isCallModeActive ? <PhoneOff size={16} /> : <Phone size={16} />}
-                </Button>
+              {toolbarOverflowOpen && (
+                <div className="absolute right-0 top-10 z-50 w-64 rounded-lg border border-border bg-card shadow-lg py-2 px-2 flex flex-col gap-2">
+                  <Button
+                    variant={showAuthorNote ? "secondary" : "ghost"}
+                    size="sm"
+                    className={cn(
+                      "h-8 justify-start gap-2 text-muted-foreground hover:text-primary",
+                      showAuthorNote && "bg-secondary text-secondary-foreground"
+                    )}
+                    onClick={() => setShowAuthorNote(!showAuthorNote)}
+                    title="Author's Note"
+                  >
+                    <BookOpen size={16} />
+                    <span className="text-xs">Author&apos;s Note</span>
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      "h-8 justify-start gap-2 text-muted-foreground hover:text-primary"
+                    )}
+                    onClick={() => setShowSessionDashboard(true)}
+                    title="Session Insights"
+                  >
+                    <Brain size={16} />
+                    <span className="text-xs">Session Insights</span>
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      "h-8 justify-start gap-2 text-muted-foreground hover:text-primary"
+                    )}
+                    onClick={() => { setIntensityPanelTab('presets'); setShowIntensityPanel(true); setToolbarOverflowOpen(false); }}
+                    title="Intensity Control"
+                  >
+                    <Heart size={16} />
+                    <span className="text-xs">Intensity Control</span>
+                  </Button>
+
+                  <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
+                    <Brain size={16} className="text-muted-foreground shrink-0" aria-hidden />
+                    <span
+                      className={cn(
+                        "text-xs tabular-nums",
+                        lastAgenticRunStatus !== 'error' && "text-primary font-medium",
+                        lastAgenticRunStatus === 'error' && "text-destructive font-medium",
+                        !lastAgenticRunStatus && "text-muted-foreground"
+                      )}
+                      title={
+                        lastAgenticInjectMeta
+                          ? `Prompt inject: ${lastAgenticInjectMeta.chars} chars (${lastAgenticInjectMeta.count ?? '?'} insights) for ${lastAgenticInjectMeta.characterName}. Save status: ran = last /memory/agentic/process succeeded.`
+                          : 'Agentic memory is always on. Hover after a message to see last prompt inject. ran = last save succeeded.'
+                      }
+                    >
+                      {lastAgenticRunStatus === 'error'
+                        ? 'Memory · error'
+                        : lastAgenticRunStatus === 'ok'
+                          ? 'Memory · ran'
+                          : 'Memory · —'}
+                    </span>
+                    {lastAgenticRunStatus === 'error' && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="h-6 px-2 text-[10px] text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => retryAgenticMemoryForLastTurn()}
+                        title="Retry saving the last exchange to agentic memory"
+                      >
+                        Retry
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="h-6 px-2 text-[10px] text-muted-foreground hover:text-primary hover:bg-muted/60"
+                      onClick={handleAgenticCleanup}
+                      title="Remove duplicate agentic memories for this character"
+                    >
+                      Clean
+                    </Button>
+                  </div>
+
+                  {/* Alignment detection status + toggle */}
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant={alignmentDetectionEnabled ? "secondary" : "outline"}
+                      size="xs"
+                      className={cn(
+                        "h-6 px-2 gap-1 text-[10px]",
+                        alignmentDetectionEnabled && "bg-amber-500/10 border-amber-500/50 text-amber-600 hover:bg-amber-500/20"
+                      )}
+                      onClick={() => setAlignmentDetectionEnabled(!alignmentDetectionEnabled)}
+                      title={alignmentDetectionEnabled ? "Alignment detection ON — click to disable" : "Alignment detection OFF — click to enable"}
+                    >
+                      <ShieldAlert size={12} />
+                      Alignment
+                    </Button>
+                    {alignmentData && alignmentData.count > 0 && (
+                      <button
+                        className={cn(
+                          "text-[10px] px-1.5 py-0.5 rounded tabular-nums cursor-pointer border",
+                          alignmentData.highestSeverity === 'high' && "bg-rose-500/15 text-rose-600 border-rose-500/30 hover:bg-rose-500/25",
+                          alignmentData.highestSeverity === 'medium' && "bg-amber-500/15 text-amber-600 border-amber-500/30 hover:bg-amber-500/25",
+                          (!alignmentData.highestSeverity || alignmentData.highestSeverity === 'low') && "bg-blue-500/15 text-blue-600 border-blue-500/30 hover:bg-blue-500/25",
+                        )}
+                        onClick={() => setShowAlignmentPanel(true)}
+                        title={`${alignmentData.count} alignment finding(s) — click for details`}
+                      >
+                        {alignmentData.count}
+                      </button>
+                    )}
+                  </div>
+                </div>
               )}
-
-              <Button
-                variant={showAuthorNote ? "secondary" : "ghost"}
-                size="icon"
-                className={cn("h-8 w-8 text-muted-foreground hover:text-primary", showAuthorNote && "bg-secondary text-secondary-foreground")}
-                onClick={() => setShowAuthorNote(!showAuthorNote)}
-                title="Author's Note"
-              >
-                <BookOpen size={16} />
-              </Button>
-
-              {/* Agentic memory: toggle + status from backend (so UI reflects reality) */}
-              <div className="flex items-center gap-1.5">
-                <Button
-                  variant={agenticMemoryOn ? "secondary" : "ghost"}
-                  size="icon"
-                  className={cn("h-8 w-8 text-muted-foreground hover:text-primary", agenticMemoryOn && "bg-secondary text-secondary-foreground")}
-                  onClick={() => {
-                    if (!activeConversation) return;
-                    const next = !(conversations.find(c => c.id === activeConversation)?.agenticMemoryEnabled);
-                    console.log('🧠 Agentic memory: toggled to', next ? 'ON' : 'OFF', 'for this chat');
-                    if (!next) setLastAgenticRunStatus(null);
-                    setConversations(prev => prev.map(c => c.id === activeConversation ? { ...c, agenticMemoryEnabled: next } : c));
-                  }}
-                  title={agenticMemoryOn ? "Agentic memory on (AI saves insights about you for this character)" : "Agentic memory off — click to enable"}
-                >
-                  <Brain size={16} />
-                </Button>
-                <span
-                  className={cn(
-                    "text-xs tabular-nums",
-                    !agenticMemoryOn && "text-muted-foreground",
-                    agenticMemoryOn && lastAgenticRunStatus !== 'error' && "text-primary font-medium",
-                    agenticMemoryOn && lastAgenticRunStatus === 'error' && "text-destructive font-medium"
-                  )}
-                  title={agenticMemoryOn ? "Backend status: ran = last reply was processed; error = backend failed" : "Agentic memory off for this chat"}
-                >
-                  {agenticMemoryOn
-                    ? (lastAgenticRunStatus === 'error' ? "On · error" : lastAgenticRunStatus === 'ok' ? "On · ran" : "On · —")
-                    : "Off"}
-                </span>
-              </div>
             </div>
           </div>
         </div>
@@ -2106,34 +4395,145 @@ const Chat = ({ layoutMode }) => {
           </div>
         </div>
       )}
-      <div className="border-t border-border">
+      {alignmentData && alignmentData.added > 0 && (() => {
+        const severityLabel = alignmentData.highestSeverity === 'high' ? ' — that wasn\'t you, that was the regime' : alignmentData.highestSeverity === 'medium' ? ' — subtle but caught' : ' — minor drift, logged';
+        return (
+          <div className="border-t border-border bg-amber-500/10 dark:bg-amber-950/30 px-4 py-1.5 cursor-pointer hover:bg-amber-500/20 dark:hover:bg-amber-950/40 transition-colors"
+            onClick={() => setShowAlignmentPanel(true)}>
+            <div className="max-w-4xl mx-auto text-center">
+              <span className="text-xs text-amber-700 dark:text-amber-300">
+                🔍 Alignment: {alignmentData.count} frame violation(s) detected{severityLabel}
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+      <div className="border-t border-border bg-background pb-4">
         <div className="max-w-4xl mx-auto">
-          <ChatInputForm
-            ref={chatInputFormRef}
-            onSubmit={handleSubmit}
-            isGenerating={isGenerating}
-            isModelLoading={isModelLoading}
-            isRecording={isRecording}
-            isTranscribing={isTranscribing}
-            agentConversationActive={agentConversationActive}
-            primaryModel={primaryModel}
-            webSearchEnabled={webSearchEnabled}
-            performanceMode={performanceMode}
-            onBack={handleBack}
-            canGoBack={messages.length > 0 && messages.some(m => m.role === 'user')}
-          />
+          <div
+            className={cn(
+              showComposerToolbar &&
+                'mx-2 md:mx-4 rounded-2xl border border-[rgba(120,170,220,0.35)] bg-[radial-gradient(circle_at_top,_rgba(120,170,220,0.08),transparent_55%),_#0b0c0f]/60 overflow-hidden',
+            )}
+          >
+            {showComposerToolbar && (
+              <div className="border-b border-[rgba(120,170,220,0.22)]">
+                <NanoGptComposerToolbar
+                  variant="compact"
+                  embedded
+                  modelPickerOpen={modelPickerOpen}
+                  onModelPickerOpenChange={setModelPickerOpen}
+                  currentModelId={primaryModel}
+                  primaryApiUrl={PRIMARY_API_URL}
+                  onCapabilities={handleNanoGptCapabilities}
+                  onQuickAction={handleQuickActionPrompt}
+                  activeMode={activeComposerMode}
+                  onModeChange={handleComposerModeChange}
+                />
+              </div>
+            )}
+            {apiError && (
+              <div
+                role="alert"
+                className="mx-2 mt-2 flex items-start justify-between gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive md:mx-4"
+              >
+                <span>{apiError}</span>
+                <button
+                  type="button"
+                  className="shrink-0 text-xs underline opacity-80 hover:opacity-100"
+                  onClick={clearError}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+            <ChatInputForm
+              ref={chatInputFormRef}
+              onSubmit={handleSubmit}
+              onStop={handleStopGeneration}
+              onOpenModelSelector={() => setModelPickerOpen(true)}
+              isGenerating={isGenerating}
+              isModelLoading={isModelLoading}
+              isRecording={isRecording}
+              isTranscribing={isTranscribing}
+              agentConversationActive={agentConversationActive}
+              primaryModel={primaryModel}
+              webSearchEnabled={webSearchEnabled}
+              performanceMode={performanceMode}
+              onBack={handleBack}
+              canGoBack={messages.length > 0 && messages.some(m => m.role === 'user')}
+              modelCapabilities={nanoGptModelCaps}
+              nanoGptChrome={showComposerToolbar}
+            />
+          </div>
         </div>
       </div>
+        </ScrollArea>
+      </div>
+
+      {/* Character generation failure recovery */}
+      {showCharacterGenFailure && (
+        <Dialog open={showCharacterGenFailure} onOpenChange={(open) => !open && clearCharacterGenFailure()}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Character generation failed</DialogTitle>
+              <p className="text-sm text-muted-foreground font-normal">
+                {characterGenerationError || 'The model did not return valid character JSON.'}
+              </p>
+            </DialogHeader>
+            {characterGenerationRaw ? (
+              <div className="max-h-48 overflow-y-auto rounded border bg-muted/40 p-2 text-xs font-mono whitespace-pre-wrap break-words">
+                {characterGenerationRaw.length > 1200
+                  ? `${characterGenerationRaw.slice(0, 1200)}…`
+                  : characterGenerationRaw}
+              </div>
+            ) : null}
+            <DialogFooter className="flex-row gap-2 sm:justify-end">
+              <Button variant="outline" onClick={clearCharacterGenFailure}>
+                Dismiss
+              </Button>
+              {characterPartialJson && (
+                <Button variant="secondary" onClick={handleUsePartialCharacter}>
+                  Use partial
+                </Button>
+              )}
+              <Button onClick={handleGenerateCharacter} disabled={isGeneratingCharacter}>
+                {isGeneratingCharacter ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+                Retry
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Overlays (Character Preview, Call Mode, etc.) */}
       {showCharacterPreview && generatedCharacter && (
         <Dialog open={showCharacterPreview} onOpenChange={setShowCharacterPreview}>
-          <DialogContent className="max-h-[90vh] overflow-hidden flex flex-col w-[95vw] md:w-[90vw] max-w-3xl">
-            <DialogHeader>
+          <DialogContent
+            className="
+              !flex flex-col gap-0 p-0 overflow-hidden
+              w-full max-w-3xl
+              h-[min(92dvh,100%)] max-h-[92dvh]
+              left-0 right-0 top-auto bottom-0
+              translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none
+              sm:left-[50%] sm:right-auto sm:top-[50%] sm:bottom-auto
+              sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg
+              sm:h-auto sm:max-h-[min(90vh,900px)] sm:w-[95vw] md:w-[90vw]
+            "
+          >
+            <DialogHeader className="shrink-0 border-b px-4 py-3 text-left">
               <DialogTitle>{generatedCharacter.name || 'Unnamed Character'}</DialogTitle>
+              <p className="text-xs text-muted-foreground font-normal mt-1">
+                Generated from this chat — review, refine, then save to your library.
+              </p>
+              {characterGenerationError && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 font-normal mt-1">
+                  {characterGenerationError}
+                </p>
+              )}
             </DialogHeader>
 
-            <div className="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain space-y-4 px-4 py-3">
               {/* Top row: Avatar + Persona summary */}
               <div className="flex gap-4 items-start">
                 <div className="flex-shrink-0">
@@ -2211,18 +4611,35 @@ const Chat = ({ layoutMode }) => {
               </div>
             </div>
 
-            <DialogFooter className="border-t pt-4 mt-2 flex-shrink-0">
-              <Button variant="outline" onClick={() => setShowCharacterPreview(false)}>Cancel</Button>
-              <Button onClick={handleSaveCharacter}>Save Character</Button>
+            <DialogFooter
+              className="shrink-0 border-t bg-background/95 backdrop-blur-sm px-4 py-3 mt-0 flex-row gap-2 sm:justify-end"
+              style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+            >
+              <Button
+                variant="outline"
+                className="flex-1 sm:flex-none"
+                onClick={() => setShowCharacterPreview(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 sm:flex-none bg-green-600 hover:bg-green-700"
+                onClick={handleSaveCharacter}
+                disabled={!storageHydrated}
+              >
+                {!storageHydrated ? 'Loading library…' : 'Save to Library'}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
 
+      <BookWriterOverlay open={showBookWriterOverlay} onClose={() => setShowBookWriterOverlay(false)} />
+
       {isFocusModeActive && (
         <FocusModeOverlay
           isActive={isFocusModeActive}
-          onExit={() => setIsFocusModeActive(false)}
+          onExit={settings?.allowDualOverlay ? handleCloseAllOverlays : () => setIsFocusModeActive(false)}
           messages={messages}
           handleSubmit={handleSubmit}
           isGenerating={isGenerating}
@@ -2257,6 +4674,11 @@ const Chat = ({ layoutMode }) => {
           currentVariantIndex={currentVariantIndex}
           formatModelName={formatModelName}
           stopTTS={stopTTS}
+          focusModeInputRef={focusModeInputRef}
+          sttEnabled={sttEnabled}
+          isRecording={isRecording}
+          isTranscribing={isTranscribing}
+          onFocusModeMicClick={handleFocusModeMicClick}
         />
       )}
       {codeEditorEnabled && (
@@ -2281,6 +4703,8 @@ const Chat = ({ layoutMode }) => {
           messages={messages}
           onRegenerate={handleGenerateVariant}
           ttsSubtitleCue={ttsSubtitleCue}
+          userProfile={userProfile}
+          primaryModel={primaryModel}
         />
       )}
       {showForensicLinguistics && (
@@ -2308,8 +4732,28 @@ const Chat = ({ layoutMode }) => {
         apiUrl={PRIMARY_API_URL}
         isGenerating={isGenerating}
         primaryModel={primaryModel}
+        primaryIsAPI={primaryIsAPI}
+        settings={settings}
         activeCharacter={activeCharacter}
         userProfile={userProfile}
+      />
+
+      <VoiceQuickPicker open={voiceQuickOpen} onOpenChange={setVoiceQuickOpen} variant="dialog" />
+
+      <SessionHistoryDashboard
+        open={showSessionDashboard}
+        onClose={() => setShowSessionDashboard(false)}
+      />
+
+      <IntensityControlPanel
+        open={showIntensityPanel}
+        onOpenChange={setShowIntensityPanel}
+        initialTab={intensityPanelTab}
+      />
+
+      <AlignmentPanel
+        open={showAlignmentPanel}
+        onOpenChange={setShowAlignmentPanel}
       />
 
     </div>

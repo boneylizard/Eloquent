@@ -4,6 +4,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { X, Loader2, Sparkles, ArrowRight, RefreshCw, Dice6, Edit3, Wand2, Settings2, Plus, Trash2, Send, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
+import { createRouteTraceId, logRouteTrace, resolveUnifiedRequestRoute } from '../utils/requestRouting';
 
 const ChoiceGenerator = ({
   isOpen,
@@ -13,6 +14,8 @@ const ChoiceGenerator = ({
   apiUrl,
   isGenerating: parentIsGenerating,
   primaryModel,
+  primaryIsAPI = false,
+  settings = null,
   activeCharacter,
   userProfile // Add user profile for context
 }) => {
@@ -90,18 +93,33 @@ const ChoiceGenerator = ({
   };
 
   const callAPI = async (prompt, temperature = 0.85) => {
+    const route = resolveUnifiedRequestRoute({
+      primaryModel,
+      primaryIsAPI,
+      settings,
+      requestPurpose: 'choice_generation',
+    });
+    const traceId = createRouteTraceId();
+    logRouteTrace({
+      action: 'choice_generation',
+      route,
+      requestPurpose: 'choice_generation',
+      traceId,
+    });
     const response = await fetch(`${apiUrl}/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Router-Trace-Id': traceId },
       body: JSON.stringify({
         prompt,
-        model_name: primaryModel || 'default',
+        model_name: route.effectiveModel || primaryModel || 'default',
         max_tokens: 800,
         temperature,
         stop: ['```'],
         stream: true,
         gpu_id: 0,
-        request_purpose: 'choice_generation'
+        request_purpose: 'choice_generation',
+        selected_model: route.selectedModel || undefined,
+        round_robin_enabled: route.autoEnabled,
       })
     });
 

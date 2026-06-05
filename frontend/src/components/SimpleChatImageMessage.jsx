@@ -7,9 +7,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo, ArrowUpCircle, Image as ImageIcon } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { useApp } from '../contexts/AppContext';
+import { createRouteTraceId, logRouteTrace, resolveUnifiedRequestRoute } from '../utils/requestRouting';
 
 const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCancelRegenerations, isRegenerationRunning }) => {
-  const { primaryModel, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile, setBackgroundImage } = useApp();
+  const { primaryModel, primaryIsAPI, settings, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile, setBackgroundImage } = useApp();
 
   // Existing state
   const [isImageLoaded, setIsImageLoaded] = useState(false);
@@ -390,17 +391,33 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
       });
 
       // Call vision API
+      const route = resolveUnifiedRequestRoute({
+        primaryModel,
+        primaryIsAPI,
+        settings,
+        requestPurpose: 'chat_image_analysis',
+      });
+      const traceId = createRouteTraceId();
+      logRouteTrace({
+        action: 'chat_image_analysis',
+        route,
+        requestPurpose: 'chat_image_analysis',
+        traceId,
+      });
       const analysisResponse = await fetch(`${MEMORY_API_URL}/generate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Router-Trace-Id': traceId },
         body: JSON.stringify({
           prompt: fullPrompt,
-          model_name: primaryModel,
+          model_name: route.effectiveModel || primaryModel,
           image_base64: base64,
           image_type: 'image/png',
           temperature: 0.7,
           max_tokens: 1024,
-          userProfile: { id: userProfile?.id ?? 'anonymous' }
+          userProfile: { id: userProfile?.id ?? 'anonymous' },
+          request_purpose: 'chat_image_analysis',
+          selected_model: route.selectedModel || undefined,
+          round_robin_enabled: route.autoEnabled,
         })
       });
 
@@ -429,7 +446,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
     } finally {
       setIsAnalyzing(false);
     }
-  }, [imageUrl, isAnalyzing, primaryModel, MEMORY_API_URL, setMessages, generateUniqueId, userProfile]);
+  }, [imageUrl, isAnalyzing, primaryModel, primaryIsAPI, settings, MEMORY_API_URL, setMessages, generateUniqueId, userProfile]);
 
   // Existing functions
   const handleCopyPrompt = () => {

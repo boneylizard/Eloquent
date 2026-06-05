@@ -128,12 +128,12 @@ const ImageGen = () => {
             <CardContent className="p-6">
               <h2 className="text-2xl font-bold mb-4">Image Generation</h2>
 
-              {!sdStatus.automatic1111 && (
+              {false && (
                 <Alert className="mb-4">
                   <AlertTriangle className="h-4 w-4" />
                   <AlertTitle>Stable Diffusion Not Available</AlertTitle>
                   <AlertDescription>
-                    Please make sure Automatic1111 WebUI is running on http://127.0.0.1:7860/
+                    Please make sure an image generation engine is running.
                     <Button
                       size="sm"
                       variant="outline"
@@ -176,7 +176,7 @@ const ImageGen = () => {
                     onChange={(e) => setPrompt(e.target.value)}
                     rows={3}
                     required
-                    disabled={isImageGenerating || !sdStatus.automatic1111}
+                    disabled={isImageGenerating }
                   />
                 </div>
 
@@ -188,7 +188,7 @@ const ImageGen = () => {
                     value={negativePrompt}
                     onChange={(e) => setNegativePrompt(e.target.value)}
                     rows={2}
-                    disabled={isImageGenerating || !sdStatus.automatic1111}
+                    disabled={isImageGenerating }
                   />
                 </div>
 
@@ -204,7 +204,7 @@ const ImageGen = () => {
                       step={64}
                       value={[width]}
                       onValueChange={(value) => setWidth(value[0])}
-                      disabled={isImageGenerating || !sdStatus.automatic1111}
+                      disabled={isImageGenerating }
                     />
                   </div>
 
@@ -217,7 +217,7 @@ const ImageGen = () => {
                       step={64}
                       value={[height]}
                       onValueChange={(value) => setHeight(value[0])}
-                      disabled={isImageGenerating || !sdStatus.automatic1111}
+                      disabled={isImageGenerating }
                     />
                   </div>
                 </div>
@@ -231,7 +231,7 @@ const ImageGen = () => {
                     step={1}
                     value={[steps]}
                     onValueChange={(value) => setSteps(value[0])}
-                    disabled={isImageGenerating || !sdStatus.automatic1111}
+                    disabled={isImageGenerating }
                   />
                 </div>
 
@@ -244,7 +244,7 @@ const ImageGen = () => {
                     step={0.1}
                     value={[guidanceScale]}
                     onValueChange={(value) => setGuidanceScale(value[0])}
-                    disabled={isImageGenerating || !sdStatus.automatic1111}
+                    disabled={isImageGenerating }
                   />
                 </div>
 
@@ -255,7 +255,7 @@ const ImageGen = () => {
                     value={sampler}
                     onChange={(e) => setSampler(e.target.value)}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                    disabled={isImageGenerating || !sdStatus.automatic1111}
+                    disabled={isImageGenerating }
                   >
                     {samplers.map(s => (
                       <option key={s} value={s}>{s}</option>
@@ -273,13 +273,13 @@ const ImageGen = () => {
                       max="2147483647"
                       value={seed}
                       onChange={(e) => setSeed(parseInt(e.target.value))}
-                      disabled={isImageGenerating || !sdStatus.automatic1111}
+                      disabled={isImageGenerating }
                     />
                     <Button
                       type="button"
                       variant="outline"
                       onClick={() => setSeed(-1)}
-                      disabled={isImageGenerating || !sdStatus.automatic1111}
+                      disabled={isImageGenerating }
                     >
                       Random
                     </Button>
@@ -289,7 +289,7 @@ const ImageGen = () => {
                 <Button
                   type="submit"
                   className="w-full"
-                  disabled={isImageGenerating || !prompt.trim() || !sdStatus.automatic1111}
+                  disabled={isImageGenerating || !prompt.trim() }
                 >
                   {isImageGenerating ? (
                     <>

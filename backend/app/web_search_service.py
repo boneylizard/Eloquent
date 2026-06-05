@@ -1,9 +1,19 @@
 # web_search_service.py
+#
+# Eloquent prefetch search engine (DuckDuckGo, RSS news, scrape/Jina/Wayback).
+# Extension points:
+#   - SearchResult / SmartSearchResult — add fields for structured citations
+#   - optimize_query() — LLM query decomposition (wired via set_web_search_llm)
+#   - format_structured_search_block() in web_search_routing.py — preferred inject format
+#   - handle_web_search_tool_call() — model-initiated tool execution
+# Provider-native search is routed in web_search_routing.py (not here).
+#
 import asyncio
 import logging
+import os
 import re
 import time
-from typing import List, Dict, Optional, Any, Callable
+from typing import List, Dict, Optional, Any, Callable, Tuple
 from urllib.parse import urljoin, urlparse, unquote, parse_qs
 import httpx
 from bs4 import BeautifulSoup
@@ -40,6 +50,38 @@ WEB_SEARCH_TOOL_DEFINITION = {
             "required": ["search_queries", "search_intent"]
         }
     }
+}
+
+# Unified schema: works with DeepSeek, GLM, OpenAI (use simple required field for strict APIs)
+WEB_SEARCH_TOOL_UNIFIED = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for current information. Use specific keywords. "
+            "For breaking news or politics use web_search_news instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Primary search keywords (preferred for GLM/DeepSeek)",
+                },
+                "search_queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional: 1-3 keyword queries for broader research",
+                    "maxItems": 3,
+                },
+                "search_intent": {
+                    "type": "string",
+                    "description": "Brief note on what you are trying to find",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 }
 
 # Simpler single-query version for basic tool calling
@@ -91,13 +133,31 @@ class SmartSearchResult:
             "formatted_context": self.formatted_context
         }
     
+_ERROR_PAGE_MARKERS = (
+    "403 forbidden",
+    "access denied",
+    "access to this page has been denied",
+    "just a moment",
+    "cloudflare",
+    "captcha",
+    "enable javascript",
+    "bot detection",
+    "request blocked",
+    "unusual traffic",
+    "verify you are human",
+)
+
+
 class WebSearchService:
     def __init__(self):
         self.session_timeout = 30.0
         self.scrape_timeout = 15.0
         self.max_content_length = 10000  # Limit content size
-        self.rate_limit_delay = 1.0  # Delay between requests
-        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        self.rate_limit_delay = 1.2  # Delay between requests (reduce 403 bursts)
+        self.user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
         
         # Domains to avoid scraping (add more as needed)
         self.blocked_domains = {
@@ -124,7 +184,169 @@ USER INPUT: {user_prompt}
 Respond in this exact JSON format only, no other text:
 {{"queries": ["query1", "query2"], "intent": "brief description of what user wants to find"}}"""
 
-        logger.info("🔎 Web search configured: DuckDuckGo")
+        self.jina_api_key = (
+            os.environ.get("ELOQUENT_JINA_API_KEY") or os.environ.get("JINA_API_KEY") or ""
+        ).strip()
+        self.use_jina_fallback = os.environ.get("ELOQUENT_WEB_FETCH_JINA", "1").lower() not in (
+            "0",
+            "false",
+            "no",
+        )
+        self.use_wayback_fallback = os.environ.get("ELOQUENT_WEB_FETCH_WAYBACK", "1").lower() not in (
+            "0",
+            "false",
+            "no",
+        )
+        extras = []
+        if self.use_jina_fallback:
+            extras.append("Jina reader" + ("+API key" if self.jina_api_key else " (free)"))
+        if self.use_wayback_fallback:
+            extras.append("Wayback")
+        logger.info(
+            "🔎 Web search: DuckDuckGo; 403 fallbacks: %s",
+            ", ".join(extras) if extras else "none",
+        )
+
+    def _default_headers(self, url: Optional[str] = None) -> Dict[str, str]:
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        if url:
+            try:
+                parsed = urlparse(url)
+                headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+            except Exception:
+                pass
+        return headers
+
+    @staticmethod
+    def _is_error_page_content(text: str, status_code: int) -> bool:
+        if status_code in (401, 403, 429, 503):
+            return True
+        if not text:
+            return True
+        low = text[:2500].lower()
+        if any(m in low for m in _ERROR_PAGE_MARKERS):
+            # Short pages with block markers are almost never real articles
+            if len(text.strip()) < 12000:
+                return True
+        return False
+
+    async def _fetch_via_jina(self, client: httpx.AsyncClient, url: str) -> Optional[str]:
+        """Jina Reader proxy — often works when sites return 403 to direct bots."""
+        if not self.use_jina_fallback:
+            return None
+        reader_url = f"https://r.jina.ai/{url}"
+        headers: Dict[str, str] = {"Accept": "text/plain", "X-Return-Format": "text"}
+        if self.jina_api_key:
+            headers["Authorization"] = f"Bearer {self.jina_api_key}"
+        try:
+            response = await client.get(reader_url, headers=headers, timeout=28.0)
+            if response.status_code not in (200, 201):
+                logger.debug("Jina reader HTTP %s for %s", response.status_code, url)
+                return None
+            text = (response.text or "").strip()
+            if not text or self._is_error_page_content(text, 200):
+                return None
+            if len(text) < 80:
+                return None
+            logger.info("📖 Jina reader fetched %s (%d chars)", url, len(text))
+            return text[: self.max_content_length]
+        except Exception as e:
+            logger.debug("Jina reader failed for %s: %s", url, e)
+            return None
+
+    async def _fetch_via_wayback(self, client: httpx.AsyncClient, url: str) -> Optional[str]:
+        """Internet Archive snapshot when live site blocks bots."""
+        if not self.use_wayback_fallback:
+            return None
+        try:
+            avail = await client.get(
+                "https://archive.org/wayback/available",
+                params={"url": url},
+                timeout=15.0,
+            )
+            if avail.status_code != 200:
+                return None
+            data = avail.json()
+            closest = (data.get("archived_snapshots") or {}).get("closest") or {}
+            if not closest.get("available"):
+                return None
+            snap_url = closest.get("url")
+            if not snap_url:
+                return None
+            response = await client.get(
+                snap_url,
+                headers=self._default_headers(url),
+                follow_redirects=True,
+                timeout=self.scrape_timeout,
+            )
+            if response.status_code in (401, 403, 429):
+                return None
+            if self._is_error_page_content(response.text, response.status_code):
+                return None
+            soup = BeautifulSoup(response.text, "html.parser")
+            for elem in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                elem.decompose()
+            content = self._extract_main_content(soup)
+            if content and len(content.strip()) > 80:
+                logger.info("📚 Wayback snapshot fetched %s (%d chars)", url, len(content))
+                return content[: self.max_content_length]
+        except Exception as e:
+            logger.debug("Wayback failed for %s: %s", url, e)
+        return None
+
+    async def _fetch_page_text(
+        self, client: httpx.AsyncClient, url: str
+    ) -> Tuple[bool, str, str]:
+        """
+        Try direct scrape, then Jina reader, then Wayback.
+        Returns (ok, text, method) where method is direct|jina|wayback|none.
+        """
+        try:
+            await asyncio.sleep(self.rate_limit_delay)
+            response = await client.get(
+                url,
+                headers=self._default_headers(url),
+                follow_redirects=True,
+            )
+            status = response.status_code
+            if status not in (401, 403, 429):
+                response.raise_for_status()
+                if not self._is_error_page_content(response.text, status):
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    for elem in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                        elem.decompose()
+                    content = self._extract_main_content(soup)
+                    if content and len(content.strip()) > 80:
+                        return True, content[: self.max_content_length], "direct"
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code not in (401, 403, 429):
+                logger.debug("Direct fetch %s: HTTP %s", url, code)
+        except Exception as e:
+            logger.debug("Direct fetch %s: %s", url, e)
+
+        jina_text = await self._fetch_via_jina(client, url)
+        if jina_text:
+            return True, jina_text, "jina"
+
+        wayback_text = await self._fetch_via_wayback(client, url)
+        if wayback_text:
+            return True, wayback_text, "wayback"
+
+        return False, "", "none"
+
+    HUMAN_FETCH_HINT = (
+        "HUMAN WORKAROUND (no captcha solver): open the URL in your browser, "
+        "copy the article text, paste into chat OR save as .txt and index in Transcript search. "
+        "Optional: set JINA_API_KEY in env for higher Jina Reader limits."
+    )
 
     def set_llm_function(self, llm_func: Callable):
         """Set the LLM function used for query optimization.
@@ -135,7 +357,7 @@ Respond in this exact JSON format only, no other text:
         self._llm_function = llm_func
         logger.info("🔍 LLM function set for smart query optimization")
     
-    async def optimize_query(self, user_prompt: str) -> tuple[List[str], str]:
+    async def optimize_query(self, user_prompt: str, max_queries: int = 3) -> tuple[List[str], str]:
         """Use LLM to convert user prompt into optimized search queries.
         
         Returns: (list of optimized queries, search intent description)
@@ -153,6 +375,10 @@ Respond in this exact JSON format only, no other text:
                 response = await self._llm_function(prompt)
             else:
                 response = self._llm_function(prompt)
+
+            if not response or not isinstance(response, str):
+                logger.warning("⚠️ Query optimization LLM returned empty/invalid response; using basic optimization")
+                return self._basic_query_optimization(user_prompt)
             
             # Parse JSON response
             # Try to extract JSON from response (handle markdown code blocks)
@@ -166,14 +392,15 @@ Respond in this exact JSON format only, no other text:
                 if not queries or not isinstance(queries, list):
                     queries = [user_prompt]
                 
-                # Limit to 3 queries max
-                queries = queries[:3]
+                # Limit number of queries (default 3, can be higher for deep research)
+                if max_queries and max_queries > 0:
+                    queries = queries[:max_queries]
                 
                 logger.info(f"🧠 Optimized '{user_prompt[:50]}...' → {queries}")
                 return queries, intent
             else:
-                logger.warning(f"⚠️ Could not parse LLM response, using original query")
-                return [user_prompt], "general search"
+                logger.warning(f"⚠️ Could not parse LLM response, using basic optimization")
+                return self._basic_query_optimization(user_prompt)
                 
         except Exception as e:
             logger.error(f"❌ Query optimization error: {e}")
@@ -245,11 +472,7 @@ Respond in this exact JSON format only, no other text:
         """Search DuckDuckGo and return results. Prefer HTML search (organic results); Instant Answer API often empty."""
         try:
             logger.info(f"🔍 Searching DuckDuckGo for: '{query}'")
-            headers = {
-                "User-Agent": self.user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
+            headers = self._default_headers()
             async with httpx.AsyncClient(timeout=self.session_timeout) as client:
                 # Try HTML search first (organic results; Instant Answer API often returns empty for news)
                 results = await self._search_duckduckgo_html(client, query, max_results, headers)
@@ -508,48 +731,51 @@ Respond in this exact JSON format only, no other text:
         except Exception:
             return False
     
-    async def scrape_content(self, results: List[SearchResult]) -> List[SearchResult]:
-        """Scrape content from search result URLs."""
-        logger.info(f"🕷️ Scraping content from {len(results)} URLs")
-        
+    async def scrape_content(
+        self,
+        results: List[SearchResult],
+        *,
+        max_to_scrape: Optional[int] = None,
+    ) -> List[SearchResult]:
+        """Scrape content from search result URLs (skips 403/bot-block pages)."""
+        if not results:
+            return results
+        cap = max_to_scrape if max_to_scrape is not None else len(results)
+        to_scrape = results[: max(0, cap)]
+        logger.info(f"🕷️ Scraping up to {len(to_scrape)}/{len(results)} URLs")
+
+        blocked: List[str] = []
         async with httpx.AsyncClient(timeout=self.scrape_timeout) as client:
-            for result in results:
-                try:
-                    # Rate limiting
-                    await asyncio.sleep(self.rate_limit_delay)
-                    
-                    logger.debug(f"Scraping: {result.url}")
-                    response = await client.get(
+            for result in to_scrape:
+                logger.debug(f"Scraping: {result.url}")
+                ok, text, method = await self._fetch_page_text(client, result.url)
+                if ok and text:
+                    result.content = text
+                    result.scraped_successfully = True
+                    if method != "direct":
+                        result.snippet = (result.snippet or "") + f" [via {method}]"
+                    logger.debug(
+                        "✅ Fetched %d chars from %s (%s)",
+                        len(result.content),
                         result.url,
-                        headers={'User-Agent': self.user_agent},
-                        follow_redirects=True
+                        method,
                     )
-                    response.raise_for_status()
-                    
-                    # Parse content
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # Remove unwanted elements
-                    for elem in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                        elem.decompose()
-                    
-                    # Extract main content
-                    content = self._extract_main_content(soup)
-                    
-                    if content and len(content.strip()) > 50:  # Minimum content threshold
-                        result.content = content[:self.max_content_length]
-                        result.scraped_successfully = True
-                        logger.debug(f"✅ Scraped {len(result.content)} chars from {result.url}")
-                    else:
-                        logger.debug(f"⚠️ Insufficient content from {result.url}")
-                        
-                except Exception as e:
-                    logger.debug(f"❌ Scraping failed for {result.url}: {e}")
+                else:
+                    blocked.append(result.url)
                     result.scraped_successfully = False
-        
-        successful_scrapes = sum(1 for r in results if r.scraped_successfully)
-        logger.info(f"🕷️ Successfully scraped {successful_scrapes}/{len(results)} URLs")
-        
+                    logger.info(
+                        "🕷️ Blocked %s (403/bot) — tried direct, Jina, Wayback",
+                        result.url,
+                    )
+
+        successful_scrapes = sum(1 for r in to_scrape if r.scraped_successfully)
+        logger.info(f"🕷️ Successfully fetched {successful_scrapes}/{len(to_scrape)} URLs")
+        if blocked and successful_scrapes < len(to_scrape):
+            logger.info(
+                "🕷️ %d URL(s) still blocked. %s",
+                len(blocked),
+                self.HUMAN_FETCH_HINT[:120] + "…",
+            )
         return results
     
     def _extract_main_content(self, soup: BeautifulSoup) -> str:
@@ -639,22 +865,25 @@ Respond in this exact JSON format only, no other text:
         return '\n'.join(context_parts)
     
     def format_tool_response(
-        self, 
-        queries: List[str], 
-        intent: str, 
-        results: List[SearchResult]
+        self,
+        queries: List[str],
+        intent: str,
+        results: List[SearchResult],
+        *,
+        max_chars_per_result: int = 1200,
     ) -> str:
         """Format search results for tool call response."""
         if not results:
             return f"No results found for: {', '.join(queries)}"
-        
+
+        limit = max(400, min(max_chars_per_result, self.max_content_length))
         context_parts = [
             f"Search completed for: {', '.join(queries)}",
             f"Intent: {intent}",
             f"Found {len(results)} relevant results:",
-            ""
+            "",
         ]
-        
+
         for i, result in enumerate(results, 1):
             context_parts.append(f"[{i}] {result.title}")
             context_parts.append(f"URL: {result.url}")
@@ -662,20 +891,58 @@ Respond in this exact JSON format only, no other text:
                 context_parts.append(f"Publisher: {result.publisher}")
 
             if result.scraped_successfully and result.content:
-                # For tool responses, include more content
-                content_preview = result.content[:1200] + "..." if len(result.content) > 1200 else result.content
-                context_parts.append(f"{content_preview}")
+                text = result.content
+                if len(text) > limit:
+                    text = text[:limit] + f"\n… [truncated at {limit} chars; full length {len(result.content)}]"
+                context_parts.append(text)
             elif result.snippet:
-                context_parts.append(f"{result.snippet}")
-            
+                context_parts.append(result.snippet)
+
             context_parts.append("")
-        
-        return '\n'.join(context_parts)
+
+        return "\n".join(context_parts)
+
+    async def fetch_urls(
+        self,
+        urls: List[str],
+        *,
+        max_urls: int = 20,
+        max_chars_per_url: int = 10000,
+    ) -> List[SearchResult]:
+        """Fetch and extract full article text from explicit URLs (for known article lists)."""
+        seen: set[str] = set()
+        unique: List[str] = []
+        for raw in urls:
+            u = (raw or "").strip()
+            if not u or u in seen:
+                continue
+            if not u.startswith("http"):
+                u = "https://" + u.lstrip("/")
+            if self._is_scrapeable_url(u):
+                seen.add(u)
+                unique.append(u)
+            if len(unique) >= max_urls:
+                break
+
+        if not unique:
+            return []
+
+        stubs = [
+            SearchResult(title=u, url=u, snippet=f"Fetching {u}")
+            for u in unique
+        ]
+        scraped = await self.scrape_content(stubs)
+        for r in scraped:
+            if r.content and len(r.content) > max_chars_per_url:
+                r.content = r.content[:max_chars_per_url]
+            if r.scraped_successfully and r.content and not r.title:
+                r.title = r.url
+        return scraped
 
 # Global service instance
 web_search_service = WebSearchService()
 
-async def perform_web_search(query: str, max_results: int = 5) -> str:
+async def perform_web_search(query: str, max_results: int = 5, *, scrape_full: bool = False) -> str:
     """Main function to perform web search and return formatted context."""
     try:
         logger.info(f"🌐 Starting web search for: '{query}'")
@@ -686,8 +953,12 @@ async def perform_web_search(query: str, max_results: int = 5) -> str:
         if not results:
             return f"WEB SEARCH RESULTS for '{query}':\nNo results found or search service unavailable."
         
-        # Scrape content
-        results_with_content = await web_search_service.scrape_content(results)
+        if scrape_full:
+            results_with_content = await web_search_service.scrape_content(
+                results, max_to_scrape=min(4, max_results)
+            )
+        else:
+            results_with_content = results
         
         # Format for LLM
         formatted_context = web_search_service.format_search_context(query, results_with_content)
@@ -703,7 +974,10 @@ async def perform_web_search(query: str, max_results: int = 5) -> str:
 async def perform_smart_web_search(
     user_prompt: str, 
     max_results: int = 5,
-    use_optimization: bool = True
+    use_optimization: bool = True,
+    max_queries: int = 3,
+    *,
+    scrape_full: bool = False,
 ) -> SmartSearchResult:
     """
     Smart web search that optimizes the user's query before searching.
@@ -721,7 +995,7 @@ async def perform_smart_web_search(
         
         # Step 1: Optimize the query using LLM
         if use_optimization:
-            optimized_queries, search_intent = await web_search_service.optimize_query(user_prompt)
+            optimized_queries, search_intent = await web_search_service.optimize_query(user_prompt, max_queries=max_queries)
         else:
             optimized_queries = [user_prompt]
             search_intent = "direct search"
@@ -750,10 +1024,13 @@ async def perform_smart_web_search(
                 formatted_context=f"WEB SEARCH for '{user_prompt}':\nNo results found."
             )
         
-        # Step 3: Scrape content from top results
-        # Limit scraping to avoid timeout
         results_to_scrape = all_results[:max_results]
-        results_with_content = await web_search_service.scrape_content(results_to_scrape)
+        if scrape_full:
+            results_with_content = await web_search_service.scrape_content(
+                results_to_scrape, max_to_scrape=min(4, max_results)
+            )
+        else:
+            results_with_content = results_to_scrape
         
         # Step 4: Format context
         formatted_context = web_search_service.format_smart_search_context(
@@ -781,7 +1058,55 @@ async def perform_smart_web_search(
         )
 
 
-async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: int = 5, news: bool = False) -> str:
+async def handle_fetch_urls_tool_call(
+    arguments: Dict[str, Any],
+    *,
+    max_urls: int = 20,
+    max_chars_per_url: int = 10000,
+) -> str:
+    """Fetch full page text for explicit URLs (ideal for a known set of articles)."""
+    try:
+        if isinstance(arguments, str):
+            arguments = {"urls": [arguments]}
+        urls = arguments.get("urls") or arguments.get("url") or []
+        if isinstance(urls, str):
+            urls = [u.strip() for u in re.split(r"[\n,]+", urls) if u.strip()]
+        if not urls:
+            return "Error: provide urls as a list of article links."
+
+        results = await web_search_service.fetch_urls(
+            urls,
+            max_urls=max_urls,
+            max_chars_per_url=max_chars_per_url,
+        )
+        if not results:
+            return "Could not fetch any of the provided URLs."
+
+        ok = [r for r in results if r.scraped_successfully and r.content]
+        parts = [f"Fetched {len(ok)}/{len(urls)} URLs:", ""]
+        for i, r in enumerate(ok, 1):
+            parts.append(f"=== Article {i}: {r.title or r.url} ===")
+            parts.append(f"URL: {r.url}")
+            parts.append(r.content or "")
+            parts.append("")
+        if len(ok) < len(urls):
+            failed = [r.url for r in results if not r.scraped_successfully]
+            parts.append(f"Failed to fetch: {', '.join(failed[:10])}")
+            parts.append(web_search_service.HUMAN_FETCH_HINT)
+        return "\n".join(parts)
+    except Exception as e:
+        logger.error("fetch_urls tool error: %s", e)
+        return f"fetch_urls failed: {e}"
+
+
+async def handle_web_search_tool_call(
+    arguments: Dict[str, Any],
+    max_results: int = 5,
+    news: bool = False,
+    *,
+    max_chars_per_result: int = 1200,
+    scrape_full: bool = True,
+) -> str:
     """
     Handle a web_search tool call from a model.
     
@@ -794,12 +1119,24 @@ async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: in
     try:
         if isinstance(arguments, str):
             arguments = {"query": arguments}
+        # GLM / some providers nest: {"name": "web_search", "arguments": {...}}
+        if isinstance(arguments, dict) and "arguments" in arguments and isinstance(arguments["arguments"], dict):
+            arguments = arguments["arguments"]
+        if isinstance(arguments, dict) and "parameters" in arguments and isinstance(arguments["parameters"], dict):
+            arguments = arguments["parameters"]
         if isinstance(arguments, dict) and "query" in arguments and isinstance(arguments["query"], str):
             raw = arguments["query"]
             if "{" in raw and "query" in raw:
                 queries = re.findall(r'"query"\s*:\s*"([^"]+)"', raw)
                 if queries:
                     arguments = {"search_queries": queries}
+
+        if "search_queries" in arguments and "query" not in arguments:
+            sq = arguments.get("search_queries")
+            if isinstance(sq, list) and sq:
+                arguments = {**arguments, "query": sq[0]}
+            elif isinstance(sq, str) and sq.strip():
+                arguments = {**arguments, "query": sq.strip()}
 
         # Handle both tool definition formats
         if "search_queries" in arguments:
@@ -831,17 +1168,25 @@ async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: in
             return f"Web search found no results for: {queries}"
 
         if news:
-            # For news, rely on RSS titles/snippets; skip scraping to avoid Google News blocks.
             top_titles = [r.title for r in all_results[:5] if r.title]
             logger.info(f"🗞️ News search returned {len(all_results)} results. Top: {top_titles}")
-            return web_search_service.format_tool_response(queries, intent, all_results[:max_results])
-        
-        # Scrape top results
+            return web_search_service.format_tool_response(
+                queries, intent, all_results[:max_results],
+                max_chars_per_result=max_chars_per_result,
+            )
+
         results_to_scrape = all_results[:max_results]
-        results_with_content = await web_search_service.scrape_content(results_to_scrape)
-        
-        # Format for tool response
-        formatted = web_search_service.format_tool_response(queries, intent, results_with_content)
+        if scrape_full:
+            results_with_content = await web_search_service.scrape_content(
+                results_to_scrape, max_to_scrape=min(4, max_results)
+            )
+        else:
+            results_with_content = results_to_scrape
+
+        formatted = web_search_service.format_tool_response(
+            queries, intent, results_with_content,
+            max_chars_per_result=max_chars_per_result,
+        )
         
         return formatted
         
@@ -850,15 +1195,18 @@ async def handle_web_search_tool_call(arguments: Dict[str, Any], max_results: in
         return f"Web search failed: {str(e)}"
 
 
-def get_web_search_tool_definition(simple: bool = False) -> Dict[str, Any]:
+def get_web_search_tool_definition(simple: bool = False, unified: bool = False) -> Dict[str, Any]:
     """Get the tool definition for web search.
     
     Args:
         simple: If True, returns the simpler single-query version
+        unified: If True, returns query + optional search_queries (best for agent APIs)
         
     Returns:
         Tool definition dict compatible with OpenAI/Anthropic tool calling format
     """
+    if unified:
+        return WEB_SEARCH_TOOL_UNIFIED
     return WEB_SEARCH_TOOL_SIMPLE if simple else WEB_SEARCH_TOOL_DEFINITION
 
 

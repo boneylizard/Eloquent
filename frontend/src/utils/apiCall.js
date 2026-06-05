@@ -2,7 +2,7 @@
 // apiCall.js
 import { getTemplateForModel } from './chat_templates';
 import { retrieveRelevantMemories, formatMemoriesForPrompt } from './memoryUtils';
-import { getBackendUrl, getSecondaryUrl, getTtsUrl } from '../config/api';
+import { getBackendUrl, getSecondaryUrl, getTtsUrl, fetchWithTimeout } from '../config/api';
 
 // Function to retrieve the currently active user profile object from localStorage
 function getUserProfile() {
@@ -206,6 +206,51 @@ export function callModelAPI(messages, modelName, options = {}, memoryContext = 
 
 // For streaming responses (if your backend supports it)
 export function streamModelAPI(messages, modelName, onChunk, onDone, onError, options = {}) {
+  // Black-box stream debug snapshot (survives tab crashes via localStorage).
+  const debugSessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let contentEvents = 0;
+  let parseErrors = 0;
+  let lastPersistAt = 0;
+  const persistNow = (accumLen) => {
+    try {
+      const nowPerf = performance.now();
+      if (nowPerf - lastPersistAt < 1000) return;
+      lastPersistAt = nowPerf;
+      const mem = window?.performance?.memory;
+      localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+        sessionId: debugSessionId,
+        model: modelName,
+        stage: 'apiCall_streamModelAPI_streaming',
+        ts: new Date().toISOString(),
+        streamResponses: true,
+        heapUsedBytes: mem?.usedJSHeapSize ?? null,
+        heapTotalBytes: mem?.totalJSHeapSize ?? null,
+        heapLimitBytes: mem?.jsHeapSizeLimit ?? null,
+        contentEvents,
+        parseErrors,
+        lastAccumLen: accumLen ?? 0,
+      }));
+    } catch (_) {}
+  };
+
+  try {
+    const mem = window?.performance?.memory;
+    localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+      sessionId: debugSessionId,
+      model: modelName,
+      stage: 'apiCall_streamModelAPI_start',
+      ts: new Date().toISOString(),
+      streamResponses: true,
+      heapUsedBytes: mem?.usedJSHeapSize ?? null,
+      heapTotalBytes: mem?.totalJSHeapSize ?? null,
+      heapLimitBytes: mem?.jsHeapSizeLimit ?? null,
+      contentEvents: 0,
+      parseErrors: 0,
+      rafUiUpdates: 0,
+      lastAccumLen: 0,
+    }));
+  } catch (_) {}
+
   // Extract the latest user message for memory retrieval
   const userMessages = messages.filter(m => m.role === 'user');
   const latestUserMessage = userMessages.length > 0 ? userMessages[userMessages.length - 1].content : '';
@@ -272,14 +317,29 @@ export function streamModelAPI(messages, modelName, onChunk, onDone, onError, op
 
                 try {
                   const data = JSON.parse(jsonStr);
-                  onChunk(data.text || data.token || data.chunk || '');
+                  const token = data.text || data.token || data.chunk || '';
+                  contentEvents += 1;
+                  onChunk(token);
+                  if (token) persistNow(token.length);
                 } catch (e) {
+                  parseErrors += 1;
                   console.warn('Could not parse chunk:', jsonStr);
                 }
               }
             }
           } catch (error) {
             console.error('Error processing stream:', error);
+            try {
+              localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+                sessionId: debugSessionId,
+                model: modelName,
+                stage: 'apiCall_streamModelAPI_error',
+                ts: new Date().toISOString(),
+                contentEvents,
+                parseErrors,
+                error: String(error?.message || error),
+              }));
+            } catch (_) {}
             onError(error);
             return;
           }
@@ -295,6 +355,17 @@ export function streamModelAPI(messages, modelName, onChunk, onDone, onError, op
     })
     .catch(error => {
       console.error('Error initiating stream:', error);
+      try {
+        localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+          sessionId: debugSessionId,
+          model: modelName,
+          stage: 'apiCall_streamModelAPI_fetch_error',
+          ts: new Date().toISOString(),
+          contentEvents,
+          parseErrors,
+          error: String(error?.message || error),
+        }));
+      } catch (_) {}
       onError(error);
     });
 }
@@ -333,6 +404,51 @@ export async function streamModelAPIWithMemory(messages, modelName, onChunk, onD
 
 // Helper function to perform the actual streaming API call
 function streamAPICall(prompt, modelName, options, onChunk, onDone, onError, hasMemories) {
+  // Black-box stream debug snapshot (survives tab crashes via localStorage).
+  const debugSessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let contentEvents = 0;
+  let parseErrors = 0;
+  let lastPersistAt = 0;
+  const persistNow = (accumLen) => {
+    try {
+      const nowPerf = performance.now();
+      if (nowPerf - lastPersistAt < 1000) return;
+      lastPersistAt = nowPerf;
+      const mem = window?.performance?.memory;
+      localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+        sessionId: debugSessionId,
+        model: modelName,
+        stage: 'apiCall_streamAPICall_streaming',
+        ts: new Date().toISOString(),
+        streamResponses: true,
+        heapUsedBytes: mem?.usedJSHeapSize ?? null,
+        heapTotalBytes: mem?.totalJSHeapSize ?? null,
+        heapLimitBytes: mem?.jsHeapSizeLimit ?? null,
+        contentEvents,
+        parseErrors,
+        lastAccumLen: accumLen ?? 0,
+      }));
+    } catch (_) {}
+  };
+
+  try {
+    const mem = window?.performance?.memory;
+    localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+      sessionId: debugSessionId,
+      model: modelName,
+      stage: 'apiCall_streamAPICall_start',
+      ts: new Date().toISOString(),
+      streamResponses: true,
+      heapUsedBytes: mem?.usedJSHeapSize ?? null,
+      heapTotalBytes: mem?.totalJSHeapSize ?? null,
+      heapLimitBytes: mem?.jsHeapSizeLimit ?? null,
+      contentEvents: 0,
+      parseErrors: 0,
+      rafUiUpdates: 0,
+      lastAccumLen: 0,
+    }));
+  } catch (_) {}
+
   fetch(`${getBackendUrl()}/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -377,14 +493,29 @@ function streamAPICall(prompt, modelName, options, onChunk, onDone, onError, has
 
                 try {
                   const data = JSON.parse(jsonStr);
-                  onChunk(data.text || data.token || data.chunk || '');
+                  const token = data.text || data.token || data.chunk || '';
+                  contentEvents += 1;
+                  onChunk(token);
+                  if (token) persistNow(token.length);
                 } catch (e) {
+                  parseErrors += 1;
                   console.warn('Could not parse chunk:', jsonStr);
                 }
               }
             }
           } catch (error) {
             console.error('Error processing stream:', error);
+            try {
+              localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+                sessionId: debugSessionId,
+                model: modelName,
+                stage: 'apiCall_streamAPICall_error',
+                ts: new Date().toISOString(),
+                contentEvents,
+                parseErrors,
+                error: String(error?.message || error),
+              }));
+            } catch (_) {}
             onError(error);
             return;
           }
@@ -400,6 +531,17 @@ function streamAPICall(prompt, modelName, options, onChunk, onDone, onError, has
     })
     .catch(error => {
       console.error('Error initiating stream:', error);
+      try {
+        localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+          sessionId: debugSessionId,
+          model: modelName,
+          stage: 'apiCall_streamAPICall_fetch_error',
+          ts: new Date().toISOString(),
+          contentEvents,
+          parseErrors,
+          error: String(error?.message || error),
+        }));
+      } catch (_) {}
       onError(error);
     });
 }
@@ -625,10 +767,17 @@ export async function fetchTriggeredLore(message, activeCharacter) {
   }
 }
 
+let lastTtsSynthesisMeta = null;
+
+export function getLastTtsSynthesisMeta() {
+  return lastTtsSynthesisMeta;
+}
+
 export const synthesizeSpeech = async (text, options = {}) => {
   try {
     // Handle both old format (string voice) and new format (options object)
-    let voice, engine, audio_prompt_path, exaggeration, cfg;
+    let voice, engine, audio_prompt_path, exaggeration, cfg, save_full_response_audio;
+    let save_full_response_max_chunk_seconds = null;
 
     if (typeof options === 'string') {
       // Old format: synthesizeSpeech(text, voice)
@@ -643,6 +792,11 @@ export const synthesizeSpeech = async (text, options = {}) => {
       audio_prompt_path = options.audio_prompt_path;
       exaggeration = options.exaggeration || 0.5;
       cfg = options.cfg || 0.5;
+      save_full_response_audio = options.save_full_response_audio === true;
+      const rawMax = options.save_full_response_max_chunk_seconds;
+      if (rawMax != null && rawMax !== '' && Number(rawMax) > 0) {
+        save_full_response_max_chunk_seconds = Number(rawMax);
+      }
     }
 
     console.log(`Calling TTS API with engine "${engine}" and voice "${voice}":`, text.substring(0, 50));
@@ -652,8 +806,14 @@ export const synthesizeSpeech = async (text, options = {}) => {
       voice,
       engine,
       exaggeration,
-      cfg
+      cfg,
+      save_full_response_audio,
+      message_id: options.message_id || null,
+      conversation_id: options.conversation_id || null
     };
+    if (save_full_response_max_chunk_seconds != null) {
+      payload.save_full_response_max_chunk_seconds = save_full_response_max_chunk_seconds;
+    }
 
     // Add voice cloning path if provided
     if (audio_prompt_path) {
@@ -678,6 +838,26 @@ export const synthesizeSpeech = async (text, options = {}) => {
       console.error("TTS API error:", error);
       throw new Error(`TTS failed: ${response.status} - ${error.detail}`);
     }
+
+    const saveStatus = response.headers.get('X-TTS-Save-Status') || 'not_requested';
+    const savePath = response.headers.get('X-TTS-Save-Path') || null;
+    const saveError = response.headers.get('X-TTS-Save-Error') || null;
+    const saveFilename = response.headers.get('X-TTS-Save-Filename') || null;
+    const saveChunkCountRaw = response.headers.get('X-TTS-Save-Chunk-Count');
+    const saveChunkCount = parseInt(saveChunkCountRaw || '1', 10);
+    const saveFilenamesAll = response.headers.get('X-TTS-Save-Filenames-All') || '';
+    const saveFilenamesList = saveFilenamesAll
+      ? saveFilenamesAll.split('\t').map((s) => s.trim()).filter(Boolean)
+      : null;
+    lastTtsSynthesisMeta = {
+      saveStatus,
+      savePath,
+      saveError,
+      saveFilename,
+      saveChunkCount: Number.isFinite(saveChunkCount) ? saveChunkCount : 1,
+      saveFilenamesList,
+      timestamp: Date.now(),
+    };
 
     const audioBlob = await response.blob();
 
@@ -738,11 +918,12 @@ export const getAvailableVoices = async () => {
 // Function to transcribe audio using the STT API
 // This function assumes the backend is running and accessible at the specified URL
 export const transcribeAudio = async (audioBlob, engine = "whisper") => {
-  console.log(`📝 Sending audio blob for transcription with engine: ${engine}`);
+  const isWav = audioBlob?.type?.includes('wav') || audioBlob?.type === 'audio/wave';
+  const filename = isWav ? 'recording.wav' : 'recording.webm';
 
   try {
     const formData = new FormData();
-    formData.append('file', audioBlob, 'recording.webm'); // or .ogg or .wav, based on your MIME type
+    formData.append('file', audioBlob, filename);
 
     // Add engine as a query parameter
     const response = await fetch(`${getBackendUrl()}/transcribe?engine=${engine}`, {
@@ -817,11 +998,15 @@ export const generateChatTitle = async (message, modelName) => {
       promptPreview: payload.prompt.substring(0, 60) + "..."
     });
 
-    const response = await fetch(apiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const response = await fetchWithTimeout(
+      apiUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      30000
+    );
 
     console.log("🔤 [TITLE] API response status:", response.status);
 
@@ -885,6 +1070,22 @@ class TTSWebSocketClient {
     this.onOpenCallback = null;
     this.onCloseCallback = null;
     this.onErrorCallback = null;
+    /** Text fragments queued when socket is not OPEN (live streaming TTS must not drop deltas). */
+    this.pendingTextFragments = [];
+  }
+
+  _flushPendingTextFragments() {
+    if (!this.socket || this.socket.readyState !== 1) return;
+    while (this.pendingTextFragments.length > 0) {
+      const frag = this.pendingTextFragments.shift();
+      if (!frag) continue;
+      if (!this.settingsSent && this.pendingSettings) {
+        this.socket.send(JSON.stringify(this.pendingSettings));
+        this.settingsSent = true;
+        this.pendingSettings = null;
+      }
+      this.socket.send(JSON.stringify({ text: frag }));
+    }
   }
 
   connect(onOpen, onClose, onError) {
@@ -929,6 +1130,8 @@ class TTSWebSocketClient {
         this.pendingSettings = null;
       }
 
+      this._flushPendingTextFragments();
+
       if (this.onOpenCallback) this.onOpenCallback();
     };
 
@@ -971,6 +1174,7 @@ class TTSWebSocketClient {
       this.socket = null;
       this.settingsSent = false;
       this.isConnecting = false;
+      this.pendingTextFragments = [];
 
       if (this.onCloseCallback) this.onCloseCallback();
 
@@ -999,6 +1203,7 @@ class TTSWebSocketClient {
     // For settings, just store them and send if connected
     if (isSettings) {
       console.log("🔧 [WebSocket] Received settings for new message:", text);
+      this.pendingTextFragments = [];
       this.pendingSettings = text;
       this.settingsSent = false;
 
@@ -1007,25 +1212,27 @@ class TTSWebSocketClient {
         this.socket.send(JSON.stringify(text));
         this.settingsSent = true;
         this.pendingSettings = null;
+        this._flushPendingTextFragments();
       }
       return;
     }
 
-    // For text - since we keep connection open, this should always work
+    const payload = typeof text === 'string' ? text : (text != null ? String(text) : '');
+    if (!payload) return;
+
     if (!this.socket || this.socket.readyState !== 1) {
-      console.error("❌ [WebSocket] Not connected! This shouldn't happen with always-open connection");
+      console.warn("⚠️ [WebSocket] Not connected; queueing TTS text until open");
+      this.pendingTextFragments.push(payload);
       return;
     }
 
     if (!this.settingsSent && this.pendingSettings) {
-      // Send pending settings first if we have them
       this.socket.send(JSON.stringify(this.pendingSettings));
       this.settingsSent = true;
       this.pendingSettings = null;
     }
 
-    // Send the text
-    this.socket.send(JSON.stringify({ text }));
+    this.socket.send(JSON.stringify({ text: payload }));
   }
 
   // Signal end of current message stream normally
@@ -1041,6 +1248,12 @@ class TTSWebSocketClient {
   // INTERRUPT the current synthesis immediately (backend kill switch)
   interrupt() {
     if (this.socket && this.socket.readyState === 1) {
+      const now = Date.now();
+      if (this._lastInterruptAt && now - this._lastInterruptAt < 400) {
+        console.warn('🛑 [WebSocket] Skipping duplicate interrupt (debounced)');
+        return;
+      }
+      this._lastInterruptAt = now;
       console.log("🛑 [WebSocket] Sending [INTERRUPT] signal to backend");
       try {
         this.socket.send(JSON.stringify({ type: 'interrupt' })); // Send standard format
@@ -1056,6 +1269,7 @@ class TTSWebSocketClient {
     console.log("🧹 [WebSocket] Clearing all pending TTS state");
     this.pendingSettings = null;
     this.settingsSent = false;
+    this.pendingTextFragments = [];
   }
 
   // Disconnect the WebSocket entirely

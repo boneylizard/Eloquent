@@ -4,9 +4,11 @@ Provides standard OpenAI endpoints that route through Eloquent's existing infere
 """
 
 import json
+import os
+import re
 import time
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -19,6 +21,17 @@ from . import inference
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Slow remotes (e.g. nano-gpt) may buffer long before first byte; allow long gaps between chunks.
+REMOTE_HTTPC_TIMEOUT = httpx.Timeout(connect=60.0, read=3600.0, write=120.0, pool=60.0)
+
+# Short-lived in-memory endpoint health guard.
+# If an endpoint repeatedly errors, we briefly cool it down so auto-rotation can move on.
+_ENDPOINT_FAILURE_STATE: Dict[str, Dict[str, Any]] = {}
+_ENDPOINT_FAILURE_THRESHOLD = 2
+_ENDPOINT_FAILURE_WINDOW_SECONDS = 120.0
+_ENDPOINT_COOLDOWN_SECONDS = 180.0
+_ENDPOINT_ROTATION_STATE: Dict[str, Dict[str, str]] = {}
 
 router = APIRouter(prefix="/v1", tags=["OpenAI Compatibility"])
 
@@ -62,19 +75,212 @@ class ModelInfo(BaseModel):
     owned_by: str = "eloquent"
 
 # === Helper Functions ===
+
+def strip_thinking_model_suffix(model: str) -> Tuple[str, bool]:
+    """Remove Eloquent :thinking / -thinking suffix before provider or endpoint lookup."""
+    m = (model or "").strip()
+    if not m:
+        return "", False
+    low = m.lower()
+    if low.endswith(":thinking"):
+        return m[: -len(":thinking")].rstrip(), True
+    if low.endswith("-thinking"):
+        return m[: -len("-thinking")].rstrip(), True
+    return m, False
+
+
+def normalize_endpoint_model_id(model_name: Optional[str]) -> str:
+    """Fix duplicated prefix from UI (endpoint-endpoint-* → endpoint-*)."""
+    if not model_name:
+        return ""
+    raw = str(model_name).strip()
+    raw, _ = strip_thinking_model_suffix(raw)
+    # Strip human labels/comments accidentally persisted with model ids, e.g. "foo #2".
+    raw = re.sub(r"\s+#\d+\s*$", "", raw).strip()
+    if raw.startswith("endpoint-endpoint-"):
+        return "endpoint-" + raw[len("endpoint-endpoint-") :]
+    return raw
+
+
+def _endpoint_match_tokens(endpoint: dict) -> set[str]:
+    """Canonical matching tokens for endpoint identity checks."""
+    tokens: set[str] = set()
+    for value in (
+        endpoint.get("id"),
+        endpoint.get("name"),
+        endpoint.get("model"),
+    ):
+        token = normalize_endpoint_model_id(value)
+        if token:
+            tokens.add(token)
+    return tokens
+
+
+def _load_custom_api_endpoints() -> List[dict]:
+    try:
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
+        if not settings_path.exists():
+            return []
+        with open(settings_path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+        endpoints = settings.get("customApiEndpoints", [])
+        return endpoints if isinstance(endpoints, list) else []
+    except Exception as e:
+        logger.error("Error reading custom API endpoints from settings: %s", e)
+        return []
+
+
+def find_custom_api_endpoint(model_name: Optional[str]) -> tuple[Optional[dict], str]:
+    """
+    Match model_name to a custom API endpoint record.
+    Returns (record, status) where status is 'ok' | 'disabled' | 'missing' | 'none'.
+    """
+    if not model_name or not isinstance(model_name, str):
+        return None, "none"
+    raw = normalize_endpoint_model_id(model_name)
+    if not raw:
+        return None, "none"
+
+    for endpoint in _load_custom_api_endpoints():
+        eid = (endpoint.get("id") or "").strip()
+        ename = (endpoint.get("name") or "").strip()
+        emodel = (endpoint.get("model") or "").strip()
+        if raw not in (eid, ename, emodel):
+            continue
+        if endpoint.get("enabled", False):
+            return endpoint, "ok"
+        return endpoint, "disabled"
+
+    if raw.startswith("endpoint-"):
+        return None, "missing"
+    return None, "none"
+
+
+def resolve_api_endpoint_id(model_name: Optional[str]) -> Optional[str]:
+    """Canonical enabled endpoint-* id, or None if not a configured API model."""
+    record, status = find_custom_api_endpoint(model_name)
+    if status == "ok" and record:
+        return (record.get("id") or "").strip() or None
+    return None
+
+
+def validate_api_model_for_generate(model_name: Optional[str]) -> Optional[str]:
+    """
+    Resolve API model_name for /generate.
+    Returns canonical endpoint id, None for local GGUF models, or raises HTTP 400.
+    """
+    record, status = find_custom_api_endpoint(model_name)
+    if status == "ok" and record:
+        eid = (record.get("id") or "").strip()
+        if not (record.get("url") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"API endpoint '{eid or model_name}' has no provider URL. "
+                    "Set URL under Settings → Custom API Endpoints."
+                ),
+            )
+        return eid or None
+    if status == "disabled" and record:
+        eid = (record.get("id") or model_name or "").strip()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"API endpoint '{eid}' is disabled. "
+                "Enable it under Settings → Custom API Endpoints."
+            ),
+        )
+    if status == "missing":
+        raw = normalize_endpoint_model_id(model_name)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"API endpoint '{raw}' was not found in Settings → Custom API Endpoints. "
+                "Re-select your API model or add the endpoint again."
+            ),
+        )
+    return None
+
+
+def log_generate_outbound(
+    url: str,
+    model: str,
+    endpoint_config: Optional[dict] = None,
+    request_data: Optional[dict] = None,
+) -> None:
+    """Single-line marker immediately before provider HTTP (easy to grep in logs)."""
+    name = (endpoint_config or {}).get("name") or (endpoint_config or {}).get("id") or "custom"
+    thinking_payload = None
+    injected = False
+    if request_data:
+        thinking_payload = request_data.get("thinking") or request_data.get("reasoning")
+        injected = bool(thinking_payload)
+    logger.info(
+        "[generate] model=%s thinking_injected=%s thinking_payload=%s url=%s endpoint=%s",
+        model,
+        injected,
+        thinking_payload,
+        url,
+        name,
+    )
+
+
 def is_api_endpoint(model_name: str) -> bool:
-    """Check if the model name is an API endpoint"""
+    """True when model_name maps to an enabled custom API endpoint."""
     if not model_name:
         return False
     if not isinstance(model_name, str):
         logger.warning(f"[is_api_endpoint] model_name is not a string: {type(model_name)} = {model_name}")
         return False
-    result = model_name.startswith('endpoint-')
+    result = resolve_api_endpoint_id(model_name) is not None
     logger.debug(f"[is_api_endpoint] Checking '{model_name}': {result}")
     return result
 
-def get_configured_endpoint(model_id: str = None):
-    """Read custom API endpoints from settings.json and find the specified one."""
+
+FLOW_API_REQUEST_PURPOSES = frozenset({
+    "character_intro",
+    "system_intro",
+    "call_mode_character_about",
+})
+
+INTRO_ABOUT_PURPOSES = FLOW_API_REQUEST_PURPOSES | frozenset({
+    "about_character",
+})
+
+
+def is_flow_dedicated_api_request(
+    request_purpose: Optional[str],
+    flow_api_url: Optional[str] = None,
+) -> bool:
+    """True when the client enabled Settings → Dedicated API (sends flow_api_url)."""
+    return request_purpose in FLOW_API_REQUEST_PURPOSES and bool(
+        (flow_api_url or "").strip()
+    )
+
+
+def get_configured_endpoint(
+    model_id: str = None,
+    *,
+    rotation_candidate_ids: Optional[List[str]] = None,
+    rotation_cursor_key: Optional[str] = None,
+    skip_rotation: bool = False,
+    request_purpose: Optional[str] = None,
+    router_trace_id: Optional[str] = None,
+    frontend_round_robin_enabled: Optional[bool] = None,
+):
+    """Read custom API endpoints from settings.json and find the specified one.
+
+    When ``apiEndpointRoundRobinEnabled`` is on and at least two rotate-enabled
+    endpoints exist, each call advances a persisted cursor. Pass
+    ``rotation_candidate_ids`` (e.g. orchestrator #1/#2 selection) to limit
+    rotation to that subset; ``rotation_cursor_key`` scopes the cursor (default
+    ``__manual_rotation__`` for global rotation, or ``__orch_<run_id>__``).
+
+    Flow intro / call-mode about purposes (``FLOW_API_REQUEST_PURPOSES``) never
+    participate in round-robin — callers cannot override this via ``skip_rotation``.
+    """
+    if request_purpose in INTRO_ABOUT_PURPOSES:
+        skip_rotation = True
     try:
         settings_path = Path.home() / ".LiangLocal" / "settings.json"
         if not settings_path.exists():
@@ -84,35 +290,337 @@ def get_configured_endpoint(model_id: str = None):
             settings = json.load(f)
 
         custom_endpoints = settings.get('customApiEndpoints', [])
+        backend_round_robin_enabled = bool(settings.get('apiEndpointRoundRobinEnabled', False))
+        frontend_auto_flag = (
+            bool(frontend_round_robin_enabled)
+            if frontend_round_robin_enabled is not None
+            else None
+        )
+        purpose = request_purpose or "user_chat"
+        effective_round_robin_enabled = (
+            bool(frontend_round_robin_enabled)
+            if frontend_round_robin_enabled is not None
+            else backend_round_robin_enabled
+        )
+        if (
+            purpose == "user_chat"
+            and frontend_auto_flag is not None
+            and frontend_auto_flag != backend_round_robin_enabled
+        ):
+            logger.warning(
+                "router_state_mismatch_reconciled trace_id=%s purpose=%s frontend_auto_flag=%s backend_auto_flag=%s source_of_truth=frontend_request",
+                router_trace_id or "",
+                purpose,
+                frontend_auto_flag,
+                backend_round_robin_enabled,
+            )
+        route_mode = "manual"
+        selected_in_candidates = None
+        correction_action = None
+        override_ignored = False
+        override_reason = None
 
-        # If a model_id is provided, find that specific endpoint
+        def _fmt(endpoint: dict) -> dict:
+            native_flag = endpoint.get('supports_native_search')
+            if native_flag is None:
+                native_flag = endpoint.get('supportsNativeSearch')
+            return {
+                'id': endpoint.get('id', ''),
+                'url': endpoint.get('url', '').rstrip('/'),
+                'api_key': endpoint.get('apiKey', ''),
+                'name': endpoint.get('name', 'Custom Endpoint'),
+                'model': endpoint.get('model', ''),  # Model name to send to the API
+                'context_window': endpoint.get('context_window') or endpoint.get('contextWindow'),
+                'supports_native_search': native_flag,
+                '_routing_mode': route_mode,
+            }
+
+        def _persist_round_robin_cursor(updated_settings: dict):
+            try:
+                with open(settings_path, 'w') as wf:
+                    json.dump(updated_settings, wf, indent=2)
+            except Exception as write_err:
+                logger.warning(f"Failed to persist API round-robin cursor: {write_err}")
+
+        def _rotate_among(candidates: list, cursor_key: str):
+            if len(candidates) < 2:
+                return None
+            cursor_map = settings.get('apiEndpointRoundRobinCursor') or {}
+            if not isinstance(cursor_map, dict):
+                cursor_map = {}
+            idx_raw = cursor_map.get(cursor_key, 0)
+            try:
+                idx = int(idx_raw)
+            except Exception:
+                idx = 0
+            idx = idx % len(candidates)
+            candidate_ids = [str(ep.get("id") or "").strip() for ep in candidates]
+            pool_signature = "|".join(candidate_ids)
+            last_state = _ENDPOINT_ROTATION_STATE.get(cursor_key) or {}
+            last_selected = str(last_state.get("last_selected") or "")
+            chosen_idx = idx
+            next_selected_reason = "cursor"
+            # Guarantee no repeated endpoint when 2+ healthy candidates are available.
+            if (
+                last_selected
+                and candidate_ids[chosen_idx] == last_selected
+                and len(candidates) >= 2
+            ):
+                chosen_idx = (chosen_idx + 1) % len(candidates)
+                next_selected_reason = "avoid_repeat"
+            chosen = candidates[chosen_idx]
+            cursor_map[cursor_key] = (chosen_idx + 1) % len(candidates)
+            settings['apiEndpointRoundRobinCursor'] = cursor_map
+            _persist_round_robin_cursor(settings)
+            _ENDPOINT_ROTATION_STATE[cursor_key] = {
+                "last_selected": str(chosen.get("id") or ""),
+                "pool_signature": pool_signature,
+            }
+            return _fmt(chosen), {
+                "last_selected": last_selected,
+                "next_selected_reason": next_selected_reason,
+            }
+
+        def _is_endpoint_healthy(endpoint: dict) -> bool:
+            endpoint_id = str(endpoint.get("id") or "").strip()
+            if not endpoint_id:
+                return True
+            state = _ENDPOINT_FAILURE_STATE.get(endpoint_id) or {}
+            cooldown_until = float(state.get("cooldown_until", 0.0) or 0.0)
+            return cooldown_until <= time.monotonic()
+
+        def _healthy_candidates(candidates: List[dict]) -> List[dict]:
+            healthy = [ep for ep in candidates if _is_endpoint_healthy(ep)]
+            return healthy or candidates
+
+        def _build_rotation_candidates() -> List[dict]:
+            id_filter = {normalize_endpoint_model_id(v) for v in (rotation_candidate_ids or []) if normalize_endpoint_model_id(v)}
+            return [
+                ep for ep in custom_endpoints
+                if ep.get('enabled', False)
+                and ep.get('rotate_enabled', True)
+                and (not id_filter or normalize_endpoint_model_id(ep.get("id")) in id_filter)
+            ]
+
+        def _log_router_decision(
+            *,
+            selected_endpoint: Optional[dict],
+            candidates: Optional[List[dict]] = None,
+            last_selected: str = "",
+            next_selected_reason: str = "",
+        ) -> None:
+            nonlocal selected_in_candidates, correction_action, route_mode, override_ignored, override_reason
+            candidate_ids = [
+                normalize_endpoint_model_id(ep.get("id"))
+                for ep in (candidates or [])
+                if normalize_endpoint_model_id(ep.get("id"))
+            ]
+            selected_id = normalize_endpoint_model_id((selected_endpoint or {}).get("id"))
+            if candidates is None:
+                selected_in_candidates = bool(selected_id)
+            else:
+                selected_in_candidates = selected_id in set(candidate_ids)
+            auto_enabled = bool(effective_round_robin_enabled and not skip_rotation)
+            msg = (
+                "[API Router] decision trace_id=%s mode=%s purpose=%s auto_enabled=%s candidate_count=%d "
+                "candidate_ids=%s selected_endpoint=%s last_selected=%s next_selected_reason=%s "
+                "selected_in_candidates=%s override_ignored=%s override_reason=%s"
+            )
+            logger.info(
+                msg,
+                router_trace_id or "",
+                route_mode,
+                purpose,
+                auto_enabled,
+                len(candidate_ids),
+                candidate_ids,
+                selected_id or "",
+                normalize_endpoint_model_id(last_selected),
+                next_selected_reason or "",
+                selected_in_candidates,
+                override_ignored,
+                override_reason or "",
+            )
+            if candidates is not None and not selected_in_candidates and correction_action:
+                logger.warning(
+                    "[API Router] correction action=%s selected_endpoint=%s candidates=%s",
+                    correction_action,
+                    selected_id or "",
+                    candidate_ids,
+                )
+
+        # If a model_id is provided, find that specific endpoint (id, display name, or provider model)
         if model_id:
+            canonical_id = resolve_api_endpoint_id(model_id)
+            lookup_id = canonical_id or normalize_endpoint_model_id(model_id)
+            requested_endpoint = None
             for endpoint in custom_endpoints:
-                if endpoint.get('id') == model_id and endpoint.get('enabled', False):
-                      return {
-                          'url': endpoint.get('url', '').rstrip('/'),
-                          'api_key': endpoint.get('apiKey', ''),
-                          'name': endpoint.get('name', 'Custom Endpoint'),
-                          'model': endpoint.get('model', ''),  # Model name to send to the API
-                          'context_window': endpoint.get('context_window') or endpoint.get('contextWindow')
-                      }
+                if not endpoint.get('enabled', False):
+                    continue
+                if lookup_id and lookup_id in _endpoint_match_tokens(endpoint):
+                    requested_endpoint = endpoint
+                    break
+
+            if effective_round_robin_enabled and not skip_rotation:
+                route_mode = "auto"
+                candidates = _build_rotation_candidates()
+                candidate_ids = {
+                    normalize_endpoint_model_id(ep.get("id"))
+                    for ep in candidates
+                    if normalize_endpoint_model_id(ep.get("id"))
+                }
+                # user_chat contract: explicit endpoint selection is never honored while auto-routing.
+                if purpose == "user_chat" and requested_endpoint:
+                    override_ignored = True
+                    req_id = normalize_endpoint_model_id(requested_endpoint.get("id"))
+                    if req_id and req_id not in candidate_ids:
+                        override_reason = "requested_endpoint_not_in_rotate_candidates"
+                    else:
+                        override_reason = "manual_override_disallowed_for_user_chat_auto"
+                if not candidates:
+                    correction_action = "no_eligible_rotate_candidates"
+                    _log_router_decision(selected_endpoint=None, candidates=[])
+                    if purpose == "user_chat":
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Auto API routing is enabled for user_chat but no eligible rotate candidates exist "
+                                "(enabled && rotate_enabled). Enable at least one rotate-enabled endpoint."
+                            ),
+                        )
+                    return None
+
+                chosen_pool = _healthy_candidates(candidates)
+                cursor_key = rotation_cursor_key or "__manual_rotation__"
+                if len(chosen_pool) >= 2:
+                    rotated = _rotate_among(chosen_pool, cursor_key)
+                    if rotated:
+                        selected_endpoint, rotate_meta = rotated
+                        # Strict invariant: selected endpoint must be from eligible candidates.
+                        # If explicit requested endpoint was outside auto list, we corrected to rotated candidate.
+                        if requested_endpoint and not override_ignored:
+                            req_id = normalize_endpoint_model_id(requested_endpoint.get("id"))
+                            if req_id not in candidate_ids:
+                                correction_action = "replaced_out_of_list_requested_endpoint"
+                        _log_router_decision(
+                            selected_endpoint=selected_endpoint,
+                            candidates=candidates,
+                            last_selected=rotate_meta.get("last_selected", ""),
+                            next_selected_reason=rotate_meta.get("next_selected_reason", ""),
+                        )
+                        return selected_endpoint
+                # Single candidate pool: choose it deterministically.
+                selected = _fmt(chosen_pool[0])
+                selected_raw_id = str(chosen_pool[0].get("id") or "")
+                last_single = ""
+                if len(candidates) >= 2:
+                    last_state = _ENDPOINT_ROTATION_STATE.get(cursor_key) or {}
+                    last_single = str(last_state.get("last_selected") or "")
+                    _ENDPOINT_ROTATION_STATE[cursor_key] = {
+                        "last_selected": selected_raw_id,
+                        "pool_signature": "|".join(str(ep.get("id") or "") for ep in chosen_pool),
+                    }
+                if requested_endpoint and not override_ignored:
+                    req_id = normalize_endpoint_model_id(requested_endpoint.get("id"))
+                    if req_id not in candidate_ids:
+                        correction_action = "replaced_out_of_list_requested_endpoint"
+                _log_router_decision(
+                    selected_endpoint=selected,
+                    candidates=candidates,
+                    last_selected=last_single,
+                    next_selected_reason="single_healthy_candidate",
+                )
+                return selected
+
+            if requested_endpoint:
+                route_mode = "pinned" if skip_rotation else "manual"
+                selected = _fmt(requested_endpoint)
+                _log_router_decision(selected_endpoint=selected, candidates=None)
+                return selected
             # If the specific endpoint is not found or disabled, it's an error
             return None
 
         # Fallback for old behavior: find the first enabled endpoint
+        if effective_round_robin_enabled and not skip_rotation:
+            route_mode = "auto"
+            candidates = _build_rotation_candidates()
+            if not candidates:
+                correction_action = "no_eligible_rotate_candidates"
+                _log_router_decision(selected_endpoint=None, candidates=[])
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Auto API routing is enabled for user_chat but no eligible rotate candidates exist "
+                        "(enabled && rotate_enabled). Enable at least one rotate-enabled endpoint."
+                    ),
+                )
+            chosen_pool = _healthy_candidates(candidates)
+            cursor_key = rotation_cursor_key or "__manual_rotation__"
+            if len(chosen_pool) >= 2:
+                rotated = _rotate_among(chosen_pool, cursor_key)
+                if rotated:
+                    selected_endpoint, rotate_meta = rotated
+                    _log_router_decision(
+                        selected_endpoint=selected_endpoint,
+                        candidates=candidates,
+                        last_selected=rotate_meta.get("last_selected", ""),
+                        next_selected_reason=rotate_meta.get("next_selected_reason", ""),
+                    )
+                    return selected_endpoint
+            selected = _fmt(chosen_pool[0])
+            _log_router_decision(
+                selected_endpoint=selected,
+                candidates=candidates,
+                next_selected_reason="single_healthy_candidate",
+            )
+            return selected
+
         for endpoint in custom_endpoints:
             if endpoint.get('enabled', False):
-              return {
-                  'url': endpoint.get('url', '').rstrip('/'),
-                  'api_key': endpoint.get('apiKey', ''),
-                  'name': endpoint.get('name', 'Custom Endpoint'),
-                  'model': endpoint.get('model', ''),  # Model name to send to the API
-                  'context_window': endpoint.get('context_window') or endpoint.get('contextWindow')
-              }
+                selected = _fmt(endpoint)
+                route_mode = "manual"
+                _log_router_decision(selected_endpoint=selected, candidates=None)
+                return selected
         return None
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error reading settings: {e}")
         return None
+
+
+def note_endpoint_failure(endpoint_id: Optional[str], reason: str = "upstream_error") -> None:
+    """Record endpoint failure; repeated failures trigger temporary cooldown."""
+    endpoint = str(endpoint_id or "").strip()
+    if not endpoint:
+        return
+    now = time.monotonic()
+    state = _ENDPOINT_FAILURE_STATE.get(endpoint) or {}
+    last_at = float(state.get("last_failure_at", 0.0) or 0.0)
+    if now - last_at > _ENDPOINT_FAILURE_WINDOW_SECONDS:
+        state["failures"] = 0
+    failures = int(state.get("failures", 0) or 0) + 1
+    state["failures"] = failures
+    state["last_failure_at"] = now
+    if failures >= _ENDPOINT_FAILURE_THRESHOLD:
+        state["cooldown_until"] = now + _ENDPOINT_COOLDOWN_SECONDS
+    _ENDPOINT_FAILURE_STATE[endpoint] = state
+    logger.warning(
+        "[API Router] mark_failure endpoint=%s failures=%d cooldown_until=%s reason=%s",
+        endpoint,
+        failures,
+        round(float(state.get("cooldown_until", 0.0) or 0.0), 2),
+        reason,
+    )
+
+
+def note_endpoint_success(endpoint_id: Optional[str]) -> None:
+    endpoint = str(endpoint_id or "").strip()
+    if not endpoint:
+        return
+    if endpoint in _ENDPOINT_FAILURE_STATE:
+        _ENDPOINT_FAILURE_STATE.pop(endpoint, None)
+        logger.info("[API Router] clear_failure endpoint=%s", endpoint)
 
 def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
     """Return the number of tokens used by a list of messages.
@@ -141,7 +649,7 @@ def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str 
     Prunes the message history to fit within max_input_tokens.
     Strategies:
     1. ALWAYS keep the System message (if present at index 0).
-    2. ALWAYS keep the LAST user message (index -1).
+    2. ALWAYS keep the newest user message verbatim (or the final message if no user exists).
     3. Remove messages from the beginning of the history (after system) until it fits.
     """
     if not messages:
@@ -158,39 +666,37 @@ def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str 
     has_system = messages[0]['role'] == 'system'
     system_msg = messages[0] if has_system else None
     
-    # We must preserve the last message at absolute minimum
-    last_msg = messages[-1]
+    # Preserve the newest user message verbatim when present.
+    # Fallback to the very last message if there is no user turn.
+    last_user_index = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_index = i
+            break
+    pinned_index = last_user_index if last_user_index is not None else len(messages) - 1
+    last_msg = messages[pinned_index]
     
-    # Define the "prunable" slice
-    # If system exists, skipping index 0. Always skipping index -1.
-    start_index = 1 if has_system else 0
-    end_index = len(messages) - 1
-    
-    # If there's nothing to prune (e.g. only system + last msg), we can't do much but return them
-    # if start_index >= end_index:
-    #     return messages, original_tokens, current_tokens
-        
-    # Create the mutable list of middle messages
-    middle_messages = messages[start_index:end_index]
-    
-    # Iteratively remove from the front of middle_messages until we fit
-    # Or until middle is empty
-    
-    while middle_messages:
-        # Reconstruct the potential new history
-        candidate_history = []
-        if system_msg:
-            candidate_history.append(system_msg)
-        candidate_history.extend(middle_messages)
-        candidate_history.append(last_msg)
+    # Build prunable indices in chronological order.
+    prunable_indices = []
+    for idx in range(len(messages)):
+        if has_system and idx == 0:
+            continue
+        if idx == pinned_index:
+            continue
+        prunable_indices.append(idx)
+
+    dropped = set()
+
+    while prunable_indices:
+        candidate_history = [msg for idx, msg in enumerate(messages) if idx not in dropped]
         
         token_count = num_tokens_from_messages(candidate_history, model_name)
         
         if token_count <= max_input_tokens:
             return candidate_history, original_tokens, token_count
             
-        # If still too big, pop the oldest message from middle
-        middle_messages.pop(0)
+        # If still too big, drop the oldest remaining prunable message.
+        dropped.add(prunable_indices.pop(0))
         
     # Worst case: only system + last message
     final_fallback = []
@@ -229,14 +735,478 @@ def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str 
 
     return final_fallback, original_tokens, final_count
 
-def prepare_endpoint_request(model_name: str, request_data: dict):
+def parse_eloquent_llm_prompt_to_openai_messages(llm_prompt: str) -> List[Dict[str, Any]]:
+    """
+    Convert the assembled /generate prompt string into OpenAI-style chat messages.
+    Used for custom API endpoints (OpenAI-compatible), including Moonshot / Kimi and NanoGPT proxies.
+    """
+    messages: List[Dict[str, Any]] = []
+    segments = re.findall(
+        r"<start_of_turn>(user|model)\n(.*?)(?:<end_of_turn>|$)", llm_prompt, re.DOTALL
+    )
+    if segments:
+        for role, content in segments:
+            messages.append(
+                {
+                    "role": "assistant" if role == "model" else "user",
+                    "content": content.strip(),
+                }
+            )
+        system_part = llm_prompt.split("<start_of_turn>")[0].strip()
+        if system_part:
+            messages.insert(0, {"role": "system", "content": system_part})
+        return messages
+
+    if "Character Persona:" in llm_prompt:
+        parts = llm_prompt.split("Character Persona:", 1)
+        if parts[0].strip():
+            messages.append({"role": "system", "content": parts[0].strip()})
+        if len(parts) > 1:
+            persona_and_user = parts[1]
+            if "User Query:" in persona_and_user:
+                persona, user_query = persona_and_user.split("User Query:", 1)
+                if persona.strip():
+                    messages.append(
+                        {"role": "system", "content": f"Character Persona:\n{persona.strip()}"}
+                    )
+                messages.append({"role": "user", "content": user_query.strip()})
+            else:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": persona_and_user.replace("Assistant:", "").strip(),
+                    }
+                )
+        return messages
+
+    if "User Query:" in llm_prompt:
+        parts = llm_prompt.split("User Query:", 1)
+        if parts[0].strip():
+            messages.append({"role": "system", "content": parts[0].strip()})
+        messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
+        return messages
+
+    clean_prompt = llm_prompt.replace("Assistant:", "").strip()
+    messages.append({"role": "user", "content": clean_prompt})
+    return messages
+
+
+def build_vision_data_url(image_base64: str, image_type: Optional[str] = None) -> str:
+    """Return a data: URI suitable for OpenAI-style image_url (Kimi / Moonshot / NanoGPT)."""
+    raw = (image_base64 or "").strip()
+    if raw.startswith("data:"):
+        return raw
+    it = (image_type or "png").strip().lower().removeprefix("image/")
+    if it == "jpg":
+        it = "jpeg"
+    if it not in ("jpeg", "png", "webp", "gif"):
+        it = "png"
+    mime = f"image/{it}"
+    return f"data:{mime};base64,{raw}"
+
+
+def inject_openai_vision_into_messages(
+    messages: List[Dict[str, Any]],
+    image_base64: str,
+    image_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Attach a vision image to the last user turn using OpenAI multimodal content parts.
+    Moonshot Kimi and other OpenAI-compatible vision APIs expect this shape.
+    """
+    if not image_base64:
+        return list(messages)
+    out: List[Dict[str, Any]] = []
+    for m in messages:
+        out.append(dict(m))
+    url = build_vision_data_url(image_base64, image_type)
+    image_part = {"type": "image_url", "image_url": {"url": url}}
+
+    last_user = -1
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "user":
+            last_user = i
+            break
+
+    if last_user < 0:
+        out.append({"role": "user", "content": [{"type": "text", "text": ""}, image_part]})
+        return out
+
+    c = out[last_user].get("content")
+    if isinstance(c, str):
+        out[last_user]["content"] = [{"type": "text", "text": c}, image_part]
+    elif isinstance(c, list):
+        new_parts: List[Dict[str, Any]] = []
+        for p in c:
+            if not isinstance(p, dict):
+                continue
+            if p.get("type") == "image_url":
+                existing = (p.get("image_url") or {}).get("url")
+                if existing == url:
+                    return out
+            new_parts.append(dict(p))
+        new_parts.append(image_part)
+        out[last_user]["content"] = new_parts
+    else:
+        out[last_user]["content"] = [{"type": "text", "text": str(c)}, image_part]
+    return out
+
+
+def approx_openai_messages_payload_chars(messages: List[Dict[str, Any]]) -> int:
+    """Rough character count for logging (supports string or multimodal list content)."""
+    total = 0
+    for m in messages:
+        c = m.get("content", "")
+        if isinstance(c, str):
+            total += len(c)
+        elif isinstance(c, list):
+            total += sum(len(str(p)) for p in c)
+        else:
+            total += len(str(c))
+    return total
+
+
+# Provider-native web search is applied in web_search_routing.apply_native_web_search_request()
+# from main.py when chat web search path resolves to "native".
+
+
+def apply_nano_gpt_context_memory(
+    endpoint_config: dict,
+    request_data: dict,
+    *,
+    enabled: bool,
+    mode: str,
+    expiration_days: int,
+) -> Dict[str, str]:
+    """
+    NanoGPT Context Memory (docs.nano-gpt.com): header `memory: true` or model suffix `:memory-<days>`.
+    Only applies when the configured endpoint URL is nano-gpt.com.
+    Mutates request_data['model'] when mode is suffix.
+    Returns extra HTTP headers to merge for header mode.
+    """
+    url = (endpoint_config.get("url") or "").lower()
+    if not enabled or "nano-gpt.com" not in url:
+        return {}
+    try:
+        days = max(1, min(365, int(expiration_days)))
+    except (TypeError, ValueError):
+        days = 30
+    mode_n = (mode or "header").strip().lower()
+    if mode_n == "suffix":
+        m = request_data.get("model") or ""
+        if ":memory" in m:
+            return {}
+        request_data["model"] = f"{m}:memory-{days}"
+        return {}
+    return {"memory": "true", "memory_expiration_days": str(days)}
+
+
+def thinking_stream_debug_enabled(model: str) -> bool:
+    """Gated dev logging for :thinking models or ELOQUENT_THINKING_STREAM_DEBUG=1."""
+    flag = os.environ.get("ELOQUENT_THINKING_STREAM_DEBUG", "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    return ":thinking" in (model or "").lower()
+
+
+def model_id_implies_extended_thinking(model: str) -> bool:
+    """True when the provider model id suggests extended thinking / reasoning output."""
+    m = (model or "").lower()
+    if not m:
+        return False
+    if ":thinking" in m or m.endswith("-thinking"):
+        return True
+    hints = (
+        "deepseek-r1",
+        "reasoner",
+        "/o1-",
+        "/o1:",
+        "/o3-",
+        "/o3:",
+        "sonnet-4-thinking",
+        "opus-4-thinking",
+    )
+    return any(h in m for h in hints)
+
+
+def _thinking_budget_tokens(request_data: dict) -> int:
+    """NanoGPT: budget_tokens must be >= 1024 and < max_tokens."""
+    try:
+        max_tokens = int(request_data.get("max_tokens") or 4096)
+    except (TypeError, ValueError):
+        max_tokens = 4096
+    budget = min(8192, max(1024, max_tokens // 2))
+    if budget >= max_tokens:
+        budget = max(1024, max_tokens - 512)
+    if budget >= max_tokens:
+        budget = 1024
+    return budget
+
+
+def apply_extended_thinking_request(
+    endpoint_config: dict,
+    request_data: dict,
+    *,
+    force_thinking: bool = False,
+) -> bool:
+    """
+    Enable provider reasoning streams for thinking-capable models.
+
+    NanoGPT (docs.nano-gpt.com extended thinking): ``thinking: { type, budget_tokens }``.
+    OpenRouter GLM/Z.ai (reasoning tokens guide): ``reasoning: { enabled: true, max_tokens }``.
+    Skips when caller already set ``thinking`` or ``reasoning``.
+    Returns True when thinking/reasoning is present on the outbound body.
+    """
+    if request_data.get("thinking") or request_data.get("reasoning"):
+        return True
+    model = (request_data.get("model") or "").strip()
+    if not force_thinking and not model_id_implies_extended_thinking(model):
+        return False
+
+    url = (endpoint_config.get("url") or "").lower()
+    budget = _thinking_budget_tokens(request_data)
+
+    if "nano-gpt.com" in url or "nanogpt" in url:
+        request_data["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        if thinking_stream_debug_enabled(model):
+            logger.info(
+                "[OpenAI Compat] extended thinking enabled (NanoGPT) model=%s budget_tokens=%s",
+                model,
+                budget,
+            )
+        return True
+
+    if "openrouter.ai" in url:
+        request_data["reasoning"] = {"enabled": True, "max_tokens": budget}
+        if thinking_stream_debug_enabled(model):
+            logger.info(
+                "[OpenAI Compat] extended thinking enabled (OpenRouter) model=%s max_tokens=%s",
+                model,
+                budget,
+            )
+        return True
+
+    request_data["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    if thinking_stream_debug_enabled(model):
+        logger.info(
+            "[OpenAI Compat] extended thinking enabled (generic thinking=) model=%s budget_tokens=%s",
+            model,
+            budget,
+        )
+    return True
+
+
+def _prepare_outbound_provider_model(
+    model_name: str,
+    request_data: dict,
+    endpoint_config: dict,
+) -> bool:
+    """
+    Resolve endpoint-* → configured provider model; strip :thinking suffix for upstream.
+    Returns whether extended thinking should be forced on the outbound request.
+    """
+    force_thinking = bool(request_data.pop("_force_extended_thinking", False))
+    force_thinking = force_thinking or model_id_implies_extended_thinking(model_name) or model_id_implies_extended_thinking(
+        request_data.get("model", "")
+    )
+
+    req_model = (request_data.get("model") or "").strip()
+    if req_model.startswith("endpoint-") or not req_model:
+        configured_model = (endpoint_config.get("model") or "").strip()
+        if configured_model:
+            provider_model, had_suffix = strip_thinking_model_suffix(configured_model)
+            request_data["model"] = provider_model or configured_model
+            force_thinking = force_thinking or had_suffix
+        elif not req_model:
+            request_data["model"] = "gpt-3.5-turbo"
+
+    provider_model, had_suffix = strip_thinking_model_suffix(request_data.get("model", ""))
+    if had_suffix:
+        request_data["model"] = provider_model
+        force_thinking = True
+
+    return force_thinking
+
+
+def extract_openai_stream_delta_parts(chunk_data: dict) -> Tuple[str, str]:
+    """
+    Split upstream OpenAI-style stream JSON into visible content vs reasoning.
+
+    Supports NanoGPT ``delta.reasoning``, legacy ``reasoning_content``, and
+    OpenRouter ``delta.reasoning_details[]``.
+    """
+    if not chunk_data or not isinstance(chunk_data, dict):
+        return "", ""
+    if chunk_data.get("text") is not None:
+        return str(chunk_data.get("text") or ""), str(chunk_data.get("reasoning") or "")
+    choices = chunk_data.get("choices")
+    if not choices or not isinstance(choices, list):
+        return "", ""
+    first_choice = choices[0] if isinstance(choices[0], dict) else None
+    if not isinstance(first_choice, dict):
+        return "", ""
+    delta = first_choice.get("delta")
+    if not isinstance(delta, dict):
+        # Some providers/proxies emit non-delta chunks while streaming:
+        # - choices[0].message.content (chat-completion shape)
+        # - choices[0].text (legacy completion shape)
+        message = first_choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                return content, ""
+            if isinstance(content, list):
+                text_parts: List[str] = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text = item.get("text")
+                        if text:
+                            text_parts.append(str(text))
+                if text_parts:
+                    return "".join(text_parts), ""
+        choice_text = first_choice.get("text")
+        if choice_text:
+            return str(choice_text), ""
+        return "", ""
+    content = str(delta.get("content") or "")
+    reasoning = str(delta.get("reasoning") or delta.get("reasoning_content") or "")
+    if not reasoning:
+        details = delta.get("reasoning_details")
+        if isinstance(details, list):
+            parts: List[str] = []
+            for item in details:
+                if not isinstance(item, dict):
+                    continue
+                piece = item.get("text") or item.get("content") or ""
+                if piece:
+                    parts.append(str(piece))
+            reasoning = "".join(parts)
+    return content, reasoning
+
+
+def resolve_flow_api_endpoint_config(
+    *,
+    request_purpose: Optional[str],
+    model_name: str = "",
+    flow_api_url: Optional[str] = None,
+    flow_api_model: Optional[str] = None,
+    flow_api_key: Optional[str] = None,
+) -> Optional[dict]:
+    """Dedicated intro/about API: use only request-body provider fields (no settings lookup)."""
+    if not is_flow_dedicated_api_request(request_purpose, flow_api_url):
+        return None
+
+    url = (flow_api_url or "").strip().rstrip("/")
+    if not url:
+        return None
+
+    model = (flow_api_model or "").strip() or "gpt-3.5-turbo"
+    key = (flow_api_key or "").strip()
+    return {
+        "url": url,
+        "model": model,
+        "api_key": key,
+        "name": f"flow-{request_purpose}",
+    }
+
+
+def prepare_endpoint_request_from_config(endpoint_config: dict, request_data: dict, label: str = "custom"):
+    """Like prepare_endpoint_request but uses a pre-built endpoint_config dict (flow overrides)."""
+    if not endpoint_config:
+        raise HTTPException(status_code=400, detail="No endpoint configuration for API request.")
+
+    base_url = endpoint_config["url"]
+    if base_url.endswith("/v1"):
+        url = f"{base_url}/chat/completions"
+    else:
+        url = f"{base_url}/v1/chat/completions"
+
+    force_thinking = _prepare_outbound_provider_model("", request_data, endpoint_config)
+    if request_data.pop("_skip_openai_message_pruning", False):
+        logger.info(
+            "[OpenAI Compat] skip_openai_message_pruning (%s): %s messages",
+            label,
+            len(request_data.get("messages", [])),
+        )
+        apply_extended_thinking_request(endpoint_config, request_data, force_thinking=force_thinking)
+        log_generate_outbound(url, request_data.get("model", ""), endpoint_config, request_data)
+        return endpoint_config, url, request_data
+
+    default_limit = 1_000_000
+    configured_limit = endpoint_config.get("context_window")
+    if configured_limit:
+        try:
+            CONTEXT_WINDOW_LIMIT = int(configured_limit)
+        except (ValueError, TypeError):
+            CONTEXT_WINDOW_LIMIT = default_limit
+    else:
+        CONTEXT_WINDOW_LIMIT = default_limit
+
+    SAFETY_MARGIN = 1000
+    requested_gen_tokens = min(request_data.get("max_tokens", 16384) or 16384, 32768)
+    max_input_tokens = CONTEXT_WINDOW_LIMIT - requested_gen_tokens - SAFETY_MARGIN
+    if max_input_tokens < 1000:
+        max_input_tokens = 1000
+
+    messages = request_data.get("messages", [])
+    pruned_messages, original_count, new_count = prune_messages(
+        messages,
+        max_input_tokens=max_input_tokens,
+        model_name=request_data["model"],
+    )
+    request_data["messages"] = pruned_messages
+    if original_count > new_count:
+        logger.warning(
+            "[OpenAI Compat] Flow %s pruned context %s → %s tokens",
+            label,
+            original_count,
+            new_count,
+        )
+    logger.info("[OpenAI Compat] Forwarding flow %s to %s at %s", label, endpoint_config.get("name"), url)
+    apply_extended_thinking_request(endpoint_config, request_data, force_thinking=force_thinking)
+    log_generate_outbound(url, request_data.get("model", ""), endpoint_config, request_data)
+    return endpoint_config, url, request_data
+
+
+def prepare_endpoint_request(
+    model_name: str,
+    request_data: dict,
+    *,
+    skip_rotation: bool = False,
+    request_purpose: Optional[str] = None,
+    router_trace_id: Optional[str] = None,
+    frontend_round_robin_enabled: Optional[bool] = None,
+):
     """Prepare endpoint config and URL - returns (endpoint_config, url, request_data) or raises HTTPException"""
-    endpoint_config = get_configured_endpoint(model_name)
+    endpoint_config = get_configured_endpoint(
+        model_name,
+        skip_rotation=skip_rotation,
+        request_purpose=request_purpose,
+        router_trace_id=router_trace_id,
+        frontend_round_robin_enabled=frontend_round_robin_enabled,
+    )
     
     if not endpoint_config:
+        raw = normalize_endpoint_model_id(model_name)
+        if raw.startswith("endpoint-"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"API endpoint '{raw}' not found or is disabled. "
+                    "Check Settings → Custom API Endpoints."
+                ),
+            )
         raise HTTPException(
-            status_code=400, 
-            detail="No custom API endpoints configured. Please add one in Settings → LLM Settings → Custom API Endpoints"
+            status_code=400,
+            detail="No custom API endpoints configured. Please add one in Settings → LLM Settings → Custom API Endpoints",
+        )
+
+    if not (endpoint_config.get("url") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"API endpoint '{endpoint_config.get('name') or model_name}' has no provider URL configured."
+            ),
         )
     
     base_url = endpoint_config['url']
@@ -246,20 +1216,23 @@ def prepare_endpoint_request(model_name: str, request_data: dict):
     else:
         url = f"{base_url}/v1/chat/completions"
     
-    # Don't send internal endpoint ID as model name - use configured model or a default
-    if request_data.get('model', '').startswith('endpoint-'):
-        configured_model = endpoint_config.get('model', '').strip()
-        if configured_model:
-            request_data['model'] = configured_model
-        else:
-             # Use a generic default that most OpenAI-compatible APIs accept
-            request_data['model'] = 'gpt-3.5-turbo'
+    force_thinking = _prepare_outbound_provider_model(model_name, request_data, endpoint_config)
+
+    if request_data.pop("_skip_openai_message_pruning", False):
+        logger.info("[OpenAI Compat] skip_openai_message_pruning: sending messages without local token pruning (caller accepts upstream limits).")
+        msg_count = len(request_data.get("messages", []))
+        char_count = approx_openai_messages_payload_chars(request_data.get("messages", []))
+        logger.info(f"[OpenAI Compat] Outgoing API Payload (unpruned): {msg_count} messages, ~{char_count} chars")
+        logger.info(f"[OpenAI Compat] Forwarding {model_name} to {endpoint_config['name']} at {url}")
+        apply_extended_thinking_request(endpoint_config, request_data, force_thinking=force_thinking)
+        log_generate_outbound(url, request_data.get("model", ""), endpoint_config, request_data)
+        return endpoint_config, url, request_data
     
     # --- CONTEXT PRUNING LOGIC ---
     # Smart context limit management to prevent upstream "input too long" errors.
     # We allow the limit to be configured in the endpoint settings (settings.json),
-    # defaulting to 8192 which is a safe common denominator (Chub.ai, etc.).
-    default_limit = 8192
+    # defaulting to 32768 as a higher-but-reasonable baseline for long-form chats.
+    default_limit = 1_000_000
     configured_limit = endpoint_config.get('context_window')
     
     if configured_limit:
@@ -272,7 +1245,7 @@ def prepare_endpoint_request(model_name: str, request_data: dict):
 
     SAFETY_MARGIN = 1000 # Increased safety margin to account for tokenizer mismatch (tiktoken vs Llama)
     
-    requested_gen_tokens = request_data.get('max_tokens', 1024) or 1024
+    requested_gen_tokens = min(request_data.get('max_tokens', 16384) or 16384, 32768)
     # The budget for INPUT tokens is Total - Output - Safety
     max_input_tokens = CONTEXT_WINDOW_LIMIT - requested_gen_tokens - SAFETY_MARGIN
     
@@ -298,9 +1271,11 @@ def prepare_endpoint_request(model_name: str, request_data: dict):
 
     # Log payload size for debugging context issues
     msg_count = len(request_data.get('messages', []))
-    char_count = sum(len(m.get('content', '')) for m in request_data.get('messages', []))
+    char_count = approx_openai_messages_payload_chars(request_data.get("messages", []))
     logger.info(f"[OpenAI Compat] Outgoing API Payload: {msg_count} messages, ~{char_count} chars")
     logger.info(f"[OpenAI Compat] Forwarding {model_name} to {endpoint_config['name']} at {url}")
+    apply_extended_thinking_request(endpoint_config, request_data, force_thinking=force_thinking)
+    log_generate_outbound(url, request_data.get("model", ""), endpoint_config, request_data)
     
     return endpoint_config, url, request_data
 
@@ -311,7 +1286,33 @@ def _resolve_redirect_url(base: str, location: str) -> str:
     return urljoin(base.rstrip("/") + "/", location)
 
 
-async def forward_to_configured_endpoint_streaming(endpoint_config: dict, url: str, request_data: dict):
+def _openai_compat_is_transient_upstream_for_retry(
+    exc: BaseException,
+    *,
+    include_read_write_timeout: bool = False,
+) -> bool:
+    """Brief WAN / DNS / router blips — safe to retry a fresh request."""
+    kinds: tuple = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    # Upstream may drop mid-request on large bodies without sending a response.
+    kinds = kinds + (httpx.RemoteProtocolError,)
+    try:
+        import httpcore
+
+        if httpcore.RemoteProtocolError not in kinds:
+            kinds = kinds + (httpcore.RemoteProtocolError,)
+    except ImportError:
+        pass
+    if include_read_write_timeout:
+        kinds = kinds + (httpx.ReadTimeout, httpx.WriteTimeout)
+    return isinstance(exc, kinds)
+
+
+async def forward_to_configured_endpoint_streaming(
+    endpoint_config: dict,
+    url: str,
+    request_data: dict,
+    extra_headers: Optional[Dict[str, str]] = None,
+):
     """Forward OpenAI streaming request to the configured custom endpoint.
     
     Note: endpoint_config, url, and request_data should be prepared by _prepare_endpoint_request()
@@ -330,113 +1331,201 @@ async def forward_to_configured_endpoint_streaming(endpoint_config: dict, url: s
         # Chub.ai also accepts CH-API-Key header
         if api_key.startswith('CHK-'):
             headers["CH-API-Key"] = api_key
+
+    if extra_headers:
+        headers.update(extra_headers)
     
     base_url = endpoint_config['url']
     
+    log_generate_outbound(url, request_data.get("model", ""), endpoint_config, request_data)
     logger.info(f"[OpenAI Compat] Making request to {url}")
     logger.info(f"[OpenAI Compat] Headers (redacted): {list(headers.keys())}")
     logger.info(f"[OpenAI Compat] Request body keys: {list(request_data.keys())}")
-    
-    try:
-        # follow_redirects=False so we can re-POST on 301/302 (default follow would change POST→GET and cause 405)
-        async with httpx.AsyncClient(timeout=150.0, follow_redirects=False, verify=True) as client:
-            logger.info(f"[OpenAI Compat] Initiating POST to {url}...")
-            async with client.stream("POST", url, headers=headers, json=request_data) as response:
-                logger.info(f"[OpenAI Compat] Got response status: {response.status_code}")
-                if response.status_code in (301, 302, 307, 308):
-                    location = response.headers.get("location")
-                    await response.aread()  # consume body before closing
-                    if location:
-                        redirect_url = _resolve_redirect_url(url, location)
-                        logger.info(f"[OpenAI Compat] Following redirect (preserving POST): {url} -> {redirect_url}")
-                        # Re-POST to redirect URL (one hop only)
-                        async with client.stream("POST", redirect_url, headers=headers, json=request_data) as redir_response:
-                            if redir_response.status_code != 200:
-                                err = await redir_response.aread()
-                                error_msg = f"Remote API error ({redir_response.status_code}): {err.decode()}"
-                                logger.error(f"[OpenAI Compat] {error_msg}")
-                                yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'api_error', 'code': redir_response.status_code}})}\n\n"
-                                yield "data: [DONE]\n\n"
-                                return
-                            chunk_count = 0
-                            async for chunk in redir_response.aiter_raw():
-                                chunk_count += 1
-                                if chunk_count % 50 == 0:
-                                    logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
-                                try:
-                                    chunk_str = chunk.decode('utf-8')
-                                    if chunk_count == 1:
-                                        logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
-                                    if "error" in chunk_str.lower() and '"message":' in chunk_str:
-                                        logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
-                                except Exception:
-                                    pass
-                                yield chunk
-                            logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
-                    else:
-                        error_msg = f"Redirect with no Location header ({response.status_code})"
-                        logger.error(f"[OpenAI Compat] {error_msg}")
-                        yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'api_error', 'code': response.status_code}})}\n\n"
-                        yield "data: [DONE]\n\n"
-                    return
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    error_msg = f"Remote API error ({response.status_code}): {error_text.decode()}"
-                    if response.status_code == 405:
-                        logger.error(f"[OpenAI Compat] 405 Method Not Allowed. Location header: {response.headers.get('location')}. If the API worked in a fresh chat, the server may be redirecting long requests and the client was sending GET after redirect.")
-                    logger.error(f"[OpenAI Compat] {error_msg}")
-                    error_event = {
-                        "error": {
-                            "message": error_msg,
-                            "type": "api_error",
-                            "code": response.status_code
-                        }
-                    }
-                    yield f"data: {json.dumps(error_event)}\n\n"
-                    yield "data: [DONE]\n\n"
-                    return
-                
-                chunk_count = 0
-                async for chunk in response.aiter_raw():
-                    chunk_count += 1
-                    if chunk_count % 50 == 0:
-                        logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
-                    try:
-                        chunk_str = chunk.decode('utf-8')
-                        if chunk_count == 1:
-                            logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
-                        if "error" in chunk_str.lower() and '"message":' in chunk_str:
-                            logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
-                    except Exception:
-                        pass
-                    yield chunk
-                logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
-                    
-    except httpx.RequestError as e:
-        logger.warning("[OpenAI Compat] Connection error to %s: %s", url, type(e).__name__)
-        # Yield error as SSE event
-        error_event = {
-            "error": {
-                "message": f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(e).__name__}: {str(e)}",
-                "type": "connection_error",
-                "code": 502
-            }
-        }
-        yield f"data: {json.dumps(error_event)}\n\n"
-        yield "data: [DONE]\n\n"
-    except Exception as e:
-        logger.error(f"[OpenAI Compat] Unexpected error: {type(e).__name__}: {e}", exc_info=True)
-        error_event = {
-            "error": {
-                "message": f"Unexpected error: {type(e).__name__}: {str(e)}",
-                "type": "unknown_error",
-                "code": 500
-            }
-        }
-        yield f"data: {json.dumps(error_event)}\n\n"
-        yield "data: [DONE]\n\n"
 
-async def forward_to_configured_endpoint_non_streaming(endpoint_config: dict, url: str, request_data: dict):
+    max_stream_attempts = request_data.get("_max_stream_attempts")
+    if max_stream_attempts is not None:
+        try:
+            max_stream_attempts = max(1, int(max_stream_attempts))
+        except (TypeError, ValueError):
+            max_stream_attempts = 1
+    else:
+        max_stream_attempts = 5
+
+    for attempt in range(1, max_stream_attempts + 1):
+        try:
+            # follow_redirects=False so we can re-POST on 301/302 (default follow would change POST→GET and cause 405)
+            async with httpx.AsyncClient(timeout=REMOTE_HTTPC_TIMEOUT, follow_redirects=False, verify=True) as client:
+                logger.info(f"[OpenAI Compat] Initiating POST to {url}...")
+                async with client.stream("POST", url, headers=headers, json=request_data) as response:
+                    logger.info(f"[OpenAI Compat] Got response status: {response.status_code}")
+                    if response.status_code in (301, 302, 307, 308):
+                        location = response.headers.get("location")
+                        await response.aread()  # consume body before closing
+                        if location:
+                            redirect_url = _resolve_redirect_url(url, location)
+                            logger.info(f"[OpenAI Compat] Following redirect (preserving POST): {url} -> {redirect_url}")
+                            # Re-POST to redirect URL (one hop only)
+                            async with client.stream("POST", redirect_url, headers=headers, json=request_data) as redir_response:
+                                if redir_response.status_code != 200:
+                                    err = await redir_response.aread()
+                                    error_msg = f"Remote API error ({redir_response.status_code}): {err.decode()}"
+                                    logger.error(f"[OpenAI Compat] {error_msg}")
+                                    yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'api_error', 'code': redir_response.status_code}})}\n\n"
+                                    yield "data: [DONE]\n\n"
+                                    return
+                                chunk_count = 0
+                                async for chunk in redir_response.aiter_raw():
+                                    chunk_count += 1
+                                    if chunk_count % 50 == 0:
+                                        logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
+                                    try:
+                                        chunk_str = chunk.decode('utf-8')
+                                        if chunk_count == 1:
+                                            logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
+                                        if "error" in chunk_str.lower() and '"message":' in chunk_str:
+                                            logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
+                                    except Exception:
+                                        pass
+                                    yield chunk
+                                logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
+                        else:
+                            error_msg = f"Redirect with no Location header ({response.status_code})"
+                            logger.error(f"[OpenAI Compat] {error_msg}")
+                            yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'api_error', 'code': response.status_code}})}\n\n"
+                            yield "data: [DONE]\n\n"
+                        return
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        error_msg = f"Remote API error ({response.status_code}): {error_text.decode()}"
+                        if response.status_code == 405:
+                            logger.error(f"[OpenAI Compat] 405 Method Not Allowed. Location header: {response.headers.get('location')}. If the API worked in a fresh chat, the server may be redirecting long requests and the client was sending GET after redirect.")
+                        logger.error(f"[OpenAI Compat] {error_msg}")
+                        error_event = {
+                            "error": {
+                                "message": error_msg,
+                                "type": "api_error",
+                                "code": response.status_code
+                            }
+                        }
+                        yield f"data: {json.dumps(error_event)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    chunk_count = 0
+                    async for chunk in response.aiter_raw():
+                        chunk_count += 1
+                        if chunk_count % 50 == 0:
+                            logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
+                        try:
+                            chunk_str = chunk.decode('utf-8')
+                            if chunk_count == 1:
+                                logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
+                            if "error" in chunk_str.lower() and '"message":' in chunk_str:
+                                logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
+                        except Exception:
+                            pass
+                        yield chunk
+                    logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
+            return
+
+        except httpx.RequestError as e:
+            if _openai_compat_is_transient_upstream_for_retry(e) and attempt < max_stream_attempts:
+                delay = min(20.0, 1.25 * (2 ** (attempt - 1)))
+                logger.warning(
+                    "[OpenAI Compat] Transient upstream error (stream attempt %d/%d), retrying in %.1fs: %s",
+                    attempt,
+                    max_stream_attempts,
+                    delay,
+                    type(e).__name__,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.warning("[OpenAI Compat] Connection error to %s: %s", url, type(e).__name__)
+            error_event = {
+                "error": {
+                    "message": f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(e).__name__}: {str(e)}",
+                    "type": "connection_error",
+                    "code": 502,
+                }
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        except Exception as e:
+            logger.error(f"[OpenAI Compat] Unexpected error: {type(e).__name__}: {e}", exc_info=True)
+            error_event = {
+                "error": {
+                    "message": f"Unexpected error: {type(e).__name__}: {str(e)}",
+                    "type": "unknown_error",
+                    "code": 500,
+                },
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+
+async def collect_openai_compatible_stream_text(
+    endpoint_config: dict,
+    url: str,
+    request_data: dict,
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> str:
+    """
+    Upstream OpenAI-style chat with stream=True; aggregate delta content.
+    Avoids remotes that buffer the entire completion before sending a non-streaming body (short read timeouts).
+    """
+    rd = dict(request_data)
+    rd["stream"] = True
+    parts: List[str] = []
+    buffer = b""
+    logger.info("[OpenAI Compat] collect_openai_compatible_stream_text: upstream streaming aggregate")
+    async for chunk_bytes in forward_to_configured_endpoint_streaming(
+        endpoint_config, url, rd, extra_headers
+    ):
+        if isinstance(chunk_bytes, bytes):
+            buffer += chunk_bytes
+        else:
+            buffer += chunk_bytes.encode("utf-8") if isinstance(chunk_bytes, str) else b""
+        while b"\n\n" in buffer:
+            message, buffer = buffer.split(b"\n\n", 1)
+            if not message.strip():
+                continue
+            try:
+                message_str = message.decode("utf-8", errors="ignore")
+                for line in message_str.split("\n"):
+                    if not line.startswith("data: "):
+                        continue
+                    json_str = line[6:].strip()
+                    if json_str == "[DONE]":
+                        continue
+                    try:
+                        chunk_data = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        continue
+                    err = chunk_data.get("error")
+                    if isinstance(err, dict):
+                        msg = err.get("message", str(err))
+                        code = int(err.get("code", 502) or 502)
+                        raise HTTPException(status_code=min(code, 599), detail=msg)
+                    content, reasoning = extract_openai_stream_delta_parts(chunk_data)
+                    if reasoning:
+                        parts.append(reasoning)
+                    if content:
+                        parts.append(content)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.debug("[OpenAI Compat] stream line parse skip: %s", e)
+    return "".join(parts)
+
+
+async def forward_to_configured_endpoint_non_streaming(
+    endpoint_config: dict,
+    url: str,
+    request_data: dict,
+    extra_headers: Optional[Dict[str, str]] = None,
+):
     """Forward OpenAI non-streaming request to the configured custom endpoint.
     
     Note: endpoint_config, url, and request_data should be prepared by _prepare_endpoint_request()
@@ -454,6 +1543,9 @@ async def forward_to_configured_endpoint_non_streaming(endpoint_config: dict, ur
         # Chub.ai also accepts CH-API-Key header
         if api_key.startswith('CHK-'):
             headers["CH-API-Key"] = api_key
+
+    if extra_headers:
+        headers.update(extra_headers)
     
     base_url = endpoint_config['url']
     
@@ -461,15 +1553,14 @@ async def forward_to_configured_endpoint_non_streaming(endpoint_config: dict, ur
     
     # Log payload size
     msg_count = len(request_data.get('messages', []))
-    char_count = sum(len(m.get('content', '')) for m in request_data.get('messages', []))
+    char_count = approx_openai_messages_payload_chars(request_data.get("messages", []))
     logger.info(f"[OpenAI Compat] Outgoing API Payload: {msg_count} messages, ~{char_count} chars")
     
     last_error = None
-    max_attempts = 3
-    retry_delay_sec = 5.0
+    max_attempts = 5
     for attempt in range(max_attempts):
         try:
-            async with httpx.AsyncClient(timeout=150.0, follow_redirects=False) as client:
+            async with httpx.AsyncClient(timeout=REMOTE_HTTPC_TIMEOUT, follow_redirects=False) as client:
                 response = await client.post(url, headers=headers, json=request_data)
                 if response.status_code in (301, 302, 307, 308):
                     location = response.headers.get("location")
@@ -487,21 +1578,34 @@ async def forward_to_configured_endpoint_non_streaming(endpoint_config: dict, ur
                 return response.json()
         except httpx.RequestError as e:
             last_error = e
+            if not _openai_compat_is_transient_upstream_for_retry(e, include_read_write_timeout=True):
+                logger.warning("[OpenAI Compat] Non-retryable connection error: %s", type(e).__name__)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(e).__name__}: {str(e)}"
+                ) from e
             if attempt < max_attempts - 1:
+                delay = min(20.0, 1.25 * (2 ** attempt))
                 logger.warning(
-                    "[OpenAI Compat] Connection error (attempt %d/%d), retrying in %.0fs: %s",
-                    attempt + 1, max_attempts, retry_delay_sec, type(e).__name__
+                    "[OpenAI Compat] Connection error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1,
+                    max_attempts,
+                    delay,
+                    type(e).__name__,
                 )
-                await asyncio.sleep(retry_delay_sec)
+                await asyncio.sleep(delay)
             else:
                 logger.warning(
                     "[OpenAI Compat] Connection failed after %d attempts: %s",
-                    max_attempts, type(e).__name__
+                    max_attempts,
+                    type(last_error).__name__,
                 )
                 raise HTTPException(
                     status_code=502,
                     detail=f"Cannot connect to {endpoint_config['name']} at {base_url}: {type(last_error).__name__}: {str(last_error)}"
                 ) from last_error
+
+
 def convert_messages_to_prompt(messages: List[ChatMessage], model_name: str) -> str:
     """Convert OpenAI messages to Eloquent prompt format"""
     # Extract system message if present

@@ -1,5 +1,8 @@
 // Description: Main application component that sets up the layout and theme context for the app.
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { cn } from '@/lib/utils';
+import { useNavbarAutoHide } from './hooks/useNavbarAutoHide';
+import { useSearchParams } from 'react-router-dom';
 import './App.css';
 // Correct named import for ThemeProvider and import useTheme
 import { ThemeProvider, useTheme } from './components/ThemeProvider';
@@ -10,7 +13,9 @@ import Documents from './components/Documents';
 import Settings from './components/Settings';
 import { MemoryProvider } from './contexts/MemoryContext';
 import MemoryPage from './pages/MemoryPage';
+import TranscriptCorpusPage from './pages/TranscriptCorpusPage';
 import { useApp, AppProvider } from './contexts/AppContext';
+import { IntensityProvider } from './contexts/IntensityContext';
 
 // Import components
 import SimpleModelSelector from './components/SimpleModelSelector';
@@ -21,21 +26,42 @@ import CodeEditorOverlay from './components/CodeEditorOverlay';
 import ElectionTracker from './components/ElectionTracker';
 import ChessTab from './components/ChessTab';
 import MarketSimTab from './components/MarketSimTab';
+import WatchTab from './components/WatchTab';
+import { VideoWatchProvider } from './contexts/VideoWatchContext';
 
 import LoginOverlay from './components/LoginOverlay';
+import OutreachNotificationStack from './components/OutreachNotificationStack';
+import SettingsStandaloneLayout from './components/SettingsStandaloneLayout';
+import CallModeStandaloneLayout from './components/CallModeStandaloneLayout';
 import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
 
 // Inner component to access theme context easily
 function AppContent() {
+  const [searchParams] = useSearchParams();
+  const standalone = searchParams.get('standalone');
   const { theme, setTheme } = useTheme(); // Use the theme hook here
-  const appContext = useApp();
-  if (!appContext) {
-    return <div className="p-4">Loading...</div>;
-  }
-  const { activeTab, setActiveTab } = appContext;
+  const { activeTab, setActiveTab, settingsEntryTab } = useApp();
   // Default to closed on mobile (< 768px), open on desktop
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768);
   const [showLogin, setShowLogin] = useState(false);
+  const [scrollContainer, setScrollContainer] = useState(null);
+  const assignScrollContainer = useCallback((node) => {
+    setScrollContainer(node);
+  }, []);
+  const {
+    navbarCollapsed,
+    navbarPinned,
+    toggleNavbarPinned,
+  } = useNavbarAutoHide(scrollContainer);
+
+  const [reduceMotion, setReduceMotion] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const apply = () => setReduceMotion(mq.matches);
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
 
   // Apply the layout mode as a class to the document body
   const [layoutMode, setLayoutMode] = useState('default'); // Default layout mode
@@ -60,6 +86,17 @@ function AppContent() {
     };
   }, []);
 
+  // Mobile remote: theme toggle (same as header theme control)
+  useEffect(() => {
+    const onAppCmd = (ev) => {
+      if (ev?.detail?.type === 'theme_toggle') {
+        setTheme(theme === 'dark' ? 'light' : 'dark');
+      }
+    };
+    window.addEventListener('eloquent-app-command', onAppCmd);
+    return () => window.removeEventListener('eloquent-app-command', onAppCmd);
+  }, [theme, setTheme]);
+
   const handleLogin = (password) => {
     // Save to settings
     try {
@@ -79,7 +116,12 @@ function AppContent() {
   const renderActiveComponent = () => {
     switch (activeTab) {
       case 'chat':
-        return <Chat layoutMode={layoutMode} />;
+        return (
+          <Chat
+            layoutMode={layoutMode}
+            scrollContainerRef={assignScrollContainer}
+          />
+        );
       case 'documents':
         return <Documents />;
       case 'forensics':
@@ -94,21 +136,30 @@ function AppContent() {
         return <ChessTab />;
       case 'market-sim':
         return <MarketSimTab />;
+      case 'watch':
+        return <WatchTab />;
       case 'settings':
         // Pass theme state and toggle function to Settings
         return <Settings
           darkMode={theme === 'dark'}
           toggleDarkMode={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          initialTab="general"
+          initialTab={settingsEntryTab}
         />;
       case 'memory':
         return <MemoryPage />;
+      case 'transcript-corpus':
+        return <TranscriptCorpusPage />;
       case 'modeltester':
         return <ModelTester />;
       case 'codeeditor':
         return <CodeEditorOverlay isOpen={true} onClose={() => setActiveTab('chat')} />;
       default:
-        return <Chat layoutMode={layoutMode} />;
+        return (
+          <Chat
+            layoutMode={layoutMode}
+            scrollContainerRef={assignScrollContainer}
+          />
+        );
     }
   };
 
@@ -127,14 +178,42 @@ function AppContent() {
     }
   };
 
+  if (standalone === 'settings') {
+    return (
+      <>
+        <SettingsStandaloneLayout />
+        <LoginOverlay isOpen={showLogin} onLogin={handleLogin} />
+      </>
+    );
+  }
+
+  if (standalone === 'call') {
+    return <CallModeStandaloneLayout />;
+  }
+
+  const isChatTab = activeTab === 'chat' || activeTab == null;
+  // Keep offset constant when auto-hiding: navbar slides over content via transform only.
+  const navbarOffset = '3rem';
+
   return (
-    <div className={`min-h-screen flex flex-col ${layoutMode}`}>
+    <div
+      className={cn('h-screen flex flex-col overflow-hidden', layoutMode)}
+      style={{
+        '--app-navbar-height': '3rem',
+        '--app-navbar-offset': navbarOffset,
+      }}
+    >
       <Navbar
         toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-        layoutMode={layoutMode}
-        setLayoutMode={setLayoutMode}
+        collapsed={navbarCollapsed}
+        pinned={navbarPinned}
+        onTogglePin={toggleNavbarPinned}
+        reduceMotion={reduceMotion}
       />
-      <div className={`flex flex-1 overflow-hidden ${getLayoutClasses()}`}>
+      <div
+        className={cn('flex flex-1 min-h-0 overflow-hidden', getLayoutClasses())}
+        style={{ paddingTop: navbarOffset }}
+      >
         <Sidebar
           isOpen={sidebarOpen}
           setIsOpen={setSidebarOpen}
@@ -142,10 +221,18 @@ function AppContent() {
           setActiveTab={setActiveTab}
           layoutMode={layoutMode}
         />
-        <main className="flex-1 overflow-y-auto p-4">
+        <main
+          ref={isChatTab ? undefined : assignScrollContainer}
+          className={cn(
+            'flex-1 min-h-0 flex flex-col',
+            isChatTab ? 'min-h-0 overflow-hidden p-0' : 'overflow-y-auto overscroll-contain p-4',
+          )}
+        >
           {renderActiveComponent()}
         </main>
       </div>
+
+      <OutreachNotificationStack />
 
       <LoginOverlay isOpen={showLogin} onLogin={handleLogin} />
     </div>
@@ -159,10 +246,14 @@ function App() {
     // MemoryProvider should likely wrap AppProvider if AppContext depends on MemoryContext
     <MemoryProvider>
       <AppProvider>
-        {/* ThemeProvider wraps everything that needs theme context */}
-        <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
-          <AppContent /> {/* Render the inner component that uses the theme */}
-        </ThemeProvider>
+        <IntensityProvider>
+          <VideoWatchProvider>
+            {/* ThemeProvider wraps everything that needs theme context */}
+            <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
+              <AppContent /> {/* Render the inner component that uses the theme */}
+            </ThemeProvider>
+          </VideoWatchProvider>
+        </IntensityProvider>
       </AppProvider>
     </MemoryProvider>
   );

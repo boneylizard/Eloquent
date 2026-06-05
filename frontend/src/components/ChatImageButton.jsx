@@ -97,9 +97,9 @@ const ChatImageButton = ({ onImageGenerated }) => {
             </Button>
           </div>
           
-          {!sdStatus?.automatic1111 && (
+          {!sdStatus?.localSd && !sdStatus?.comfyui && (
             <div className="text-xs text-red-500">
-              ⚠️ Stable Diffusion is not available. Make sure Automatic1111 is running.
+              ⚠️ No image generation engine detected. Check your settings.
             </div>
           )}
           
@@ -121,7 +121,7 @@ const ChatImageButton = ({ onImageGenerated }) => {
               onChange={(e) => setPrompt(e.target.value)}
               rows={2}
               className="resize-none text-sm"
-              disabled={isImageGenerating || !sdStatus?.automatic1111}
+              disabled={isImageGenerating }
             />
           </div>
           
@@ -134,7 +134,7 @@ const ChatImageButton = ({ onImageGenerated }) => {
               onChange={(e) => setNegativePrompt(e.target.value)}
               rows={1}
               className="resize-none text-sm"
-              disabled={isImageGenerating || !sdStatus?.automatic1111}
+              disabled={isImageGenerating }
             />
           </div>
           
@@ -206,7 +206,7 @@ const ChatImageButton = ({ onImageGenerated }) => {
           <Button
             className="w-full"
             onClick={handleGenerateImage}
-            disabled={isImageGenerating || !prompt.trim() || !sdStatus?.automatic1111}
+            disabled={isImageGenerating || !prompt.trim() }
           >
             {isImageGenerating ? (
               <>

@@ -16,6 +16,7 @@ import re
 import json
 import inspect
 import wave
+import aiohttp
 # --- FastAPI and WebSocket Imports ---
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
@@ -329,6 +330,11 @@ def clean_markdown_for_tts(text: str, engine: str = 'kokoro') -> str:
         # Normalizes [giggles] -> [laugh], removes [screams], etc.
         text = normalize_chatterbox_tags(text)
         
+    # Convert decimal points inside numbers to spoken form (e.g., "3.2" -> "3 point 2")
+    text = re.sub(r'(?<=\d)\.(?=\d)', ' point ', text)
+    # Speak "%" as "percent" (e.g. "80%" -> "80 percent") before we strip special chars
+    text = text.replace('%', ' percent')
+
     emoji_pattern = re.compile("["
         u"\U0001F600-\U0001F64F"
         u"\U0001F300-\U0001F5FF"
@@ -474,6 +480,10 @@ async def synthesize_speech(
             exaggeration=exaggeration, # Note: Turbo warns this is unused, but we pass it for compat
             cfg=cfg
         )
+    elif engine.lower().startswith('nanogpt-'):
+        # Extract model from engine name (e.g., 'nanogpt-gpt-4o-mini-tts')
+        model = engine.split('-', 1)[1] if '-' in engine else 'gpt-4o-mini-tts'
+        return await _synthesize_with_nanogpt(cleaned_text, voice, model=model)
     else:
         # Default to Kokoro for unknown engines, fall back to Chatterbox if unavailable
         logger.warning(f"⚠️ Unknown engine '{engine}', using Kokoro.")
@@ -486,6 +496,91 @@ async def synthesize_speech(
             cfg=cfg
         )
 
+
+
+async def _synthesize_with_nanogpt(text: str, voice: str, model: str = 'gpt-4o-mini-tts') -> bytes:
+    """
+    Synthesize speech using NanoGPT TTS API with server-side API key resolution.
+    Uses buffered responses initially (stream: false) for compatibility.
+    """
+    import time
+    
+    try:
+        # Get the API key from server-side settings
+        settings = load_settings()
+        nanogpt_api_key = settings.get('nanogpt_api_key')
+        
+        if not nanogpt_api_key:
+            logger.error("❌ NanoGPT API key not configured in settings")
+            raise RuntimeError("NanoGPT API key not configured")
+        
+        # Prepare request to NanoGPT API
+        # Use the global API endpoint for TTS
+        url = "http://localhost:6000/api/v1/audio/speech"  # Default NanoGPT TTS endpoint
+        
+        headers = {
+            "Authorization": f"Bearer {nanogpt_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Prepare payload - using OpenAI-compatible format
+        payload = {
+            "model": model,
+            "input": text,
+            "voice": voice,
+            "response_format": "mp3",  # Start with MP3 for broad compatibility
+            "speed": 1.0,
+            "stream": False  # Start with buffered response
+        }
+        
+        logger.info(f"🎵 Calling NanoGPT TTS API with model '{model}' for text: '{text[:60]}...'")
+        
+        start_time = time.perf_counter()
+        
+        # Make async request to NanoGPT API
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    error_detail = await response.text()
+                    logger.error(f"❌ NanoGPT API request failed with status {response.status}: {error_detail}")
+                    
+                    # Check for specific error codes from NanoGPT
+                    if response.status == 401:
+                        raise RuntimeError("Invalid API key for NanoGPT")
+                    elif response.status == 403:
+                        raise RuntimeError("Access forbidden - check API key permissions")
+                    elif response.status == 429:
+                        raise RuntimeError("Rate limit exceeded - too many requests")
+                    elif response.status == 400:
+                        # Try to parse error details
+                        try:
+                            error_json = await response.json()
+                            raise RuntimeError(f"Bad request: {error_json.get('detail', error_detail)}")
+                        except:
+                            raise RuntimeError(f"Bad request: {error_detail}")
+                    else:
+                        raise RuntimeError(f"API request failed with status {response.status}")
+                
+                # Read the audio response
+                audio_bytes = await response.read()
+        
+        end_time = time.perf_counter()
+        duration_ms = (end_time - start_time) * 1000
+        
+        if not audio_bytes:
+            logger.error("❌ NanoGPT API returned empty audio response")
+            raise RuntimeError("Empty audio response from NanoGPT")
+        
+        logger.info(f"✅ NanoGPT TTS completed in {duration_ms:.2f}ms, {len(audio_bytes)} bytes")
+        
+        return audio_bytes
+        
+    except RuntimeError:
+        # Re-raise runtime errors as-is
+        raise
+    except Exception as e:
+        logger.error(f"❌ NanoGPT TTS synthesis failed: {e}", exc_info=True)
+        raise RuntimeError(f"NanoGPT TTS synthesis failed: {str(e)}")
 
 
 def _extract_paragraph_chunk(text: str, max_tokens: int = 200) -> dict:
@@ -1041,6 +1136,34 @@ class TTSStreamer:
         
         # Chatterbox benefits from fast first chunk extraction
         is_slow_engine = self._tts_settings.get('engine') in ('chatterbox', 'chatterbox_turbo')
+
+        # For Chatterbox engines: configurable sentence grouping.
+        # Default is 2 sentences/chunk for smoother continuity with modest initial wait.
+        if is_slow_engine:
+            target_sentences = self._get_stream_chunk_sentence_count()
+            while True:
+                chunk_info = self._extract_n_sentence_chunk(self._text_buffer, target_sentences)
+                if not chunk_info and target_sentences > 1:
+                    # Fallback prevents unnecessary stalls when there is not enough punctuation yet.
+                    chunk_info = self._extract_one_sentence_chunk(self._text_buffer)
+                if not chunk_info:
+                    # Latency fallback: if the model hasn't produced sentence-ending punctuation yet,
+                    # allow comma-based splits once the buffer is long enough. This matches the intent
+                    # of "start speaking early" even for run-on sentences.
+                    words = self._text_buffer.split()
+                    if len(words) >= 16:
+                        chunk_info = self._extract_smart_chunk(self._text_buffer)
+                if chunk_info:
+                    chunk_text = chunk_info['text']
+                    self._text_buffer = self._text_buffer[chunk_info['end_pos']:]
+                    if chunk_text.strip():
+                        self._synthesis_queue.put_nowait(chunk_text.strip())
+                        self._has_queued_before = True
+                        logger.info(f"🧠 [Streamer] Queued one-sentence chunk: '{chunk_text[:60]}...'")
+                else:
+                    break
+            return
+
         is_first_extraction = is_slow_engine and not self._has_queued_before
 
         if is_first_extraction:
@@ -1251,6 +1374,46 @@ class TTSStreamer:
     def _extract_fast_chunk(self, text: str) -> dict:
          """Wrapper for smart chunking (logic is now unified)"""
          return self._extract_smart_chunk(text)
+
+    def _extract_one_sentence_chunk(self, text: str) -> dict:
+        """
+        First full sentence using . ! ? as enders; ignore decimal points (e.g. 3.2).
+        """
+        return self._extract_n_sentence_chunk(text, 1)
+
+    def _extract_two_sentence_chunk(self, text: str) -> dict:
+        """
+        Extract exactly two full sentences using simple regex markers.
+        Avoids complex heuristics for faster, more predictable chunking.
+        """
+        return self._extract_n_sentence_chunk(text, 2)
+
+    def _extract_n_sentence_chunk(self, text: str, sentence_count: int) -> dict:
+        """Extract exactly N full sentences using . ! ? as enders; ignore decimal points."""
+        if not text or not text.strip():
+            return None
+
+        import re
+        target = max(1, int(sentence_count or 1))
+        pattern = re.compile(r'(?:(?<!\d)\.(?=\s|$)|[!?](?=\s|$))')
+        matches = list(pattern.finditer(text))
+        if len(matches) < target:
+            return None
+
+        chunk_end = matches[target - 1].end()
+        chunk_text = text[:chunk_end].strip()
+        if not chunk_text:
+            return None
+        return {'text': chunk_text, 'end_pos': chunk_end}
+
+    def _get_stream_chunk_sentence_count(self) -> int:
+        """Read per-stream sentence grouping from settings payload (clamped)."""
+        try:
+            raw = self._tts_settings.get('stream_chunk_sentences', 2)
+            value = int(raw)
+        except Exception:
+            value = 2
+        return max(1, min(12, value))
 
     def finish(self):
         # Check if there's any leftover text in the buffer and queue it

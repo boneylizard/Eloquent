@@ -10,6 +10,8 @@ import re
 import os
 import logging # Keep import for getLogger
 import traceback
+import asyncio
+from threading import Lock
 # Assuming inference.py is in the same directory structure allowing this import
 from . import inference
 # Assuming ModelManager class definition is accessible for type hinting
@@ -21,11 +23,59 @@ import time
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("memory_intelligence") # Use getLogger to potentially get Uvicorn/FastAPI configured logger
 
+# --- In-process per-user locks to prevent concurrent duplicate writes ---
+_USER_MEMORY_LOCKS = {}
+_USER_MEMORY_LOCKS_GUARD = Lock()
+
+def _get_user_memory_lock(user_id: Optional[str]):
+    if not user_id:
+        return None
+    with _USER_MEMORY_LOCKS_GUARD:
+        lock = _USER_MEMORY_LOCKS.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _USER_MEMORY_LOCKS[user_id] = lock
+        return lock
+
+def get_user_memory_lock(user_id: Optional[str]):
+    """Public accessor for per-user memory lock."""
+    return _get_user_memory_lock(user_id)
+
+def _resolve_user_id(user_id: Optional[str]) -> Optional[str]:
+    if user_id and isinstance(user_id, str):
+        return user_id
+    try:
+        from . import user_utils
+        fallback_id = user_utils.get_active_profile_id()
+        if fallback_id:
+            return str(fallback_id)
+    except Exception as e:
+        logger.error(f"🧠 [Path] Error getting fallback user_id: {e}")
+    return None
+
 # Initialize the similarity model with fallback chain
 
-similarity_model = None # Set to None on startup
+similarity_model = None  # Set to None on startup
 
-def initialize_similarity_model(device='cpu'):
+# Prefer a modern small SOTA embedding model for semantic similarity.
+# Allow override via env var MEMORY_SIMILARITY_MODEL (primary candidate).
+_PRIMARY_SIMILARITY_MODEL = os.environ.get("MEMORY_SIMILARITY_MODEL") or "BAAI/bge-small-en-v1.5"
+SIMILARITY_MODEL_CANDIDATES = [
+    _PRIMARY_SIMILARITY_MODEL,
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "sentence-transformers/all-MiniLM-L12-v2",
+    "sentence-transformers/all-mpnet-base-v2",
+]
+
+
+def _get_default_similarity_device() -> str:
+    env_device = os.environ.get("MEMORY_SIMILARITY_DEVICE")
+    if env_device:
+        return env_device
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
+def initialize_similarity_model(device: Optional[str] = None):
     """
     Manually loads the SentenceTransformer model onto a specified device.
     """
@@ -34,23 +84,36 @@ def initialize_similarity_model(device='cpu'):
         logger.info("✅ Similarity model already loaded.")
         return
 
-    logger.info(f"🧠 Manually loading similarity model onto device: {device}...")
-    try:
-        similarity_model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2', device=device)
-        logger.info("✅ Successfully loaded SentenceTransformer 'all-mpnet-base-v2' (best quality)")
-    except Exception as e:
-        logger.warning(f"Failed to load all-mpnet-base-v2: {e}")
+    resolved_device = device or _get_default_similarity_device()
+    logger.info(f"🧠 Manually loading similarity model onto device: {resolved_device}...")
+
+    last_error = None
+    for model_name in SIMILARITY_MODEL_CANDIDATES:
+        if not model_name:
+            continue
         try:
-            similarity_model = SentenceTransformer('sentence-transformers/all-MiniLM-L12-v2', device=device)
-            logger.info("✅ Successfully loaded SentenceTransformer 'all-MiniLM-L12-v2' (fallback)")
-        except Exception as e2:
-            logger.error(f"Failed to load fallback model all-MiniLM-L12-v2: {e2}")
-            try:
-                similarity_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device=device)
-                logger.info("✅ Successfully loaded SentenceTransformer 'all-MiniLM-L6-v2' (last resort)")
-            except Exception as e3:
-                logger.error(f"❌ Failed to load any similarity model: {e3}")
-                raise RuntimeError("Could not load any sentence transformer model.")
+            similarity_model = SentenceTransformer(model_name, device=resolved_device)
+            logger.info(f"✅ Successfully loaded similarity model '{model_name}' on {resolved_device}")
+            return
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Failed to load similarity model '{model_name}': {e}")
+
+    logger.error(f"❌ Failed to load any similarity model: {last_error}")
+    raise RuntimeError("Could not load any sentence transformer model.")
+
+
+def ensure_similarity_model(device: Optional[str] = None):
+    """Ensure the similarity model is loaded; return it or None on failure."""
+    global similarity_model
+    if similarity_model is not None:
+        return similarity_model
+    try:
+        initialize_similarity_model(device=device)
+    except Exception as e:
+        logger.error(f"❌ Similarity model initialization failed: {e}")
+        return None
+    return similarity_model
 # --- Define the path to the memory store file ---
 try:
     _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -104,7 +167,8 @@ CONFIG = {
     "memory_extraction_temperature": 0.1,
     "memory_quality_threshold": 0.55,
     "banned_prefixes": [],
-    "memory_content_min_length": 10,
+    # Allow short manual memories (e.g. single words) without blocking saves on mobile.
+    "memory_content_min_length": 3,
     "memory_deduplication_window": 1000,
 }
 
@@ -213,12 +277,25 @@ def get_triggered_character_lore(prompt: str, active_character: Optional[Dict[st
 
 # <<<< End of new function >>>>
 # === Core Memory Functions ===
-def is_valid_memory_content(content: str) -> bool:
-    """Check if memory content is valid with stricter validation to prevent memory pollution."""
+def is_valid_memory_content(content: str, *, relaxed: bool = False) -> bool:
+    """Check if memory content is valid.
+
+    ``relaxed=True`` is for explicit user saves (UI /profile paste, /memory/create, /sync):
+    only enforces minimum length and banned prefixes. Auto-extraction paths use strict
+    filters to drop prompts and junk.
+    """
     if not content or len(content) < CONFIG["memory_content_min_length"]:
         logger.debug(f"❌ Rejected memory - too short: '{content}'")
         return False
-    
+
+    if relaxed:
+        normalized = content.lower().strip()
+        for prefix in CONFIG["banned_prefixes"]:
+            if normalized.startswith(prefix.lower()):
+                logger.info(f"❌ Rejected memory with banned prefix: '{prefix}' in '{content[:50]}...'")
+                return False
+        return True
+
     normalized = content.lower().strip()
     logger.debug(f"Checking memory content: '{content}'")
     
@@ -297,6 +374,15 @@ def does_it_basically_mean_the_same_thing(text1, text2, threshold=None):
         logger.info(f"✅ Exact match detected between texts")
         return True
     try:
+        model = ensure_similarity_model()
+        if model is None:
+            logger.warning("⚠️ Similarity model unavailable; falling back to word overlap only.")
+            words1 = set(text1.lower().split())
+            words2 = set(text2.lower().split())
+            if not words1 or not words2:
+                return False
+            word_overlap = len(words1.intersection(words2)) / max(len(words1), len(words2))
+            return word_overlap > 0.85
         chars1 = set(text1.lower())
         chars2 = set(text2.lower())
         if not chars1 or not chars2: return False # Avoid division by zero
@@ -313,8 +399,8 @@ def does_it_basically_mean_the_same_thing(text1, text2, threshold=None):
             logger.info(f"  Text 1: '{text1[:50]}...'")
             logger.info(f"  Text 2: '{text2[:50]}...'")
             return True
-        embedding1 = similarity_model.encode(text1, convert_to_tensor=True)
-        embedding2 = similarity_model.encode(text2, convert_to_tensor=True)
+        embedding1 = model.encode(text1, convert_to_tensor=True)
+        embedding2 = model.encode(text2, convert_to_tensor=True)
         cosine_scores = util.pytorch_cos_sim(embedding1, embedding2)
         similarity = cosine_scores[0][0].item()
         log_level = logging.INFO if similarity > threshold * 0.3 else logging.DEBUG
@@ -357,12 +443,58 @@ def get_memory_store(user_id: str) -> List[Dict[str, Any]]:
     try:
         start = time.time()
         with open(memory_path, 'r', encoding='utf-8-sig') as f:
-            raw = f.read().strip()
-            if not raw:
-                # Empty file—treat as no memories
-                logger.info(f"🧠 [I/O] Memory store empty at {memory_path}")
+            raw = f.read()
+
+        raw_stripped = (raw or "").strip()
+        if not raw_stripped:
+            # Empty file—treat as no memories
+            logger.info(f"🧠 [I/O] Memory store empty at {memory_path}")
+            return []
+
+        try:
+            data = json.loads(raw_stripped)
+        except json.JSONDecodeError as jde:
+            # Attempt recovery for common corruption case: valid JSON + extra trailing data.
+            # Use raw_decode to parse the first valid JSON value and ignore any trailing bytes.
+            logger.error(f"🧠 [I/O] JSON decode error in {memory_path}: {jde}", exc_info=True)
+            try:
+                decoder = json.JSONDecoder()
+                recovered, end_idx = decoder.raw_decode(raw_stripped.lstrip())
+                logger.warning(
+                    f"🧠 [I/O] Recovered memory store JSON from {memory_path} "
+                    f"(ignored trailing {max(0, len(raw_stripped) - end_idx)} bytes)"
+                )
+                data = recovered
+
+                # Rewrite a cleaned version atomically to prevent repeated failures.
+                try:
+                    temp_path = memory_path + ".repair.tmp"
+                    with open(temp_path, 'w', encoding='utf-8') as wf:
+                        if isinstance(data, list):
+                            json.dump(data, wf, ensure_ascii=False, indent=2)
+                        elif isinstance(data, dict):
+                            json.dump(data, wf, ensure_ascii=False, indent=2)
+                        else:
+                            json.dump([], wf, ensure_ascii=False, indent=2)
+                    os.replace(temp_path, memory_path)
+                    logger.info(f"🧠 [I/O] Rewrote repaired memory store at {memory_path}")
+                except Exception as e:
+                    logger.warning(f"🧠 [I/O] Failed to rewrite repaired store at {memory_path}: {e}")
+            except Exception as e:
+                # If we can't recover, quarantine the corrupt file and start fresh.
+                try:
+                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    quarantined = memory_path + f".corrupt.{ts}"
+                    os.replace(memory_path, quarantined)
+                    logger.error(f"🧠 [I/O] Quarantined corrupt memory store to {quarantined}")
+                except Exception as qe:
+                    logger.error(f"🧠 [I/O] Failed to quarantine corrupt store {memory_path}: {qe}")
+                try:
+                    with open(memory_path, 'w', encoding='utf-8') as wf:
+                        json.dump([], wf)
+                except Exception:
+                    pass
                 return []
-            data = json.loads(raw)
         elapsed = time.time() - start
 
         # Data may be either a list of memories or an object with a "memories" key
@@ -377,9 +509,6 @@ def get_memory_store(user_id: str) -> List[Dict[str, Any]]:
         logger.info(f"🧠 [I/O] Read {len(memories)} memories in {elapsed:.2f}s")
         return memories
 
-    except json.JSONDecodeError as jde:
-        logger.error(f"🧠 [I/O] JSON decode error in {memory_path}: {jde}", exc_info=True)
-        return []
     except Exception as e:
         logger.error(f"🧠 [I/O] Error reading memory store at {memory_path}: {e}", exc_info=True)
         return []
@@ -546,8 +675,11 @@ REFINED CONTEXT FOR AI (Your output MUST be a bulleted list of 5-7 memory conten
         # Find a suitable model on the memory GPU
         model_name = await model_manager.find_suitable_model(gpu_id=gpu_id)
         if not model_name:
-            logger.error(f"🧠 [Refine] No suitable model found on GPU {gpu_id} for context refinement.")
-            return {"status": "error", "error": f"No model found on GPU {gpu_id}"}
+            logger.warning(
+                "🧠 [Refine] No local model on GPU %s — skipping LLM refinement (caller will use simple formatting).",
+                gpu_id,
+            )
+            return {"status": "no_gpu_model", "refined_context": ""}
 
         logger.info(f"🧠 [Refine] Using model '{model_name}' on GPU {gpu_id} for refinement.")
         
@@ -649,7 +781,11 @@ async def analyze_for_relevant_memories(model_manager, prompt, memories=None, gp
         logger.info(f"🧠 [Retrieval] Scoring {len(all_memories)} candidate memories")
         
         # Get embeddings for the prompt
-        prompt_embedding = similarity_model.encode(prompt, convert_to_tensor=True)
+        model = ensure_similarity_model()
+        if model is None:
+            logger.warning("⚠️ Similarity model unavailable; cannot score relevant memories.")
+            return []
+        prompt_embedding = model.encode(prompt, convert_to_tensor=True)
         
         # Score memories based on relevance to prompt
         scored_memories = []
@@ -663,7 +799,7 @@ async def analyze_for_relevant_memories(model_manager, prompt, memories=None, gp
                 
             # Get embedding for memory
             try:
-                memory_embedding = similarity_model.encode(memory_content, convert_to_tensor=True)
+                memory_embedding = model.encode(memory_content, convert_to_tensor=True)
                 
                 # Calculate semantic similarity
                 cosine_scores = util.pytorch_cos_sim(prompt_embedding, memory_embedding)
@@ -1179,112 +1315,127 @@ EXTRACTED MEMORIES (JSON array):
         logger.error(f"❌ Error in model-based memory creation from snippet: {e}", exc_info=True)
         return [] # Return empty list on error
 
-async def store_memories(memories, user_id: Optional[str] = None):
-    """Store newly created memories with absolutely foolproof duplicate checking"""
+async def store_memories(memories, user_id: Optional[str] = None) -> int:
+    """Persist new memories. Returns number of rows actually written, or -1 on error.
+
+    Callers must not treat truthiness as success: returning 0 means nothing was
+    persisted (exact duplicate or filtered), which is not a successful create.
+    """
     if not memories or len(memories) == 0:
         logger.info("No new memories to store")
-        return False
+        return 0
 
     try:
-        logger.info(f"Processing {len(memories)} potential memories for storage")
+        resolved_user_id = _resolve_user_id(user_id)
+        if not resolved_user_id:
+            logger.error("❌ store_memories called without a valid user_id and no fallback available.")
+            return -1
+
+        user_lock = _get_user_memory_lock(resolved_user_id)
+        if user_lock is None:
+            logger.error("❌ store_memories could not acquire a user lock.")
+            return -1
+
+        async with user_lock:
+            logger.info(f"Processing {len(memories)} potential memories for storage")
         
-        # Load existing memories
-        existing_memories = get_memory_store(user_id=user_id)
-        logger.info(f"Loaded {len(existing_memories)} existing memories from store")
+            # Load existing memories
+            existing_memories = get_memory_store(user_id=resolved_user_id)
+            logger.info(f"Loaded {len(existing_memories)} existing memories from store")
         
-        # Create a set of ALL existing memory contents for exact duplicate checking
-        existing_contents = set()
-        for memory in existing_memories:
-            if 'content' in memory and memory['content']:
-                normalized = memory['content'].strip().lower()
-                existing_contents.add(normalized)
+            # Create a set of ALL existing memory contents for exact duplicate checking
+            existing_contents = set()
+            for memory in existing_memories:
+                if 'content' in memory and memory['content']:
+                    normalized = memory['content'].strip().lower()
+                    existing_contents.add(normalized)
         
-        # Add timestamps if missing
-        for memory in memories:
-            if 'created' not in memory:
-                memory['created'] = datetime.datetime.now().isoformat()
-            if 'accessed' not in memory:
-                memory['accessed'] = 0
+            # Add timestamps if missing
+            for memory in memories:
+                if 'created' not in memory:
+                    memory['created'] = datetime.datetime.now().isoformat()
+                if 'accessed' not in memory:
+                    memory['accessed'] = 0
         
-        # Process and enhance new memories
-        enhanced_memories = []
-        for memory in memories:
-            if not memory or 'content' not in memory:
-                logger.warning(f"Skipping memory without content")
-                continue
-            
-            content = memory.get('content', '').strip()
-            if not content:
-                continue
-            
-            if content and len(content) > 0 and not content[0].isupper():
-                content = content[0].upper() + content[1:]
-            if content and not content.endswith(('.', '!', '?', ':', ';')):
-                content += '.'
-            memory['content'] = content
+            # Process and enhance new memories
+            enhanced_memories = []
+            for memory in memories:
+                if not memory or 'content' not in memory:
+                    logger.warning(f"Skipping memory without content")
+                    continue
+                
+                content = memory.get('content', '').strip()
+                if not content:
+                    continue
+                
+                if content and len(content) > 0 and not content[0].isupper():
+                    content = content[0].upper() + content[1:]
+                if content and not content.endswith(('.', '!', '?', ':', ';')):
+                    content += '.'
+                memory['content'] = content
 
-            if not is_valid_memory_content(content):
-                logger.warning(f"Skipping invalid memory content: {content[:50]}...")
-                continue
-            
-            if user_id and 'user' not in memory:
-                # Add user ID to memory if not already present
-                memory['user'] = user_id
-                logger.debug(f"Added user tag '{user_id}' to memory")
-            
-            enhanced_memories.append(memory)
+                relaxed_validation = memory.get("type") == "manual"
+                if not is_valid_memory_content(content, relaxed=relaxed_validation):
+                    logger.warning(f"Skipping invalid memory content: {content[:50]}...")
+                    continue
+                
+                if resolved_user_id and 'user' not in memory:
+                    # Add user ID to memory if not already present
+                    memory['user'] = resolved_user_id
+                    logger.debug(f"Added user tag '{resolved_user_id}' to memory")
+                
+                enhanced_memories.append(memory)
         
-        # Add new memories with enhanced duplicate checking
-        memories_added = 0
-        for memory in enhanced_memories:
-            content = memory.get('content', '').strip()
-            normalized_content = content.lower()
-            if normalized_content in existing_contents:
-                logger.info(f"Skipping exact duplicate: {content[:50]}...")
-                continue
+            # Add new memories with enhanced duplicate checking
+            memories_added = 0
+            for memory in enhanced_memories:
+                content = memory.get('content', '').strip()
+                normalized_content = content.lower()
+                if normalized_content in existing_contents:
+                    logger.info(f"Skipping exact duplicate: {content[:50]}...")
+                    continue
 
-            is_semantic_duplicate = False
-            recent_memories = sorted(
-                existing_memories,
-                key=lambda x: x.get('created', '2000-01-01'),
-                reverse=True
-            )[:CONFIG["memory_deduplication_window"]]
+                # Manual UI saves (profile editor, /add): only exact-match dedupe; user chose each line.
+                is_semantic_duplicate = False
+                if memory.get("type") != "manual":
+                    recent_memories = sorted(
+                        existing_memories,
+                        key=lambda x: x.get('created', '2000-01-01'),
+                        reverse=True
+                    )[:CONFIG["memory_deduplication_window"]]
 
-            for existing_memory in recent_memories:
-                if does_it_basically_mean_the_same_thing(
-                    existing_memory.get('content', ''),
-                    content,
-                    threshold=CONFIG["similarity_threshold"]
-                ):
-                    is_semantic_duplicate = True
-                    logger.info(f"Skipping semantic duplicate: {content[:50]}...")
-                    logger.info(f"Similar to existing: {existing_memory.get('content')[:50]}...")
-                    break
+                    for existing_memory in recent_memories:
+                        if does_it_basically_mean_the_same_thing(
+                            existing_memory.get('content', ''),
+                            content,
+                            threshold=CONFIG["similarity_threshold"]
+                        ):
+                            is_semantic_duplicate = True
+                            logger.info(f"Skipping semantic duplicate: {content[:50]}...")
+                            logger.info(f"Similar to existing: {existing_memory.get('content')[:50]}...")
+                            break
 
-            if is_semantic_duplicate:
-                continue
+                if is_semantic_duplicate:
+                    continue
 
-            existing_memories.append(memory)
-            existing_contents.add(normalized_content)
-            memories_added += 1
-            logger.info(f"✅ Added new memory: {content[:50]}...")
+                existing_memories.append(memory)
+                existing_contents.add(normalized_content)
+                memories_added += 1
+                logger.info(f"✅ Added new memory: {content[:50]}...")
 
-        if memories_added > 0:
-            if save_memory_store(existing_memories, user_id=user_id):
-                # Save the updated memory store
-                logger.info(f"Added {memories_added} new memories for user '{user_id}'. Store now has {len(existing_memories)} memories.")
-                return True
-            else:
+            if memories_added > 0:
+                if save_memory_store(existing_memories, user_id=resolved_user_id):
+                    logger.info(f"Added {memories_added} new memories for user '{resolved_user_id}'. Store now has {len(existing_memories)} memories.")
+                    return memories_added
                 logger.warning("❌ Failed to save updated memory store.")
-                return False
-        else:
+                return -1
             logger.info("No new unique memories to add")
-            return True  # ✅ This is now correct
+            return 0
 
     except Exception as e:
         logger.error(f"Error storing memories: {e}")
         traceback.print_exc()
-        return False
+        return -1
 
 
 def curate_memory_store(user_id: Optional[str] = None, similarity_threshold=0.7):
@@ -1521,7 +1672,16 @@ async def process_incoming_message_with_userprofile(model_manager, message, user
             }
 
         # Use the existing analysis logic but with profile_memories instead of from disk
-        prompt_embedding = similarity_model.encode(message, convert_to_tensor=True)
+        model = ensure_similarity_model()
+        if model is None:
+            logger.warning("⚠️ Similarity model unavailable; cannot score userProfile memories.")
+            return {
+                "status": "success",
+                "memories": [],
+                "formatted_memories": "",
+                "memory_count": 0
+            }
+        prompt_embedding = model.encode(message, convert_to_tensor=True)
 
         # Score memories based on relevance to prompt
         scored_memories = []
@@ -1532,7 +1692,7 @@ async def process_incoming_message_with_userprofile(model_manager, message, user
             if not memory_content:
                 continue
 
-            memory_embedding = similarity_model.encode(memory_content, convert_to_tensor=True)
+            memory_embedding = model.encode(memory_content, convert_to_tensor=True)
             cosine_scores = util.pytorch_cos_sim(prompt_embedding, memory_embedding)
             semantic_score = cosine_scores[0][0].item()
 
@@ -1699,7 +1859,8 @@ async def process_completed_exchange(model_manager, user_message, ai_response, g
         
         # Step 2: Store memories
         if new_memories and len(new_memories) > 0:
-            storage_success = await store_memories(new_memories)
+            added = await store_memories(new_memories)
+            storage_success = added > 0
         else:
             storage_success = False
         
@@ -1718,3 +1879,172 @@ async def process_completed_exchange(model_manager, user_message, ai_response, g
             "memories_created": 0,
             "storage_success": False
         }
+
+
+# === Compatibility Functions for Restored memory_routes.py ===
+# These functions bridge naming discrepancies after routes were restored from cache
+
+def get_all_memories_for_user(user_id: str) -> List[Dict[str, Any]]:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Maps to the actual get_memory_store function
+    Returns all memories for a specific user as a list
+    """
+    try:
+        return get_memory_store(user_id)
+    except Exception as e:
+        logger.error(f"Error in get_all_memories_for_user for user '{user_id}': {e}")
+        return []
+
+
+def add_memory_to_store(user_id: str, memory_data: Dict[str, Any]) -> bool:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Maps to the existing memory store operations
+    Returns True on success, False on failure
+    """
+    try:
+        # Load existing memories
+        existing_memories = get_memory_store(user_id)
+        
+        # Validate memory data
+        if not memory_data or not isinstance(memory_data, dict) or not memory_data.get("content"):
+            logger.warning(f"Invalid memory data provided for user '{user_id}'")
+            return False
+        
+        # Check for duplicates by content
+        content_to_add = memory_data.get("content", "").strip().lower()
+        if not content_to_add or len(content_to_add) < 3:
+            logger.warning(f"Invalid content in memory for user '{user_id}'")
+            return False
+        
+        # Check for existing similar content (simple exact match for now)
+        for existing in existing_memories:
+            existing_content = existing.get("content", "").strip().lower()
+            if existing_content == content_to_add:
+                logger.info(f"Duplicate memory skipped for user '{user_id}'")
+                return False  # Duplicate - don't add
+        
+        # Add timestamp if not present
+        if "created" not in memory_data:
+            memory_data["created"] = datetime.datetime.utcnow().isoformat() + "Z"
+        if "id" not in memory_data:
+            memory_data["id"] = f"mem_{int(time.time() * 1000)}_{abs(hash(memory_data['content']))}"
+        
+        # Add the new memory
+        updated_memories = existing_memories + [memory_data]
+        
+        # Save back
+        return save_memory_store(updated_memories, user_id)
+        
+    except Exception as e:
+        logger.error(f"Error in add_memory_to_store for user '{user_id}': {e}")
+        return False
+
+
+def purge_memory_store(user_id: str) -> bool:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Clears all memories for a specific user
+    """
+    try:
+        return save_memory_store([], user_id)
+    except Exception as e:
+        logger.error(f"Error in purge_memory_store for user '{user_id}': {e}")
+        return False
+
+
+def refine_memories_with_llm(**kwargs) -> str:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Maps to get_llm_refined_context function
+    Returns LLM-refined memory context
+    """
+    try:
+        return get_llm_refined_context(**kwargs)
+    except Exception as e:
+        logger.error(f"Error in refine_memories_with_llm: {e}")
+        return ""
+
+
+def format_memories_simple(memories: List[Dict[str, Any]], **kwargs) -> str:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Maps to format_memories_for_context function
+    Returns formatted memory text
+    """
+    try:
+        return format_memories_for_context(memories, **kwargs)
+    except Exception as e:
+        logger.error(f"Error in format_memories_simple: {e}")
+        return ""
+
+
+def add_memories_batch(user_id: str, memories: List[Dict[str, Any]]) -> bool:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Adds multiple memories at once with deduplication
+    Returns True on success, False on failure
+    """
+    try:
+        if not memories or not isinstance(memories, list):
+            return False
+            
+        existing_memories = get_memory_store(user_id)
+        existing_contents = {m.get("content", "").strip().lower() for m in existing_memories if isinstance(m, dict) and m.get("content")}
+        
+        new_memories = []
+        for mem in memories:
+            if not isinstance(mem, dict) or not mem.get("content"):
+                continue
+            
+            content = mem.get("content", "").strip()
+            if content.lower() in existing_contents:
+                continue
+            
+            # Add metadata if missing
+            if "created" not in mem:
+                mem["created"] = datetime.datetime.utcnow().isoformat() + "Z"
+            if "id" not in mem:
+                mem["id"] = f"mem_{int(time.time() * 1000)}_{abs(hash(mem['content']))}"
+            
+            new_memories.append(mem)
+            existing_contents.add(content.lower())
+        
+        if not new_memories:
+            return False  # No new memories to add
+        
+        updated_memories = existing_memories + new_memories
+        return save_memory_store(updated_memories, user_id)
+        
+    except Exception as e:
+        logger.error(f"Error in add_memories_batch for user '{user_id}': {e}")
+        return False
+
+
+def model_based_memory_extraction(**kwargs) -> Optional[Dict[str, Any]]:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Maps to model_based_memory_creation function
+    Returns extracted memory data or None
+    """
+    try:
+        return model_based_memory_creation(**kwargs)
+    except Exception as e:
+        logger.error(f"Error in model_based_memory_extraction: {e}")
+        return None
+
+
+def replace_memory_store(user_id: str, memories: List[Dict[str, Any]]) -> bool:
+    """
+    Compatibility wrapper for restored memory_routes.py
+    Completely replaces the memory store for a user
+    Returns True on success, False on failure
+    """
+    try:
+        if not isinstance(memories, list):
+            memories = []
+        return save_memory_store(memories, user_id)
+    except Exception as e:
+        logger.error(f"Error in replace_memory_store for user '{user_id}': {e}")
+        return False

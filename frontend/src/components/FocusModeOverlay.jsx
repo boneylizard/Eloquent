@@ -7,12 +7,13 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus } from 'lucide-react';
+import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Phone, PhoneOff, Focus, AudioLines } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import SimpleChatImageButton from './SimpleChatImageButton';
 import ChatImageUploadButton from './ChatImageUploadButton';
 import ChatMessageItem from './ChatMessageItem'; // ADD THIS IMPORT
 import FocusModeInputForm from './FocusModeInputForm';
+import VoiceQuickPicker from './VoiceQuickPicker';
 
 const FocusModeOverlay = ({ 
   isActive, 
@@ -49,31 +50,21 @@ const FocusModeOverlay = ({
   regenerationQueue,
   currentVariantIndex,
   formatModelName,
-  stopTTS
+  stopTTS,
+  focusModeInputRef,
+  sttEnabled,
+  isRecording,
+  isTranscribing,
+  onFocusModeMicClick,
 }) => {
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
+  const [voiceQuickOpen, setVoiceQuickOpen] = useState(false);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [userScrolledRecently, setUserScrolledRecently] = useState(false);
   const lastScrollTimeRef = useRef(0);
   const isNearBottomRef = useRef(true);
 
-  useEffect(() => {
-  const handleKeyDown = (event) => {
-    if (event.key === 'Shift' && isPlayingAudio && stopTTS) {
-      event.preventDefault();
-      stopTTS();
-    }
-  };
-
-  if (isActive) {
-    document.addEventListener('keydown', handleKeyDown);
-  }
-
-  return () => {
-    document.removeEventListener('keydown', handleKeyDown);
-  };
-}, [isActive, isPlayingAudio, stopTTS]);
   // Handle ESC key to exit
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -84,12 +75,10 @@ const FocusModeOverlay = ({
 
     if (isActive) {
       document.addEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'hidden';
     }
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'auto';
     };
   }, [isActive, onExit]);
 
@@ -161,6 +150,24 @@ const lastMessageAvatars = useMemo(() => {
 
   return (
     <div className="fixed inset-0 z-[9999] bg-black flex flex-col">
+      {ttsEnabled && (
+        <>
+          <button
+            type="button"
+            onClick={() => setVoiceQuickOpen(true)}
+            className="absolute top-6 left-6 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition-all duration-200 hover:bg-white/20"
+            title="Voices & clones (per character)"
+          >
+            <AudioLines size={20} />
+          </button>
+          <VoiceQuickPicker
+            open={voiceQuickOpen}
+            onOpenChange={setVoiceQuickOpen}
+            variant="dialog"
+            primaryApiUrl={PRIMARY_API_URL}
+          />
+        </>
+      )}
       <button onClick={onExit} className="absolute top-6 right-6 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-all duration-200 z-10" title="Exit Focus Mode (ESC)">
         <X size={20} />
       </button>
@@ -239,10 +246,15 @@ const lastMessageAvatars = useMemo(() => {
 
 <div className="border-t border-gray-800 p-4 bg-black/50">
     <div className="max-w-6xl mx-auto w-full">
-        <FocusModeInputForm 
-            onSubmit={handleSubmit} 
-            isGenerating={isGenerating} 
-            primaryModel={primaryModel} 
+        <FocusModeInputForm
+            ref={focusModeInputRef}
+            onSubmit={handleSubmit}
+            isGenerating={isGenerating}
+            primaryModel={primaryModel}
+            sttEnabled={sttEnabled}
+            isRecording={isRecording}
+            isTranscribing={isTranscribing}
+            onMicClick={onFocusModeMicClick}
         />
     </div>
 </div>

@@ -99,6 +99,28 @@ export default function MarketSimTab() {
     } catch (_) {}
   }, [baseUrl]);
 
+  const resetPortfolioToStartingCapital = useCallback(async () => {
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm(
+        'Reset portfolio to starting cash only (no positions)? Trade and tournament history stay in the database.'
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      const res = await fetch(`${baseUrl}/market-sim/portfolio/reset`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Reset failed');
+      setPortfolio(data.portfolio);
+      setSp500Current(data.sp500_current);
+      await fetchSnapshots();
+    } catch (e) {
+      setError(e?.message || 'Reset failed');
+    }
+  }, [baseUrl, fetchSnapshots]);
+
   const fetchQuotes = useCallback(async () => {
     try {
       const res = await fetch(`${baseUrl}/market-sim/quotes?symbols=SPY,AAPL,^GSPC`, { cache: 'no-store' });
@@ -147,7 +169,7 @@ export default function MarketSimTab() {
   const chartData = React.useMemo(() => {
     const snaps = [...(snapshots || [])].reverse();
     if (!snaps.length) return [];
-    const baseValue = snaps[0]?.total_value || 10000;
+    const baseValue = snaps[0]?.total_value || 250000;
     const baseSp = snaps[0]?.sp500_value;
     return snaps.map((s, i) => ({
       date: s.created_at?.slice(0, 10) || `Day ${i}`,
@@ -160,15 +182,21 @@ export default function MarketSimTab() {
 
   const strategyLeaderboard = React.useMemo(() => {
     const r = tournament?.results || tournament?.tournament?.results || {};
-    return Object.entries(r).map(([id, v]) => ({
-      id,
-      name: v.analysis?.strategy_name || id,
-      expectedValue: v.analysis?.expected_value,
-      sharpe: v.analysis?.sharpe_ratio,
-      maxDrawdown: v.analysis?.max_drawdown,
-      winRate: v.analysis?.win_rate,
-      beatSp500: v.analysis?.beat_sp500_prob,
-    })).sort((a, b) => (b.sharpe ?? -999) - (a.sharpe ?? -999));
+    return Object.entries(r)
+      .map(([id, v]) => ({
+        id,
+        name: v.analysis?.strategy_name || id,
+        expectedValue: v.analysis?.expected_value,
+        meanReturn: v.analysis?.mean_return,
+        sharpe: v.analysis?.sharpe_ratio,
+        sharpeVsRf: v.analysis?.sharpe_excess_vs_4pct_rf,
+        maxDrawdown: v.analysis?.max_drawdown,
+        winRate: v.analysis?.win_rate,
+        winRateNote: v.analysis?.win_rate_note,
+        beatSp500: v.analysis?.beat_sp500_prob,
+        beatSp500Note: v.analysis?.beat_sp500_note,
+      }))
+      .sort((a, b) => (b.sharpe ?? -999) - (a.sharpe ?? -999));
   }, [tournament]);
 
   const formatCurrency = (n) => {
@@ -189,7 +217,7 @@ export default function MarketSimTab() {
           Market Simulator
         </h2>
         <p className="text-sm text-muted-foreground">
-          AI-managed $10,000 portfolio • Live market data • Monte Carlo tournaments
+          AI-managed $250,000 portfolio • Live market data • Monte Carlo tournaments
         </p>
       </div>
 
@@ -217,6 +245,14 @@ export default function MarketSimTab() {
       <div className="flex-1 overflow-auto p-4">
         {activeSubTab === 'dashboard' && (
           <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={resetPortfolioToStartingCapital}>
+                Reset to starting balance ($250k cash, clear positions)
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Use if portfolio still shows an old $10k row from SQLite.
+              </span>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="rounded-lg border bg-card p-4">
                 <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
@@ -316,17 +352,44 @@ export default function MarketSimTab() {
             )}
 
             <div className="rounded-lg border bg-card p-4">
-              <h3 className="text-sm font-medium mb-3">Strategy Leaderboard</h3>
+              <h3 className="text-sm font-medium mb-2">Strategy Leaderboard</h3>
+              <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
+                Each row is one strategy run through <strong>10,000 parallel one-year simulations</strong> (not
+                one timeline). <strong>Return÷risk</strong> is mean simulated return divided by how spread out
+                those outcomes are—higher means more return per unit of scenario uncertainty.{' '}
+                <strong>Beat S&amp;P</strong> is the share of scenarios where that strategy beat the simulated
+                1× index; it is <strong>not applicable</strong> for Index Fund (identical path).{' '}
+                <strong>Win rate</strong> is the share of scenarios with a positive return; cash is always 0%
+                because it is modeled as flat.
+              </p>
+              {tournament?.simulation_calibration && (
+                <div className="rounded-md bg-muted/50 border p-2 mb-3 text-xs text-muted-foreground space-y-1">
+                  <div className="font-medium text-foreground">Why this run is actionable</div>
+                  <p>{tournament.simulation_calibration.design_intent}</p>
+                  <p>
+                    Simulated index: mean return{' '}
+                    <strong>{((tournament.simulation_calibration.simulated_index_mean_return ?? 0) * 100).toFixed(2)}%</strong>
+                    , median{' '}
+                    <strong>{((tournament.simulation_calibration.simulated_index_median_return ?? 0) * 100).toFixed(2)}%</strong>
+                    , positive in{' '}
+                    <strong>{((tournament.simulation_calibration.simulated_index_pct_positive_scenarios ?? 0) * 100).toFixed(1)}%</strong>
+                    {' '}of scenarios.
+                  </p>
+                </div>
+              )}
               {strategyLeaderboard.length > 0 ? (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b">
                         <th className="text-left py-2">Strategy</th>
-                        <th className="text-right py-2">Expected Value</th>
-                        <th className="text-right py-2">Sharpe</th>
-                        <th className="text-right py-2">Max DD</th>
-                        <th className="text-right py-2">Win Rate</th>
+                        <th className="text-right py-2">Expected value</th>
+                        <th className="text-right py-2">Mean return</th>
+                        <th className="text-right py-2" title="Mean ÷ std of 10k one-year outcomes">
+                          Return÷risk
+                        </th>
+                        <th className="text-right py-2">Max DD (median)</th>
+                        <th className="text-right py-2">Win rate</th>
                         <th className="text-right py-2">Beat S&P</th>
                       </tr>
                     </thead>
@@ -335,10 +398,20 @@ export default function MarketSimTab() {
                         <tr key={s.id} className="border-b hover:bg-muted/50">
                           <td className="py-2 font-medium">{s.name}</td>
                           <td className="text-right">{formatCurrency(s.expectedValue)}</td>
-                          <td className="text-right">{(s.sharpe ?? 0).toFixed(2)}</td>
+                          <td className="text-right">{formatPct(s.meanReturn)}</td>
+                          <td className="text-right" title={s.sharpeVsRf != null ? `vs 4% RF variant: ${(s.sharpeVsRf ?? 0).toFixed(3)}` : ''}>
+                            {(s.sharpe ?? 0).toFixed(2)}
+                          </td>
                           <td className="text-right">{formatPct(s.maxDrawdown)}</td>
-                          <td className="text-right">{formatPct(s.winRate)}</td>
-                          <td className="text-right">{formatPct(s.beatSp500)}</td>
+                          <td className="text-right" title={s.winRateNote || undefined}>
+                            {formatPct(s.winRate)}
+                          </td>
+                          <td
+                            className="text-right"
+                            title={s.beatSp500Note || undefined}
+                          >
+                            {s.beatSp500 == null ? '—' : formatPct(s.beatSp500)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -358,7 +431,9 @@ export default function MarketSimTab() {
                 <div className="rounded-lg border bg-card p-4">
                   <h3 className="text-sm font-medium mb-2">Monte Carlo Overview</h3>
                   <p className="text-sm text-muted-foreground mb-2">
-                    10,000 market scenarios • Bull, Bear, Sideways, Crash regimes • Black swan events (2%)
+                    10,000 one-year paths • Two half-year regime segments (may shift mid-year) • Recession / Fed
+                    drag on drift • Rare stress shocks (~1.2%) • Strategy-specific rules (DCA ramp, momentum,
+                    hedged sleeve, etc.)
                   </p>
                 </div>
                 <div className="rounded-lg border bg-card p-4">
@@ -416,7 +491,8 @@ export default function MarketSimTab() {
             {strategyLeaderboard.length > 0 ? (
               <>
                 <div className="rounded-lg border bg-card p-4">
-                  <h3 className="text-sm font-medium mb-3">Risk-Adjusted Returns</h3>
+                  <h3 className="text-sm font-medium mb-1">Return ÷ scenario risk</h3>
+                  <p className="text-xs text-muted-foreground mb-2">Mean one-year return over std across 10k paths (not textbook daily Sharpe).</p>
                   <div className="h-48">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={strategyLeaderboard.slice(0, 10)} layout="vertical" margin={{ left: 80 }}>
@@ -424,7 +500,7 @@ export default function MarketSimTab() {
                         <XAxis type="number" />
                         <YAxis type="category" dataKey="name" width={80} tick={{ fontSize: 10 }} />
                         <Tooltip />
-                        <Bar dataKey="sharpe" fill="hsl(var(--primary))" name="Sharpe Ratio" />
+                        <Bar dataKey="sharpe" fill="hsl(var(--primary))" name="Return÷risk" />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>

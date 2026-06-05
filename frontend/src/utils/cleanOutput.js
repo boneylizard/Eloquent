@@ -1,14 +1,7 @@
 // src/utils/cleanOutput.js
 
-/**
- * Enhanced model output cleaning function that handles various patterns
- * commonly found in LLM outputs, including dual chat mode special patterns.
- * Significantly enhanced to prevent instruction leakage and meta-commentary.
- * 
- * @param {string} text - The raw model output text to clean
- * @param {boolean} isDualChat - Whether this is from a dual chat conversation
- * @return {string} - The cleaned text
- */
+import { stripThinkTags } from './thinkStreamParser';
+
 export function cleanModelOutput(text, isDualChat = false) {
   if (!text) return "";
 
@@ -17,113 +10,9 @@ export function cleanModelOutput(text, isDualChat = false) {
     return cleanDualChatOutput(text);
   }
 
-  // --- Standard cleaning for normal mode ---
-
-  // 1. Handle common meta-commentary and instruction leakage at the beginning
-  const beginningPatterns = [
-    // Meta-commentary about completing responses
-    /^(?:In order|To indicate|To signal|To let you know|To show|To mark|To ensure) .*?(?:completion|finished|complete|end|done)[^.]*\./i,
-    /^(?:I'll|I will) (?:now|just|simply) (?:respond|answer|provide)[^.]*\./i,
-    /^(?:I hope|I trust|I believe) (?:this|that|my|the) (?:response|answer|information|explanation) (?:is|was|has been)[^.]*\./i,
-
-    // Phrases that acknowledge instructions
-    /^As (?:instructed|requested|per your request|mentioned in the instructions)[^.]*\./i,
-    /^Following (?:your|the) instructions[^.]*\./i,
-    /^According to (?:your|the) instructions[^.]*\./i,
-
-    // Stock response beginnings
-    /^(?:I'd be happy to|I'll help you with that|Sure,? (?:I can|here's|let me)|Certainly)[^.]*\./i,
-    /^(?:Here is|Here's|Below is|The following is)[^.]*\./i,
-    /^(?:Let me|I will|I'll) (?:provide|give|share|offer)[^.]*\./i
-  ];
-
-  // Apply each beginning pattern replacement (for full sentences)
-  let cleaned = text;
-  for (const pattern of beginningPatterns) {
-    const match = cleaned.match(pattern);
-    if (match) {
-      const restIndex = cleaned.indexOf('.', match[0].length - 1);
-      if (restIndex > 0) {
-        cleaned = cleaned.substring(restIndex + 1).trim();
-      }
-    }
-  }
-
-  // 1b. Handle simple Assistant prefixes (just strip the prefix, don't kill the sentence)
-  const prefixPatterns = [
-    /^(###\s*)?((assistant|ai|bot|claude|llm|chatbot|gpt|model):\s*)/i,
-    /^\*\*\s*assistant\s*\*\*\s*:/i
-  ];
-
-  for (const pattern of prefixPatterns) {
-    cleaned = cleaned.replace(pattern, "");
-  }
-
-  // 2. Handle mid-text assistant interruptions and meta-commentary
-  // These regex patterns target common formats of assistant interruptions
-  const midTextPatterns = [
-    /\n\s*\*\*\s*assistant\s*\*\*\s*:/gi,  // Bold with newline: \n**Assistant:**
-    /\n\s*\*\s*assistant\s*\*\s*:/gi,      // Italic with newline: \n*Assistant:*
-    /\n\s*(###)?\s*(assistant|ai|bot|claude|llm|chatbot|gpt|model):\s*/gi, // Plain or with ###
-    /\n\s*\[\s*(assistant|ai|bot|claude|llm|chatbot|gpt|model)\s*\]:\s*/gi, // [Assistant]:
-    // Mid-text meta-commentary
-    /\n\s*(?:to signal|to indicate|to mark|to show|to let you know|to ensure) (?:completion|that I'm done|I've finished|the end)[^.]*\./gi
-  ];
-
-  // Apply each pattern replacement
-  midTextPatterns.forEach(pattern => {
-    cleaned = cleaned.replace(pattern, "\n");
-  });
-
-  // 3. Truncate at any user/human markers (indicating a new turn)
-  const userMarkers = [
-    /###\s*user:/i,
-    /\n+user:/i,
-    /\n+human:/i,
-    /<user>/i,
-    /\n+---\s*\n+/,  // Section dividers often used to separate turns
-    /\n*\[user\]:/i,
-    /\*\*user\*\*:/i  // Bold markdown user marker
-  ];
-
-  for (const marker of userMarkers) {
-    const match = cleaned.match(marker);
-    if (match && match.index !== undefined) {
-      cleaned = cleaned.substring(0, match.index).trim();
-    }
-  }
-
-  // 4. Remove trailing continuation markers and meta-commentary endings
-  const trailingPatterns = [
-    // Standard continuation markers
-    /###\.\.\.$/m,                       // "###..."
-    /\.\.\.$/m,                          // "..."
-    /###\s*$/m,                          // "###" with optional whitespace
-    /continue\s*(>>>|→|—|-->|→→→)$/i,    // "continue >>>" or similar
-    /\[continue\]$/i,                    // "[continue]"
-
-    // Meta-commentary endings
-    /\s*(?:Is there anything else|Do you need|Let me know|Hope this helps|If you have any).*?$/i,
-    /\s*Please feel free to.*?$/i,
-    /\s*Don't hesitate to.*?$/i,
-    /\s*I'm here to.*?$/i,
-    /\s*(?:to indicate|to signal|to mark|to show) (?:completion|the end|that I'm done|I've finished).*?$/i
-  ];
-
-  trailingPatterns.forEach(pattern => {
-    cleaned = cleaned.replace(pattern, "");
-  });
-
-  // 5. Remove XML-like tags that some models generate
-  cleaned = cleaned.replace(/<\/?assistant>|<\/?ai>|<\/?response>|<\/?answer>|<\/?completion>/g, "");
-
-  // 6. Normalize whitespace - collapse multiple newlines to max 2
-  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
-
-  // 7. Trim leading/trailing whitespace
-  cleaned = cleaned.trim();
-
-  return cleaned;
+  // For normal chat, return the raw text with minimal changes so we don't
+  // accidentally strip headings, sections, or other useful content.
+  return String(text);
 }
 
 /**
@@ -171,8 +60,8 @@ function cleanDualChatOutput(text) {
     }
   }
 
-  // 2. Remove thinking sections
-  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/g, "");
+  // 2. Remove thinking sections (same tag variants as chat stream parser)
+  cleaned = stripThinkTags(cleaned);
 
   // 3. Remove The Assistant markers with enhanced patterns
   const assistantMarkerPatterns = [

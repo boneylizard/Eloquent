@@ -65,18 +65,28 @@ class StreamingTTSQueue {
 
   // --- THIS IS THE NEW, CORRECTED CHUNKING LOGIC ---
   processBuffer() {
-    // Find the position of the FIRST sentence-ending punctuation mark.
-    const sentenceEndRegex = /[.!?]/;
-    const match = this.textBuffer.match(sentenceEndRegex);
+    // Find the position of the FIRST sentence-ending punctuation mark,
+    // but ignore decimal points inside numbers (e.g., "3.2").
+    let splitPoint = -1;
+    for (let i = 0; i < this.textBuffer.length; i += 1) {
+      const ch = this.textBuffer[i];
+      if (ch === '!' || ch === '?') {
+        splitPoint = i + 1;
+        break;
+      }
+      if (ch === '.') {
+        const prev = this.textBuffer[i - 1] || '';
+        const next = this.textBuffer[i + 1] || '';
+        const isDecimal = /\d/.test(prev) && /\d/.test(next);
+        if (!isDecimal) {
+          splitPoint = i + 1;
+          break;
+        }
+      }
+    }
 
-    // If we found a punctuation mark
-    if (match && match.index > 0) {
-      const splitPoint = match.index + 1;
-      
-      // The chunk to process is everything from the beginning to that point.
+    if (splitPoint > 0) {
       const chunkToProcess = this.textBuffer.substring(0, splitPoint).trim();
-      
-      // CRITICALLY: Remove the processed chunk from the start of the buffer.
       this.textBuffer = this.textBuffer.substring(splitPoint);
 
       if (chunkToProcess) {

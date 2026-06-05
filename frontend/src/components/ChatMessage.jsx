@@ -1,6 +1,7 @@
-import React, { memo, useState, useEffect } from 'react';
+import React, { memo, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Loader2, X, PlayCircle as PlayIcon, RotateCcw } from 'lucide-react';
+import { Loader2, X, PlayCircle as PlayIcon, FastForward, Pause, RotateCcw, Cpu } from 'lucide-react';
+import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkSoftBreaks from '@/utils/remarkSoftBreaks';
@@ -9,7 +10,52 @@ import { cn } from '@/lib/utils';
 import SimpleChatImageMessage from './SimpleChatImageMessage';
 import CodeBlock from './CodeBlock';
 import MessageEditField from './MessageEditField';
+import CharacterAvatarMedia from './CharacterAvatarMedia';
+import ThinkingBlock from './ThinkingBlock';
+import { resolveMessageThinkDisplay } from '../utils/thinkStreamParser';
 import { getBackendUrl } from '../config/api';
+import { getActiveCharacterAvatar, resolveAvatarDisplayUrl } from '../utils/characterAvatars';
+import { resolveBotMessageSpeaker, resolveEndpointDisplay } from '../utils/resolveEndpointDisplay';
+
+/** ~66–70 characters per line — comfortable eye-scan width without full-screen lines. */
+const CHAT_READING_MEASURE = '70ch';
+const CHAT_MESSAGE_GAP = '0.75rem';
+
+function chatBubbleWidth(avatarPx) {
+    return `min(100%, calc(${CHAT_READING_MEASURE} + ${avatarPx}px + ${CHAT_MESSAGE_GAP}))`;
+}
+
+function AvatarRing({ sizePx, url, alt, fallbackLabel, fallbackIcon, videoKey, className = '' }) {
+    const ringStyle = { width: sizePx, height: sizePx };
+    const fallbackContent = fallbackIcon || fallbackLabel;
+  const fallbackClass = fallbackIcon
+    ? 'text-lg leading-none'
+    : 'text-sm font-semibold text-muted-foreground';
+    return (
+        <div
+            className={cn(
+                'shrink-0 overflow-hidden rounded-full border border-gray-300 dark:border-gray-600 bg-muted',
+                className
+            )}
+            style={ringStyle}
+            title={alt}
+        >
+            {url ? (
+                <CharacterAvatarMedia
+                    url={url}
+                    alt={alt}
+                    fit="cover"
+                    className="h-full w-full object-cover"
+                    videoKey={videoKey || url}
+                />
+            ) : (
+                <div className={cn('flex h-full w-full items-center justify-center', fallbackClass)}>
+                    {fallbackContent}
+                </div>
+            )}
+        </div>
+    );
+}
 
 const ChatMessage = memo(({
     msg,
@@ -17,10 +63,17 @@ const ChatMessage = memo(({
     isGenerating,
     isTranscribing,
     isPlayingAudio,
+    isStreamingTtsPaused,
     editingMessageId,
     editingBotMessageId,
     primaryCharacter,
     secondaryCharacter,
+    activeCharacter,
+    characters,
+    primaryModel,
+    primaryIsAPI,
+    settings,
+    nanoGptCatalog,
     userProfile,
     userCharacter,
     isMultiRoleMode,
@@ -33,7 +86,6 @@ const ChatMessage = memo(({
     isRegenerationRunning,
     ttsEnabled,
 
-    // Handlers
     onEditUserMessage,
     onCancelEdit,
     onSaveEditedMessage,
@@ -44,57 +96,58 @@ const ChatMessage = memo(({
     onCancelBotEdit,
     onSaveBotMessage,
     onGenerateVariant,
+    onGenerateVariantWithModel,
     onContinueGeneration,
     onNavigateVariant,
     onSpeakerClick,
+    onChunkedSpeakerClick,
     onRegenerateImage,
     onCancelRegenerations,
 
     formatModelName,
 }) => {
-    // --- Avatar Rendering Logic ---
-    const renderAvatar = (message, apiUrl, activeCharacter) => {
-        const avatarSource = message.avatar || (message.role === 'bot' && !message.characterId && activeCharacter?.avatar);
-        const characterName = message.characterName
-            || (message.role === 'bot' && activeCharacter?.name)
-            || 'activeCharacter';
+    const showDiagnostics = settings?.showReasoningDiagnostics === true;
+    const [thinkingOpen, setThinkingOpen] = useState(false);
 
-        // Responsive avatar size: smaller on mobile unless overridden
-        const sizeStyle = {
-            width: `${characterAvatarSize}px`,
-            height: `${characterAvatarSize}px`
-        };
+    const botThinkDisplay = useMemo(() => {
+        if (msg.role !== 'bot') return null;
+        return resolveMessageThinkDisplay(content, msg?.reasoningText);
+    }, [msg.role, content, msg?.reasoningText]);
 
-        let displayUrl = null;
-        if (avatarSource) {
-            if (avatarSource.startsWith('/')) {
-                displayUrl = `${apiUrl || getBackendUrl()}${avatarSource}`;
-            } else {
-                displayUrl = avatarSource;
-            }
-        }
+    const displayContent = botThinkDisplay ? botThinkDisplay.visibleContent : content;
+    const displayReasoning = botThinkDisplay ? botThinkDisplay.reasoningText : '';
+    const botSpeakerCtx = {
+        characters,
+        activeCharacter,
+        primaryCharacter,
+        secondaryCharacter,
+        primaryModel,
+        primaryIsAPI,
+        settings,
+        catalog: nanoGptCatalog,
+        getActiveCharacterAvatar,
+    };
 
-        if (displayUrl) {
-            return (
-                <img
-                    src={displayUrl}
-                    alt={`${characterName || '?'}`}
-                    onError={(e) => { e.target.style.display = 'none'; }}
-                    className="rounded-full object-cover border border-gray-300 dark:border-gray-600 flex-shrink-0"
-                    style={sizeStyle}
-                />
-            );
-        } else {
-            return (
-                <div
-                    title={characterName || '?'}
-                    className="rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-sm font-semibold text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 flex-shrink-0"
-                    style={sizeStyle}
-                >
-                    {characterName ? characterName.charAt(0).toUpperCase() : '?'}
-                </div>
-            );
-        }
+    const resolveBotSpeaker = (message) =>
+        resolveBotMessageSpeaker(message, botSpeakerCtx);
+
+    const renderAvatar = (message, apiUrl) => {
+        const speaker = resolveBotSpeaker(message);
+        const displayUrl = resolveAvatarDisplayUrl(speaker.avatarUrl, apiUrl || getBackendUrl());
+        const fallbackIcon = !displayUrl && speaker.icon ? speaker.icon : null;
+        const fallbackLabel = !fallbackIcon && speaker.displayName
+            ? speaker.displayName.charAt(0).toUpperCase()
+            : '?';
+        return (
+            <AvatarRing
+                sizePx={characterAvatarSize}
+                url={displayUrl}
+                alt={speaker.displayName}
+                fallbackLabel={fallbackLabel}
+                fallbackIcon={fallbackIcon}
+                videoKey={`${message.id}-${displayUrl || speaker.icon || 'fallback'}`}
+            />
+        );
     };
 
     const renderUserAvatar = (message) => {
@@ -105,307 +158,274 @@ const ChatMessage = memo(({
         const userName = isMultiRoleMode && message?.characterId
             ? (message?.characterName || userCharacter?.name || 'User')
             : (userProfile?.name || userProfile?.username || 'User');
-        let userDisplayUrl = null;
-
-        // Responsive avatar size logic similar to character avatar
-        const userSizeStyle = {
-            width: `${userAvatarSize}px`,
-            height: `${userAvatarSize}px`
-        };
-
-        if (userAvatarSource) {
-            userDisplayUrl = userAvatarSource.startsWith('/')
-                ? `${PRIMARY_API_URL || getBackendUrl()}${userAvatarSource}`
-                : userAvatarSource;
-        }
-
-        if (userDisplayUrl) {
-            return (
-                <img
-                    src={userDisplayUrl}
-                    alt={`${userName}'s avatar`}
-                    title={userName}
-                    onError={(e) => { e.target.style.display = 'none'; }}
-                    className="rounded-full object-cover border border-gray-300 dark:border-gray-600 flex-shrink-0"
-                    style={userSizeStyle}
-                />
-            );
-        } else {
-            return (
-                <div
-                    title={userName}
-                    className="rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-semibold flex-shrink-0 border border-primary/50"
-                    style={userSizeStyle}
-                >
-                    {userName ? userName.charAt(0).toUpperCase() : 'U'}
-                </div>
-            );
-        }
+        const userDisplayUrl = resolveAvatarDisplayUrl(userAvatarSource, PRIMARY_API_URL || getBackendUrl());
+        return (
+            <AvatarRing
+                sizePx={userAvatarSize}
+                url={userDisplayUrl}
+                alt={userName}
+                fallbackLabel={userName ? userName.charAt(0).toUpperCase() : 'U'}
+                videoKey={`user-${message?.id || 'profile'}-${userDisplayUrl || 'fallback'}`}
+                className="border-primary/50"
+            />
+        );
     };
 
-    // --- Image Message Rendering ---
+    const botBubbleWidth = chatBubbleWidth(characterAvatarSize);
+    const userBubbleWidth = chatBubbleWidth(userAvatarSize);
+    const textColClass = 'min-w-0 flex-1 basis-0';
+    const textColStyle = { maxWidth: CHAT_READING_MEASURE, width: '100%' };
+    const rowLayoutClass = 'flex items-start gap-2 md:gap-3 max-w-full';
+
     if (msg.type === 'image' || msg.type === 'video') {
         return (
             <div
                 className={cn(
-                    "my-3 p-2 md:p-3 rounded-lg flex items-start gap-2 md:gap-3 shadow-sm",
-                    msg.role === 'user' ? 'bg-primary/10 justify-end ml-2 md:ml-10' : 'bg-secondary mr-2 md:mr-10'
+                    'my-3 rounded-lg p-2 shadow-sm md:p-3 max-w-full',
+                    rowLayoutClass,
+                    msg.role === 'user' ? 'ml-auto bg-primary/10' : 'bg-secondary'
                 )}
+                style={{ width: msg.role === 'user' ? userBubbleWidth : botBubbleWidth }}
             >
-                {msg.role !== 'user' && renderAvatar(msg, PRIMARY_API_URL, msg.modelId === 'primary' ? primaryCharacter : secondaryCharacter)}
-
-                <div className={cn("flex-1 min-w-0", msg.role === 'user' ? 'order-first' : '')}>
-                    <SimpleChatImageMessage message={msg} onRegenerate={onRegenerateImage} regenerationQueue={regenerationQueue} onCancelRegenerations={onCancelRegenerations} isRegenerationRunning={isRegenerationRunning} />
+                {msg.role !== 'user' && renderAvatar(msg, PRIMARY_API_URL)}
+                <div className={textColClass} style={textColStyle}>
+                    <SimpleChatImageMessage
+                        message={msg}
+                        onRegenerate={onRegenerateImage}
+                        regenerationQueue={regenerationQueue}
+                        onCancelRegenerations={onCancelRegenerations}
+                        isRegenerationRunning={isRegenerationRunning}
+                    />
                 </div>
-
                 {msg.role === 'user' && renderUserAvatar(msg)}
-            </div >
+            </div>
         );
     }
 
-    // --- Regular Message Rendering ---
+    const isSystem = msg.role === 'system';
+
+    const renderReasoningDiagnostics = (message) => {
+        if (!showDiagnostics || message.role !== 'bot') return null;
+
+        const capOn =
+            message?.reasoningEnabled === true ||
+            message?.reasoningCapabilitySource === 'inline';
+        let capSource = 'none';
+        if (message?.reasoningCapabilitySource === 'inline') {
+            capSource = 'inline';
+        } else if (primaryIsAPI && primaryModel) {
+            try {
+                const resolved = resolveEndpointDisplay(primaryModel, settings, nanoGptCatalog);
+                if (resolved?.capabilitySource) {
+                    capSource = resolved.capabilitySource;
+                }
+            } catch {
+                // ignore resolution errors in debug UI
+            }
+        }
+
+        const hasContent = typeof displayContent === 'string' && displayContent.length > 0;
+        const hasReasoningText =
+            typeof displayReasoning === 'string' && displayReasoning.trim().length > 0;
+
+        let sseStatus = 'none';
+        if (hasReasoningText) sseStatus = 'reasoning';
+        else if (hasContent) sseStatus = 'content';
+
+        const uiRendered = message?.reasoningEnabled === true &&
+            (message?.reasoningStreaming || hasReasoningText);
+        const uiStatus = uiRendered ? (thinkingOpen ? 'open' : 'closed') : 'hidden';
+
+        return (
+            <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono text-muted-foreground/80">
+                <span className="uppercase tracking-[0.16em] text-muted-foreground/90">
+                    Reasoning status
+                </span>
+                <span>
+                    CAP: {capOn ? 'on' : 'off'}
+                    {capOn && capSource !== 'none' ? ` (${capSource})` : ''}
+                </span>
+                <span>SSE: {sseStatus}</span>
+                <span>UI: {uiStatus}</span>
+            </div>
+        );
+    };
+
+  const messageBody = (
+    <div className={cn('relative w-full', textColClass)} style={textColStyle}>
+      {msg.role === 'user' ? (
+        editingMessageId === msg.id ? (
+          <MessageEditField
+            initialValue={msg.content}
+            messageId={msg.id}
+            onSave={onSaveEditedMessage}
+            onCancel={onCancelEdit}
+            onSaveAndRegenerate={onRegenerateFromEditedPrompt}
+            rows={3}
+            saveLabel="Save"
+            showSaveAndRegenerate
+            disabledSaveAndRegenerate={isGenerating}
+          />
+        ) : (
+          <div className="group relative w-full">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">You</span>
+              <div className="relative z-10 flex gap-1 opacity-100 transition-opacity md:opacity-0 group-hover:opacity-100">
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onEditUserMessage(msg.id)} title="Edit message">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                </Button>
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onRegenerateFromEditedPrompt(msg.id)} disabled={isGenerating} title="Regenerate from this message">
+                  <RotateCcw size={12} />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30" onClick={() => onDeleteMessage(msg.id)} disabled={isGenerating} title="Delete message">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </Button>
+              </div>
+            </div>
+            <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]} className="prose prose-sm dark:prose-invert chat-prose max-w-none w-full break-words">
+              {msg.content}
+            </ReactMarkdown>
+          </div>
+        )
+      ) : (
+        <>
+          {msg.role === 'bot' && (
+            <>
+              <ThinkingBlock
+                enabled={msg?.reasoningEnabled === true}
+                reasoningText={displayReasoning || ''}
+                streaming={msg?.reasoningStreaming === true}
+                startedAtMs={msg?.reasoningStartedAtMs ?? null}
+                finishedSeconds={typeof msg?.reasoningSeconds === 'number' ? msg.reasoningSeconds : null}
+                onOpenChange={setThinkingOpen}
+              />
+              {renderReasoningDiagnostics(msg)}
+            </>
+          )}
+          {msg.role === 'bot' && (
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
+              <span>{resolveBotSpeaker(msg).displayName}</span>
+              <div className="relative z-10 flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 group-hover:opacity-100">
+                {ttsEnabled && (
+                  <>
+                    <Button variant={isPlayingAudio === msg.id ? 'destructive' : 'ghost'} size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onSpeakerClick(msg.id, displayContent)} disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== msg.id)} title="Play full message TTS">
+                      {isPlayingAudio === msg.id ? <Loader2 className="animate-spin" size={12} /> : <PlayIcon size={12} />}
+                    </Button>
+                    <Button variant={isPlayingAudio === msg.id ? (isStreamingTtsPaused ? 'secondary' : 'destructive') : 'ghost'} size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onChunkedSpeakerClick(msg.id, displayContent)} disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== msg.id)} title="Play chunked TTS">
+                      {isPlayingAudio === msg.id ? (isStreamingTtsPaused ? <PlayIcon size={12} /> : <Pause size={12} />) : <FastForward size={12} />}
+                    </Button>
+                  </>
+                )}
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onEditBotMessage(msg.id)} disabled={isGenerating || editingBotMessageId === msg.id} title="Edit AI response">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                </Button>
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onGenerateVariant(msg.id)} disabled={isGenerating || isTranscribing} title="Regenerate">
+                  <RotateCcw size={16} />
+                </Button>
+                {primaryIsAPI && typeof onGenerateVariantWithModel === 'function' && (
+                  <NanoGptModelSelectorPopover
+                    className="inline-flex"
+                    compact
+                    showAutoRoutingToggle={false}
+                    updatePrimaryOnSelect={false}
+                    currentModelId={primaryModel}
+                    primaryApiUrl={PRIMARY_API_URL}
+                    onSelectModelId={(endpointId) => onGenerateVariantWithModel(msg.id, endpointId)}
+                    trigger={({ setOpen, open }) => (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 md:h-6 md:w-6"
+                        disabled={isGenerating || isTranscribing}
+                        title="Regenerate with model…"
+                        onClick={() => setOpen(!open)}
+                        aria-expanded={open}
+                      >
+                        <Cpu size={14} />
+                      </Button>
+                    )}
+                  />
+                )}
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onContinueGeneration(msg.id)} disabled={isGenerating || isTranscribing} title="Continue response">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9,18 15,12 9,6" /></svg>
+                </Button>
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30" onClick={() => onDeleteMessage(msg.id)} disabled={isGenerating} title="Delete message">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </Button>
+              </div>
+            </div>
+          )}
+          <div className="group relative w-full">
+            {editingBotMessageId === msg.id ? (
+              <MessageEditField initialValue={content} messageId={msg.id} onSave={onSaveBotMessage} onCancel={onCancelBotEdit} rows={6} saveLabel="Save Edit" className="mb-2" textareaClassName="min-h-[120px]" />
+            ) : (
+              <>
+                {msg.role === 'bot' && variantCount > 1 && (
+                  <div className="mb-2 flex items-center justify-between rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
+                    <button type="button" onClick={() => onNavigateVariant(msg.id, 'prev')} className="hover:text-foreground">← Previous</button>
+                    <span>{variantIndex + 1} of {variantCount}</span>
+                    <button type="button" onClick={() => onNavigateVariant(msg.id, 'next')} className="hover:text-foreground">Next →</button>
+                  </div>
+                )}
+                {msg.role === 'bot' && Array.isArray(msg.webSearchSources) && msg.webSearchSources.length > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-1" role="list" aria-label="Web search sources">
+                    {msg.webSearchSources.map((s, i) => (
+                      <a
+                        key={s.url || `src-${i}`}
+                        href={s.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        role="listitem"
+                        className="inline-flex max-w-[14rem] truncate rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[10px] text-blue-600 dark:text-blue-400 hover:underline"
+                        title={s.url}
+                      >
+                        [{i + 1}] {s.title || 'Source'}
+                      </a>
+                    ))}
+                  </div>
+                )}
+                {msg.error ? (
+                  <div className="group relative rounded border border-red-200 bg-red-100 p-3 pr-8 dark:border-red-900 dark:bg-red-900/30">
+                    <div className="break-words text-sm font-medium text-red-600 dark:text-red-400 whitespace-pre-wrap">{msg.content}</div>
+                    <button type="button" onClick={() => onDeleteMessage(msg.id)} className="absolute right-2 top-2 rounded-full p-1 text-red-500 opacity-100 transition-colors hover:bg-red-200 md:opacity-0 group-hover:opacity-100 dark:hover:bg-red-900/50" title="Dismiss error">
+                      <X size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]} className="prose prose-sm dark:prose-invert chat-prose max-w-none w-full break-words">
+                    {displayContent}
+                  </ReactMarkdown>
+                )}
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+    if (isSystem) {
+        return (
+            <div className="message-bubble mx-auto my-2 max-w-[95%] rounded-lg p-2 text-center shadow-sm md:my-3 md:max-w-[80%] md:p-3">
+                {messageBody}
+            </div>
+        );
+    }
+
     return (
         <div
             className={cn(
-                "my-2 md:my-3 p-2 md:p-3 flex items-start gap-2 md:gap-3 shadow-sm group transition-all duration-200 message-bubble",
+                'message-bubble group my-2 p-2 shadow-sm transition-all duration-200 md:my-3 md:p-3',
+                rowLayoutClass,
                 msg.role === 'user'
-                    ? 'bg-secondary text-secondary-foreground justify-end ml-2 md:ml-10 border border-transparent'
-                    : msg.role === 'system'
-                        ? 'bg-yellow-100 dark:bg-yellow-900/20 text-center mx-auto max-w-[95%] md:max-w-[80%] rounded-lg'
-                        : 'bg-muted text-muted-foreground mr-2 md:mr-10 border border-border'
+                    ? 'ml-auto border border-transparent bg-secondary text-secondary-foreground'
+                    : 'border border-border bg-muted text-muted-foreground'
             )}
-            style={msg.role !== 'system' ? { borderRadius: 'var(--radius)' } : {}}
+            style={{ borderRadius: 'var(--radius)', width: msg.role === 'user' ? userBubbleWidth : botBubbleWidth }}
         >
-            {msg.role !== 'user' && renderAvatar(msg, PRIMARY_API_URL, msg.modelId === 'primary' ? primaryCharacter : secondaryCharacter)}
-
-            {/* Added min-w-0 here to fix flexbox overflow on mobile */}
-            <div className={cn("flex-1 relative min-w-0", msg.role === 'user' ? 'order-first' : '')}>
-                {/* USER MESSAGE EDIT FUNCTIONALITY */}
-                {msg.role === 'user' ? (
-                    editingMessageId === msg.id ? (
-                        <MessageEditField
-                            initialValue={msg.content}
-                            messageId={msg.id}
-                            onSave={onSaveEditedMessage}
-                            onCancel={onCancelEdit}
-                            onSaveAndRegenerate={onRegenerateFromEditedPrompt}
-                            rows={3}
-                            saveLabel="Save"
-                            showSaveAndRegenerate
-                            disabledSaveAndRegenerate={isGenerating}
-                        />
-                    ) : (
-                        // Display mode for user messages with edit button
-                        <div className="relative group">
-                            <div className="flex items-center justify-between mb-1">
-                                <span className="text-xs text-muted-foreground font-medium">You</span>
-                                <div className="flex gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10 relative">
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-9 w-9 md:h-6 md:w-6"
-                                        onClick={() => onEditUserMessage(msg.id)}
-                                        title="Edit message"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                            <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                        </svg>
-                                    </Button>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-9 w-9 md:h-6 md:w-6"
-                                        onClick={() => onRegenerateFromEditedPrompt(msg.id)}
-                                        disabled={isGenerating}
-                                        title="Regenerate from this message"
-                                    >
-                                        <RotateCcw size={12} />
-                                    </Button>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
-                                        onClick={() => onDeleteMessage(msg.id)}
-                                        disabled={isGenerating}
-                                        title="Delete message"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <line x1="18" y1="6" x2="6" y2="18" />
-                                            <line x1="6" y1="6" x2="18" y2="18" />
-                                        </svg>
-                                    </Button>
-                                </div>
-                            </div>
-                            <ReactMarkdown
-                                components={{ code: CodeBlock }}
-                                remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]}
-                                className="prose prose-sm dark:prose-invert max-w-none break-words chat-prose"
-                            >
-                                {msg.content}
-                            </ReactMarkdown>
-                        </div>
-                    )
-                ) : (
-                    /* BOT/SYSTEM MESSAGE RENDERING */
-                    <>
-                        {msg.role === 'bot' && (
-                            <div className="text-xs text-muted-foreground mb-1 font-medium flex items-center justify-between flex-wrap gap-2">
-                                <span>{msg.characterName || (msg.modelName ? formatModelName(msg.modelName) : "Assistant")}</span>
-
-                                <div className="flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10 relative">
-                                    {/* Per-message TTS button for non-user messages */}
-                                    {ttsEnabled && msg.role !== 'user' && msg.role !== 'system' && (
-                                        <Button
-                                            variant={isPlayingAudio === msg.id ? "destructive" : "ghost"}
-                                            size="icon"
-                                            className="h-9 w-9 md:h-6 md:w-6"
-                                            onClick={() => onSpeakerClick(msg.id, content)}
-                                            disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== msg.id)}
-                                        >
-                                            {isPlayingAudio === msg.id ? (
-                                                <Loader2 className="animate-spin" size={12} />
-                                            ) : (
-                                                <PlayIcon size={12} />
-                                            )}
-                                        </Button>
-                                    )}
-
-                                    {/* Edit button for bot messages */}
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-9 w-9 md:h-6 md:w-6"
-                                        onClick={() => onEditBotMessage(msg.id)}
-                                        disabled={isGenerating || editingBotMessageId === msg.id}
-                                        title="Edit AI response"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                            <path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                        </svg>
-                                    </Button>
-
-                                    {/* Regenerate button */}
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-9 w-9 md:h-6 md:w-6"
-                                        onClick={() => onGenerateVariant(msg.id)}
-                                        disabled={isGenerating || isTranscribing}
-                                        title="Generate variant"
-                                    >
-                                        <RotateCcw size={16} />
-                                    </Button>
-
-                                    {/* Continue button */}
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-9 w-9 md:h-6 md:w-6"
-                                        onClick={() => onContinueGeneration(msg.id)}
-                                        disabled={isGenerating || isTranscribing}
-                                        title="Continue response"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <polyline points="9,18 15,12 9,6" />
-                                        </svg>
-                                    </Button>
-
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30"
-                                        onClick={() => onDeleteMessage(msg.id)}
-                                        disabled={isGenerating}
-                                        title="Delete message"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <line x1="18" y1="6" x2="6" y2="18" />
-                                            <line x1="6" y1="6" x2="18" y2="18" />
-                                        </svg>
-                                    </Button>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="relative group">
-                            {/* Show edit mode if this message is being edited */}
-                            {editingBotMessageId === msg.id ? (
-                                <MessageEditField
-                                    initialValue={content}
-                                    messageId={msg.id}
-                                    onSave={onSaveBotMessage}
-                                    onCancel={onCancelBotEdit}
-                                    rows={6}
-                                    saveLabel="Save Edit"
-                                    className="mb-2"
-                                    textareaClassName="min-h-[120px]"
-                                />
-                            ) : (
-                                <>
-                                    {/* Variant navigation - only show if there are multiple variants */}
-                                    {msg.role === 'bot' && variantCount > 1 && (
-                                        <div className="flex items-center justify-between mb-2 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded">
-                                            <button
-                                                onClick={() => onNavigateVariant(msg.id, 'prev')}
-                                                className="hover:text-foreground"
-                                            >
-                                                ← Previous
-                                            </button>
-                                            <span>
-                                                {variantIndex + 1} of {variantCount}
-                                            </span>
-                                            <button
-                                                onClick={() => onNavigateVariant(msg.id, 'next')}
-                                                className="hover:text-foreground"
-                                            >
-                                                Next →
-                                            </button>
-                                        </div>
-                                    )}
-
-                                    {msg.error ? (
-                                        <div className="bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-900 rounded p-3 relative pr-8 group">
-                                            <div className="text-sm text-red-600 dark:text-red-400 font-medium whitespace-pre-wrap break-words">
-                                                {msg.content}
-                                            </div>
-                                            <button
-                                                onClick={() => onDeleteMessage(msg.id)}
-                                                className="absolute top-2 right-2 p-1 text-red-500 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-full transition-colors opacity-100 md:opacity-0 group-hover:opacity-100"
-                                                title="Dismiss error"
-                                            >
-                                                <X size={14} />
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <ReactMarkdown
-                                            components={{ code: CodeBlock }}
-                                            remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]}
-                                            className="prose prose-sm dark:prose-invert max-w-none break-words chat-prose"
-                                        >
-                                            {content}
-                                        </ReactMarkdown>
-                                    )}
-                                </>
-                            )}
-                        </div>
-                    </>
-                )}
-            </div>
-            {!msg.error && msg.role === 'system' && (
-                <button
-                    onClick={() => onDeleteMessage(msg.id)}
-                    className="absolute -right-6 top-1/2 transform -translate-y-1/2 p-1 text-muted-foreground hover:text-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Delete system message"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18" />
-                        <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                </button>
-            )}
-
+            {msg.role !== 'user' && renderAvatar(msg, PRIMARY_API_URL)}
+            {messageBody}
             {msg.role === 'user' && renderUserAvatar(msg)}
         </div>
     );

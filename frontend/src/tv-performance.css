@@ -1,0 +1,101 @@
+/**
+ * Eloquent — TV / projector / low-power embedded browsers (e.g. Browsehere on Android TV).
+ * Activated when <html> has class `tv-performance` (see tvPerformanceMode.js).
+ */
+
+html.tv-performance {
+  font-size: 112.5%;
+}
+
+@media (min-width: 1400px) {
+  html.tv-performance {
+    font-size: 122%;
+  }
+}
+
+html.tv-performance body {
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+/* backdrop-filter is often very expensive on TV GPUs / compositors */
+html.tv-performance *,
+html.tv-performance *::before,
+html.tv-performance *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Tone down heavy Tailwind shadows (still readable, cheaper to paint) */
+html.tv-performance :where(
+  .shadow-sm,
+  .shadow,
+  .shadow-md,
+  .shadow-lg,
+  .shadow-xl,
+  .shadow-2xl
+) {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2) !important;
+}
+
+html.tv-performance {
+  --shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.tv-performance *,
+  html.tv-performance *::before,
+  html.tv-performance *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Remote / D-pad focus visibility */
+html.tv-performance :focus-visible {
+  outline: 3px solid var(--ring, #38bdf8);
+  outline-offset: 3px;
+}
+
+/* Android TV browsers often still run a hover model with remote pointers.
+   Neutralize hover-only transforms/filters that cause extra repaint churn. */
+html.tv-performance :where(button, [role="button"], a, .card, [class*="hover:"]):hover {
+  transform: none !important;
+  filter: none !important;
+}
+
+/* Increase hit targets for TV remotes and air-mouse taps. */
+html.tv-performance :where(button, [role="button"], [type="button"], [type="submit"]) {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+html.tv-performance :where(input, textarea, select) {
+  min-height: 42px;
+  font-size: 1rem;
+}
+
+/* Keep content away from screen edges/overscan areas. */
+html.tv-performance body > #root {
+  padding-left: max(8px, env(safe-area-inset-left));
+  padding-right: max(8px, env(safe-area-inset-right));
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Extra constraints for Android TV WebView class. */
+html.tv-performance.tv-webview {
+  -webkit-text-size-adjust: 100%;
+}
+
+html.tv-performance.tv-webview * {
+  scroll-behavior: auto !important;
+}
+
+/* Sticky + blur combos are expensive on TV webviews; keep sticky but remove visual extras. */
+html.tv-performance.tv-webview :where([class*="sticky"], .sticky) {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}

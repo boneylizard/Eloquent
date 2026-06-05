@@ -9,6 +9,7 @@ import { Progress } from './ui/progress';
 import { AlertTriangle, Image, Loader2, X, Sparkles, Info, Video } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import * as Path from 'path-browserify';
+import { getActiveCharacterAvatar } from '../utils/characterAvatars';
 
 const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose }) => {
     const {
@@ -28,6 +29,13 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
     } = useApp();
 
     const [isDialogOpen, setIsDialogOpen] = useState(!!defaultOpen);
+
+    useEffect(() => {
+        const onOpen = () => setIsDialogOpen(true);
+        window.addEventListener('eloquent-open-chat-image', onOpen);
+        return () => window.removeEventListener('eloquent-open-chat-image', onOpen);
+    }, []);
+
     const [prompt, setPrompt] = useState('');
     const [negativePrompt, setNegativePrompt] = useState('');
     const [width, setWidth] = useState(512);
@@ -39,7 +47,6 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
     const [selectedSampler, setSelectedSampler] = useState("dpmpp2m");
     const [selectedGpuId, setSelectedGpuId] = useState(0);
     const [selectedScheduler, setSelectedScheduler] = useState("normal"); // ComfyUI scheduler
-    // AUTOMATIC1111 state
     const [selectedModel, setSelectedModel] = useState('');
     const [availableModels, setAvailableModels] = useState([]);
 
@@ -350,7 +357,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
             fetchAdetailerModels(); // NEW: Fetch ADetailer models
         }
     }, [isDialogOpen, checkSdStatus, checkLocalSdStatus, fetchLocalModels, checkAdetailerStatus, fetchAdetailerModels]);
-    const imageEngine = settings?.imageEngine || 'auto1111';
+    const imageEngine = settings?.imageEngine || 'EloDiffusion';
     const isLocalEngine = imageEngine === 'EloDiffusion';
     const isAvailable = imageEngine === 'EloDiffusion'
         ? localSdStatus?.available
@@ -358,12 +365,12 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
             ? sdStatus?.comfyui
             : imageEngine === 'nanogpt'
                 ? true
-                : sdStatus?.automatic1111;
+                : false;
     const isModelLoadedForSelectedGpu = imageEngine === 'EloDiffusion'
         ? Boolean(localSdStatus.loaded_models && localSdStatus.loaded_models[selectedGpuId])
         : imageEngine === 'comfyui' || imageEngine === 'nanogpt'
             ? true // ComfyUI and NanoGPT don't require pre-loading
-            : sdStatus?.automatic1111;
+            : false;
     useEffect(() => {
         if (sdStatus?.models?.length) {
             setAvailableModels(sdStatus.models);
@@ -393,7 +400,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                         role: 'bot',
                         characterId: activeCharacter?.id,
                         characterName: activeCharacter?.name,
-                        avatar: activeCharacter?.avatar,
+                        avatar: getActiveCharacterAvatar(activeCharacter),
                         modelId: 'primary',
                         type: 'video', // NEW TYPE
                         content: prompt,
@@ -476,7 +483,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                         role: 'bot',
                         characterId: activeCharacter?.id,
                         characterName: activeCharacter?.name,
-                        avatar: activeCharacter?.avatar,
+                        avatar: getActiveCharacterAvatar(activeCharacter),
                         modelId: 'primary',
                         type: 'image',
                         content: prompt,
@@ -743,25 +750,6 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                                             ADetailer not available. Install with: <code className="bg-yellow-200 dark:bg-yellow-800 px-1 rounded">pip install ultralytics</code>
                                         </span>
                                     </div>
-                                </div>
-                            )}
-
-                            {/* A1111 model selection */}
-                            {imageEngine === 'auto1111' && sdStatus?.automatic1111 && availableModels.length > 0 && (
-                                <div className="space-y-2">
-                                    <Label htmlFor="sd-model" className="text-xs">Model</Label>
-                                    <select
-                                        id="sd-model"
-                                        value={selectedModel}
-                                        onChange={e => setSelectedModel(e.target.value)}
-                                        disabled={isImageGenerating}
-                                        className="w-full rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                                    >
-                                        {availableModels.map((m, i) => {
-                                            const name = m.model_name || m.title || m.name;
-                                            return <option key={i} value={name} className="bg-background text-foreground">{name}</option>;
-                                        })}
-                                    </select>
                                 </div>
                             )}
 

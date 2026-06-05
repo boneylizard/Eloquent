@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useMemory } from '../contexts/MemoryContext';
 import { useApp } from '../contexts/AppContext';
+import { fetchWithTimeout } from '../config/api';
 import ProfileSelector from './ProfileSelector';
+import MemoryCuratorPanel from './MemoryCuratorPanel';
 import './MemoryEditor.css';
 import { Input } from './ui/input';
 
@@ -16,7 +18,7 @@ const MEMORY_CATEGORIES = [
   'other'
 ];
 
-const MemoryEditor = ({ onClose }) => {
+const MemoryEditor = ({ onClose, hideCuratorPanels = false, memoryListRefreshKey = 0 }) => {
   const { 
     userProfile,
     activeProfileId,
@@ -24,7 +26,8 @@ const MemoryEditor = ({ onClose }) => {
   } = useMemory();
   
   // Get MEMORY_API_URL from AppContext
-  const { MEMORY_API_URL } = useApp();
+  const { MEMORY_API_URL, portsReady, storageHydrated, characters = [] } = useApp();
+  const apiReady = portsReady && storageHydrated;
   
   // Backend-only memory state
   const [memories, setMemories] = useState([]);
@@ -42,6 +45,9 @@ const MemoryEditor = ({ onClose }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [profileData, setProfileData] = useState({ ...userProfile });
+  const [duplicateInfo, setDuplicateInfo] = useState({ groups: 0, entries: 0 });
+  const [duplicateIndices, setDuplicateIndices] = useState(new Set());
+  const [isDuplicateBusy, setIsDuplicateBusy] = useState(false);
 
 
   // Fetch memories from backend
@@ -50,12 +56,19 @@ const MemoryEditor = ({ onClose }) => {
       setMemories([]);
       return;
     }
+    if (!apiReady) {
+      return;
+    }
 
     setIsLoadingMemories(true);
     setMemoryError(null);
     
     try {
-      const response = await fetch(`${MEMORY_API_URL}/memory/get_all?user_id=${activeProfileId}`);
+      const response = await fetchWithTimeout(
+        `${MEMORY_API_URL}/memory/get_all?user_id=${activeProfileId}`,
+        {},
+        25000
+      );
 
       if (!response.ok) {
         throw new Error(`Failed to fetch memories: ${response.status}`);
@@ -65,6 +78,8 @@ const MemoryEditor = ({ onClose }) => {
       
       if (data.status === 'success') {
         setMemories(data.memories || []);
+        setDuplicateInfo({ groups: 0, entries: 0 });
+        setDuplicateIndices(new Set());
         console.log(`Loaded ${data.memories?.length || 0} memories for profile ${activeProfileId}`);
       } else {
         throw new Error(data.detail || 'Failed to fetch memories');
@@ -76,12 +91,83 @@ const MemoryEditor = ({ onClose }) => {
     } finally {
       setIsLoadingMemories(false);
     }
+  }, [activeProfileId, MEMORY_API_URL, apiReady]);
+
+  const previewDuplicateMemories = useCallback(async () => {
+    if (!activeProfileId) {
+      alert('No active profile selected');
+      return;
+    }
+    setIsDuplicateBusy(true);
+    try {
+      const response = await fetch(`${MEMORY_API_URL}/memory/duplicates/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: activeProfileId })
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      const indices = Array.isArray(data.indices_to_remove) ? data.indices_to_remove : [];
+      setDuplicateIndices(new Set(indices));
+      setDuplicateInfo({
+        groups: Number(data.duplicate_groups) || 0,
+        entries: Number(data.duplicate_entries) || 0
+      });
+      if ((Number(data.duplicate_entries) || 0) === 0) {
+        alert('No direct duplicates found.');
+      }
+    } catch (error) {
+      console.error('Error previewing duplicates:', error);
+      alert(`Failed to preview duplicates: ${error.message}`);
+    } finally {
+      setIsDuplicateBusy(false);
+    }
   }, [activeProfileId, MEMORY_API_URL]);
+
+  const removeDuplicateMemories = useCallback(async () => {
+    if (!activeProfileId) {
+      alert('No active profile selected');
+      return;
+    }
+    if (!window.confirm('Remove all directly duplicate memory entries (keep first copy of each)?')) {
+      return;
+    }
+    setIsDuplicateBusy(true);
+    try {
+      const response = await fetch(`${MEMORY_API_URL}/memory/duplicates/remove`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: activeProfileId })
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      alert(`Removed ${data.removed || 0} duplicate entries.`);
+      await fetchMemories();
+    } catch (error) {
+      console.error('Error removing duplicates:', error);
+      alert(`Failed to remove duplicates: ${error.message}`);
+    } finally {
+      setIsDuplicateBusy(false);
+    }
+  }, [activeProfileId, MEMORY_API_URL, fetchMemories]);
 
   // Load memories when profile changes
   useEffect(() => {
     fetchMemories();
   }, [fetchMemories]);
+
+  // Parent bump (e.g. Memory tools hub curators applied) — refresh list without duplicating curator UI
+  useEffect(() => {
+    if (memoryListRefreshKey > 0) {
+      fetchMemories();
+    }
+  }, [memoryListRefreshKey, fetchMemories]);
 
   // Add memory via backend API
   const addMemory = useCallback(async (memoryData) => {
@@ -251,7 +337,7 @@ const MemoryEditor = ({ onClose }) => {
   }, [userProfile]);
   
   // Filter memories based on search and category
-  const filteredMemories = memories.filter(memory => {
+  const filteredMemories = memories.map((memory, sourceIndex) => ({ memory, sourceIndex })).filter(({ memory }) => {
     const matchesSearch = searchQuery === '' || 
       memory.content.toLowerCase().includes(searchQuery.toLowerCase());
       
@@ -263,10 +349,12 @@ const MemoryEditor = ({ onClose }) => {
   
   // Sort memories by importance and recency
   const sortedMemories = [...filteredMemories].sort((a, b) => {
-    if (b.importance !== a.importance) {
-      return b.importance - a.importance;
+    const ma = a.memory;
+    const mb = b.memory;
+    if ((mb.importance || 0) !== (ma.importance || 0)) {
+      return (mb.importance || 0) - (ma.importance || 0);
     }
-    return new Date(b.created || 0) - new Date(a.created || 0);
+    return new Date(mb.created || 0) - new Date(ma.created || 0);
   });
   
   // Handle memory form submission
@@ -351,6 +439,17 @@ const MemoryEditor = ({ onClose }) => {
       {/* MEMORIES VIEW */}
       {activeView === 'memories' && (
         <div className="memories-view">
+          {!hideCuratorPanels && (
+            <MemoryCuratorPanel
+              apiUrl={MEMORY_API_URL}
+              apiReady={apiReady}
+              activeProfileId={activeProfileId}
+              userProfile={userProfile}
+              characters={characters}
+              scope="profile"
+              onApplied={fetchMemories}
+            />
+          )}
           {memoryError && (
             <div className="error-message" style={{color: 'red', margin: '1rem', padding: '0.5rem', background: '#ffe6e6', borderRadius: '4px'}}>
               Error loading memories: {memoryError}
@@ -388,15 +487,34 @@ const MemoryEditor = ({ onClose }) => {
             <button onClick={fetchMemories} disabled={isLoadingMemories}>
               {isLoadingMemories ? 'Loading...' : 'Refresh'}
             </button>
+            <button onClick={previewDuplicateMemories} disabled={isDuplicateBusy || isLoadingMemories || !activeProfileId}>
+              {isDuplicateBusy ? 'Scanning...' : 'Find Duplicates'}
+            </button>
+            <button
+              onClick={removeDuplicateMemories}
+              disabled={isDuplicateBusy || !activeProfileId || duplicateInfo.entries === 0}
+              title="Removes only direct duplicates (normalized exact-match), keeps first copy."
+            >
+              {isDuplicateBusy ? 'Working...' : 'Remove Duplicates'}
+            </button>
           </div>
+          {(duplicateInfo.groups > 0 || duplicateInfo.entries > 0) && (
+            <div style={{ margin: '0.75rem 0', fontSize: '0.9rem', color: '#f59e0b' }}>
+              Suggested cleanup: {duplicateInfo.entries} duplicate entries across {duplicateInfo.groups} groups.
+            </div>
+          )}
           
           {isLoadingMemories ? (
             <div style={{textAlign: 'center', padding: '2rem'}}>Loading memories...</div>
           ) : (
             <div className="memories-list">
               {sortedMemories.length > 0 ? (
-                sortedMemories.map((memory, index) => (
-                  <div key={`${memory.content}-${index}`} className="memory-card">
+                sortedMemories.map(({ memory, sourceIndex }, index) => (
+                  <div
+                    key={`${memory.content}-${index}`}
+                    className="memory-card"
+                    style={duplicateIndices.has(sourceIndex) ? { border: '1px solid #f59e0b', boxShadow: '0 0 0 1px rgba(245,158,11,0.25) inset' } : undefined}
+                  >
                     <div className="memory-content">
                       <p>{memory.content}</p>
                     </div>

@@ -80,7 +80,17 @@ class SDWorkerClient:
         self._address = None
         self._process = None
         self._lock = threading.Lock()
+        self._loaded_model_paths: dict[int, str] = {}
         self._ensure_worker()
+
+    def _reload_models_after_worker_restart(self):
+        """Re-load SD models in a fresh worker after a native crash killed the process."""
+        for gpu_id, model_path in list(self._loaded_model_paths.items()):
+            try:
+                logger.info(f"Re-loading SD model on GPU {gpu_id} after worker restart: {model_path}")
+                self._request("load_model", {"model_path": model_path, "gpu_id": gpu_id})
+            except Exception as exc:
+                logger.warning(f"Failed to re-load SD model on GPU {gpu_id}: {exc}")
 
     def _restart_worker(self):
         """Kill the worker process so the next request gets a fresh one. Use after load_model fails."""
@@ -147,6 +157,7 @@ class SDWorkerClient:
                 except Exception:
                     pass
                 self._ensure_worker()
+                self._reload_models_after_worker_restart()
                 if attempt == 1:
                     raise RuntimeError(f"SD worker request failed: {exc}") from exc
                 continue
@@ -167,11 +178,13 @@ class SDWorkerClient:
             if not response.get("ok"):
                 error = response.get("error", "Unknown worker error")
                 # After load_model or generate_image failure the worker's native state may be corrupted; restart so next request gets a fresh process
-                if cmd in ("load_model", "generate_image"):
+                if cmd in ("load_model", "generate_image", "enhance_image_with_adetailer"):
                     try:
                         self._restart_worker()
                     except Exception as restart_exc:
                         logger.warning(f"Failed to restart SD worker after {cmd} error: {restart_exc}")
+                    if cmd != "load_model":
+                        self._reload_models_after_worker_restart()
                 raise RuntimeError(error)
 
             return response.get("result")
@@ -179,7 +192,12 @@ class SDWorkerClient:
         raise RuntimeError(f"SD worker request failed after retry: {last_exc}")
 
     def load_model(self, model_path: str, gpu_id: int = 0):
-        return self._request("load_model", {"model_path": model_path, "gpu_id": gpu_id})
+        result = self._request("load_model", {"model_path": model_path, "gpu_id": gpu_id})
+        if result:
+            self._loaded_model_paths[gpu_id] = model_path
+        else:
+            self._loaded_model_paths.pop(gpu_id, None)
+        return result
 
     def generate_image(self, **kwargs):
         return self._request("generate_image", kwargs)

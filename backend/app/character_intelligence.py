@@ -192,6 +192,133 @@ def generate_analysis_summary(concept_scores: List[float], detected_elements: Li
     else:
         return f"Basic character information detected: {detected_concepts[0] if detected_concepts else 'general'}"
 
+MAX_CHARACTER_GEN_ATTEMPTS = 3
+CHARACTER_API_MAX_ATTEMPTS = 3
+CHARACTER_API_MAX_TOKENS = 1_000_000
+_CHARACTER_API_TIMEOUT_MSG = (
+    "The character API stopped responding before the model finished (read timeout). "
+    "Try again, use a faster model, or shorten the conversation context."
+)
+
+
+class CharacterApiError(Exception):
+    """Remote API failure for character generation (after retries)."""
+
+
+def _character_api_error_is_transient(exc: BaseException) -> bool:
+    import httpx
+    from fastapi import HTTPException
+
+    from .openai_compat import _openai_compat_is_transient_upstream_for_retry
+
+    if isinstance(exc, httpx.RequestError):
+        return _openai_compat_is_transient_upstream_for_retry(
+            exc, include_read_write_timeout=True
+        )
+    if isinstance(exc, HTTPException) and exc.status_code == 502:
+        detail = str(exc.detail or "").lower()
+        return any(
+            marker in detail
+            for marker in (
+                "readtimeout",
+                "writetimeout",
+                "remoteprotocolerror",
+                "server disconnected",
+                "cannot connect",
+            )
+        )
+    return False
+
+
+def _format_character_api_error(
+    exc: BaseException,
+    *,
+    endpoint_name: str = "API",
+) -> str:
+    import httpx
+
+    if isinstance(exc, httpx.ReadTimeout):
+        return _CHARACTER_API_TIMEOUT_MSG
+    if isinstance(exc, CharacterApiError):
+        return str(exc)
+    from fastapi import HTTPException
+
+    if isinstance(exc, HTTPException):
+        detail = str(exc.detail or "").strip()
+        if exc.status_code == 502 and _character_api_error_is_transient(exc):
+            tech = f" — {detail}" if detail else ""
+            return f"{_CHARACTER_API_TIMEOUT_MSG}{tech}"
+        return detail or f"API error from {endpoint_name} (HTTP {exc.status_code})"
+    return str(exc) or f"API error from {endpoint_name}"
+
+
+def _resolve_character_endpoint_model_id(
+    model_name: Optional[str],
+    api_endpoint: Optional[Dict[str, Any]],
+) -> str:
+    if model_name and str(model_name).startswith("endpoint-"):
+        return str(model_name)
+    if api_endpoint:
+        ep_id = api_endpoint.get("id") or ""
+        if str(ep_id).startswith("endpoint-"):
+            return str(ep_id)
+    return ""
+
+
+def _build_character_api_request_data(
+    prompt: str,
+    *,
+    endpoint_model_id: str,
+    configured_model: str = "",
+) -> Dict[str, Any]:
+    model_field = endpoint_model_id or configured_model or "gpt-3.5-turbo"
+    return {
+        "model": model_field,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": CHARACTER_API_MAX_TOKENS,
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "stream": True,
+        "_skip_openai_message_pruning": True,
+        "_max_stream_attempts": CHARACTER_API_MAX_ATTEMPTS,
+    }
+
+
+async def _generate_character_llm_text(
+    *,
+    prompt: str,
+    model_manager,
+    model_name: str,
+    gpu_id: int,
+    use_api: bool,
+    api_endpoint: Optional[Dict[str, Any]],
+    frontend_round_robin_enabled: Optional[bool] = None,
+    force_resolved_endpoint: bool = False,
+) -> str:
+    if use_api and api_endpoint:
+        return await generate_with_api(
+            prompt,
+            api_endpoint,
+            model_name=model_name,
+            frontend_round_robin_enabled=frontend_round_robin_enabled,
+            force_resolved_endpoint=force_resolved_endpoint,
+        )
+    from . import inference
+
+    return await inference.generate_text(
+        model_manager=model_manager,
+        model_name=model_name,
+        prompt=prompt,
+        max_tokens=2048,
+        temperature=0.3,
+        top_p=0.9,
+        top_k=40,
+        repetition_penalty=1.1,
+        stop_sequences=["</character>", "---"],
+        gpu_id=gpu_id,
+    )
+
+
 async def generate_character_json(
     model_manager, 
     messages: List[Dict[str, Any]], 
@@ -200,108 +327,270 @@ async def generate_character_json(
     gpu_id: int = None,
     single_gpu_mode: bool = False,
     use_api: bool = False,
-    api_endpoint: Dict[str, Any] = None
+    api_endpoint: Dict[str, Any] = None,
+    frontend_round_robin_enabled: Optional[bool] = None,
+    force_resolved_endpoint: bool = False,
+    conversation_id: str = "",
 ) -> Dict[str, Any]:
     """
     Use an LLM to generate character JSON based on conversation analysis.
-    Supports both local models and external APIs.
+    Supports both local models and external APIs. Retries with JSON repair on failure.
     """
+    from . import character_json_parse as cjp
+
     logger.info(f"🎨 Generating character JSON (use_api={use_api})")
-    
+
     try:
-        # Prepare conversation context
         recent_messages = messages[-15:] if len(messages) > 15 else messages
         conversation_context = "\n".join([
-            f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" 
-            for msg in recent_messages 
+            f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
+            for msg in recent_messages
             if msg.get('content')
         ])
-        
-        # Build generation prompt
+
         generation_prompt = build_character_generation_prompt(
-            conversation_context, 
-            character_analysis
+            conversation_context,
+            character_analysis,
         )
-        
-        if use_api and api_endpoint:
-            # Use external API (OpenAI-compatible)
-            response = await generate_with_api(generation_prompt, api_endpoint)
-        else:
-            # Generate character JSON using local inference module
-            from . import inference
-            response = await inference.generate_text(
+
+        last_raw = ""
+        last_error: Optional[str] = None
+        last_partial: Optional[Dict[str, Any]] = None
+        backup_paths: List[str] = []
+
+        for attempt in range(MAX_CHARACTER_GEN_ATTEMPTS):
+            prompt = (
+                generation_prompt
+                if attempt == 0
+                else cjp.build_character_repair_prompt(last_raw)
+            )
+
+            response = await _generate_character_llm_text(
+                prompt=prompt,
                 model_manager=model_manager,
                 model_name=model_name,
-                prompt=generation_prompt,
-                max_tokens=2048,
-                temperature=0.3,
-                top_p=0.9,
-                top_k=40,
-                repetition_penalty=1.1,
-                stop_sequences=["</character>", "---"],
-                gpu_id=gpu_id
+                gpu_id=gpu_id,
+                use_api=use_api,
+                api_endpoint=api_endpoint,
+                frontend_round_robin_enabled=frontend_round_robin_enabled,
+                force_resolved_endpoint=force_resolved_endpoint,
             )
-        
-        # Extract and parse JSON from response
-        character_json = extract_json_from_response(response)
-        
-        if character_json:
-            logger.info(f"✅ Generated character JSON for: {character_json.get('name', 'Unnamed')}")
-            return {"status": "success", "character_json": character_json}
-        else:
-            return {"status": "error", "error": "Could not extract valid JSON from model response"}
-            
+            last_raw = response or ""
+            backup_paths.append(
+                cjp.save_character_generation_backup(
+                    last_raw,
+                    attempt=attempt,
+                    conversation_id=conversation_id,
+                )
+            )
+
+            character_json, partial, salvaged, parse_error = cjp.parse_character_json(
+                last_raw
+            )
+            last_error = parse_error
+            if partial:
+                last_partial = partial
+
+            if character_json:
+                logger.info(
+                    "✅ Generated character JSON for: %s (attempt %d)",
+                    character_json.get("name", "Unnamed"),
+                    attempt + 1,
+                )
+                return {
+                    "status": "success",
+                    "character_json": character_json,
+                    "attempts": attempt + 1,
+                    "backup_paths": backup_paths,
+                }
+
+            if attempt < MAX_CHARACTER_GEN_ATTEMPTS - 1:
+                logger.warning(
+                    "Character JSON parse failed (attempt %d): %s — retrying",
+                    attempt + 1,
+                    parse_error,
+                )
+
+        excerpt = (last_raw or "")[:2000]
+        if last_partial and cjp.character_json_is_usable(last_partial, partial_ok=True):
+            logger.warning(
+                "Returning salvaged partial character after %d attempts",
+                MAX_CHARACTER_GEN_ATTEMPTS,
+            )
+            return {
+                "status": "partial",
+                "character_json": last_partial,
+                "partial_character_json": last_partial,
+                "salvaged": True,
+                "error": last_error or "Incomplete JSON; partial fields recovered",
+                "raw_response_excerpt": excerpt,
+                "backup_paths": backup_paths,
+                "attempts": MAX_CHARACTER_GEN_ATTEMPTS,
+            }
+
+        return {
+            "status": "error",
+            "error": last_error or "Could not extract valid JSON from model response",
+            "raw_response_excerpt": excerpt,
+            "backup_paths": backup_paths,
+            "attempts": MAX_CHARACTER_GEN_ATTEMPTS,
+        }
+
+    except CharacterApiError as e:
+        logger.error("❌ Character API failed after retries: %s", e)
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": "api_timeout",
+        }
     except Exception as e:
         logger.error(f"❌ Error generating character JSON: {e}", exc_info=True)
-        return {"status": "error", "error": str(e)}
+        return {
+            "status": "error",
+            "error": _format_character_api_error(e),
+            "error_type": "api_error" if "timeout" in str(e).lower() else "internal",
+        }
 
 
-async def generate_with_api(prompt: str, api_endpoint: Dict[str, Any]) -> str:
-    """Generate text using an external OpenAI-compatible API."""
+async def generate_with_api(
+    prompt: str,
+    api_endpoint: Dict[str, Any],
+    *,
+    model_name: Optional[str] = None,
+    request_purpose: Optional[str] = "create_character",
+    frontend_round_robin_enabled: Optional[bool] = None,
+    force_resolved_endpoint: bool = False,
+) -> str:
+    """Generate text via configured OpenAI-compatible endpoint (streaming, long read timeout)."""
+    import asyncio
+
     import httpx
-    
-    url = api_endpoint.get("url", "").rstrip("/")
-    # Handle various URL formats
-    if url.endswith("/chat/completions"):
-        pass  # Already complete
-    elif url.endswith("/v1"):
-        url = f"{url}/chat/completions"
-    elif "/v1" in url and not url.endswith("/chat/completions"):
-        url = f"{url}/chat/completions"
-    else:
-        url = f"{url}/v1/chat/completions"
-    
-    api_key = api_endpoint.get("api_key", "")
-    model = api_endpoint.get("model", "")
-    
-    headers = {
-        "Content-Type": "application/json"
-    }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": 2048,
-        "temperature": 0.3,
-        "top_p": 0.9
-    }
-    
-    logger.info(f"🌐 Calling API: {url} with model {model}")
-    
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        result = response.json()
-        
-        # Extract content from OpenAI-style response
-        if "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"]["content"]
+    from fastapi import HTTPException
+
+    from .openai_compat import (
+        approx_openai_messages_payload_chars,
+        collect_openai_compatible_stream_text,
+        prepare_endpoint_request,
+    )
+
+    endpoint_model_id = _resolve_character_endpoint_model_id(model_name, api_endpoint)
+    endpoint_name = api_endpoint.get("name") or endpoint_model_id or "API"
+    request_data = _build_character_api_request_data(
+        prompt,
+        endpoint_model_id=endpoint_model_id,
+        configured_model=api_endpoint.get("model") or "",
+    )
+
+    if force_resolved_endpoint and api_endpoint:
+        base_url = (api_endpoint.get("url") or "").rstrip("/")
+        if not base_url:
+            raise CharacterApiError("API endpoint URL is missing")
+        if base_url.endswith("/v1"):
+            url = f"{base_url}/chat/completions"
         else:
-            raise ValueError("Invalid API response format")
+            url = f"{base_url}/v1/chat/completions"
+        endpoint_config = {
+            "url": base_url,
+            "api_key": api_endpoint.get("api_key") or api_endpoint.get("apiKey") or "",
+            "name": endpoint_name,
+            "model": api_endpoint.get("model", ""),
+        }
+        prepared = dict(request_data)
+        if prepared.get("model", "").startswith("endpoint-"):
+            configured = (api_endpoint.get("model") or "").strip()
+            prepared["model"] = configured or "gpt-3.5-turbo"
+    elif endpoint_model_id:
+        endpoint_config, url, prepared = prepare_endpoint_request(
+            endpoint_model_id,
+            request_data,
+            request_purpose=request_purpose or "create_character",
+            frontend_round_robin_enabled=frontend_round_robin_enabled,
+        )
+    else:
+        base_url = (api_endpoint.get("url") or "").rstrip("/")
+        if not base_url:
+            raise CharacterApiError("API endpoint URL is missing")
+        if base_url.endswith("/v1"):
+            url = f"{base_url}/chat/completions"
+        else:
+            url = f"{base_url}/v1/chat/completions"
+        endpoint_config = {
+            "url": base_url,
+            "api_key": api_endpoint.get("api_key", ""),
+            "name": endpoint_name,
+            "model": api_endpoint.get("model", ""),
+        }
+        prepared = dict(request_data)
+        if prepared.get("model", "").startswith("endpoint-"):
+            configured = (api_endpoint.get("model") or "").strip()
+            prepared["model"] = configured or "gpt-3.5-turbo"
+
+    msg_chars = approx_openai_messages_payload_chars(prepared.get("messages", []))
+    log_fn = logger.warning if msg_chars >= 80_000 else logger.info
+    log_fn(
+        "Character API request: ~%s prompt chars, max_tokens=%s, upstream=stream_aggregate, endpoint=%s",
+        msg_chars,
+        prepared.get("max_tokens"),
+        endpoint_name,
+    )
+
+    last_exc: Optional[BaseException] = None
+    for attempt in range(CHARACTER_API_MAX_ATTEMPTS):
+        try:
+            text_out = await collect_openai_compatible_stream_text(
+                endpoint_config, url, prepared
+            )
+            if not (text_out or "").strip():
+                raise CharacterApiError(
+                    f"{endpoint_name} returned an empty response. Try again or pick another model."
+                )
+            return text_out
+        except CharacterApiError:
+            raise
+        except HTTPException as e:
+            last_exc = e
+            if (
+                _character_api_error_is_transient(e)
+                and attempt < CHARACTER_API_MAX_ATTEMPTS - 1
+            ):
+                delay = 2.0 * (attempt + 1)
+                logger.warning(
+                    "Character API transient error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1,
+                    CHARACTER_API_MAX_ATTEMPTS,
+                    delay,
+                    e.detail,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise CharacterApiError(
+                _format_character_api_error(e, endpoint_name=endpoint_name)
+            ) from e
+        except httpx.RequestError as e:
+            last_exc = e
+            if (
+                _character_api_error_is_transient(e)
+                and attempt < CHARACTER_API_MAX_ATTEMPTS - 1
+            ):
+                delay = 2.0 * (attempt + 1)
+                logger.warning(
+                    "Character API connection error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1,
+                    CHARACTER_API_MAX_ATTEMPTS,
+                    delay,
+                    type(e).__name__,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise CharacterApiError(
+                _format_character_api_error(e, endpoint_name=endpoint_name)
+            ) from e
+
+    if last_exc is not None:
+        raise CharacterApiError(
+            _format_character_api_error(last_exc, endpoint_name=endpoint_name)
+        ) from last_exc
+    raise CharacterApiError(_CHARACTER_API_TIMEOUT_MSG)
 
 def build_character_generation_prompt(conversation_context: str, analysis: Dict[str, Any]) -> str:
     """
@@ -366,47 +655,12 @@ You are a highly advanced AI with a specialization in creative character profili
 
 
 def extract_json_from_response(response: str) -> Optional[Dict[str, Any]]:
-    """Extract and validate JSON from model response."""
-    try:
-        # Log the raw response for debugging
-        logger.debug(f"Raw model response: {response}")
-        # Try to find JSON block
-        json_start = response.find('{')
-        json_end = response.rfind('}') + 1
-        
-        if json_start == -1 or json_end <= json_start:
-            logger.warning("No valid JSON found in model response")
-            return None
-        
-        json_str = response[json_start:json_end]
-        logger.debug(f"Extracted JSON string: {json_str}")
-        character_data = json.loads(json_str)
-        logger.debug(f"Parsed JSON data: {character_data}")
-        # Validate required fields
-        required_fields = ["name", "description"]
-        for field in required_fields:
-            if field not in character_data:
-                logger.warning(f"Missing required field: {field}")
-                return None
-        
-        # Set defaults for optional fields
-        defaults = {
-            "model_instructions": "",
-            "scenario": "",
-            "first_message": f"Hello! I'm {character_data.get('name', 'a character')}.",
-            "example_dialogue": [],
-            "loreEntries": []
-        }
-        
-        for key, default_value in defaults.items():
-            if key not in character_data:
-                character_data[key] = default_value
-        
-        return character_data
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error extracting JSON: {e}")
-        return None
+    """Extract and validate JSON from model response (with local repair/salvage)."""
+    from . import character_json_parse as cjp
+
+    character_json, partial, _salvaged, _err = cjp.parse_character_json(response or "")
+    if character_json:
+        return character_json
+    if partial and cjp.character_json_is_usable(partial, partial_ok=True):
+        return partial
+    return None

@@ -189,6 +189,46 @@ class SDManager:
 
         return method
 
+    @staticmethod
+    def _align_sd_dimensions(width: int, height: int, multiple: int = 64, align: str = "up") -> Tuple[int, int]:
+        """Align dimensions for stable-diffusion.cpp (img2img rounds up to multiples of 64)."""
+        width = max(multiple, int(width))
+        height = max(multiple, int(height))
+        if align == "up":
+            width = ((width + multiple - 1) // multiple) * multiple
+            height = ((height + multiple - 1) // multiple) * multiple
+        else:
+            width = max(multiple, (width // multiple) * multiple)
+            height = max(multiple, (height // multiple) * multiple)
+        return width, height
+
+    def _prepare_init_image_for_img2img(self, image_source, width: int, height: int) -> Tuple[str, Optional[str]]:
+        """
+        Ensure init image dimensions exactly match the target width×height.
+        Returns (path_for_bindings, temp_path_to_delete_or_None).
+        """
+        if isinstance(image_source, (bytes, bytearray)):
+            image = Image.open(io.BytesIO(image_source)).convert("RGB")
+            source_path = None
+        elif isinstance(image_source, str) and os.path.isfile(image_source):
+            image = Image.open(image_source).convert("RGB")
+            source_path = image_source
+        else:
+            return image_source, None
+
+        if image.size == (width, height) and source_path:
+            return source_path, None
+
+        if image.size != (width, height):
+            logger.info(f"Resizing init image from {image.size} to {width}x{height} for img2img compatibility")
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+        temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
+        image.save(temp_path, format="PNG")
+        return temp_path, temp_path
+
     # Add the @property decorator to expose adetailer for backward compatibility
     @property
     def adetailer(self):
@@ -266,9 +306,8 @@ class SDManager:
             new_width = int(original_width * scale_factor)
             new_height = int(original_height * scale_factor)
             
-            # Ensure dimensions are multiples of 64 (requirement for many SD models)
-            new_width = (new_width // 64) * 64
-            new_height = (new_height // 64) * 64
+            # stable-diffusion.cpp aligns img2img targets up to multiples of 64
+            new_width, new_height = self._align_sd_dimensions(new_width, new_height, multiple=64, align="up")
             # 3. Prepare prompt (if empty, use a generic enhancer)
             # Truncate prompt if too long and remove newlines to avoid CUDA errors
             if prompt:
@@ -313,8 +352,12 @@ class SDManager:
             # Create a temporary file for the input image
             # We pass the ORIGINAL image and let img_to_img handle the resize to target width/height
             # This avoids potential issues with passing already-large images to the pipeline
+            upscaled_input = original_image
+            if original_image.size != (new_width, new_height):
+                upscaled_input = original_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_input_file:
-                original_image.save(temp_input_file, format="PNG")
+                upscaled_input.save(temp_input_file, format="PNG")
                 temp_input_path = temp_input_file.name
 
             try:
@@ -433,6 +476,14 @@ class SDManager:
                 
             logger.info(f"Loaded image for ADetailer enhancement: {original_image.size}")
 
+            # stable-diffusion.cpp requires init image size to match aligned tensor dims (multiple of 64)
+            aligned_w, aligned_h = self._align_sd_dimensions(
+                original_image.width, original_image.height, multiple=64, align="up"
+            )
+            if original_image.size != (aligned_w, aligned_h):
+                logger.info(f"Resizing image for ADetailer from {original_image.size} to {aligned_w}x{aligned_h}")
+                original_image = original_image.resize((aligned_w, aligned_h), Image.Resampling.LANCZOS)
+
             # CRITICAL FIX: Use the correct GPU ID for face detection
             face_boxes = self.adetailer_processor.detect_faces(original_image, model_name=model_name, confidence=confidence, gpu_id=gpu_id)
 
@@ -467,10 +518,9 @@ class SDManager:
                     dilation=10
                 )
 
-                # 3) Inpaint
-                w = (original_image.width  // 8) * 8
-                h = (original_image.height // 8) * 8
-                logger.info(f"Inpainting full frame at {w}×{h}")
+                # 3) Inpaint (image already aligned to 64-multiple dimensions)
+                w, h = original_image.width, original_image.height
+                logger.info(f"Inpainting full frame at {w}x{h}")
 
                 # Clean up PyTorch CUDA state before ggml inpainting
                 try:
@@ -825,11 +875,19 @@ class SDManager:
                 
                 seed = seed % (2**32)
 
+                is_img2img_for_dims = (
+                    ('init_image' in kwargs and kwargs['init_image'] is not None)
+                    or ('image' in kwargs and kwargs['image'] is not None)
+                )
+
                 try:
                     width = int(kwargs.get('width', 512))
                     height = int(kwargs.get('height', 512))
-                    width = (width // 8) * 8
-                    height = (height // 8) * 8
+                    if is_img2img_for_dims:
+                        width, height = self._align_sd_dimensions(width, height, multiple=64, align="up")
+                    else:
+                        width = (width // 8) * 8
+                        height = (height // 8) * 8
                     
                     steps = int(kwargs.get('steps', 20))
                     cfg_scale = float(kwargs.get('cfg_scale', 7.0))
@@ -904,8 +962,8 @@ class SDManager:
                 method_name = None
                 method = None
 
-                # Check if we are doing img2img (init_image present and not None)
-                is_img2img = 'init_image' in kwargs and kwargs['init_image'] is not None
+                # Check if we are doing img2img (init_image or image present)
+                is_img2img = is_img2img_for_dims
                 
                 if is_img2img:
                     # Prioritize img2img methods
@@ -967,64 +1025,83 @@ class SDManager:
                 }
                 
                 # Explicitly pass img2img parameters if present in kwargs
+                resized_init_path = None
                 if 'strength' in kwargs:
                     call_args['strength'] = float(kwargs['strength'])
                 if 'init_image' in kwargs:
                     call_args['init_image'] = kwargs['init_image']
                 if 'image' in kwargs:
                     call_args['image'] = kwargs['image']
+
+                if is_img2img:
+                    init_source = call_args.get('init_image') or call_args.get('image')
+                    if init_source is not None:
+                        prepared_path, resized_init_path = self._prepare_init_image_for_img2img(
+                            init_source, width, height
+                        )
+                        if 'init_image' in call_args:
+                            call_args['init_image'] = prepared_path
+                        if 'image' in call_args:
+                            call_args['image'] = prepared_path
                 
                 logger.info(f"Calling generation with args keys: {list(call_args.keys())}")
 
                 model_lock = self._get_model_lock(gpu_id)
-                with model_lock:
-                    # Filter args to match the selected method signature
-                    try:
-                        method_params = inspect.signature(method).parameters
-                    except (TypeError, ValueError):
-                        method_params = {}
+                try:
+                    with model_lock:
+                        # Filter args to match the selected method signature
+                        try:
+                            method_params = inspect.signature(method).parameters
+                        except (TypeError, ValueError):
+                            method_params = {}
 
-                    call_kwargs = dict(call_args)
-                    if method_params:
-                        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in method_params.values())
-                        if not accepts_kwargs:
-                            # Map init_image <-> image based on what the method accepts
-                            if 'init_image' in call_kwargs and 'init_image' not in method_params and 'image' in method_params:
-                                call_kwargs['image'] = call_kwargs.pop('init_image')
-                            if 'image' in call_kwargs and 'image' not in method_params and 'init_image' in method_params:
-                                call_kwargs['init_image'] = call_kwargs.pop('image')
+                        call_kwargs = dict(call_args)
+                        if method_params:
+                            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in method_params.values())
+                            if not accepts_kwargs:
+                                # Map init_image <-> image based on what the method accepts
+                                if 'init_image' in call_kwargs and 'init_image' not in method_params and 'image' in method_params:
+                                    call_kwargs['image'] = call_kwargs.pop('init_image')
+                                if 'image' in call_kwargs and 'image' not in method_params and 'init_image' in method_params:
+                                    call_kwargs['init_image'] = call_kwargs.pop('image')
 
-                            call_kwargs = {k: v for k, v in call_kwargs.items() if k in method_params}
+                                call_kwargs = {k: v for k, v in call_kwargs.items() if k in method_params}
 
-                    try:
-                        images_list = call_with_progress_internal(
-                            method,
-                            **call_kwargs
-                        )
-                    except TypeError as e:
-                        error_text = str(e)
-                        retry_kwargs = dict(call_kwargs)
+                        try:
+                            images_list = call_with_progress_internal(
+                                method,
+                                **call_kwargs
+                            )
+                        except TypeError as e:
+                            error_text = str(e)
+                            retry_kwargs = dict(call_kwargs)
 
-                        if "unexpected keyword argument 'init_image'" in error_text:
-                            if 'init_image' in retry_kwargs:
-                                if 'image' not in retry_kwargs:
-                                    retry_kwargs['image'] = retry_kwargs.pop('init_image')
-                                else:
-                                    retry_kwargs.pop('init_image', None)
-                        if "unexpected keyword argument 'image'" in error_text:
-                            if 'image' in retry_kwargs:
-                                if 'init_image' not in retry_kwargs:
-                                    retry_kwargs['init_image'] = retry_kwargs.pop('image')
-                                else:
-                                    retry_kwargs.pop('image', None)
+                            if "unexpected keyword argument 'init_image'" in error_text:
+                                if 'init_image' in retry_kwargs:
+                                    if 'image' not in retry_kwargs:
+                                        retry_kwargs['image'] = retry_kwargs.pop('init_image')
+                                    else:
+                                        retry_kwargs.pop('init_image', None)
+                            if "unexpected keyword argument 'image'" in error_text:
+                                if 'image' in retry_kwargs:
+                                    if 'init_image' not in retry_kwargs:
+                                        retry_kwargs['init_image'] = retry_kwargs.pop('image')
+                                    else:
+                                        retry_kwargs.pop('image', None)
 
-                        if retry_kwargs == call_kwargs:
-                            raise
+                            if retry_kwargs == call_kwargs:
+                                raise
 
-                        images_list = call_with_progress_internal(
-                            method,
-                            **retry_kwargs
-                        )
+                            images_list = call_with_progress_internal(
+                                method,
+                                **retry_kwargs
+                            )
+                finally:
+                    if resized_init_path and os.path.exists(resized_init_path):
+                        try:
+                            os.unlink(resized_init_path)
+                        except Exception as cleanup_err:
+                            logger.warning(f"Failed to delete resized init image temp file: {cleanup_err}")
                 
                 if not images_list:
                     raise RuntimeError("Image generation returned empty list.")

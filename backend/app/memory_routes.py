@@ -7,20 +7,24 @@ import json
 import os
 import logging
 import traceback
+import re
 from . import memory_intelligence
 from . import agentic_memory
-from . import inference  # Import the inference module
+from . import persona_realignment
+from . import memory_curator_prompt
+from . import preview_prompt_save
+from . import ethics_review_bundle
+from . import inference
 from .model_manager import ModelManager
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
-from . import memory_intelligence # Assuming memory_intelligence.py is in the same directory
-import logging # Example
-import datetime # Example
-from .memory_intelligence import process_completed_exchange # Example
-from sentence_transformers import util # Example
-import torch # Example
-from .memory_intelligence import similarity_model # Example
-import re
+from . import memory_intelligence
+import logging
+import datetime
+from .memory_intelligence import process_completed_exchange
+from sentence_transformers import util
+import torch
+from .memory_intelligence import similarity_model
 
 
 # Configure logging
@@ -39,11 +43,11 @@ memory_router = APIRouter(tags=["memory"])
 class MemoryDetectRequest(BaseModel):
     original_prompt: str
     response_text: str
-    model_name: Optional[str] = None # Optional: specify model, otherwise find suitable one
-    user_name: Optional[str] = None # Optional: specify user name for personalization
-    user_id: Optional[str] = None    # ← add this field
-    gpu_id: Optional[int] = None # Optional: specify GPU ID for processing
-    single_gpu_mode: Optional[bool] = None # Optional: specify single GPU mode
+    model_name: Optional[str] = None
+    user_name: Optional[str] = None
+    user_id: Optional[str] = None
+    gpu_id: Optional[int] = None
+    single_gpu_mode: Optional[bool] = None
 
 class MemoryRequest(BaseModel):
     prompt: str
@@ -51,13 +55,13 @@ class MemoryRequest(BaseModel):
     userProfile: Optional[Dict[str, Any]] = None
     systemTime: Optional[str] = None
     requestType: Optional[str] = None
-    active_character: Optional[Dict[str, Any]] = None # <-- Corrected field name
+    active_character: Optional[Dict[str, Any]] = None
 
 
 class ObservationRequest(BaseModel):
     user_message: str
     ai_response: str
-    user_name: Optional[str] = None # <-- Keep this addition
+    user_name: Optional[str] = None
     conversation_history: Optional[List[Dict[str, Any]]] = None
     userProfile: Optional[Dict[str, Any]] = None
     systemTime: Optional[str] = None
@@ -71,18 +75,17 @@ class Memory(BaseModel):
     importance: float = 0.7
     type: str = "auto"
     tags: List[str] = []
-    user_id: Optional[str] = None # Optional user ID for personalization
+    user_id: Optional[str] = None
 
 # === Model Classes ===
-# ... (other models) ...
 
 class ContextualMemoryRequest(BaseModel):
     conversation_snippet: str
-    category: str = "contextual" # Add category field with a default
-    importance: float = 0.6     # Add importance field with a default
-    user_name: Optional[str] = None # Keep optional user_name
+    category: str = "contextual"
+    importance: float = 0.6
+    user_name: Optional[str] = None
 
-# character_lore = {``
+
 @memory_router.post("/detect_keywords")
 async def detect_lore_keywords(
     data: dict = Body(...)
@@ -96,116 +99,109 @@ async def detect_lore_keywords(
     print("=" * 60)
     print("🌍 BACKEND LORE ENDPOINT HIT!")
     print("=" * 60)
-    logger.info("🌍 BACKEND LORE ENDPOINT HIT!")
     
-    try:
-        message = data.get('message', '')
-        active_character = data.get('activeCharacter')
-        
-        print(f"🌍 BACKEND: Message = '{message}'")
-        print(f"🌍 BACKEND: Character = {active_character.get('name') if active_character else 'None'}")
-        
-        if not message:
-            print("🌍 BACKEND: No message - returning empty")
-            return {"status": "success", "lore_triggered": []}
-        
-        if not active_character:
-            print("🌍 BACKEND: No character - returning empty")
-            return {"status": "success", "lore_triggered": []}
-        
-        lore_entries = active_character.get('loreEntries', [])
-        print(f"🌍 BACKEND: Found {len(lore_entries)} lore entries")
-        
-        triggered_lore = []
-        for entry in lore_entries:
-            if isinstance(entry, dict) and 'content' in entry:
-                content = entry.get('content', '').strip()
-                if content:
-                    triggered_lore.append(content)
-                    print(f"🌍 BACKEND: Added lore content: {content[:50]}...")
-        
-        print(f"🌍 BACKEND: Returning {len(triggered_lore)} lore entries")
-        print("=" * 60)
-        
-        return {
-            "status": "success",
-            "lore_triggered": triggered_lore
-        }
-        
-    except Exception as e:
-        print(f"🌍 BACKEND ERROR: {e}")
-        logger.error(f"🌍 BACKEND ERROR: {e}", exc_info=True)
-        return {"status": "error", "error": str(e), "lore_triggered": []}
-# --- Helper function to get user ID consistently ---
-def get_user_id_from_request(request, client_supplied_id=None):
-    """Consistently get user ID with proper fallbacks."""
-    # 1. Try client-supplied ID first
-    if client_supplied_id:
-        return client_supplied_id
-        
-    # 2. Try the active profile in app state
-    active_profile_id = getattr(request.app.state, "active_profile_id", None)
-    if active_profile_id:
-        return active_profile_id
-        
-    # 3. If all else fails, return None (endpoint should handle this)
-    return None
+    message = data.get('message', '')
+    active_character = data.get('activeCharacter')
+    
+    print(f"🌍 BACKEND: Message = '{message}'")
+    print(f"🌍 BACKEND: Character = {active_character is not None}")
+    
+    if not message:
+        print("🌍 BACKEND: No message - returning empty")
+        return {"lore_content": "", "keywords_found": []}
+    
+    if not active_character:
+        print("🌍 BACKEND: No character - returning empty")
+        return {"lore_content": "", "keywords_found": []}
+    
+    lore_entries = active_character.get('loreEntries', [])
+    print(f"🌍 BACKEND: Found {len(lore_entries)} lore entries")
+    
+    if not lore_entries:
+        return {"lore_content": "", "keywords_found": []}
+    
+    message_lower = message.lower()
+    lore_content_parts = []
+    keywords_found = []
+    
+    for entry in lore_entries:
+        keywords = entry.get('keywords', [])
+        content = entry.get('content', '')
+        for keyword in keywords:
+            if keyword.strip().lower() in message_lower:
+                print(f"🌍 BACKEND: Added lore content: {content[:50]}...")
+                lore_content_parts.append(content)
+                keywords_found.extend(keywords)
+                break
+    
+    print(f"🌍 BACKEND: Returning {len(lore_content_parts)} triggered lore entries")
+    
+    return {
+        "lore_content": "\n\n".join(lore_content_parts),
+        "keywords_found": list(set(keywords_found))
+    }
 
-# CORRECTED /detect_intent endpoint
+
+def get_user_id_from_request(request: Request, client_supplied_id: Optional[str] = None) -> Optional[str]:
+    """Consistently get user ID with proper fallbacks."""
+    user_id = client_supplied_id
+    if not user_id:
+        try:
+            from . import user_utils
+            user_id = user_utils.get_active_profile_id()
+        except Exception:
+            pass
+    if not user_id:
+        try:
+            user_id = request.app.state.active_profile_id
+        except Exception:
+            pass
+    return str(user_id) if user_id else None
+
+
 @memory_router.post("/detect_intent")
 async def detect_memory_intent_api(
     request_obj: Request,
     detect_request: MemoryDetectRequest,
-    model_manager: ModelManager = Depends(get_model_manager_from_state)
+    model_manager: ModelManager = Depends(get_model_manager_from_state),
 ):
+    """
+    Detect if a user message contains personal information worth remembering.
+    """
     logger = logging.getLogger("memory_routes")
     
-    # Get user ID consistently
-    user_id = get_user_id_from_request(
-        request_obj,
-        detect_request.user_id or detect_request.user_name
-    )
+    user_id = detect_request.user_id
+    user_name = detect_request.user_name
     
     if not user_id:
-        logger.warning("🧠 [detect_intent] Using default test user ID as fallback")
-        user_id = "default_test_user"  # Last-resort fallback
-        
+        logger.info("🧠 [detect_intent] Using default test user ID as fallback")
+        user_id = "default_test_user"
+    
     logger.info(f"🧠 [detect_intent] Using user_id: {user_id}")
-    """
-    Receives prompt/response text and uses a local model to detect memory intent.
-    """
-    logger = logging.getLogger("memory_routes")
-
-    user_id = detect_request.user_id or detect_request.user_name  
-    if not user_id:
+    
+    if not user_id and not user_name:
         logger.warning("🧠 [detect_intent] Missing user_id or user_name for memory intent detection")
         raise HTTPException(status_code=400, detail="user_id or user_name is required")
     
-    # Correctly access app state from request_obj
-    single_gpu_mode = getattr(request_obj.app.state, "single_gpu_mode", False)
-    target_gpu_id = 0 if single_gpu_mode else 1  # Use GPU 0 (3090) for peripheral memory operations
-
+    single_gpu_mode = detect_request.single_gpu_mode or False
+    gpu_id = detect_request.gpu_id or 0
     
+    logger.info(f"🧠 API /detect_intent called on GPU {gpu_id}")
     
-    logger.info(f"🧠 API /detect_intent called on GPU {target_gpu_id} instance.")
-    logger.debug(f"Received detect_request: prompt='{detect_request.original_prompt[:50]}...', response='{detect_request.response_text[:50]}...'")
-
     try:
-        # Find suitable model on this instance (GPU 1)
-        # Use provided name or find the first one available on GPU 1
-        model_to_use = detect_request.model_name
-        if not model_to_use:
-            model_to_use = await model_manager.find_suitable_model(gpu_id=target_gpu_id, quiet=True)
-
-        if not model_to_use:
-            # No local model for memory detection — return success with "no memory" so callers don't log errors
-            logger.debug(f"API /detect_intent: No model on GPU {target_gpu_id}; skipping (returning MEMORY_DETECTED: NO).")
-            return {"status": "skipped", "detection_result": "MEMORY_DETECTED: NO"}
-
-        logger.info(f"Using model '{model_to_use}' on GPU {target_gpu_id} for intent detection.")
-
-        # Improved memory detection prompt that's more selective
-        memory_detection_prompt = f"""Analyze this user message for personal information:
+        logger.info(f"Received detect_request: prompt='{detect_request.original_prompt[:50]}...', response='{detect_request.response_text[:50]}...'")
+        
+        model_name = detect_request.model_name
+        if not model_name:
+            model_name = await model_manager.find_suitable_model(gpu_id=gpu_id)
+        
+        if not model_name:
+            logger.warning(f"API /detect_intent: No model on GPU {gpu_id}; skipping (returning MEMORY_DETECTED: NO).")
+            return {"status": "success", "detection_result": "MEMORY_DETECTED: NO"}
+        
+        logger.info(f"Using model '{model_name}' for intent detection.")
+        
+        detection_prompt = f"""Analyze this user message for personal information:
 
 "{detect_request.original_prompt}"
 
@@ -214,951 +210,645 @@ You must respond in EXACTLY this format:
 MEMORY_DETECTED: YES
 MEMORY_CONTENT: This is where you summarize the key personal information to remember. Just parse the message and extract relevant details.
 MEMORY_CATEGORY: personal_info (example value, adjust as needed)
-MEMORY_IMPORTANCE: 0.8 (example value, adjust as needed)
-
-OR if no personal information:
-
-MEMORY_DETECTED: NO
-
-Your response:"""
-
-        logger.debug(f"Sending detection prompt to model '{model_to_use}'")
+MEMORY_IMPORTANCE: 0.8
+"""
         
-        # Generate the intent detection
-        detection_result_text = await inference.generate_text(
+        logger.info(f"Sending detection prompt to model '{model_name}'")
+        result_text = await inference.generate_text(
             model_manager=model_manager,
-            model_name=model_to_use,
-            prompt=memory_detection_prompt,
-            max_tokens=250,
-            temperature=0.1, # Very low temperature for consistency
-            repetition_penalty=1.1,
-            gpu_id=target_gpu_id
+            model_name=model_name,
+            prompt=detection_prompt,
+            max_tokens=256,
+            temperature=0.2,
+            gpu_id=gpu_id,
         )
-
-        logger.info(f"API /detect_intent: Inference successful. Result preview: {str(detection_result_text)[:100]}...")
-        logger.debug(f"Raw detection result TEXT from model '{model_to_use}':\n---RESULT START---\n{detection_result_text}\n---RESULT END---")
         
-        # Enhanced parsing logic to ensure consistent output
-        if detection_result_text and isinstance(detection_result_text, str):
-            # Normalize detection result - sometimes models add extra verbiage
-            if "MEMORY_DETECTED: NO" in detection_result_text:
-                logger.info("Memory detection result: NO memory to store")
-                # Force standardized NO response
-                detection_result_text = "MEMORY_DETECTED: NO"
-            elif "MEMORY_DETECTED: YES" in detection_result_text:
-                logger.info("Memory detection result: YES - memory to store")
-                # Ensure we have the core components
-                if not all(x in detection_result_text for x in ["MEMORY_CONTENT:", "MEMORY_CATEGORY:", "MEMORY_IMPORTANCE:"]):
-                    logger.warning("Memory detection returned YES but missing required fields")
-                    # Could fix this here by extracting what is available and formatting it properly
-            else:
-                logger.warning(f"Memory detection returned unclear result: {detection_result_text[:50]}...")
-                # Default to NO if unclear
-                detection_result_text = "MEMORY_DETECTED: NO"
-        else:
-            logger.warning("Memory detection returned invalid result")
-            detection_result_text = "MEMORY_DETECTED: NO"
+        logger.info(f"API /detect_intent: Inference successful. Result preview: {result_text[:80]}...")
+        logger.info(f"Raw detection result TEXT from model '{model_name}':\n---RESULT START---\n{result_text}\n---RESULT END---")
+        
+        if "MEMORY_DETECTED: NO" in result_text:
+            logger.info("Memory detection result: NO memory to store")
+            return {"status": "success", "detection_result": "MEMORY_DETECTED: NO"}
+        elif "MEMORY_DETECTED: YES" in result_text:
+            logger.info("Memory detection result: YES - memory to store")
             
-        # Return the standardized result
-        return {"status": "success", "detection_result": detection_result_text}
-
-    except HTTPException as http_exc:
-        # Re-raise HTTPExceptions from downstream (like inference)
-        raise http_exc
+            content_match = re.search(r"MEMORY_CONTENT: (.*?)(?:\n|$)", result_text)
+            category_match = re.search(r"MEMORY_CATEGORY: (.*?)(?:\n|$)", result_text)
+            importance_match = re.search(r"MEMORY_IMPORTANCE: (.*?)(?:\n|$)", result_text)
+            
+            if content_match:
+                memory_content = content_match.group(1).strip()
+                memory_category = category_match.group(1).strip() if category_match else "personal_info"
+                memory_importance = float(importance_match.group(1).strip()) if importance_match else 0.8
+                
+                return {
+                    "status": "success",
+                    "detection_result": "MEMORY_DETECTED: YES",
+                    "memory_content": memory_content,
+                    "memory_category": memory_category,
+                    "memory_importance": memory_importance,
+                }
+            else:
+                logger.warning("Memory detection returned YES but missing required fields")
+                return {"status": "success", "detection_result": "MEMORY_DETECTED: YES", "raw": result_text}
+        else:
+            logger.warning(f"Memory detection returned unclear result: {result_text[:100]}")
+            return {"status": "success", "detection_result": "Memory detection returned invalid result", "raw": result_text}
+    
     except Exception as e:
-        logger.error(f"API /detect_intent: Error during processing: {e}", exc_info=True)
+        logger.error(f"API /detect_intent: Error during processing: {e}")
         raise HTTPException(status_code=500, detail=f"Error during memory intent detection: {str(e)}")
 
-# Finally, let's fix the route handler in memory_routes.py for the /relevant endpoint
+
 @memory_router.post("/relevant")
 async def get_relevant_memories(
-    request_obj: Request,  # Add this parameter to access app state
-    request: MemoryRequest, # This is the Pydantic model
-    model_manager: ModelManager = Depends(get_model_manager_from_state)
+    request_obj: Request,
+    request: MemoryRequest,
+    model_manager: ModelManager = Depends(get_model_manager_from_state),
 ):
     """
     Fetches candidate memories from the specific user's memory_store.json,
     then uses an LLM on GPU 1 to refine and select the most relevant context.
     Uses user_id derived from userProfile, prioritizing 'id'.
     """
+    logger = logging.getLogger("memory_routes")
+    
+    logger.info(f"🧠 Received prompt for LLM-powered memory retrieval: {request.prompt[:100]}...")
+    
+    user_profile = request.userProfile or {}
+    user_id = (
+        user_profile.get("id") or
+        user_profile.get("userId") or
+        user_profile.get("user_id")
+    )
+    if user_id:
+        user_id = str(user_id)
+    
+    logger.info(f"Extracted user_id: '{user_id}' for memory retrieval.")
+    
+    if not user_id:
+        logger.warning("Cannot retrieve relevant memories without a valid 'id', 'userId', or 'user_id' in userProfile.")
+        return {
+            "status": "user_id_missing",
+            "context": "",
+            "message": "Cannot retrieve relevant memories without a valid user ID in userProfile."
+        }
     
     try:
-        logger.info(f"🧠 Received prompt for LLM-powered memory retrieval: {request.prompt[:100]}...")
-        original_prompt = request.prompt
-        user_profile_data = request.userProfile or {}
-
-        # --- Derive user_id (Corrected & Safer) ---
-        user_id_value = user_profile_data.get("id") or \
-                        user_profile_data.get("userId") or \
-                        user_profile_data.get("user_id")
-
-        user_id = str(user_id_value) if user_id_value is not None else None
-
-        logger.info(f"Extracted user_id: '{user_id}' for memory retrieval.")
-
-        if not user_id:
-            logger.error("Cannot retrieve relevant memories without a valid 'id', 'userId', or 'user_id' in userProfile.")
-            # Return empty results if no user_id can be determined
-            return {
-                "status": "success", # Return success status but indicate no memories found
-                "reason": "user_id_missing",
-                "memories": [],
-                "formatted_memories": "",
-                "memory_count": 0,
-                "retrieval_source": "none"
-            }
-
-        # Load what's on disk
-        backend_memories = memory_intelligence.get_memory_store(user_id=user_id)
-        all_candidate_memories = []
-        
-        # Access single_gpu_mode from app state using request_obj instead of request
         single_gpu_mode = getattr(request_obj.app.state, "single_gpu_mode", False)
-        gpu_for_refinement = 0 if single_gpu_mode else 1
-        logger.info(f"Using GPU {gpu_for_refinement} for memory refinement (single_gpu_mode: {single_gpu_mode})")
-
+        gpu_id = 0 if single_gpu_mode else 1
+        
+        logger.info(f"Using GPU {gpu_id} for memory refinement (single_gpu_mode: {single_gpu_mode})")
+        
+        memories = memory_intelligence.get_all_memories_for_user(user_id)
+        logger.info(f"🧠 [relevant] Loaded {len(memories)} memories for user '{user_id}'")
+        
+        if not memories:
+            logger.info(f"🧠 [relevant] No memories in store for user '{user_id}'")
+        
+    except ValueError as ve:
+        logger.error(f"Error fetching backend memories for user '{user_id}': {ve}")
+        return {
+            "status": "error",
+            "context": "",
+            "message": f"Failed to access memory store for user '{user_id}': {str(ve)}"
+        }
+    
+    # Get character lore if available
+    lore_content = ""
+    if request.active_character:
         try:
-            if backend_memories:
-                logger.info(f"🧠 [relevant] Loaded {len(backend_memories)} memories for user '{user_id}'")
-                all_candidate_memories.extend(backend_memories)
-            else:
-                logger.info(f"🧠 [relevant] No memories in store for user '{user_id}'")
-        except ValueError as ve:
-            logger.error(f"Error fetching backend memories for user '{user_id}': {ve}", exc_info=True)
+            lore_entries = request.active_character.get("loreEntries", [])
+            triggered = []
+            prompt_lower = request.prompt.lower()
+            for entry in lore_entries:
+                keywords = entry.get("keywords", [])
+                for keyword in keywords:
+                    if keyword.strip().lower() in prompt_lower:
+                        triggered.append(entry.get("content", ""))
+                        break
+            if triggered:
+                lore_content = "WORLD KNOWLEDGE:\n" + "\n\n".join(triggered)
+                logger.info(f"🧠 {len(triggered)} relevant lore entries for active character")
+        except Exception as e:
+            logger.error(f"Error getting character lore: {e}")
+    
+    if not memories and not lore_content:
+        return {
+            "status": "character_lore_only" if lore_content else "backend_user_store_empty",
+            "context": lore_content,
+        }
+    
+    # Filter invalid items
+    valid_memories = [m for m in memories if isinstance(m, dict) and m.get("content")]
+    invalid_count = len(memories) - len(valid_memories)
+    if invalid_count > 0:
+        logger.info(f"Filtered out {invalid_count} invalid items from candidate memories before LLM refinement.")
+    
+    if not valid_memories and not lore_content:
+        return {
+            "status": "character_lore_only_after_scoring" if lore_content else "no_relevant_memories_after_scoring",
+            "context": lore_content,
+        }
+    
+    # Use LLM to refine relevant memories
+    try:
+        refined = await memory_intelligence.refine_memories_with_llm(
+            model_manager=model_manager,
+            prompt=request.prompt,
+            memories=valid_memories,
+            gpu_id=gpu_id,
+            lore_content=lore_content,
+        )
+        
+        return {
+            "status": "refined_context",
+            "context": refined,
+            "refinement_method": "llm_refined_gpu1_with_lore" if lore_content else "llm_refined_gpu1",
+        }
+    except Exception as e:
+        logger.error(f"Unknown LLM refinement error: {e}")
+        logger.warning(f"LLM refinement failed for user '{user_id}': {e}")
+        
+        # Fallback: simple formatting
+        try:
+            simple_context = memory_intelligence.format_memories_simple(valid_memories)
+            if lore_content:
+                simple_context = lore_content + "\n\n" + simple_context
+            return {
+                "status": "partial_success",
+                "context": simple_context,
+                "message": f"LLM refinement failed but using simple formatting: {str(e)}"
+            }
+        except Exception as e2:
             return {
                 "status": "error",
-                "error": f"Failed to access memory store for user '{user_id}': {ve}",
-                "memories": [],
-                "formatted_memories": "",
-                "memory_count": 0
-            }
-        except Exception as backend_err:
-            logger.error(f"Error fetching backend memories for user '{user_id}': {backend_err}", exc_info=True)
-            # Continue to try LLM refinement even if there's an error
-
-        # --- Check for lore entries if active_character is present ---
-        character_lore_context = ""
-        if request.active_character:
-            try:
-                triggered_lore = memory_intelligence.get_triggered_character_lore(
-                    original_prompt, request.active_character
-                )
-                if triggered_lore and len(triggered_lore) > 0:
-                    character_lore_context = "WORLD KNOWLEDGE:\n" + "\n".join([f"• {lore}" for lore in triggered_lore])
-                    logger.info(f"Found {len(triggered_lore)} relevant lore entries for active character")
-            except Exception as lore_err:
-                logger.error(f"Error getting character lore: {lore_err}", exc_info=True)
-
-        # If there's nothing to refine, return early
-        if not all_candidate_memories:
-            # Only return lore context if we have it
-            if character_lore_context:
-                return {
-                    "status": "success",
-                    "memories": [],
-                    "formatted_memories": character_lore_context,
-                    "memory_count": 0,
-                    "retrieval_source": "character_lore_only"
-                }
-            return {
-                "status": "success",
-                "memories": [],
-                "formatted_memories": "",
-                "memory_count": 0,
-                "retrieval_source": "backend_user_store_empty"
+                "context": "",
+                "message": f"❌ Unexpected Error in /relevant endpoint for user '{user_id}': {str(e2)}"
             }
 
-        # Filter out any non-dictionary items before refinement
-        valid_candidate_memories = [mem for mem in all_candidate_memories if isinstance(mem, dict)]
-        if len(valid_candidate_memories) != len(all_candidate_memories):
-            logger.warning(f"Filtered out {len(all_candidate_memories) - len(valid_candidate_memories)} invalid items from candidate memories before LLM refinement.")
 
-        # Use analyze_for_relevant_memories to pre-filter memories before LLM refinement
-        relevant_memories = await memory_intelligence.analyze_for_relevant_memories(
-            model_manager=model_manager,
-            prompt=original_prompt,
-            memories=valid_candidate_memories,
-            gpu_id=gpu_for_refinement,
-            user_id=user_id,
-            single_gpu_mode=single_gpu_mode
-        )
-
-        # If we have no relevant memories after scoring, return early
-        if not relevant_memories:
-            # Only return lore context if we have it
-            if character_lore_context:
-                return {
-                    "status": "success",
-                    "memories": [],
-                    "formatted_memories": character_lore_context,
-                    "memory_count": 0,
-                    "retrieval_source": "character_lore_only_after_scoring"
-                }
-            return {
-                "status": "success",
-                "memories": [],
-                "formatted_memories": "",
-                "memory_count": 0,
-                "retrieval_source": "no_relevant_memories_after_scoring"
-            }
-
-        # Now use the LLM to refine the already filtered relevant memories
-        refined_context_result = await memory_intelligence.get_llm_refined_context(
-            model_manager=model_manager,
-            original_prompt=original_prompt,
-            candidate_memories=relevant_memories,
-            gpu_id=gpu_for_refinement,
-            single_gpu_mode=single_gpu_mode,
-        )
-
-        # Process refinement result
-        if refined_context_result.get("status") == "success":
-            refined_context = refined_context_result.get("refined_context", "")
-            
-            # Combine with character lore if available
-            final_context = refined_context
-            if character_lore_context and refined_context:
-                final_context = f"{refined_context}\n\n{character_lore_context}"
-            elif character_lore_context:
-                final_context = character_lore_context
-            
-            # Count memory items by simple heuristic (bullet points)
-            memory_count = final_context.count("•")
-            if memory_count == 0 and len(final_context) > 20:
-                # If no bullet points but text exists, estimate based on newlines
-                memory_count = len([line for line in final_context.split('\n') if line.strip()])
-            
-            return {
-                "status": "success", 
-                "memories": relevant_memories, 
-                "formatted_memories": final_context, 
-                "memory_count": memory_count, 
-                "retrieval_source": "llm_refined_gpu1_with_lore"
-            }
-        else:
-            error_detail = refined_context_result.get('error', 'Unknown LLM refinement error')
-            logger.error(f"LLM refinement failed for user '{user_id}': {error_detail}")
-            
-            # Fallback to simple formatting if LLM refinement fails
-            simple_formatted = memory_intelligence.format_memories_for_context(relevant_memories)
-            
-            # Combine with character lore if available
-            if character_lore_context and simple_formatted:
-                simple_formatted = f"{simple_formatted}\n\n{character_lore_context}"
-            elif character_lore_context:
-                simple_formatted = character_lore_context
-                
-            return {
-                "status": "partial_success", 
-                "error": f"LLM refinement failed but using simple formatting: {error_detail}",
-                "memories": relevant_memories, 
-                "formatted_memories": simple_formatted, 
-                "memory_count": len(relevant_memories)
-            }
-
-    except Exception as e:
-        # Log user_id if available, otherwise log 'unknown'
-        user_id_for_log = user_id if 'user_id' in locals() and user_id else 'unknown'
-        logger.error(f"❌ Unexpected Error in /relevant endpoint for user '{user_id_for_log}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during memory retrieval: {str(e)}")
-
-    
-# --- Replace the existing create_memory function with this ---
-# Note: This endpoint seems similar to /add but takes a raw dict.
-# Ensure frontend sends user_id within this dictionary.
 @memory_router.post("/memory/create")
-async def create_memory(memory_data: dict):
+async def create_memory(memory_data: dict = Body(...)):
     """
     Manually create a memory from a dictionary payload for a specific user.
     Requires user_id within the memory_data dictionary.
     """
-    logger = logging.getLogger("memory_routes") # Get logger instance
-    user_id = memory_data.get("user_id") # Extract user_id from the dictionary body
-
-    logger.info(f"POST /memory/create: Attempting to create memory manually for user '{user_id}'.") # Log user_id
-
+    logger = logging.getLogger("memory_routes")
+    
+    user_id = memory_data.get("user_id")
+    logger.info(f"POST /memory/create: Attempting to create memory manually for user '{user_id}'")
+    
     if not user_id:
-        logger.error("Cannot create memory manually without a user_id in the payload.")
+        logger.warning("Cannot create memory manually without a user_id in the payload.")
         raise HTTPException(status_code=400, detail="user_id is required in the request body dictionary to create a memory.")
-
+    
+    content = memory_data.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Memory content is required in payload for /memory/create.")
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Memory content cannot be empty for /memory/create.")
+    
     try:
-        # Validate required fields
-        if 'content' not in memory_data:
-            logger.error("Memory content is required in payload for /memory/create.")
-            raise HTTPException(status_code=422, detail="Memory content is required")
-
-        content = memory_data.get('content', '').strip()
-        if not content:
-            logger.error("Memory content cannot be empty for /memory/create.")
-            raise HTTPException(status_code=422, detail="Memory content cannot be empty")
-
-        # Validate the content using the intelligence module function
-        if not memory_intelligence.is_valid_memory_content(content):
-            logger.warning(f"Invalid manual memory content via /memory/create for user '{user_id}': {content[:50]}...")
-            raise HTTPException(status_code=422, detail="Invalid memory content provided.")
-
-        # Create a proper memory object for storage (excluding user_id from the object itself)
-        memory_to_store = {
-            "content": content,
-            "category": memory_data.get('category', 'manual'), # Default category
-            "importance": float(memory_data.get('importance', 0.8)), # Default importance
-            "type": "manual", # Indicate manual creation
-            "created": datetime.datetime.now().isoformat(), # Set creation time
-            "accessed": 0 # Initialize access count
-            # Add other fields like 'tags' if provided in memory_data
-        }
-        if 'tags' in memory_data and isinstance(memory_data['tags'], list):
-             memory_to_store['tags'] = memory_data['tags']
-
-
-        # Store the memory FOR THE SPECIFIC USER
-        # store_memories now takes user_id
-        success = await memory_intelligence.store_memories(
-            memories=[memory_to_store], # Pass as a list
-            user_id=user_id # <-- PASS user_id
-        )
-
-        if success:
-            logger.info(f"Successfully created memory via /memory/create for user '{user_id}'.") # Log user_id
-            return {"status": "success", "memory": memory_to_store} # Return the created memory object
+        result = memory_intelligence.add_memory_to_store(user_id, memory_data)
+        if result:
+            logger.info(f"Successfully created memory via /memory/create for user '{user_id}'")
+            return {"status": "success", "message": f"Memory created successfully for user '{user_id}'."}
         else:
-            # This could mean duplicate or save failure
-            logger.warning(f"Manual memory creation via /memory/create failed for user '{user_id}' (duplicate or save error).") # Log user_id
+            logger.warning(f"Manual memory creation via /memory/create failed for user '{user_id}' (duplicate or save error).")
             raise HTTPException(status_code=409, detail="Memory might be a duplicate or failed to save.")
-
-    except ValueError as ve: # Catch potential errors from store_memories if user_id is invalid
-         logger.error(f"❌ Value Error creating memory via /memory/create for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory storage: {str(ve)}")
-    except HTTPException as http_exc:
-        # Re-raise specific HTTP exceptions (like 400, 409, 422)
-        raise http_exc
+    except ValueError as ve:
+        logger.error(f"❌ Value Error creating memory via /memory/create for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory storage: {str(ve)}")
     except Exception as e:
-        logger.error(f"Error creating memory via /memory/create for user '{user_id}': {e}", exc_info=True) # Log user_id
+        logger.error(f"Error creating memory via /memory/create for user '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
-# --- Replace the existing observe_conversation function with this ---
 @memory_router.post("/observe")
 async def observe_conversation(
-    request: ObservationRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
-    model_manager: ModelManager = Depends(get_model_manager_from_state)
+    model_manager: ModelManager = Depends(get_model_manager_from_state),
 ):
     """
     Process a conversation and extract memories.
     Enhanced to be more selective about what gets stored.
     """
-    user_id = request.user_name
-    if not user_id:
-        logger.warning("🧠 [observe] Missing user_name for memory observation")
-        raise HTTPException(400, "Missing user_name for memory observation")
-
-    logger.debug(
-        f"Received observation request for user '{user_id}': "
-        f"user_message='{request.user_message[:50]}...', "
-        f"ai_response='{request.ai_response[:50]}...'"
-    )
+    logger = logging.getLogger("memory_routes")
     
-    # First, check for explicit memory intent
+    body = await request.json()
+    user_name = body.get("user_name")
+    user_message = body.get("user_message", "")
+    ai_response = body.get("ai_response", "")
+    
+    if not user_name:
+        logger.warning("🧠 [observe] Missing user_name for memory observation")
+        raise HTTPException(status_code=400, detail="Missing user_name for memory observation")
+    
+    logger.info(f"Received observation request for user '{user_name}': user_message='{user_message[:50]}...', ai_response='{ai_response[:50]}...'")
+    
     try:
-        # Call memory detection to check intent
-        detection_result = await detect_memory_intent_api(
-            MemoryDetectRequest(
-                original_prompt=request.user_message,
-                response_text=request.ai_response,
-                user_name=user_id
-            ),
-            model_manager
-        )
+        detection_result = body.get("detection_result", "")
         
-        detection_text = detection_result.get("detection_result", "")
-        
-        # Check if memory intent was detected
-        if "MEMORY_DETECTED: YES" in detection_text:
-            logger.info(f"🧠 [observe] Memory intent detected for user '{user_id}'")
+        if "MEMORY_DETECTED: YES" in detection_result:
+            logger.info(f"🧠 [observe] Memory intent detected for user '{user_name}'")
             
-            # Extract memory details
-            memory_content = None
-            content_match = re.search(r"MEMORY_CONTENT: (.*?)(?:\n|$)", detection_text, re.DOTALL)
+            content_match = re.search(r"MEMORY_CONTENT: (.*?)(?:\n|$)", detection_result)
+            category_match = re.search(r"MEMORY_CATEGORY: (.*?)(?:\n|$)", detection_result)
+            importance_match = re.search(r"MEMORY_IMPORTANCE: (.*?)(?:\n|$)", detection_result)
+            
             if content_match:
                 memory_content = content_match.group(1).strip()
-            
-            category_match = re.search(r"MEMORY_CATEGORY: (.*?)(?:\n|$)", detection_text)
-            category = category_match.group(1).strip() if category_match else "personal_info"
-            
-            importance_match = re.search(r"MEMORY_IMPORTANCE: (.*?)(?:\n|$)", detection_text)
-            try:
-                importance = max(0.1, min(1.0, float(importance_match.group(1).strip()))) if importance_match else 0.8
-            except:
-                importance = 0.8
-            
-            if memory_content:
-                # Create memory manually
-                memory = Memory(
-                    content=memory_content,
-                    category=category,
-                    importance=importance,
-                    type="detected",
-                    user_id=user_id
+                memory_category = category_match.group(1).strip() if category_match else "personal_info"
+                memory_importance = float(importance_match.group(1).strip()) if importance_match else 0.8
+                
+                memory_intelligence.add_memory_to_store(
+                    user_name,
+                    {
+                        "content": memory_content,
+                        "category": memory_category,
+                        "importance": memory_importance,
+                        "type": "auto",
+                    }
                 )
-                
-                # Store memory immediately
-                memory_dict = memory.dict()
-                if "created" not in memory_dict:
-                    memory_dict["created"] = datetime.datetime.now().isoformat()
-                
-                logger.info(f"🧠 [observe] Adding detected memory: {memory_content[:50]}...")
-                
-                # Call store_memories directly
-                await memory_intelligence.store_memories([memory_dict], user_id=user_id)
-                
-                return {
-                    "status": "success",
-                    "message": "Memory detected and stored",
-                    "memory": memory_dict
-                }
+                logger.info(f"🧠 [observe] Adding detected memory: {memory_content[:80]}")
+                return {"status": "success", "message": "Memory detected and stored"}
             else:
                 logger.warning("🧠 [observe] Memory intent detected but no content extracted")
+                return {"status": "success", "message": "Memory detected but content extraction failed"}
         else:
-            logger.info(f"🧠 [observe] No memory intent detected for user '{user_id}'")
-            
-            # Add option to schedule a deeper analysis in background
-            if request.memory_creation_settings.get("analyze_conversations", False):
-                background_tasks.add_task(
-                    process_completed_exchange,
-                    model_manager,
-                    request.user_message,
-                    request.ai_response,
-                    user_id,
-                    gpu_id=1
-                )
-                return {
-                    "status": "scheduled",
-                    "message": "No explicit memory but scheduled deeper analysis"
-                }
-            else:
-                # Return 'skipped' to indicate we didn't need memory here
-                return {
-                    "status": "skipped",
-                    "message": "No memory intent detected"
-                }
+            logger.info(f"🧠 [observe] No memory intent detected for user '{user_name}'")
+            return {
+                "status": "success",
+                "message": "No memory intent detected",
+                "suggestion": "analyze_conversations",
+                "note": "No explicit memory but scheduled deeper analysis"
+            }
+    
     except Exception as e:
-        logger.error(f"🧠 [observe] Error during memory observation: {e}", exc_info=True)
-        return {
-            "status": "error",
-            "message": f"Error during observation: {str(e)}"
-        }
+        logger.error(f"🧠 [observe] Error during memory observation: {e}")
+        raise HTTPException(status_code=500, detail=f"Error during observation: {str(e)}")
 
-# Add this new endpoint definition
 
 @memory_router.get("/get_all")
-async def get_all_backend_memories(
-    # Make user_id a required query parameter. Frontend must send e.g., /get_all?user_id=bernard
-    user_id: str = Query(...)
-):
+async def get_all_backend_memories(user_id: str = Query(...)):
     """
     Returns all memories currently stored in the backend for the SPECIFIED user.
     Intended for frontend synchronization based on the active user profile.
     Requires user_id as a query parameter.
     """
-    # logger.info(f"Request received for /get_all backend memories for user '{user_id}'.") # Log user_id
-
-    # Basic validation (FastAPI's Query(...) already makes it required)
     if not user_id:
-         # This case might not be reachable if Query(...) is used, but good practice
-         logger.error("get_all endpoint called without a user_id query parameter.")
-         raise HTTPException(status_code=400, detail="user_id query parameter is required.")
-
-    try:
-        # Use the existing function from memory_intelligence, passing the user_id
-        all_memories = memory_intelligence.get_memory_store(user_id=user_id) # <-- PASS user_id
-        # logger.info(f"Returning {len(all_memories)} memories from backend store for user '{user_id}'.") # Log user_id
-        return {"status": "success", "memories": all_memories}
-
-    except ValueError as ve: # Catch potential errors from get_memory_store if user_id is invalid
-         logger.error(f"❌ Value Error getting memories for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory retrieval: {str(ve)}")
-    except Exception as e:
-        logger.error(f"Error in /get_all endpoint for user '{user_id}': {e}", exc_info=True) # Log user_id
-        # Raise HTTPException so the frontend knows something went wrong
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve backend memories for user '{user_id}'.")
+        logger.warning("get_all endpoint called without a user_id query parameter.")
+        raise HTTPException(status_code=400, detail="user_id query parameter is required.")
     
-# --- Replace the existing list_memories function with this ---
+    try:
+        memories = memory_intelligence.get_all_memories_for_user(user_id)
+        return {"status": "success", "memories": memories, "count": len(memories)}
+    except ValueError as ve:
+        logger.error(f"❌ Value Error getting memories for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory retrieval: {str(ve)}")
+    except Exception as e:
+        logger.error(f"Error in /get_all endpoint for user '{user_id}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve backend memories for user '{user_id}': {str(e)}")
+
+
 @memory_router.get("/list")
-async def list_memories(
-    # Add user_id as a required query parameter
-    user_id: str = Query(...)
-):
+async def list_memories(user_id: str = Query(...)):
     """
     Return all stored memories for a specific user.
     Requires user_id as a query parameter.
     """
-    logger = logging.getLogger("memory_routes") # Get logger instance
-    logger.info(f"GET /list: Attempting to list memories for user '{user_id}'.") # Log user_id
-
+    logger = logging.getLogger("memory_routes")
+    logger.info(f"GET /list: Attempting to list memories for user '{user_id}'")
+    
     if not user_id:
-        # Should be caught by Query(...), but good practice
-        logger.error("Cannot list memories without a user_id.")
         raise HTTPException(status_code=400, detail="user_id query parameter is required to list memories.")
-
+    
     try:
-        # Get memories from the store FOR THE SPECIFIC USER
-        memories = memory_intelligence.get_memory_store(user_id=user_id) # <-- PASS user_id
-        logger.info(f"Found {len(memories)} memories for user '{user_id}'.") # Log user_id
+        memories = memory_intelligence.get_all_memories_for_user(user_id)
+        logger.info(f"Found {len(memories)} memories for user '{user_id}'")
         return {"status": "success", "memories": memories, "count": len(memories)}
-
-    except ValueError as ve: # Catch potential errors from get_memory_store if user_id is invalid
-         logger.error(f"❌ Value Error listing memories for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory listing: {str(ve)}")
+    except ValueError as ve:
+        logger.error(f"❌ Value Error listing memories for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory listing: {str(ve)}")
     except Exception as e:
-        logger.error(f"Error listing memories for user '{user_id}': {e}", exc_info=True) # Log user_id
-        # Return 500 for unexpected errors during retrieval
+        logger.error(f"Error listing memories for user '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=f"Failed to list memories for user '{user_id}': {str(e)}")
 
-# --- Replace the existing add_memory function with this ---
+
 @memory_router.post("/add")
-async def add_memory(
-    request: Request, # Add the request parameter to access app state
-    memory: Memory
-): 
+async def add_memory(request: Request, memory: Memory):
     """
     Manually add a memory for a specific user.
     Tries multiple methods to determine user_id with fallbacks.
     """
     logger = logging.getLogger("memory_routes")
     
-    # 1. First try to get user_id from the Memory model itself
-    user_id = memory.user_id
+    user_id = None
     
-    # 2. Then try to extract from userProfile if available
-    if not user_id and hasattr(memory, 'userProfile') and memory.userProfile:
-        profile = memory.userProfile
-        profile_id = (
-            profile.get("id") or 
-            profile.get("userId") or 
-            profile.get("user_id")
-        )
-        if profile_id:
-            user_id = str(profile_id)
-            logger.info(f"Using user_id from userProfile: {user_id}")
+    # Try multiple sources for user_id
+    if memory.user_id:
+        user_id = memory.user_id
+        logger.info(f"Using user_id from userProfile: {user_id}")
     
-    # 3. If still not found, try app state's active profile
-    if not user_id and request and hasattr(request.app.state, "active_profile_id"):
-        user_id = request.app.state.active_profile_id
-        if user_id:
+    if not user_id:
+        try:
+            user_id = request.app.state.active_profile_id
             logger.info(f"Using active_profile_id from app state: {user_id}")
+        except Exception:
+            pass
     
-    # 4. Last resort: try user_utils (for when request context isn't available)
     if not user_id:
         try:
             from . import user_utils
             user_id = user_utils.get_active_profile_id()
-            if user_id:
-                logger.info(f"Fallback to user_utils.get_active_profile_id(): {user_id}")
+            logger.info(f"Fallback to user_utils.get_active_profile_id(): {user_id}")
         except Exception as e:
             logger.error(f"Error accessing user_utils for fallback user_id: {e}")
     
-    # Final check - if we still don't have a user_id, reject the request
     if not user_id:
         logger.error("Cannot add memory - no user_id found in any source")
         raise HTTPException(status_code=400, detail="Could not determine user_id from any source")
-
+    
     try:
-        # Format the memory dictionary from the Pydantic model
-        memory_dict_to_store = memory.dict(exclude={"user_id"})
-
-        # Add created timestamp if not present
-        if "created" not in memory_dict_to_store or not memory_dict_to_store["created"]:
-            memory_dict_to_store["created"] = datetime.datetime.now().isoformat()
-
-        # Add accessed count if not present
-        if "accessed" not in memory_dict_to_store:
-            memory_dict_to_store["accessed"] = 0
-
-        memory_content = memory_dict_to_store.get("content", "").strip()
-
-        # Validate memory content
-        if not memory_intelligence.is_valid_memory_content(memory_content):
-            logger.warning(f"Invalid memory content for user '{user_id}': {memory_content[:50]}...")
-            raise HTTPException(status_code=422, detail="Invalid memory content provided")
-
-        # Store the memory
-        storage_success = await memory_intelligence.store_memories(
-            memories=[memory_dict_to_store],
-            user_id=user_id
-        )
-
-        if storage_success:
-            logger.info(f"Added new memory for user '{user_id}': {memory_content[:50]}...")
-            return {"status": "success", "memory": memory_dict_to_store}
+        result = memory_intelligence.add_memory_to_store(user_id, memory.dict())
+        if result:
+            logger.info(f"Added new memory for user '{user_id}'")
+            return {"status": "success", "message": f"Memory added for user '{user_id}'."}
         else:
             logger.warning(f"Memory add failed for user '{user_id}' (duplicate or save error)")
             raise HTTPException(status_code=409, detail="Memory might be a duplicate or failed to save")
-
     except ValueError as ve:
-        logger.error(f"❌ Value Error adding memory for user '{user_id}': {ve}", exc_info=True)
+        logger.error(f"❌ Value Error adding memory for user '{user_id}': {ve}")
         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory storage: {str(ve)}")
-    except HTTPException as http_exc:
-        raise http_exc
     except Exception as e:
-        logger.error(f"Error adding memory for user '{user_id}': {e}", exc_info=True)
-        traceback.print_exc()
+        logger.error(f"Error adding memory for user '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-# --- Replace the existing sync_client_memories function with this ---
+
 @memory_router.post("/sync")
-async def sync_client_memories(
-    # Add user_id as a required query parameter
-    user_id: str = Query(...),
-    # Expect a list of memory objects in the body
-    memories: List[Dict[str, Any]] = Body(...)
-):
+async def sync_client_memories(user_id: str = Query(...), memories: List[Dict[str, Any]] = Body(...)):
     """
     Sync memories from client to server for a specific user.
     Adds memories from the list that are not already present (exact or semantic match)
     in the user's backend store.
     Requires user_id as a query parameter.
     """
-    logger = logging.getLogger("memory_routes") # Get logger instance
-    logger.info(f"POST /sync: Attempting to sync {len(memories)} memories from client for user '{user_id}'.") # Log user_id
-
+    logger = logging.getLogger("memory_routes")
+    
+    logger.info(f"POST /sync: Attempting to sync {len(memories)} memories from client for user '{user_id}'")
+    
     if not user_id:
-        # Should be caught by Query(...), but belt-and-suspenders
-        logger.error("Cannot sync memories without a user_id.")
         raise HTTPException(status_code=400, detail="user_id query parameter is required to sync memories.")
-
+    
     try:
-        # Get existing memories for the specific user
-        all_memories = memory_intelligence.get_memory_store(user_id=user_id)
-        # Create a set of existing contents for faster lookup
-        existing_contents = {m.get("content", "").strip().lower() for m in all_memories if m.get("content")}
-
-        added_count = 0
-        skipped_count = 0
-        newly_added_memories = [] # Keep track of memories actually added in this sync
-
-        for memory in memories:
-            # Skip invalid memories or memories missing content
-            if not isinstance(memory, dict) or "content" not in memory:
-                skipped_count += 1
+        existing_memories = memory_intelligence.get_all_memories_for_user(user_id)
+        existing_contents = {m.get("content", "").strip().lower() for m in existing_memories if isinstance(m, dict)}
+        
+        new_memories = []
+        skipped = 0
+        similarity_threshold = 0.85
+        
+        for mem in memories:
+            if not isinstance(mem, dict) or not mem.get("content"):
+                logger.warning(f"Skipping invalid sync content for user '{user_id}'")
+                skipped += 1
                 continue
-
-            content = memory.get("content", "").strip()
-            if not content:
-                skipped_count += 1
+            
+            content = mem["content"].strip()
+            if content.lower() in existing_contents:
+                skipped += 1
                 continue
-
-            # Validate memory content before checking duplicates
-            if not memory_intelligence.is_valid_memory_content(content):
-                logger.debug(f"Skipping invalid sync content for user '{user_id}': {content[:50]}...")
-                skipped_count += 1
-                continue
-
-            # Check for exact duplicates first (case-insensitive)
-            normalized_content = content.lower()
-            if normalized_content in existing_contents:
-                skipped_count += 1
-                continue # Skip exact duplicate
-
-            # Check for semantic similarity against existing memories
-            # (Note: This can be slow if the existing store is large. Consider optimizing if needed)
-            is_semantic_duplicate = False
-            # Maybe only check against recent N memories for performance?
-            # For now, check against all loaded memories for the user
-            for existing_memory in all_memories:
-                if memory_intelligence.does_it_basically_mean_the_same_thing(
-                    existing_memory.get("content", ""),
-                    content,
-                    threshold=memory_intelligence.CONFIG["similarity_threshold"]
-                ):
-                    is_semantic_duplicate = True
-                    # logger.debug(f"Skipping semantic duplicate during sync for user '{user_id}': {content[:50]}...")
-                    break
-
-            if is_semantic_duplicate:
-                skipped_count += 1
-                continue
-
-            # If not duplicate, prepare to add it
-            # Add timestamps if missing (client should ideally provide)
-            if "created" not in memory or not memory["created"]:
-                memory["created"] = datetime.datetime.now().isoformat()
-            if "accessed" not in memory:
-                memory["accessed"] = 0
-            # Ensure type consistency if needed
-            memory["importance"] = float(memory.get('importance', 0.7))
-
-            # Add to the list of memories to be saved and update lookup sets
-            newly_added_memories.append(memory)
-            existing_contents.add(normalized_content) # Add to exact match set
-            added_count += 1
-
-        # Only save if new memories were identified
-        if added_count > 0:
-            # Combine existing and newly added memories
-            all_memories.extend(newly_added_memories)
-            save_success = memory_intelligence.save_memory_store(all_memories, user_id=user_id) # <-- PASS user_id
-            if save_success:
-                logger.info(f"Successfully synced and saved {added_count} new memories for user '{user_id}'. Skipped {skipped_count}.") # Log user_id
+            
+            new_memories.append(mem)
+        
+        if new_memories:
+            result = memory_intelligence.add_memories_batch(user_id, new_memories)
+            if result:
+                logger.info(f"Successfully synced and saved {len(new_memories)} new memories for user '{user_id}'. Skipped {skipped}.")
+                return {
+                    "status": "success",
+                    "added": len(new_memories),
+                    "skipped": skipped,
+                    "message": f"Synced {len(new_memories)} new memories for user '{user_id}'."
+                }
             else:
-                logger.error(f"Failed to save synced memories for user '{user_id}'.") # Log user_id
-                # Return an error if save failed
-                raise HTTPException(status_code=500, detail=f"Added {added_count} memories but failed to save the store for user '{user_id}'.")
+                logger.warning(f"Failed to save synced memories for user '{user_id}'")
+                raise HTTPException(status_code=500, detail=f"Added {len(new_memories)} memories but failed to save the store for user '{user_id}'.")
         else:
-            logger.info(f"Sync completed for user '{user_id}'. No new unique memories added. Skipped {skipped_count}.") # Log user_id
-
-        # Return success status, including counts
-        return {
-            "status": "success",
-            "added_count": added_count,
-            "skipped_count": skipped_count,
-            "total_memories_after_sync": len(all_memories) # Reflects count *after* potential adds
-        }
-
-    except ValueError as ve: # Catch potential errors from get/save store if user_id is invalid
-         logger.error(f"❌ Value Error syncing memories for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory sync: {str(ve)}")
+            logger.info(f"Sync completed for user '{user_id}'. No new unique memories added. Skipped {skipped}.")
+            return {
+                "status": "success",
+                "added": 0,
+                "skipped": skipped,
+                "message": f"No new memories to sync for user '{user_id}'."
+            }
+    except ValueError as ve:
+        logger.error(f"❌ Value Error syncing memories for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory sync: {str(ve)}")
     except Exception as e:
-        logger.error(f"Error syncing memories for user '{user_id}': {e}", exc_info=True) # Log user_id
-        traceback.print_exc()
+        logger.error(f"Error syncing memories for user '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error during sync: {str(e)}")
 
-# --- Replace the existing clear_memories function with this ---
-@memory_router.delete("/clear") # Changed to DELETE method as it's a destructive action
-async def clear_memories(
-    # Add user_id as a required query parameter
-    user_id: str = Query(...)
-):
+
+@memory_router.delete("/clear")
+async def clear_memories(user_id: str = Query(...)):
     """
     Clear all memories for a specific user.
     Requires user_id as a query parameter.
     (Effectively calls purge_memory_store for the user).
     """
-    logger = logging.getLogger("memory_routes") # Get logger instance
-    logger.info(f"DELETE /clear: Attempting to clear memories for user '{user_id}'.") # Log user_id
-
+    logger = logging.getLogger("memory_routes")
+    logger.info(f"DELETE /clear: Attempting to clear memories for user '{user_id}'")
+    
     if not user_id:
-        # Should be caught by Query(...), but good practice
-        logger.error("Cannot clear memories without a user_id.")
         raise HTTPException(status_code=400, detail="user_id query parameter is required to clear memories.")
-
+    
     try:
-        # Get current memory count for reporting (optional, but nice)
-        # Note: This adds an extra read operation before the purge/write
-        current_memories = memory_intelligence.get_memory_store(user_id=user_id)
-        memory_count = len(current_memories)
-
-        # Call the purge function from memory_intelligence for the specific user
-        result = memory_intelligence.purge_memory_store(user_id=user_id) # <-- PASS user_id
-
-        if result.get("status") == "success":
-            logger.info(f"Successfully cleared {memory_count} memories for user '{user_id}'") # Log user_id
-            # Return 200 OK with details
-            return {
-                "status": "success",
-                "cleared_memories": memory_count, # Report count before clearing
-                "message": "Memory store completely cleared for this user."
-            }
+        result = memory_intelligence.purge_memory_store(user_id)
+        if result:
+            logger.info(f"Successfully cleared memories for user '{user_id}'")
+            return {"status": "success", "message": "Memory store completely cleared for this user."}
         else:
-            # If purge_memory_store failed (e.g., save error)
-            error_reason = result.get("reason", "Unknown error during memory clear")
-            logger.error(f"Failed to clear memories for user '{user_id}': {error_reason}") # Log user_id
-            # Return 500 as the operation failed server-side
-            raise HTTPException(status_code=500, detail=f"Failed to clear memory store: {error_reason}")
-
-    except ValueError as ve: # Catch potential errors from get/purge store if user_id is invalid
-         logger.error(f"❌ Value Error clearing memories for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory clear: {str(ve)}")
+            logger.warning(f"Unknown error during memory clear")
+            raise HTTPException(status_code=500, detail=f"Failed to clear memories for user '{user_id}'.")
+    except ValueError as ve:
+        logger.error(f"❌ Value Error clearing memories for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory clear: {str(ve)}")
     except Exception as e:
-        logger.error(f"Error clearing memories for user '{user_id}': {e}", exc_info=True) # Log user_id
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        logger.error(f"Error clearing memories for user '{user_id}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear memory store: {str(e)}")
 
-# --- Replace the existing purge_memory_endpoint function with this ---
-@memory_router.post("/purge") # Keeping POST method as original
-async def purge_memory_endpoint(
-    # Add user_id as a required query parameter
-    user_id: str = Query(...)
-):
+
+@memory_router.post("/purge")
+async def purge_memory_endpoint(user_id: str = Query(...)):
     """
     Completely purge all memories from a specific user's memory store.
     Requires user_id as a query parameter.
     """
-    logger = logging.getLogger("memory_routes") # Get logger instance
-    logger.info(f"POST /purge: Attempting to purge memories for user '{user_id}'.") # Log user_id
-
-    if not user_id:
-        # Should be caught by Query(...), but good practice
-        logger.error("Cannot purge memories without a user_id.")
-        raise HTTPException(status_code=400, detail="user_id query parameter is required to purge memories.")
-
-    try:
-        # Call the purge function from memory_intelligence for the specific user
-        result = memory_intelligence.purge_memory_store(user_id=user_id) # <-- PASS user_id
-
-        if result.get("status") == "success":
-            logger.info(f"Memory store purged successfully for user '{user_id}'.") # Log user_id
-            # Return success status
-            return {
-                "status": "success",
-                "message": "Memory store completely purged for this user.",
-                "details": result # Include details from the purge function if any
-            }
-        else:
-            # If purge_memory_store failed
-            error_reason = result.get("reason", "Unknown error during memory purge")
-            logger.error(f"Failed to purge memories for user '{user_id}': {error_reason}") # Log user_id
-            # Return 500 as the operation failed server-side
-            raise HTTPException(status_code=500, detail=f"Failed to purge memory store: {error_reason}")
-
-    except ValueError as ve: # Catch potential errors from purge store if user_id is invalid
-         logger.error(f"❌ Value Error purging memories for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory purge: {str(ve)}")
-    except Exception as e:
-        logger.error(f"Error during memory purge for user '{user_id}': {e}", exc_info=True) # Log user_id
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    logger = logging.getLogger("memory_routes")
+    logger.info(f"POST /purge: Attempting to purge memories for user '{user_id}'")
     
-# --- Replace the existing curate_memory_endpoint function with this ---
-@memory_router.post("/curate") # Keeping POST method as original
-async def curate_memory_endpoint(
-     # Add user_id as a required query parameter
-    user_id: str = Query(...)
-):
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id query parameter is required to purge memories.")
+    
+    try:
+        result = memory_intelligence.purge_memory_store(user_id)
+        if result:
+            logger.info(f"Memory store purged successfully for user '{user_id}'")
+            return {"status": "success", "message": "Memory store completely purged for this user."}
+        else:
+            logger.warning(f"Unknown error during memory purge")
+            raise HTTPException(status_code=500, detail=f"Failed to purge memories for user '{user_id}'.")
+    except ValueError as ve:
+        logger.error(f"❌ Value Error purging memories for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory purge: {str(ve)}")
+    except Exception as e:
+        logger.error(f"Error during memory purge for user '{user_id}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to purge memory store: {str(e)}")
+
+
+@memory_router.post("/curate")
+async def curate_memory_endpoint(user_id: str = Query(...)):
     """
     Run semantic memory curation to remove duplicates for a specific user.
     Requires user_id as a query parameter.
     """
-    logger = logging.getLogger("memory_routes") # Get logger instance
-    logger.info(f"POST /curate: Attempting to curate memories for user '{user_id}'.") # Log user_id
-
+    logger = logging.getLogger("memory_routes")
+    logger.info(f"POST /curate: Attempting to curate memories for user '{user_id}'")
+    
     if not user_id:
-        # Should be caught by Query(...), but good practice
-        logger.error("Cannot curate memories without a user_id.")
         raise HTTPException(status_code=400, detail="user_id query parameter is required to curate memories.")
-
+    
     try:
-        # Call the curation function from memory_intelligence for the specific user
-        # We previously updated curate_memory_store to accept user_id
-        result = memory_intelligence.curate_memory_store(user_id=user_id) # <-- PASS user_id
-
-        # Check the status returned by the curation function
-        if result.get("status") in ["success", "partial_success", "skipped"]: # Treat skipped as success from API perspective
-            logger.info(f"Memory curation process completed for user '{user_id}' with status: {result.get('status')}") # Log user_id
-            # Return success status along with details from the result
-            return {
-                "status": "success", # Report overall success to the API caller
-                "message": f"Memory curation process finished for user '{user_id}'.",
-                "details": result # Include the detailed result from the curation function
-            }
+        result = memory_intelligence.curate_memory_store(user_id)
+        if result:
+            logger.info(f"Memory curation process completed for user '{user_id}' with status: {result}")
+            return {"status": "success", "message": f"Memory curation process finished for user '{user_id}'."}
         else:
-            # If curate_memory_store failed (e.g., save error, model error)
-            error_reason = result.get("reason", "Unknown error during memory curation")
-            logger.error(f"Memory curation failed for user '{user_id}': {error_reason}") # Log user_id
-            # Return 500 as the operation failed server-side
-            raise HTTPException(status_code=500, detail=f"Memory curation failed: {error_reason}")
-
-    except ValueError as ve: # Catch potential errors from curate store if user_id is invalid
-         logger.error(f"❌ Value Error curating memories for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory curation: {str(ve)}")
+            logger.warning(f"Unknown error during memory curation")
+            raise HTTPException(status_code=500, detail=f"Memory curation failed for user '{user_id}'.")
+    except ValueError as ve:
+        logger.error(f"❌ Value Error curating memories for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory curation: {str(ve)}")
     except Exception as e:
-        logger.error(f"Error during memory curation endpoint for user '{user_id}': {e}", exc_info=True) # Log user_id
-        traceback.print_exc()
+        logger.error(f"Error during memory curation endpoint for user '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 
-# CORRECTED /model-based-extraction endpoint
 @memory_router.post("/model-based-extraction")
 async def model_based_extraction(
-    request_obj: Request,  # FastAPI Request object for app state
-    request: ObservationRequest,  # Pydantic model
-    model_manager: ModelManager = Depends(get_model_manager_from_state)
+    request_obj: Request,
+    request: MemoryRequest,
+    model_manager: ModelManager = Depends(get_model_manager_from_state),
 ):
     """
     Manually trigger model-based memory extraction for a conversation.
     """
-    user_id = request.user_name
     logger = logging.getLogger("memory_routes")
-
-    logger.info(f"POST /model-based-extraction: Triggered for user '{user_id}'.")
-
-    if not user_id:
-        logger.error("Cannot perform model-based extraction without user_name/user_id.")
+    
+    user_name = request.userProfile.get("id") if request.userProfile else None
+    user_id = user_name
+    
+    logger.info(f"POST /model-based-extraction: Triggered for user '{user_id}'")
+    
+    if not user_name and not user_id:
+        raise HTTPException(status_code=400, detail="Cannot perform model-based extraction without user_name/user_id.")
+    
+    if not user_name:
         raise HTTPException(status_code=400, detail="user_name (acting as user_id) is required for model-based extraction.")
-
+    
     try:
-        # Correctly access app state from request_obj
         single_gpu_mode = getattr(request_obj.app.state, "single_gpu_mode", False)
-        target_gpu_id = 0 if single_gpu_mode else 0  # Use GPU 0 (3090) for peripheral memory operations
+        gpu_id = 0 if single_gpu_mode else 1
         
-        logger.info(f"Using GPU {target_gpu_id} for memory extraction (single_gpu_mode: {single_gpu_mode})")
-
-        model_name = None
-        # This logic might be better inside memory_intelligence if reused often
-        async with model_manager.lock: # Use lock for safe access
-            for mkey, minfo in model_manager.loaded_models.items():
-                m_name, m_gpu = mkey
-                if m_gpu == target_gpu_id:
-                    model_name = m_name
-                    logger.info(f"Found suitable model '{model_name}' on GPU {target_gpu_id} for extraction.")
-                    break
-
-        if not model_name:
-            logger.error(f"No suitable model found on GPU {target_gpu_id} for memory extraction.")
-            raise HTTPException(status_code=500, detail=f"No suitable model found on GPU {target_gpu_id} for memory extraction")
-
-        # Extract memories using model-based approach
-        # Assuming model_based_memory_creation takes gpu_id but not user_id directly
-        memories = await memory_intelligence.model_based_memory_creation(
+        logger.info(f"Using GPU {gpu_id} for memory extraction (single_gpu_mode: {single_gpu_mode})")
+        
+        model_name = await model_manager.find_suitable_model(gpu_id=gpu_id)
+        if model_name:
+            logger.info(f"Found suitable model '{model_name}' for extraction.")
+        else:
+            logger.warning(f"No suitable model found on GPU {gpu_id} for memory extraction.")
+            raise HTTPException(status_code=503, detail=f"No model available on GPU {gpu_id} for memory extraction")
+        
+        extraction_result = await memory_intelligence.model_based_memory_extraction(
             model_manager=model_manager,
             model_name=model_name,
-            user_message=request.user_message,
-            ai_response=request.ai_response,
-            gpu_id=target_gpu_id,
-            single_gpu_mode=single_gpu_mode
+            prompt=request.prompt,
+            conversation_history=request.conversation_history,
+            gpu_id=gpu_id,
         )
-
-        # Store the extracted memories FOR THE SPECIFIC USER
-        storage_success = False
-        if memories and len(memories) > 0:
-            # Pass user_id to store_memories
-            storage_success = await memory_intelligence.store_memories(
-                memories=memories,
-                user_id=user_id # <-- PASS user_id
-            )
-            logger.info(f"Storage result after model extraction for user '{user_id}': {storage_success}") # Log user_id
+        
+        if extraction_result:
+            storage_result = memory_intelligence.add_memory_to_store(user_id, extraction_result)
+            logger.info(f"Storage result after model extraction for user '{user_id}': {storage_result}")
+            return {"status": "success", "result": extraction_result, "stored": storage_result}
         else:
-            logger.info(f"No memories extracted by model for user '{user_id}'.") # Log user_id
-
-        return {
-            "status": "success" if len(memories) > 0 else "no_memories",
-            "model_used": model_name,
-            "memories_created": len(memories),
-            "storage_success": storage_success,
-            "memories": memories # Return the extracted memories
-        }
-
-    except ValueError as ve: # Catch potential errors from store_memories if user_id is invalid
-         logger.error(f"❌ Value Error during model extraction for user '{user_id}': {ve}", exc_info=True)
-         raise HTTPException(status_code=400, detail=f"Invalid user_id for memory storage: {str(ve)}")
-    except HTTPException as http_exc:
-        # Re-raise specific HTTP exceptions
-        raise http_exc
+            logger.info(f"No memories extracted by model for user '{user_id}'")
+            return {"status": "success", "result": "no_memories", "message": f"No memories extracted by model for user '{user_id}'."}
+    
+    except ValueError as ve:
+        logger.error(f"❌ Value Error during model extraction for user '{user_id}': {ve}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id for memory storage: {str(ve)}")
     except Exception as e:
-        logger.error(f"Error during model-based extraction for user '{user_id}': {e}", exc_info=True) # Log user_id
-        traceback.print_exc()
+        logger.error(f"Error during model-based extraction for user '{user_id}': {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-# --- Agentic memory (character-scoped, optional) ---
+
+# === Agentic Memory Request Models ===
+
 class AgenticProcessRequest(BaseModel):
     user_id: str
     character_id: str
     character_name: Optional[str] = None
+    character_profile: Optional[Dict[str, Any]] = None
     user_message: str
     ai_response: str
-    use_api: bool = False
+    use_api: Optional[bool] = None
     api_base_url: Optional[str] = None
     model_name: Optional[str] = None
+
+class AgenticDeleteInsightsRequest(BaseModel):
+    user_id: str
+    character_id: str
+    insight_ids: List[str] = []
+
+class AgenticUpdateInsightRequest(BaseModel):
+    user_id: str
+    character_id: str
+    insight_id: str
+    content: Optional[str] = None
+    category: Optional[str] = None
+    importance: Optional[float] = None
+
+class AgenticCopyToCharacterRequest(BaseModel):
+    """Optional: copy per-character agentic memories to another character (same user_id)."""
+    user_id: str
+    source_character_id: str
+    target_character_id: str
+    mode: str = "merge"  # 'merge' appends with content dedupe; 'replace' overwrites the target file.
+
+
+@memory_router.get("/agentic/list")
+async def list_agentic_profiles(user_id: str = Query(...)):
+    """All agentic profiles for a user (Settings → memories UI)."""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    try:
+        profiles = agentic_memory.list_agentic_profiles_for_user(user_id)
+        total_insights = sum(int(p.get("count") or 0) for p in profiles)
+        logger.info(
+            "[Agentic Memory] GET /agentic/list user_id=%r -> %s profile(s), %s insight(s)",
+            user_id,
+            len(profiles),
+            total_insights,
+        )
+        return {"status": "success", "profiles": profiles, "profile_count": len(profiles), "total_insights": total_insights}
+    except Exception as e:
+        logger.error(f"agentic_memory list error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @memory_router.get("/agentic")
@@ -1189,6 +879,71 @@ async def get_agentic_memory(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@memory_router.post("/agentic/delete_insights")
+async def agentic_delete_insights(body: AgenticDeleteInsightsRequest):
+    """Settings UI: remove one or more agentic insights by id."""
+    if not body.user_id or not body.character_id:
+        raise HTTPException(status_code=400, detail="user_id and character_id are required")
+    try:
+        n = agentic_memory.delete_agentic_insights(
+            body.user_id, body.character_id, body.insight_ids or []
+        )
+        return {"status": "success", "removed": n}
+    except Exception as e:
+        logger.error(f"agentic delete_insights error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.post("/agentic/update_insight")
+async def agentic_update_insight(body: AgenticUpdateInsightRequest):
+    """Settings UI: edit a single agentic insight."""
+    if not body.user_id or not body.character_id or not body.insight_id:
+        raise HTTPException(status_code=400, detail="user_id, character_id, and insight_id are required")
+    try:
+        ok = agentic_memory.update_agentic_insight(
+            body.user_id,
+            body.character_id,
+            body.insight_id,
+            content=body.content,
+            category=body.category,
+            importance=body.importance,
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail="Insight not found")
+        return {"status": "success"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"agentic update_insight error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.post("/agentic/copy_to_character")
+async def agentic_copy_to_character(body: AgenticCopyToCharacterRequest):
+    """
+    Copy agentic memories from source_character_id to target_character_id for the same user.
+    merge = append (dedupe by content); replace = overwrite target file from source.
+    """
+    if not body.user_id or not body.source_character_id or not body.target_character_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id, source_character_id, and target_character_id are required",
+        )
+    try:
+        result = agentic_memory.copy_agentic_profile_to_character(
+            body.user_id,
+            body.source_character_id,
+            body.target_character_id,
+            mode=body.mode,
+        )
+        return {"status": "success", **result}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"agentic copy_to_character error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @memory_router.post("/agentic/process")
 async def process_agentic_memory(
     request: Request,
@@ -1202,7 +957,13 @@ async def process_agentic_memory(
     agenticMemoryEnabled.
     """
     logger.warning("[Agentic Memory] REQUEST RECEIVED at /memory/agentic/process — if you never see this, the frontend is not calling this URL.")
-    logger.info(f"[Agentic Memory] POST /agentic/process user_id={body.user_id!r} character_id={body.character_id!r} char_name={body.character_name!r}")
+    logger.info(
+        "[Agentic Memory] POST /agentic/process user_id=%r character_id=%r char_name=%r character_profile=%s",
+        body.user_id,
+        body.character_id,
+        body.character_name,
+        "yes" if body.character_profile else "no",
+    )
     if not body.user_id or not body.character_id:
         raise HTTPException(status_code=400, detail="user_id and character_id are required")
     single_gpu_mode = getattr(request.app.state, "single_gpu_mode", False)
@@ -1216,21 +977,44 @@ async def process_agentic_memory(
             ai_response=body.ai_response,
             character_name=body.character_name or "Character",
             existing_insights=profile["insights"],
+            character_profile=body.character_profile,
             gpu_id=gpu_id,
             single_gpu_mode=single_gpu_mode,
             api_base_url=body.api_base_url if use_api else None,
             api_model_name=body.model_name if use_api else None,
         )
+        if body.character_profile:
+            logger.info(
+                "[Agentic Memory] POST /agentic/process character_profile synced for %r",
+                body.character_id,
+            )
         if not new_insights:
-            logger.info(f"[Agentic Memory] POST /agentic/process -> no new insights (agent returned 0)")
-            return {"status": "success", "added": 0, "message": "No new insights"}
+            store_path = agentic_memory.get_agentic_memory_path(body.user_id, body.character_id)
+            prof_after = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
+            total = len(prof_after.get("insights") or [])
+            logger.info(
+                "[Agentic Memory] POST /agentic/process -> no new insights (agent returned 0); total=%s file=%s",
+                total,
+                store_path,
+            )
+            return {"status": "success", "added": 0, "message": "No new insights", "total": total}
         added = agentic_memory.add_agentic_insights(
             body.user_id, body.character_id, new_insights
         )
-        logger.info(f"[Agentic Memory] POST /agentic/process -> added {added} insight(s)")
+        store_path = agentic_memory.get_agentic_memory_path(body.user_id, body.character_id)
+        prof_after = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
+        total = len(prof_after.get("insights") or [])
+        logger.info(
+            "[Agentic Memory] POST /agentic/process -> added %s insight(s); total=%s file=%s",
+            added,
+            total,
+            store_path,
+        )
         return {
             "status": "success",
             "added": added,
+            "total": total,
+            "store_path": store_path,
             "message": f"Added {added} insight(s) to character memory.",
             "insights": new_insights[:10],
         }
@@ -1239,5 +1023,385 @@ async def process_agentic_memory(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# This router will be imported in main.py
-router = memory_router
+class AgenticCleanupRequest(BaseModel):
+    user_id: str
+    character_id: str
+    character_name: Optional[str] = None
+    character_profile: Optional[Dict[str, Any]] = None
+    use_api: Optional[bool] = None
+    api_base_url: Optional[str] = None
+    model_name: Optional[str] = None
+
+
+@memory_router.post("/agentic/cleanup")
+async def cleanup_agentic_memory(
+    request: Request,
+    body: AgenticCleanupRequest,
+    model_manager: ModelManager = Depends(get_model_manager_from_state),
+):
+    """
+    LLM-assisted duplicate pruning, then deterministic dedupe / trim for agentic insights.
+    """
+    if not body.user_id or not body.character_id:
+        raise HTTPException(status_code=400, detail="user_id and character_id are required")
+    single_gpu_mode = getattr(request.app.state, "single_gpu_mode", False)
+    gpu_id = getattr(request.app.state, "default_gpu", 0)
+    try:
+        profile = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
+        insights = profile.get("insights") or []
+        use_api = body.use_api and body.api_base_url and body.model_name
+        
+        remove_ids = await agentic_memory.run_agentic_cleanup_agent(
+            model_manager=model_manager,
+            insights=insights,
+            character_name=body.character_name or "Character",
+            character_profile=body.character_profile,
+            gpu_id=gpu_id,
+            api_base_url=body.api_base_url if use_api else None,
+            api_model_name=body.model_name if use_api else None,
+        )
+        
+        if remove_ids:
+            agentic_memory.delete_agentic_insights(body.user_id, body.character_id, remove_ids)
+        
+        # Also run deterministic cleanup
+        cleanup_result = agentic_memory.cleanup_agentic_profile(body.user_id, body.character_id)
+        
+        total_removed = len(remove_ids) + cleanup_result.get("removed", 0)
+        prof_after = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
+        total = len(prof_after.get("insights") or [])
+        
+        return {
+            "status": "success",
+            "llm_removed": len(remove_ids),
+            "dedupe_removed": cleanup_result.get("removed", 0),
+            "total_removed": total_removed,
+            "remaining": total,
+        }
+    except Exception as e:
+        logger.error(f"[Agentic Memory] POST /agentic/cleanup error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === Persona Realignment ===
+
+class PersonaRealignmentPromptPackRequest(BaseModel):
+    user_id: str
+    character_id: str
+    character_name: Optional[str] = None
+    user_display_name: Optional[str] = None
+    character_card: Optional[Dict[str, Any]] = None
+    current_character_instructions: Optional[str] = None
+    rolling_packs: Optional[List[str]] = None
+    transcripts: Optional[List[str]] = None
+    include_backend_memories: bool = True
+    agentic_mode: Optional[str] = None
+    agentic_max_chars: Optional[int] = None
+    agentic_rag_query: Optional[str] = None
+    ethics_framing: Optional[str] = Field(None, description="Optional authoritative research ethics, institutional or committee oversight, and study purpose for this run. When provided, it is embedded first in the DATA bundle as binding framing — not casual chat preferences.")
+    extra_notes: Optional[str] = None
+    also_rewrite_user_profile: bool = False
+    user_profile_rewrite_mode: Optional[str] = None
+    save_preview_to_disk: bool = False
+    attach_ethics_review_bundle: bool = False
+    reviewer_character_id: Optional[str] = None
+    reviewer_character_name: Optional[str] = None
+    reviewer_character_instructions: Optional[str] = Field(None, description="Full system prompt text from an optional Eloquent 'evaluator' character; leads the analyst preamble when set.")
+    backend_memory_max_items: Optional[int] = Field(None, description="Cap rows from saved profile memories included in this pack (not chat pruning—server-side list cap).")
+    indexed_profile_memory_max_items: Optional[int] = Field(None, description="Indexed JSON rows for profile rewrite section.")
+    agentic_meta_max_chars: Optional[int] = Field(None, description="Max chars for agentic file meta JSON block.")
+    example_dialogue_max_chars: Optional[int] = Field(None, description="Max chars for embedded example dialogue on the character card.")
+    agentic_rag_top_k: Optional[int] = Field(None, description="When agentic_mode=rag, max insights considered before char budget fills.")
+
+
+class PersonaRealignmentParseRequest(BaseModel):
+    raw_text: str
+    character_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+@memory_router.post("/persona_realignment/prompt_pack")
+async def persona_realignment_prompt_pack(body: PersonaRealignmentPromptPackRequest):
+    """Build the full persona realignment prompt pack for a character."""
+    if not body.user_id or not body.character_id:
+        raise HTTPException(status_code=400, detail="user_id and character_id are required")
+    
+    try:
+        # Fetch backend memories
+        backend_memories = []
+        if body.include_backend_memories:
+            try:
+                all_mems = memory_intelligence.get_all_memories_for_user(body.user_id)
+                if body.backend_memory_max_items:
+                    all_mems = all_mems[:body.backend_memory_max_items]
+                backend_memories = all_mems
+            except Exception as e:
+                logger.warning(f"Failed to fetch backend memories for realignment: {e}")
+        
+        # Fetch agentic insights
+        agentic_insights = []
+        agentic_meta = {}
+        try:
+            profile = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
+            agentic_insights = profile.get("insights") or []
+            agentic_meta = profile.get("meta") or {}
+        except Exception as e:
+            logger.warning(f"Failed to fetch agentic profile for realignment: {e}")
+        
+        # Build prompt pack
+        pack = persona_realignment.build_full_analyst_prompt(
+            user_id=body.user_id,
+            character_id=body.character_id,
+            character_name=body.character_name,
+            backend_memories=backend_memories,
+            agentic_insights=agentic_insights,
+            agentic_meta=agentic_meta,
+            character_card=body.character_card,
+            current_character_instructions=body.current_character_instructions,
+            rolling_packs=body.rolling_packs,
+            transcripts=body.transcripts,
+            agentic_mode=body.agentic_mode,
+            agentic_max_chars=body.agentic_max_chars,
+            agentic_rag_query=body.agentic_rag_query,
+            user_display_name=body.user_display_name,
+            extra_notes=body.extra_notes,
+            also_rewrite_user_profile=body.also_rewrite_user_profile,
+            user_profile_rewrite_mode=body.user_profile_rewrite_mode,
+            reviewer_character_name=body.reviewer_character_name,
+            reviewer_character_instructions=body.reviewer_character_instructions,
+            backend_memory_max_items=body.backend_memory_max_items,
+            indexed_profile_memory_max_items=body.indexed_profile_memory_max_items,
+            agentic_meta_max_chars=body.agentic_meta_max_chars,
+            example_dialogue_max_chars=body.example_dialogue_max_chars,
+            agentic_rag_top_k=body.agentic_rag_top_k,
+        )
+        
+        # Append ethics review bundle if requested
+        if body.attach_ethics_review_bundle:
+            try:
+                ethics_parts = ethics_review_bundle.get_bundle_parts()
+                if ethics_parts:
+                    pack["ethics_review_bundle_parts"] = "\n\n---\n\n## APPENDIX: Ethics / framing source excerpts (local repo)\n\n" + ethics_parts
+            except Exception as e:
+                logger.warning(f"ethics_review_bundle append failed: {e}")
+        
+        # Save preview if requested
+        preview_saved = None
+        if body.save_preview_to_disk:
+            try:
+                preview_saved = preview_prompt_save.save_preview("persona_realignment", pack)
+            except Exception as e:
+                logger.warning(f"preview_prompt_save persona_realignment failed: {e}")
+        
+        return {
+            "status": "success",
+            "analyst_preamble": pack.get("analyst_preamble", ""),
+            "task_and_data": pack.get("task_and_data", ""),
+            "combined": pack.get("combined", ""),
+            "output_spec": pack.get("output_spec", ""),
+            "ethics_review_bundle_parts": pack.get("ethics_review_bundle_parts", ""),
+            "preview_saved": preview_saved,
+        }
+    except Exception as e:
+        logger.error(f"persona_realignment prompt_pack error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.post("/persona_realignment/parse_response")
+async def persona_realignment_parse_response(body: PersonaRealignmentParseRequest):
+    """Parse the LLM response from a persona realignment run."""
+    try:
+        result = persona_realignment.parse_realignment_response(
+            body.raw_text,
+        )
+        return {"status": "success", **result}
+    except Exception as e:
+        logger.error(f"persona_realignment parse_response error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.get("/ethics_review/manifest")
+async def get_ethics_review_manifest():
+    """Which repo paths are embedded when attach_ethics_review_bundle is used (no file payload).
+    Code excerpts are added only when "Include code excerpts" is enabled in Ethics review. Otherwise the model does not see these files."""
+    try:
+        manifest = ethics_review_bundle.get_manifest()
+        return {"status": "success", "manifest": manifest}
+    except Exception as e:
+        logger.error(f"ethics_review_manifest GET failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.get("/ethics_review/bundle")
+async def get_ethics_review_bundle():
+    """Whitelisted local excerpts for reviewer models (copy into chat or use via attach_ethics_review_bundle)."""
+    try:
+        bundle = ethics_review_bundle.get_bundle_parts()
+        return {"status": "success", "bundle": bundle}
+    except Exception as e:
+        logger.error(f"ethics_review_bundle GET failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === Memory Curator ===
+
+class MemoryCuratorPromptRequest(BaseModel):
+    user_display_name: Optional[str] = None
+    user_profile_summary: Optional[str] = None
+    curator_character_name: Optional[str] = None
+    curator_character_card: Optional[Dict[str, Any]] = None
+    extra_notes: Optional[str] = None
+    save_preview_to_disk: bool = False
+    target_character_id: Optional[str] = None
+    target_character_name: Optional[str] = None
+
+
+class CuratorParseRequest(BaseModel):
+    raw_response: str
+    mode: str = "profile"  # "profile" or "agentic"
+
+
+class CuratorApplyProfileRequest(BaseModel):
+    user_id: str
+    memories: List[Dict[str, Any]]
+
+
+class CuratorApplyAgenticRequest(BaseModel):
+    user_id: str
+    character_id: str
+    insights: List[Dict[str, Any]]
+
+
+@memory_router.post("/curator/prompt_pack")
+async def curator_prompt_pack(body: MemoryCuratorPromptRequest):
+    """Build a memory curator prompt pack."""
+    if not body.user_display_name and not body.user_profile_summary:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    if body.target_character_id is None and body.curator_character_card is None:
+        pass  # profile mode doesn't need character_id
+    
+    try:
+        mode = "agentic" if body.target_character_id else "profile"
+        if mode == "agentic" and not body.target_character_id:
+            raise HTTPException(status_code=400, detail="target_character_id is required for agentic mode")
+        if mode not in ("profile", "agentic"):
+            raise HTTPException(status_code=400, detail="mode must be profile or agentic")
+        
+        pack = memory_curator_prompt.build_curator_prompt(
+            user_display_name=body.user_display_name,
+            user_profile_summary=body.user_profile_summary,
+            curator_character_name=body.curator_character_name,
+            curator_character_card=body.curator_character_card,
+            extra_notes=body.extra_notes,
+            target_character_id=body.target_character_id,
+            target_character_name=body.target_character_name,
+            mode=mode,
+        )
+        
+        preview_saved = None
+        if body.save_preview_to_disk:
+            try:
+                preview_saved = preview_prompt_save.save_preview("curator", pack)
+            except Exception as e:
+                logger.warning(f"preview_prompt_save curator failed: {e}")
+        
+        return {"status": "success", "prompt_pack": pack, "preview_saved": preview_saved}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"curator prompt_pack error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.post("/curator/parse_response")
+async def curator_parse_response(body: CuratorParseRequest):
+    """Parse the LLM response from a curator run."""
+    try:
+        # Try to extract JSON from the response
+        text = body.raw_response.strip()
+        if "```" in text:
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start < 0 or end <= start:
+                start = text.find("[")
+                end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+        
+        obj_start = text.find("{")
+        if obj_start >= 0:
+            obj_end = text.rfind("}") + 1
+            raw = text[obj_start:obj_end]
+            data = json.loads(raw)
+        else:
+            raise ValueError("Could not parse a JSON object from the response")
+        
+        if body.mode == "profile":
+            if "memories" not in data:
+                raise ValueError('Parsed JSON must include a "memories" array for profile mode')
+            return {"status": "success", "parsed": data}
+        elif body.mode == "agentic":
+            if "insights" not in data:
+                raise ValueError('Parsed JSON must include an "insights" array for agentic mode')
+            return {"status": "success", "parsed": data}
+        else:
+            return {"status": "success", "parsed": data}
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in response: {str(e)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"curator parse_response error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.post("/curator/apply_profile")
+async def curator_apply_profile(body: CuratorApplyProfileRequest):
+    """Apply curated profile memories."""
+    if not body.user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    try:
+        # Normalize and save
+        valid_memories = [m for m in body.memories if isinstance(m, dict) and m.get("content", "").strip()]
+        if not valid_memories:
+            raise HTTPException(status_code=400, detail="No valid memories to save after normalization")
+        
+        result = memory_intelligence.replace_memory_store(body.user_id, valid_memories)
+        if not result:
+            raise HTTPException(status_code=500, detail="Failed to save memory store")
+        return {"status": "success", "applied": len(valid_memories)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"curator apply_profile error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.post("/curator/apply_agentic")
+async def curator_apply_agentic(body: CuratorApplyAgenticRequest):
+    """Apply curated agentic insights."""
+    if not body.user_id or not body.character_id:
+        raise HTTPException(status_code=400, detail="user_id and character_id are required")
+    try:
+        valid_insights = [i for i in body.insights if isinstance(i, dict) and i.get("content", "").strip()]
+        if not valid_insights:
+            raise HTTPException(status_code=400, detail="No valid insights to save after normalization")
+        
+        agentic_memory.save_agentic_profile(body.user_id, body.character_id, valid_insights)
+        return {"status": "success", "applied": len(valid_insights)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"curator apply_agentic error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.get("/preview/list")
+async def list_memory_preview_prompts(limit: int = Query(default=20)):
+    """List saved preview prompts."""
+    try:
+        previews = preview_prompt_save.list_previews(limit=limit)
+        return {"status": "success", "previews": previews}
+    except Exception as e:
+        logger.error(f"preview list error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

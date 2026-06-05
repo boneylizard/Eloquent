@@ -1,3 +1,6 @@
+/* NanoGPT font — @import must be first (before @tailwind / @layer) */
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -100,6 +103,84 @@
   }
 
   /* --- THEMES --- */
+
+  /* NanoGPT dark theme — spec palette + subtle purple wash */
+  [data-theme="nanogpt"] {
+    /* Canonical NanoGPT tokens (purple-tinted surfaces) */
+    --nano-bg-deepest: #121018;
+    --nano-bg-base: #1b1a20;
+    --nano-bg-surface: rgba(22, 20, 30, 0.96);
+    --nano-bg-elevated: #26242e;
+    --nano-bg-hover: #3a3845;
+    --nano-text-primary: #f1f3f5;
+    --nano-text-default: #c1c2c5;
+    --nano-text-muted: #909296;
+    --nano-text-accent: #9e9eff;
+    --nano-text-accent-2: #9fafc4;
+    --nano-accent-teal: #3fe7fc;
+    --nano-accent-purple: #9e4ff2;
+    --nano-border-nav: rgba(148, 130, 210, 0.22);
+
+    /* Shadcn / layout mappings */
+    --background: var(--nano-bg-deepest);
+    --foreground: var(--nano-text-primary);
+    --card: var(--nano-bg-base);
+    --card-foreground: var(--nano-text-primary);
+    --popover: var(--nano-bg-surface);
+    --popover-foreground: var(--nano-text-primary);
+
+    --primary: var(--nano-accent-teal);
+    --primary-foreground: #050608;
+    --secondary: var(--nano-bg-elevated);
+    --secondary-foreground: var(--nano-text-default);
+    --muted: var(--nano-bg-base);
+    --muted-foreground: var(--nano-text-muted);
+    --accent: var(--nano-bg-elevated);
+    --accent-foreground: var(--nano-text-default);
+    --destructive: #f97373;
+    --destructive-foreground: #111827;
+
+    --border: var(--nano-border-nav);
+    --input: var(--nano-bg-elevated);
+    --ring: rgba(63, 231, 252, 0.72);
+
+    --radius: 0.9rem;
+    --shadow: 0 18px 45px rgba(8, 6, 18, 0.92);
+
+    --font-body: "Open Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-heading: "Open Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+    --md-body-color-default: var(--nano-text-default);
+    --md-bold-color-default: var(--nano-text-primary);
+    --md-italic-color-default: var(--nano-text-muted);
+    --md-quote-color-default: var(--nano-text-accent);
+    --md-quote-border-default: rgba(158, 158, 255, 0.42);
+
+    --md-body-color: var(--md-body-color-default);
+    --md-bold-color: var(--md-bold-color-default);
+    --md-italic-color: var(--md-italic-color-default);
+    --md-quote-color: var(--md-quote-color-default);
+    --md-quote-border: var(--md-quote-border-default);
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--nano-accent-teal);
+    --accent-secondary: var(--nano-text-accent);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
+  }
+
+  [data-theme="nanogpt"] body {
+    font-family: var(--font-body);
+    font-size: 15px;
+    background-color: var(--background);
+    background-image:
+      radial-gradient(ellipse 90% 55% at 50% -18%, rgba(158, 79, 242, 0.07) 0%, transparent 52%),
+      radial-gradient(ellipse 65% 45% at 100% 100%, rgba(63, 231, 252, 0.05) 0%, transparent 48%);
+    background-attachment: fixed;
+  }
 
   /* Dark Mode (Standard) */
   [data-theme="dark"] {
@@ -774,4 +855,10 @@ code {
 
 .toast-warning {
   border-left: 4px solid #eab308;
+}
+
+/* Call mode — black behind avatar (not theme --background / #121018) */
+[data-call-fullscreen-avatar-layer],
+[data-call-portrait-frame] {
+  background-color: #000;
 }

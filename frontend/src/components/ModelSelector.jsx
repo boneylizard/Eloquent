@@ -88,7 +88,7 @@ const isAPIModel = (modelId) => {
   const isCustomEndpoint = API_MODELS.some(api => api.id === modelId);
   
   // Check if it follows the endpoint pattern (starts with "endpoint-")
-  const isEndpointPattern = modelId && modelId.startsWith('endpoint-');
+  const isEndpointPattern = typeof modelId === 'string' && modelId.startsWith('endpoint-');
   
   return isCustomEndpoint || isEndpointPattern;
 };
@@ -102,7 +102,7 @@ const getAPIInfo = (modelId) => {
   }
   
   // If it's an endpoint pattern model, create a mock API info
-  if (modelId && modelId.startsWith('endpoint-')) {
+  if (typeof modelId === 'string' && modelId.startsWith('endpoint-')) {
     return {
       id: modelId,
       name: `API Endpoint (${modelId})`,
@@ -117,6 +117,10 @@ const getAPIInfo = (modelId) => {
 
   // Format model name for display
   const formatModelName = (name) => {
+    if (typeof name !== 'string' || !name.trim()) {
+      return primaryIsAPI ? 'Auto Router' : 'Unknown model';
+    }
+
     if (isAPIModel(name)) {
       const apiInfo = getAPIInfo(name);
       return apiInfo ? apiInfo.name : name;

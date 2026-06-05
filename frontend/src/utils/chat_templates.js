@@ -112,6 +112,7 @@ export function getTemplateForModel(modelName) {
  */
 export function formatPrompt(messages, modelName, systemMessage = null) {
   const template = getTemplateForModel(modelName);
+  const normalizedModelName = String(modelName || '').toLowerCase();
   let prompt = '';
 
   // Add system message with anti-leakage instructions
@@ -153,9 +154,9 @@ export function formatPrompt(messages, modelName, systemMessage = null) {
 
     // Add a specific stop marker to prevent LLM from generating meta-commentary
     // This helps models know where to stop without adding phrases like "to signal completion"
-    if (modelName.toLowerCase().includes('llama') ||
-      modelName.toLowerCase().includes('mistral') ||
-      modelName.toLowerCase().includes('alpaca')) {
+    if (normalizedModelName.includes('llama') ||
+      normalizedModelName.includes('mistral') ||
+      normalizedModelName.includes('alpaca')) {
       prompt += "\n\nAnswer: ";
     }
   }

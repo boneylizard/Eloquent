@@ -15,9 +15,16 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # Small but effective model
 
 # Chonkie chunking settings
 CHUNKING_STRATEGY = "semantic"  # Options: "semantic", "sentence", "token"
-MAX_CHUNK_SIZE = 128  # Target tokens per chunk (much smaller than before!)
+# Bigger chunks = more text per hit when RAG returns a chunk (re-process / re-index docs after changing).
+MAX_CHUNK_SIZE = 256  # Target tokens per chunk (embedding tokenizer, not your chat model)
 MIN_CHUNK_SIZE = 32   # Minimum tokens per chunk
 SIMILARITY_THRESHOLD = 0.6  # For semantic chunking - higher = more aggressive splitting
+
+# --- User chat (/generate) when "document context" is ON: knobs for how much gets pasted in ---
+# RAG_CHAT_TOP_K: max number of document chunks appended (raise = more context, longer prompt).
+# RAG_CHAT_SIMILARITY_THRESHOLD: 0–1 cosine similarity; LOWER = keep weaker matches (more noise).
+RAG_CHAT_TOP_K = int(os.environ.get("ELOQUENT_RAG_CHAT_TOP_K", "48"))
+RAG_CHAT_SIMILARITY_THRESHOLD = float(os.environ.get("ELOQUENT_RAG_CHAT_THRESHOLD", "0.22"))
 
 # Make sure the directory exists
 DOCUMENT_STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -120,11 +127,17 @@ class RAGProcessor:
             # Log the document directory and metadata path
             print(f"Loading documents from directory: {DOCUMENT_STORE_DIR}")
             
-            # Load document metadata
+            # Load document metadata (create empty file if missing so RAG is still "available")
             if not DOCUMENT_META_FILE.exists():
-                print(f"No document metadata file found at {DOCUMENT_META_FILE}")
-                return False
-                
+                print(f"No document metadata file found at {DOCUMENT_META_FILE}; initializing empty RAG index.")
+                self.documents = []
+                self.document_chunks = []
+                self.chunk_to_doc_mapping = {}
+                DOCUMENT_META_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(DOCUMENT_META_FILE, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+                return True
+
             with open(DOCUMENT_META_FILE, "r", encoding="utf-8") as f:
                 try:
                     self.documents = json.load(f)
@@ -304,7 +317,7 @@ class RAGProcessor:
             traceback.print_exc()
             self.faiss_index = None
     
-    def query(self, question: str, doc_ids: Optional[List[str]] = None, top_k: int = 5, threshold: float = 0.05) -> List[Dict[str, Any]]:
+    def query(self, question: str, doc_ids: Optional[List[str]] = None, top_k: int = 30, threshold: float = 0.05) -> List[Dict[str, Any]]:
         threshold = float(threshold)  # Ensure threshold is a float
         print(f"[DEBUG] threshold is {threshold} (type: {type(threshold)})")
         """
@@ -312,7 +325,8 @@ class RAGProcessor:
         
         Args:
             question (str): The query text
-            doc_ids (List[str], optional): Filter to specific document IDs
+            doc_ids: None = search all indexed docs; non-empty list = only those IDs;
+                empty list = no documents (UI: context enabled, nothing selected).
             top_k (int): Number of top results to return
             threshold (float): Similarity threshold (0-1)
             
@@ -322,7 +336,13 @@ class RAGProcessor:
         if not self.is_available() or not self.faiss_index:
             print("RAG system not available for query")
             return []
-        
+
+        # Explicit empty selection (e.g. document context ON but no files checked): must not
+        # fall through as falsy and skip filtering — that would search the entire index.
+        if isinstance(doc_ids, list) and len(doc_ids) == 0:
+            print("RAG Query: empty doc_ids list — returning no chunks")
+            return []
+
         try:
             print(f"RAG Query: '{question[:50]}...' with {len(doc_ids or [])} doc IDs")
             print(f"Available documents: {len(self.documents)}")
@@ -367,7 +387,7 @@ class RAGProcessor:
                     print(f"   ✖ Skipped: invalid document index {doc_idx} for chunk {chunk_idx}")
                     continue
 
-                if doc_ids and doc["id"] not in doc_ids:
+                if doc_ids is not None and doc["id"] not in doc_ids:
                     print(f"   ✖ Skipped: doc ID {doc['id']} not in {doc_ids}")
                     continue
 
@@ -444,7 +464,7 @@ def store_conversation_chunk(speaker, content, topic, conversation_id):
     # Rebuild index (or add incrementally)
     rag_processor._build_index()
 
-def query_documents(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 5, threshold: float = 0.05) -> Dict[str, Any]:
+def query_documents(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 30, threshold: float = 0.05) -> Dict[str, Any]:
     threshold = float(threshold)  # Ensure threshold is a float
     print(f"[DEBUG] threshold is {threshold} (type: {type(threshold)})")
     """
@@ -452,7 +472,7 @@ def query_documents(question: str, doc_ids: Optional[List[str]] = None, top_k: i
     
     Args:
         question (str): The query text
-        doc_ids (List[str], optional): Filter to specific document IDs
+        doc_ids: None = all docs; non-empty list = filter; [] = no docs
         top_k (int): Number of top results to return
         threshold (float): Similarity threshold (0-1)
     

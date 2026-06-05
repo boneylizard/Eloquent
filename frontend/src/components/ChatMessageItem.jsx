@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -9,6 +9,8 @@ import SimpleChatImageMessage from './SimpleChatImageMessage';
 import MessageEditField from './MessageEditField';
 import { Button } from '@/components/ui/button';
 import { Loader2, PlayCircle as PlayIcon, RotateCcw } from 'lucide-react';
+import ThinkingBlock from './ThinkingBlock';
+import { resolveMessageThinkDisplay } from '../utils/thinkStreamParser';
 
 const ChatMessageItem = React.memo(function ChatMessageItem({
   msg,
@@ -43,6 +45,14 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   formatModelName,
   isGenerating
 }) {
+  const variantContent = getCurrentVariantContent(msg.id, msg.content);
+  const botThinkDisplay = useMemo(() => {
+    if (msg.role !== 'bot') return null;
+    return resolveMessageThinkDisplay(variantContent, msg?.reasoningText);
+  }, [msg.role, variantContent, msg?.reasoningText]);
+  const displayContent = botThinkDisplay ? botThinkDisplay.visibleContent : variantContent;
+  const displayReasoning = botThinkDisplay ? botThinkDisplay.reasoningText : '';
+
   // Image Message Type
   if (msg.type === 'image') {
     return (
@@ -119,11 +129,18 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         ) : (
           // Bot Message Content
           <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-600">
+            <ThinkingBlock
+              enabled={msg?.reasoningEnabled === true}
+              reasoningText={displayReasoning || ''}
+              streaming={msg?.reasoningStreaming === true}
+              startedAtMs={msg?.reasoningStartedAtMs ?? null}
+              finishedSeconds={typeof msg?.reasoningSeconds === 'number' ? msg.reasoningSeconds : null}
+            />
             <div className="text-xs text-gray-400 mb-2 font-medium flex items-center justify-between">
               <span>{msg.characterName || (msg.modelName ? formatModelName(msg.modelName) : "Assistant")}</span>
               <div className="flex items-center gap-1">
                 {ttsEnabled && (
-                  <Button variant={isPlayingAudio === msg.id ? "destructive" : "ghost"} size="icon" className="h-6 w-6 text-gray-400 hover:text-white" onClick={() => handleSpeakerClick(msg.id, getCurrentVariantContent(msg.id, msg.content))} disabled={isGenerating || (isPlayingAudio && isPlayingAudio !== msg.id)}>
+                  <Button variant={isPlayingAudio === msg.id ? "destructive" : "ghost"} size="icon" className="h-6 w-6 text-gray-400 hover:text-white" onClick={() => handleSpeakerClick(msg.id, displayContent)} disabled={isGenerating || (isPlayingAudio && isPlayingAudio !== msg.id)}>
                     {isPlayingAudio === msg.id ? <Loader2 className="animate-spin" size={12} /> : <PlayIcon size={12} />}
                   </Button>
                 )}
@@ -147,7 +164,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
               </div>
             )}
             <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]} className="prose prose-sm prose-invert max-w-none text-white chat-prose">
-              {getCurrentVariantContent(msg.id, msg.content)}
+              {displayContent}
             </ReactMarkdown>
           </div>
         )}

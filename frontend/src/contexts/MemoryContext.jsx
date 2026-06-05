@@ -1,4 +1,10 @@
-import React, { createContext, useState, useCallback, useContext, useEffect } from 'react';
+﻿import React, { createContext, useState, useCallback, useContext, useEffect } from 'react';
+import * as indexedDbStorage from '../utils/indexedDbStorage';
+import {
+  parseProfilesBlob,
+  pickBestProfilesSource,
+  shouldPersistUserProfiles,
+} from '../utils/userProfilesStorage';
 
 const MemoryContext = createContext(null);
 
@@ -25,60 +31,102 @@ const defaultMemoryState = {
   activeProfileId: null
 };
 
+const cleanProfilesState = (parsedState) => {
+  if (!parsedState?.profiles) return parsedState;
+  return {
+    ...parsedState,
+    profiles: parsedState.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      avatar: profile.avatar,
+      preferences: profile.preferences || { topics: [], responseStyle: "balanced" }
+    }))
+  };
+};
+
 export const MemoryProvider = ({ children }) => {
   const [memoryState, setMemoryState] = useState(defaultMemoryState);
   const [isLoading, setIsLoading] = useState(true);
+  const [profilesLoadStatus, setProfilesLoadStatus] = useState('pending');
 
-  // Load profiles from localStorage (metadata only)
+  // Load profiles: localStorage first (sync), then optional IndexedDB if richer
   useEffect(() => {
-    const loadProfiles = () => {
+    let cancelled = false;
+
+    const applyFromRaw = (raw) => {
+      const parsed = parseProfilesBlob(raw);
+      if (!parsed || parsed.count === 0) return false;
+      setMemoryState(cleanProfilesState(typeof raw === 'string' ? JSON.parse(raw) : raw));
+      setProfilesLoadStatus('loaded');
+      return true;
+    };
+
+    const loadProfiles = async () => {
       setIsLoading(true);
+      setProfilesLoadStatus('pending');
+      let loaded = false;
+      let loadedCount = 0;
+
       try {
         const savedProfiles = localStorage.getItem('user-profiles');
-        
-        if (savedProfiles) {
-          const parsedState = JSON.parse(savedProfiles);
-          
-          // Clean any existing memories from localStorage profiles
-          if (parsedState.profiles) {
-            parsedState.profiles = parsedState.profiles.map(profile => ({
-              id: profile.id,
-              name: profile.name,
-              avatar: profile.avatar,
-              preferences: profile.preferences || { topics: [], responseStyle: "balanced" }
-              // Explicitly remove memories, conversations arrays
-            }));
-          }
-          
-          setMemoryState(parsedState);
+        if (savedProfiles && applyFromRaw(savedProfiles)) {
+          loaded = true;
+          loadedCount = parseProfilesBlob(savedProfiles)?.count ?? 0;
         } else {
-          // Check for legacy format and migrate metadata only
           const legacyMemories = localStorage.getItem('user-memories');
           if (legacyMemories) {
             const legacyData = JSON.parse(legacyMemories);
-            
-            const migratedState = {
+            setMemoryState({
               profiles: [{
                 id: generateId(),
                 name: legacyData.userProfile?.name || "Migrated User",
                 avatar: legacyData.userProfile?.avatar || null,
                 preferences: legacyData.userProfile?.preferences || { topics: [], responseStyle: "balanced" }
-                // No memories - they should be migrated via API if needed
               }],
               activeProfileId: null
-            };
-            
-            setMemoryState(migratedState);
+            });
+            setProfilesLoadStatus('loaded');
+            loaded = true;
           }
+        }
+
+        if (!cancelled) {
+          try {
+            const lsRaw = localStorage.getItem('user-profiles');
+            const idbRaw = await indexedDbStorage.getItem('user-profiles', { skipMigration: true });
+            if (!cancelled) {
+              const best = pickBestProfilesSource(idbRaw, lsRaw);
+              if (best.raw) {
+                const bestCount = parseProfilesBlob(best.raw)?.count ?? 0;
+                if (!loaded || bestCount > loadedCount) {
+                  applyFromRaw(best.raw);
+                  loaded = true;
+                  loadedCount = bestCount;
+                  if (best.restoreIdb) {
+                    const str = typeof best.raw === 'string' ? best.raw : JSON.stringify(parseProfilesBlob(best.raw));
+                    void indexedDbStorage.setItem('user-profiles', str);
+                  }
+                }
+              }
+            }
+          } catch (idbErr) {
+            console.warn('[MemoryContext] IndexedDB profile read skipped:', idbErr);
+          }
+        }
+
+        if (!loaded && !cancelled) {
+          setProfilesLoadStatus('empty');
         }
       } catch (error) {
         console.error("Error loading profiles:", error);
+        if (!cancelled) setProfilesLoadStatus('error');
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
-    loadProfiles();
+    void loadProfiles();
+    return () => { cancelled = true; };
   }, []);
 
   // Set active profile if not already set
@@ -91,22 +139,28 @@ export const MemoryProvider = ({ children }) => {
     }
   }, [isLoading, memoryState.activeProfileId, memoryState.profiles]);
 
-  // Save profiles to localStorage (metadata only, no memories)
+  // Save profiles to localStorage (+ IndexedDB mirror); never clobber richer on-disk data
   useEffect(() => {
-    if (!isLoading) {
-      const profilesMetadataOnly = {
-        profiles: memoryState.profiles.map(profile => ({
-          id: profile.id,
-          name: profile.name,
-          avatar: profile.avatar,
-          preferences: profile.preferences
-          // Exclude memories - they live in backend only
-        })),
-        activeProfileId: memoryState.activeProfileId
-      };
-      localStorage.setItem('user-profiles', JSON.stringify(profilesMetadataOnly));
+    if (isLoading || !shouldPersistUserProfiles(memoryState, profilesLoadStatus)) {
+      return;
     }
-  }, [memoryState, isLoading]);
+    const profilesMetadataOnly = {
+      profiles: memoryState.profiles.map(profile => ({
+        id: profile.id,
+        name: profile.name,
+        avatar: profile.avatar,
+        preferences: profile.preferences
+      })),
+      activeProfileId: memoryState.activeProfileId
+    };
+    const str = JSON.stringify(profilesMetadataOnly);
+    try {
+      localStorage.setItem('user-profiles', str);
+    } catch (e) {
+      console.warn('[MemoryContext] localStorage setItem failed:', e);
+    }
+    void indexedDbStorage.setItem('user-profiles', str);
+  }, [memoryState, isLoading, profilesLoadStatus]);
 
   // Get the active profile (metadata only)
   const activeProfile = memoryState.profiles.find(p => p.id === memoryState.activeProfileId) || memoryState.profiles[0];

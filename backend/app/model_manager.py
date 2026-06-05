@@ -19,6 +19,11 @@ except ImportError as e:
     # If this fails, the app cannot function with GGUF models.
     print(f"FATAL: Could not import llama_cpp. GGUF models will not be available. Error: {e}")
     LLAMA_CPP_AVAILABLE = False
+
+    class Llava15ChatHandler:  # type: ignore[no-redef]
+        """Stub base when llama_cpp is not installed (import-time only)."""
+
+        pass
 # --- END: FORCE LLAMA_CPP IMPORT FIRST ---
 
 import os
@@ -41,9 +46,12 @@ from fastapi import HTTPException
 # This block defines PYNVML_AVAILABLE for GPU detection without initializing torch.
 try:
     import pynvml
-    pynvml.nvmlInit()
-    PYNVML_AVAILABLE = True
-except (ImportError, pynvml.NVMLError):
+    try:
+        pynvml.nvmlInit()
+        PYNVML_AVAILABLE = True
+    except Exception:
+        PYNVML_AVAILABLE = False
+except ImportError:
     PYNVML_AVAILABLE = False
 
 # Set llama.cpp environment variables for performance

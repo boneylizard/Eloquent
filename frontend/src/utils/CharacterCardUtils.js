@@ -124,6 +124,10 @@ export function convertTavernToGinger(tavernData) {
   // Handle both v1 and v2 formats
   const data = tavernData.data || tavernData;
   
+  const eloquentExt = (data.extensions && data.extensions.eloquent) || {};
+  const importedAvatars = Array.isArray(eloquentExt.avatars)
+    ? eloquentExt.avatars.filter((u) => typeof u === 'string' && u.trim())
+    : [];
   const gingerCharacter = {
     id: null, // Will be generated when saved
     name: data.name || '',
@@ -134,7 +138,13 @@ export function convertTavernToGinger(tavernData) {
     example_dialogue: [],
     loreEntries: [],
     avatar: null, // Will be set separately if importing from PNG
-    created_at: ''
+    avatars: importedAvatars,
+    activeAvatarIndex: Number.isInteger(eloquentExt.activeAvatarIndex) ? eloquentExt.activeAvatarIndex : 0,
+    created_at: '',
+    ethics_justification:
+      (typeof eloquentExt.ethics_justification === 'string' && eloquentExt.ethics_justification) ||
+      (typeof data.ethics_justification === 'string' && data.ethics_justification) ||
+      '',
   };
   
   // Convert example messages
@@ -207,7 +217,10 @@ export function convertGingerToTavern(gingerCharacter, creatorName = 'Eloquent')
       extensions: {
         eloquent: { // FIX: Changed from ginger_gui to eloquent
           exported_at: new Date().toISOString(),
-          original_format: 'eloquent'
+          original_format: 'eloquent',
+          ethics_justification: (gingerCharacter.ethics_justification || '').trim(),
+          avatars: Array.isArray(gingerCharacter.avatars) ? gingerCharacter.avatars : [],
+          activeAvatarIndex: gingerCharacter.activeAvatarIndex ?? 0,
         }
       }
     }
@@ -299,6 +312,7 @@ export async function importCharacterCard(file, apiUrl = null) {
           const result = await response.json();
           if (result.status === 'success' && result.file_url) {
             gingerCharacter.avatar = result.file_url;
+            gingerCharacter.avatars = [result.file_url];
           }
         }
       } catch (avatarError) {

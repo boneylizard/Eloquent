@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import * as indexedDbStorage from '../utils/indexedDbStorage';
+import { isSettingsStandaloneWindow } from '../utils/settingsCrossWindowSync';
 
 // Create theme context
 const ThemeContext = createContext(null);
@@ -32,6 +34,11 @@ const ThemeProvider = ({
     return defaultTheme;
   });
 
+  /** For IDB-backed keys: do not persist until we've tried to read IDB (otherwise we overwrite empty LS with a fallback theme). */
+  const [themePersistReady, setThemePersistReady] = useState(
+    () => typeof window === 'undefined' || !indexedDbStorage.useIdb(storageKey)
+  );
+
   // Use useMemo to avoid unnecessary re-renders
   const setTheme = useMemo(() => {
     return (newTheme) => {
@@ -39,6 +46,40 @@ const ThemeProvider = ({
     };
   }, []);
 
+  // If this key was migrated to IndexedDB, localStorage may be empty — hydrate from IDB before persisting.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!indexedDbStorage.useIdb(storageKey)) {
+      setThemePersistReady(true);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!localStorage.getItem(storageKey)) {
+          const idbOpts = isSettingsStandaloneWindow()
+            ? { preferLocalStorage: true, skipMigration: true }
+            : {};
+          const fromIdb = await indexedDbStorage.getItem(storageKey, idbOpts);
+          if (!cancelled && fromIdb) {
+            setThemeState(fromIdb);
+            try {
+              localStorage.setItem(storageKey, fromIdb);
+            } catch (_) {
+              /* ignore */
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[ThemeProvider] IDB theme hydrate failed:', e);
+      } finally {
+        if (!cancelled) setThemePersistReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -50,16 +91,22 @@ const ThemeProvider = ({
     root.classList.remove('light', 'dark', 'messenger', 'whatsapp');
 
     // Add 'dark' class if the theme is dark so Tailwind dark: modifiers work
-    if (theme === 'dark' || theme === 'whatsapp' || theme === 'messenger' || theme === 'cyberpunk') {
+    if (theme === 'dark' || theme === 'whatsapp' || theme === 'messenger' || theme === 'cyberpunk' || theme === 'nanogpt') {
       root.classList.add('dark');
     }
+  }, [theme]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !themePersistReady) return;
     try {
       localStorage.setItem(storageKey, theme);
+      if (indexedDbStorage.useIdb(storageKey)) {
+        void indexedDbStorage.setItem(storageKey, theme);
+      }
     } catch (error) {
       console.error("Error saving to localStorage:", error);
     }
-  }, [theme, storageKey]);
+  }, [theme, storageKey, themePersistReady]);
 
   // Use useMemo to avoid unnecessary re-renders
   const value = useMemo(() => ({

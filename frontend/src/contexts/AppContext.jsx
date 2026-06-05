@@ -1,17 +1,129 @@
 import React, { memo, useMemo, createContext, useState, useCallback, useContext, useEffect, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import { formatPrompt } from '../utils/chat_templates';
+import { mergeRollingMemoryPack } from '../utils/conversationRollingMemory';
 import { cleanModelOutput } from '../utils/cleanOutput';
+import {
+  buildBotReasoningFinalizePatch,
+  createReasoningStreamController,
+} from '../utils/thinkStreamParser';
+import { inferCapabilitiesFromModelId } from '../utils/resolveEndpointDisplay';
+import { extractSseStreamParts } from '../utils/streamDelta';
+import { formatFetchError } from '../config/api';
 import { generateChatTitle, fetchTriggeredLore } from '../utils/apiCall';
 import { observeConversation, initializeMemories } from '../utils/memoryUtils';
 import { saveSummary } from '../utils/summaryUtils';
 import { useMemory } from '../contexts/MemoryContext';
-import { transcribeAudio, synthesizeSpeech } from '../utils/apiCall';
+import { transcribeAudio, synthesizeSpeech, getLastTtsSynthesisMeta } from '../utils/apiCall';
+import { createWavMicRecorder } from '../utils/wavMicRecorder';
 import { generateReplyOpenAI, processOpenAIStream, generateReplyOpenAINonStreaming, convertToOpenAIMessages } from '../utils/openaiApi';
 import { ttsClient } from '../utils/apiCall';
+import { isIntelMessageId } from '../utils/callModeIntelTts';
 import { processAntiRepetition } from '../utils/antiRepetition';
+import * as indexedDbStorage from '../utils/indexedDbStorage';
+import { generateIntensityGuidanceText } from '../utils/intensityPresets';
+import { fetchWithTimeout } from '../config/api';
+import {
+  withTimeout,
+  PORT_CONFIG_TIMEOUT_MS,
+  STORAGE_HYDRATION_TIMEOUT_MS,
+  SETTINGS_STANDALONE_STORAGE_TIMEOUT_MS,
+} from '../utils/appBoot';
+import { isSettingsStandaloneWindow } from '../utils/settingsCrossWindowSync';
+import {
+  loadConversationsFromStorage,
+  loadConversationMessages,
+  saveActiveConversationMessages,
+  loadTombstonedConversationIds,
+  persistChatState,
+  saveConversationCatalog,
+  deleteConversationFromStorage,
+  deleteAllConversationsFromStorage,
+  scrubConversationLocalStorageGhosts,
+  banConversationIdSync,
+  getBannedConversationIdsSync,
+  installChatStorageDebugHelpers,
+  recoverConversationCatalogEntry,
+  persistOutreachConversation,
+  purgeOutreachConversationsFromStorage,
+  isOutreachConversationId,
+} from '../utils/conversationStorage';
+import { mergeNanoGptMemoryIntoPayload } from '../utils/nanoGptMemoryPayload';
+import {
+  buildBookChapterJsonOutlineUserMessage,
+  parseChapterJsonOutlineFromModel,
+} from '../utils/bookChapterJsonOutline';
+import {
+  API_CONTEXT_WINDOW_TOKENS_DEFAULT,
+  API_CONTEXT_WINDOW_MAX,
+  clampApiContextWindowTokens,
+} from '../config/apiContextLimits';
+import { getWebSearchResearchPayload } from '../utils/webSearchResearch';
+import {
+  normalizeCharacterAvatars,
+  omitPersistedLocalAvatarFolder,
+  mergeSessionLocalAvatarFolder,
+  getActiveCharacterAvatar,
+  cycleAvatarIndex,
+  setAvatarIndexOnCharacter,
+} from '../utils/characterAvatars';
+import {
+  broadcastPrimaryModelState,
+  broadcastSettingsPatch,
+  broadcastSettingsReload,
+  openSettingsPopupWindow,
+  readLastPrimaryApiModel,
+  saveLastPrimaryApiModel,
+  subscribeAppCrossWindowSync,
+} from '../utils/settingsCrossWindowSync';
+import {
+  applyAvatarSizesToSettings,
+  mergeSettingsObjects,
+  persistSettingsBlob,
+  readSettingsFromLocalStorageSync,
+  readSettingsFromStorage,
+  shouldApplyHydratedSettings,
+} from '../utils/settingsPersistence';
+import {
+  buildCharacterIntroSeedMessages,
+  conversationAcceptsIntroTitle,
+  deriveIntroChatTitle,
+} from '../utils/characterIntro';
+import {
+  buildCharacterAsSystemPrompt,
+  composeLayeredSystemPrompt,
+  isSystemPersonaModeActive,
+  resolveSystemPersonaCharacter,
+} from '../utils/systemPersona';
+import {
+  attachApiBotSpeakerMeta,
+  resolveEndpointDisplay,
+} from '../utils/resolveEndpointDisplay';
+import {
+  assertRouteContractOrThrow,
+  createRouteTraceId,
+  extractRouteMetaFromGenerateResult,
+  logRouteTrace,
+  resolveUnifiedRequestRoute,
+} from '../utils/requestRouting';
+import {
+  createThinkingStreamChunkLogger,
+  isThinkingStreamDebugEnabled,
+} from '../utils/thinkingStreamDebug';
+import {
+  readNanoGptModelsCache,
+  refreshNanoGptModelsCache,
+  findNanoGptModel,
+} from '../utils/nanoGptModelsCache';
+import { formatApiError } from '../utils/chatlogCondenserUtils';
 
-
-const defaultAppContextValue = { activeTab: 'chat', setActiveTab: () => {} };
+const defaultAppContextValue = {
+  activeTab: 'chat',
+  setActiveTab: () => {},
+  settingsEntryTab: 'general',
+    openSettingsTab: () => {},
+  openSettingsWindow: () => {},
+};
 const AppContext = createContext(defaultAppContextValue);
 const logPromptSample = (prompt, maxLength = 500) => {
   const sample = prompt.length > maxLength ?
@@ -26,6 +138,12 @@ const logPromptSample = (prompt, maxLength = 500) => {
   console.log(`📝 [DEBUG] Prompt contains memory references: ${hasMemories}`);
 };
 console.log('🔍 [DEBUG] generateChatTitle function imported:', typeof generateChatTitle);
+
+/** Cap memory-service waits so chat never hangs silently if :8001 is down. */
+const MEMORY_FETCH_TIMEOUT_MS = 12000;
+/** API-only chat: short cap so /generate is not delayed waiting on memory GPU. */
+const MEMORY_FETCH_TIMEOUT_API_MS = 2500;
+
 // NEW — talk to your FastAPI on 8001
 async function generateAndShowImage(promptText) {
   try {
@@ -84,16 +202,112 @@ async function generateAndShowImage(promptText) {
 // Helper function to generate truly unique IDs
 const generateUniqueId = () => `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 const NARRATOR_CHARACTER_ID = '__narrator__';
+const OUTREACH_DEFAULT_INTERVAL_MINUTES = 45;
+const OUTREACH_MIN_INTERVAL_MINUTES = 1;
+
+function outreachNotificationFromConversation(conv) {
+  const messages = Array.isArray(conv?.messages) ? conv.messages : [];
+  const botMsg = [...messages].reverse().find((m) => m?.role === 'bot' || m?.role === 'assistant');
+  if (!botMsg) return null;
+  const previewSrc = typeof botMsg.content === 'string' ? botMsg.content : '';
+  return {
+    id: botMsg.id ? `outreach-note-${botMsg.id}` : `outreach-note-${conv.id}`,
+    ruleId: conv.outreachRuleId || conv.ruleId,
+    ruleName: conv.outreachRuleName || conv.ruleName || 'Scheduled Outreach',
+    characterName: conv.characterSnapshot?.name || botMsg.characterName || conv.name || 'Character',
+    characterAvatar: conv.characterSnapshot?.avatar || botMsg.avatar || null,
+    attachmentImageUrl: botMsg.imagePath || botMsg.attachmentImageUrl || null,
+    messageId: botMsg.id,
+    preview: previewSrc.replace(/\s+/g, ' ').slice(0, 200),
+    conversationId: conv.id,
+    createdAt: conv.updatedAt || conv.created || new Date().toISOString(),
+    read: false,
+  };
+}
+
+const API_CONTEXT_WINDOW_TOKENS = API_CONTEXT_WINDOW_TOKENS_DEFAULT;
+const API_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
+
+const estimateTokenCount = (text = '') => Math.ceil(String(text).length / 4);
+
+const selectApiHistoryWithinContext = ({
+  messages,
+  systemPrompt,
+  maxContextTokens = API_CONTEXT_WINDOW_TOKENS,
+  reservedOutputTokens = 2048,
+  minMessages = 1,
+  maxHistoryTokens = null
+}) => {
+  const chatMessages = (messages || []).filter(
+    (msg) =>
+      (msg?.role === 'user' || msg?.role === 'bot') &&
+      typeof msg?.content === 'string' &&
+      msg.content.length > 0
+  );
+
+  if (!chatMessages.length) return [];
+
+  // Always preserve the newest user turn verbatim. History pruning can drop older turns,
+  // but it must never trim/remove the actual prompt the user just sent.
+  const newestUserMessageId = [...chatMessages]
+    .reverse()
+    .find((msg) => msg?.role === 'user')?.id || null;
+
+  const systemTokens = estimateTokenCount(systemPrompt);
+  const availableForHistory = Math.max(
+    0,
+    maxContextTokens - systemTokens - reservedOutputTokens - API_CONTEXT_SAFETY_BUFFER_TOKENS
+  );
+  const historyCap =
+    maxHistoryTokens != null
+      ? Math.min(availableForHistory, Math.max(0, maxHistoryTokens))
+      : availableForHistory;
+
+  const reversed = [...chatMessages].reverse();
+  const selected = [];
+  let usedTokens = 0;
+
+  for (let i = 0; i < reversed.length; i += 1) {
+    const msg = reversed[i];
+    const messageTokens = estimateTokenCount(msg.content) + 12; // role + separators overhead
+    const mustKeepForContinuity = i < minMessages;
+    const isPinnedNewestUser = newestUserMessageId && msg.id === newestUserMessageId;
+
+    if (!mustKeepForContinuity && !isPinnedNewestUser && usedTokens + messageTokens > historyCap) {
+      break;
+    }
+
+    selected.unshift(msg);
+    // The newest user prompt is pinned outside the history budget.
+    if (!isPinnedNewestUser) {
+      usedTokens += messageTokens;
+    }
+  }
+
+  return selected;
+};
 
 const normalizeChatRole = (role) => {
   if (role === 'user' || role === 'narrator') return role;
   return 'npc';
 };
 
-const normalizeCharacter = (character) => ({
-  ...character,
-  chat_role: normalizeChatRole(character?.chat_role)
-});
+const normalizeCharacter = (character) =>
+  normalizeCharacterAvatars({
+    ...character,
+    chat_role: normalizeChatRole(character?.chat_role),
+  });
+
+/** Avoid setState loops when the characters list is re-built with new object refs. */
+const charactersMatchForSync = (stored, selected) => {
+  if (stored === selected) return true;
+  if (!stored || !selected || stored.id !== selected.id) return false;
+  try {
+    return JSON.stringify(stored) === JSON.stringify(selected);
+  } catch {
+    return false;
+  }
+};
 
 const buildDefaultCharacterWeights = (characterList) => {
   const weights = {};
@@ -206,8 +420,27 @@ const _buildSystemPrompt = (character, userProfile = null, summaryContextOverrid
   const scenario = character.scenario ? replaceTags(character.scenario) : '';
   const speechStyle = character.speech_style ? replaceTags(character.speech_style) : '';
   const background = character.background ? replaceTags(character.background) : '';
+  const ethics = character.ethics_justification ? replaceTags(character.ethics_justification).trim() : '';
+  const modelInstructions = character.model_instructions ? replaceTags(character.model_instructions).trim() : '';
 
-  return `You are ${charName}, ${description}.
+  const prefixParts = [];
+  if (ethics) {
+    const ethicsScopeNote =
+      '(Out-of-character context only: not a persona to perform. Do not speak as this section\'s narrator, adopt its voice, or treat it as a second character. Use it only to interpret scope and refusals for the role of ' +
+      charName +
+      ' below.)';
+    prefixParts.push(`[ETHICS JUSTIFICATION]\n${ethicsScopeNote}\n\n${ethics}`);
+  }
+  if (modelInstructions) {
+    prefixParts.push(`[MODEL INSTRUCTIONS]\n${modelInstructions}`);
+  }
+  const eloquentPrefix = prefixParts.length ? `${prefixParts.join('\n\n')}\n\n` : '';
+
+  const ethicsTail = ethics
+    ? '\n\n(When scope or refusals are ambiguous, use the ETHICS JUSTIFICATION at the start of this prompt; do not roleplay that block.)\n'
+    : '';
+
+  return `${eloquentPrefix}You are ${charName}, ${description}.
 
 PERSONALITY: ${personality}
 
@@ -217,8 +450,7 @@ ${scenario ? `SCENARIO: ${scenario}` : ''}
 
 SPEAKING STYLE: ${speechStyle}
 
-IMPORTANT: Stay in character at all times. Respond as ${charName} would, maintaining the defined personality and speech patterns.
-
+IMPORTANT: Stay in character at all times. Respond as ${charName} would, maintaining the defined personality and speech patterns.${ethicsTail}
 ${character.example_dialogue && character.example_dialogue.length > 0
       ? `EXAMPLE DIALOGUE:
 ${character.example_dialogue.map(msg =>
@@ -281,14 +513,29 @@ const AppProvider = ({ children }) => {
     ),
     [userProfile, activeContextSummary, summaryContextForRequest]
   );
+
+  const buildSystemPersonaPrompt = useCallback(
+    (char) => buildCharacterAsSystemPrompt(
+      char,
+      userProfile,
+      summaryContextForRequest || activeContextSummary || null,
+      roleplayEnabledRef.current ? userCharacterRef.current : null,
+      getStoryTrackerContext()
+    ),
+    [userProfile, activeContextSummary, summaryContextForRequest]
+  );
+
   const getRelevantMemories = memoryContext?.getRelevantMemories;
   const addConversationSummary = memoryContext?.addConversationSummary;
-  const [sdStatus, setSdStatus] = useState({ automatic1111: false });
+  const [sdStatus, setSdStatus] = useState({});
   const [generatedImages, setGeneratedImages] = useState([]);
   const [isImageGenerating, setIsImageGenerating] = useState(false);
   const [apiError, setApiError] = useState(null);
   const clearError = useCallback(() => setApiError(null), []);
   const [activeTab, setActiveTab] = useState('chat'); // Default to 'chat' tab
+  const activeTabRef = useRef('chat');
+  /** When opening Settings (sidebar or mobile remote), which inner tab to show. */
+  const [settingsEntryTab, setSettingsEntryTab] = useState('general');
   const [sttEnabled, setSttEnabled] = useState(false); // Default to false
   const [ttsEnabled, setTtsEnabled] = useState(false); // Default to false
   const [userAvatar, setUserAvatar] = useState(null);
@@ -311,12 +558,16 @@ const AppProvider = ({ children }) => {
   const [secondaryCharacter, setSecondaryCharacter] = useState(null);
   const [primaryAvatar, setPrimaryAvatar] = useState(null);
   const [secondaryAvatar, setSecondaryAvatar] = useState(null);
-  const mediaRecorderRef = useRef(null);
+  const mediaRecorderRef = useRef(null); // legacy export; STT uses wavMicRecorderRef
+  const wavMicRecorderRef = useRef(null);
   const isFirstTextChunk = useRef(true);
   const isTtsInterruptedRef = useRef(false);
   const callModeMediaRecorderRef = useRef(null);
   const callModeAudioChunksRef = useRef([]);
   const activeAudioPlayersRef = useRef(new Set()); // Track ALL active audio sources
+  const streamingTtsDrainingRef = useRef(false); // Single drain runner for WS TTS (avoids stuck "playing" gate)
+  /** Tracks whether the TTS WebSocket is in a closed/closing state to abort the drain loop. */
+  const ttsWsClosedRef = useRef(false);
   const callModeSilenceTimerRef = useRef(null);
   const callModeStreamRef = useRef(null);
   const audioChunksRef = useRef([]); // Updated to match previous edit
@@ -341,10 +592,19 @@ const AppProvider = ({ children }) => {
   const [autoMemoryEnabled, setAutoMemoryEnabled] = useState(true); // Default to enabled
   const [lastAgenticMemoryFeedback, setLastAgenticMemoryFeedback] = useState(null); // { added, characterName } when agentic memory adds insights
   const [lastAgenticRunStatus, setLastAgenticRunStatus] = useState(null); // 'ok' | 'error' | null — reflects whether backend actually ran (so UI doesn't lie)
+  /** Last GET /memory/agentic inject into system prompt (honest UI tooltip; not console spam). */
+  const [lastAgenticInjectMeta, setLastAgenticInjectMeta] = useState(null); // { chars, count, characterName } | null
+  const [alignmentData, setAlignmentData] = useState(null); // { count, highestSeverity, findings, frameFidelity } or null
+  const [alignmentDetectionEnabled, setAlignmentDetectionEnabled] = useState(false);
   const [autoDeleteChats, setAutoDeleteChats] = useState(false); // Default to false
   // avatar sizing for chat
   const [userAvatarSize] = useState(64);
   const streamingTtsMessageIdRef = useRef(null);
+  const streamingTtsStreamOptsRef = useRef(null);
+  /** True after `endStreamingTTS` sent `--END--` (no more text). Playback may still be synthesizing. */
+  const streamingTtsWsEndSentRef = useRef(false);
+  /** Batches `addStreamingText` onto rAF so we do not WS-send once per token (and sync manual chunk bursts coalesce). */
+  const ttsStreamSendCoalesceRef = useRef({ pending: '', rafId: null });
   const [characterAvatarSize] = useState(64);
   const [showAvatars, setShowAvatars] = useState(true);
   const [showAvatarsInChat, setShowAvatarsInChat] = useState(true);
@@ -352,16 +612,52 @@ const AppProvider = ({ children }) => {
   const [isStreamingStopped, setIsStreamingStopped] = useState(false);
   const [audioQueue, setAudioQueue] = useState([]);
   const [isAutoplaying, setIsAutoplaying] = useState(false);
+  const [isStreamingTtsPaused, setIsStreamingTtsPaused] = useState(false);
   const [ttsSubtitleCue, setTtsSubtitleCue] = useState(null);
+  const [ttsFullResponseSaveStatus, setTtsFullResponseSaveStatus] = useState({
+    state: 'idle',
+    message: '',
+    path: null,
+    filename: null,
+    chunkCount: null,
+    updatedAt: 0,
+  });
   const ttsSubtitleCueRef = useRef(null); // ✅ Ref for direct access, bypassing re-render issues
+  const isStreamingTtsPausedRef = useRef(false);
+  const isMobileRef = useRef(false);
+
+  // Inject timestamp into AI context (single source of truth — send + regenerate read this ref)
+  const [injectTimestamp, setInjectTimestampState] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('eloquent-inject-timestamp') === 'true');
+  const injectTimestampRef = useRef(injectTimestamp);
+  injectTimestampRef.current = injectTimestamp;
+  const setInjectTimestamp = useCallback((value) => {
+    setInjectTimestampState(!!value);
+    if (typeof localStorage !== 'undefined') {
+      if (value) localStorage.setItem('eloquent-inject-timestamp', 'true');
+      else localStorage.removeItem('eloquent-inject-timestamp');
+    }
+  }, []);
+
+  // Key profile phrases re-injected before user query (backend uses for "repetition injection" / context saturation)
+  const profileReinforcementRef = useRef('');
 
   // Debug: Monitor state changes
   useEffect(() => {
     ttsSubtitleCueRef.current = ttsSubtitleCue; // ✅ Keep ref in sync
   }, [ttsSubtitleCue]);
 
+  useEffect(() => {
+    if (typeof navigator === 'undefined') return;
+    const ua = navigator.userAgent || '';
+    isMobileRef.current = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+  }, []);
+
   const audioContextRef = useRef(null); // To manage the Web Audio API context
   const [primaryIsAPI, setPrimaryIsAPI] = useState(false);
+  const apiModelRestoredRef = useRef(false);
+  const postStorageHydrateFetchRef = useRef(false);
+  const crossWindowSyncReadyRef = useRef(false);
+  const autoRouterBootLogRef = useRef(false);
   const [secondaryIsAPI, setSecondaryIsAPI] = useState(false);
   const setUserAvatarSize = (size) => {
     updateSettings({ userAvatarSize: size });
@@ -393,19 +689,26 @@ const AppProvider = ({ children }) => {
   useEffect(() => {
     if (primaryCharacter) {
       const updatedPrimary = characters.find(c => c.id === primaryCharacter.id);
-      if (updatedPrimary && updatedPrimary !== primaryCharacter) {
-        console.log('🔄 [AppContext] Syncing primaryCharacter with updated data');
+      if (updatedPrimary && !charactersMatchForSync(updatedPrimary, primaryCharacter)) {
         setPrimaryCharacter(updatedPrimary);
       }
     }
     if (secondaryCharacter) {
       const updatedSecondary = characters.find(c => c.id === secondaryCharacter.id);
-      if (updatedSecondary && updatedSecondary !== secondaryCharacter) {
-        console.log('🔄 [AppContext] Syncing secondaryCharacter with updated data');
+      if (updatedSecondary && !charactersMatchForSync(updatedSecondary, secondaryCharacter)) {
         setSecondaryCharacter(updatedSecondary);
       }
     }
   }, [characters, primaryCharacter, secondaryCharacter]);
+
+  // Same for activeCharacter (e.g. Quick Voice / roster saves ttsVoice on the list, but TTS used stale ref)
+  useEffect(() => {
+    if (!activeCharacter?.id) return;
+    const updated = characters.find((c) => c.id === activeCharacter.id);
+    if (updated && !charactersMatchForSync(updated, activeCharacter)) {
+      setActiveCharacter(updated);
+    }
+  }, [characters, activeCharacter]);
 
   const [backgroundImage, setBackgroundImage] = useState(null); // New state for chat background
 
@@ -415,126 +718,472 @@ const AppProvider = ({ children }) => {
   /** Refs updated every render so async sendMessage always reads latest (fixes "only works in new chats"). */
   const conversationsRef = useRef([]);
   const activeConversationRef = useRef(null);
+  /** Tracks rolling-memory compaction jobs per conversation (avoid blocking replies / avoid duplicate jobs). */
+  const rollingMemoryCompactionInFlightRef = useRef({});
   const [conversations, setConversations] = useState([]);
   const [activeConversation, setActiveConversation] = useState(null);
   const [activeCharacterIds, setActiveCharacterIds] = useState([]);
   const [activeCharacterWeights, setActiveCharacterWeights] = useState({});
   const [multiRoleContext, setMultiRoleContext] = useState('');
+  const [storageHydrated, setStorageHydrated] = useState(
+    () => typeof window !== 'undefined' && isSettingsStandaloneWindow(),
+  );
+  const [storageHydrationDegraded, setStorageHydrationDegraded] = useState(false);
+  const [portsLoadDegraded, setPortsLoadDegraded] = useState(false);
+  const [bootGeneration, setBootGeneration] = useState(0);
+  /** Last IndexedDB message save for active tab (UI feedback). */
+  const [conversationSaveStatus, setConversationSaveStatus] = useState('idle');
 
   const [messages, setMessages] = useState([]);
+  const [outreachNotifications, setOutreachNotifications] = useState([]);
+  const [outreachScrollToMessageId, setOutreachScrollToMessageId] = useState(null);
+  const outreachSyncTimerRef = useRef(null);
+  /** Batches streaming token UI updates to ~1/frame; avoids ReactMarkdown thrash on fast APIs. */
+  const streamMessageRafRef = useRef({ rafId: null, pending: null });
+  // Debug: track what happens during streaming until the tab crashes/hangs.
+  const streamDebugRef = useRef(null);
   const [taskProgress, setTaskProgress] = useState({ progress: 0, status: '', active: false });
+  /** Latest chat messages for async book automation (avoids stale closures). */
+  const messagesRef = useRef([]);
+  /** When set, `prepareApiHistoryWithRollingMemory` uses these packing overrides (book automation). */
+  const bookModePackingOverridesRef = useRef(null);
+  /** Debounced mirror of conversations → IndexedDB (cleared on delete to avoid races). */
+  const conversationPersistTimerRef = useRef(null);
+  const conversationCatalogPersistTimerRef = useRef(null);
+  const conversationCatalogSigRef = useRef('');
+  /** Bumped on delete so in-flight IndexedDB writes cannot resurrect removed tabs. */
+  const conversationStorageEpochRef = useRef(0);
+  /** In-memory tombstones (sync guard for auto-save during/after delete). */
+  const tombstonedConversationIdsRef = useRef(new Set());
+  /** Suppress message auto-save while switching tabs (avoids wrong-id / empty shard writes). */
+  const conversationSwitchInProgressRef = useRef(false);
+  /**
+   * Startup restore gate:
+   * - default: landing-first (do not auto-open a past chat on refresh)
+   * - opt-in restore: `?restoreLastConversation=1` or `?restore=last`
+   * This ref is one-shot so late async hydration cannot overwrite a deliberate landing/new-chat selection.
+   */
+  const startupConversationRestoreRef = useRef({
+    allowAutoRestore: (() => {
+      if (typeof window === 'undefined') return false;
+      try {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('restoreLastConversation') === '1' || params.get('restore') === 'last';
+      } catch (_) {
+        return false;
+      }
+    })(),
+    attempted: false,
+  });
+  /** New-chat finalizes intro on the active tab before starting another. */
+  const completeCharacterIntroRef = useRef(null);
 
   // Refs updated every render so async sendMessage reads latest conversation/flag (no effect timing issues)
   conversationsRef.current = conversations;
   activeConversationRef.current = activeConversation;
+  messagesRef.current = messages;
+  activeTabRef.current = activeTab;
 
   // Clear backend run status when switching chats so "ran" / "error" isn't from a different chat
   useEffect(() => {
     setLastAgenticRunStatus(null);
   }, [activeConversation]);
 
-  const deleteConversation = useCallback((id) => {
-    try {
-      // Update state first
-      const updatedConversations = conversations.filter(conv => conv.id !== id);
-      setConversations(updatedConversations);
+  /** Same id Settings → Agentic tab uses for GET /memory/agentic/list (must match write path). */
+  const resolveAgenticUserId = useCallback(
+    () => memoryContext?.activeProfileId || userProfile?.id || null,
+    [memoryContext?.activeProfileId, userProfile?.id],
+  );
 
-      // Handle active conversation updates
-      if (activeConversation === id) {
-        if (updatedConversations.length > 0) {
-          setActiveConversation(updatedConversations[0].id);
-        } else {
-          setActiveConversation(null);
+  // Global error capture so we get something even if the page “just crashes”.
+  useEffect(() => {
+    const writeDebugLog = (prefix, errOrEvent) => {
+      try {
+        const payload = {
+          prefix,
+          ts: new Date().toISOString(),
+          message: errOrEvent?.message,
+          stack: errOrEvent?.stack,
+          // Browser events have different shapes; keep it lightweight.
+          errorName: errOrEvent?.name,
+        };
+        console.error('🧨 [GlobalError]', payload);
+        // Best-effort persistence in case console is cleared by crash.
+        localStorage.setItem('LiangLocal-last-global-error', JSON.stringify(payload));
+      } catch (_) {}
+    };
+
+    const onError = (event) => writeDebugLog('window.onerror', event?.error || event);
+    const onUnhandledRejection = (event) => writeDebugLog('unhandledrejection', event?.reason || event);
+
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
+
+  // IndexedDB hydration: lightweight first (unblock UI), migration/recover opt-in only
+  useEffect(() => {
+    installChatStorageDebugHelpers();
+    let cancelled = false;
+    const isMigrationDone = () => {
+      try {
+        return localStorage.getItem('LiangLocal-idb-migrated') === 'v1';
+      } catch (_) {
+        return false;
+      }
+    };
+
+    const hydrateFromDisk = async () => {
+      const settingsOnly = isSettingsStandaloneWindow();
+      console.time('[Eloquent] hydrate:total');
+
+      if (settingsOnly) {
+        console.info('[Eloquent] skipping emergency recover (settings window)');
+        console.time('[Eloquent] hydrate:settings-light');
+        const idbOpts = { preferLocalStorage: true, skipMigration: true };
+        const [charactersStr, avatarSizesStr, hydratedSettings] = await Promise.all([
+          indexedDbStorage.getItem('llm-characters', idbOpts),
+          indexedDbStorage.getItem('LiangLocal-avatar-sizes', idbOpts),
+          readSettingsFromStorage(idbOpts),
+        ]);
+        if (cancelled) return;
+        if (charactersStr) {
+          try {
+            const parsed = JSON.parse(charactersStr).map(normalizeCharacter);
+            setCharacters(parsed);
+            try {
+              localStorage.setItem('llm-characters', JSON.stringify(parsed));
+            } catch (_) { /* mirror */ }
+          } catch (e) { console.warn('Hydration (settings window): parse characters', e); }
+        }
+        if (hydratedSettings || avatarSizesStr) {
+          try {
+            const parsed = hydratedSettings ? { ...hydratedSettings } : {};
+            applyAvatarSizesToSettings(parsed, avatarSizesStr);
+            setSettings((s) => {
+              if (!shouldApplyHydratedSettings(parsed, s)) return s;
+              return mergeSettingsObjects(s, parsed);
+            });
+          } catch (e) { console.warn('Hydration (settings window): parse settings', e); }
+        }
+        console.timeEnd('[Eloquent] hydrate:settings-light');
+        console.info('[Eloquent] Settings window: lightweight storage hydrate (chat tabs skipped)');
+        console.timeEnd('[Eloquent] hydrate:total');
+        return;
+      }
+
+      const idbBootOpts = { preferLocalStorage: true, skipMigration: true };
+
+      if (!isMigrationDone()) {
+        console.info('[Eloquent] IDB migration running in background (boot uses localStorage mirror)');
+        void indexedDbStorage.migrateFromLocalStorage().catch((e) => {
+          console.warn('[Eloquent] background IDB migration failed:', e);
+        });
+      } else {
+        console.info('[Eloquent] skipping localStorage→IDB migration (already done)');
+      }
+
+      console.time('[Eloquent] hydrate:main-light');
+      scrubConversationLocalStorageGhosts();
+      if (cancelled) return;
+
+      const [charactersStr, activeIdStr, avatarSizesStr, parsedConversations, hydratedSettings] = await Promise.all([
+        indexedDbStorage.getItem('llm-characters', idbBootOpts),
+        indexedDbStorage.getItem('Eloquent-active-conversation', idbBootOpts),
+        indexedDbStorage.getItem('LiangLocal-avatar-sizes', idbBootOpts),
+        loadConversationsFromStorage({ skipShardScan: true, idbOpts: idbBootOpts }),
+        readSettingsFromStorage(idbBootOpts),
+      ]);
+      if (cancelled) return;
+
+      if (charactersStr) {
+        try {
+          const parsed = JSON.parse(charactersStr).map(normalizeCharacter);
+          setCharacters(parsed);
+          try {
+            localStorage.setItem('llm-characters', JSON.stringify(parsed));
+          } catch (_) { /* mirror for legacy readers */ }
+        } catch (e) { console.warn('Hydration: parse characters', e); }
+      }
+
+      const tombstoned = await loadTombstonedConversationIds();
+      getBannedConversationIdsSync().forEach((bid) => tombstoned.push(bid));
+      tombstonedConversationIdsRef.current = new Set(tombstoned);
+
+      const conversationsToShow = (Array.isArray(parsedConversations)
+        ? parsedConversations.filter(
+          (c) => c?.id
+            && !tombstonedConversationIdsRef.current.has(c.id)
+            && !isOutreachConversationId(c.id)
+        )
+        : []);
+
+      if (conversationsToShow.length === 0) {
+        console.info('[Eloquent] skipping emergency recover (deferred) — use window.eloquentChatStorage.emergencyRecover() if tabs are missing');
+      }
+
+      conversationCatalogSigRef.current = conversationsToShow
+        .map((c) => `${c.id}\t${c.name || ''}`)
+        .join('\n');
+
+      const banCount = tombstonedConversationIdsRef.current.size;
+      if (banCount > 0) {
+        console.info(
+          `[Eloquent] Chat storage v9: ${conversationsToShow.length} tab(s) loaded, ${banCount} banned id(s) hidden`
+        );
+      } else if (conversationsToShow.length > 0) {
+        console.info(`[Eloquent] Chat storage v9: ${conversationsToShow.length} tab(s) loaded`);
+      }
+
+      if (conversationsToShow.length > 0) {
+        setConversations(conversationsToShow);
+
+        const userAlreadySelectedConversation =
+          !!activeConversationRef.current
+          || (messagesRef.current?.length > 0);
+        const restoreGate = startupConversationRestoreRef.current;
+        const mayAttemptStartupRestore = !restoreGate.attempted && restoreGate.allowAutoRestore;
+        restoreGate.attempted = true;
+
+        let lastActiveId = activeIdStr || null;
+        if (lastActiveId && tombstonedConversationIdsRef.current.has(lastActiveId)) {
+          lastActiveId = conversationsToShow[0]?.id ?? null;
+        }
+        if (
+          !userAlreadySelectedConversation
+          && mayAttemptStartupRestore
+          && lastActiveId
+          && conversationsToShow.some(c => c.id === lastActiveId)
+        ) {
+          console.time('[Eloquent] hydrate:restore-last-chat');
+          setActiveConversation(lastActiveId);
+          const activeMsgs = await loadConversationMessages(lastActiveId);
+          setMessages(activeMsgs);
+          const activeConv = conversationsToShow.find(c => c.id === lastActiveId);
+          if (Array.isArray(activeConv?.activeCharacterIds)) setActiveCharacterIds(activeConv.activeCharacterIds);
+          if (activeConv?.activeCharacterWeights && typeof activeConv.activeCharacterWeights === 'object') {
+            setActiveCharacterWeights(activeConv.activeCharacterWeights);
+          }
+          if (typeof activeConv?.multiRoleContext === 'string') setMultiRoleContext(activeConv.multiRoleContext);
+          console.timeEnd('[Eloquent] hydrate:restore-last-chat');
+        } else if (!userAlreadySelectedConversation && lastActiveId && !mayAttemptStartupRestore) {
+          console.info(
+            '[Eloquent] Startup restore skipped (landing-first mode).',
+            'Use ?restoreLastConversation=1 to re-enable restore for this load.'
+          );
         }
       }
 
-      // Try-catch for localStorage to handle quota issues
-      try {
-        // Only update localStorage if we have space
-        // Save just the minimal data needed rather than everything
-        const minimalData = updatedConversations.map(conv => ({
-          id: conv.id,
-          name: conv.name,
-          characterIds: conv.characterIds,
-          created: conv.created,
-          // Skip storing full message history to reduce size
-          messageCount: Array.isArray(conv.messages) ? conv.messages.length : 0
-        }));
-
-        localStorage.setItem('Eloquent-conversations-index', JSON.stringify(minimalData));
-
-        // For the currently active conversation, save messages separately
-        if (activeConversation) {
-          const activeConv = updatedConversations.find(c => c.id === activeConversation);
-          if (activeConv && activeConv.messages) {
-            try {
-              localStorage.setItem(`Eloquent-conversation-${activeConversation}`,
-                JSON.stringify(activeConv.messages));
-            } catch (storageErr) {
-              console.warn("Could not save active conversation messages:", storageErr);
-            }
+      if (hydratedSettings || avatarSizesStr) {
+        try {
+          const parsed = hydratedSettings ? { ...hydratedSettings } : {};
+          applyAvatarSizesToSettings(parsed, avatarSizesStr);
+          setSettings((s) => {
+            if (!shouldApplyHydratedSettings(parsed, s)) return s;
+            return mergeSettingsObjects(s, parsed);
+          });
+          if (!avatarSizesStr && (typeof parsed.userAvatarSize === 'number' || typeof parsed.characterAvatarSize === 'number')) {
+            indexedDbStorage.setItem('LiangLocal-avatar-sizes', JSON.stringify({
+              userAvatarSize: parsed.userAvatarSize ?? 64,
+              characterAvatarSize: parsed.characterAvatarSize ?? 64,
+            }));
           }
+        } catch (e) { console.warn('Hydration: parse settings', e); }
+      }
+      console.timeEnd('[Eloquent] hydrate:main-light');
+      console.timeEnd('[Eloquent] hydrate:total');
+    };
+
+    (async () => {
+      const settingsOnly = isSettingsStandaloneWindow();
+      const hydrationTimeoutMs = settingsOnly
+        ? SETTINGS_STANDALONE_STORAGE_TIMEOUT_MS
+        : STORAGE_HYDRATION_TIMEOUT_MS;
+      console.time('[Eloquent] boot:storageHydrated');
+      if (!settingsOnly) {
+        setStorageHydrated(true);
+      }
+      try {
+        await withTimeout(hydrateFromDisk(), hydrationTimeoutMs, 'storageHydration');
+      } catch (e) {
+        console.warn('Storage hydration failed or timed out:', e);
+        if (!cancelled) setStorageHydrationDegraded(true);
+      } finally {
+        if (!cancelled) {
+          setStorageHydrated(true);
+          console.timeEnd('[Eloquent] boot:storageHydrated');
         }
-      } catch (storageError) {
-        console.error("Storage error during delete:", storageError);
-        // Continue with the deletion in state even if storage fails
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [bootGeneration]);
+
+  const persistConversationsToStorage = useCallback(async (
+    list,
+    activeId,
+    epochAtStart,
+    activeMessages = null,
+    persistOpts = {}
+  ) => {
+    const epoch = epochAtStart ?? conversationStorageEpochRef.current;
+    try {
+      await persistChatState(list, activeId, activeMessages, persistOpts);
+    } catch (e) {
+      console.warn('[conversations] persist failed:', e);
+      return false;
+    }
+    if (epoch !== conversationStorageEpochRef.current) {
+      console.warn('[conversations] Discarded stale IndexedDB write (tab was deleted)');
+      return false;
+    }
+    return true;
+  }, []);
+
+  const deleteConversation = useCallback(async (id) => {
+    try {
+      // Sync ban FIRST — survives crash / full IndexedDB (this was the missing piece).
+      banConversationIdSync(id);
+      tombstonedConversationIdsRef.current.add(id);
+
+      if (conversationPersistTimerRef.current) {
+        clearTimeout(conversationPersistTimerRef.current);
+        conversationPersistTimerRef.current = null;
+      }
+      conversationStorageEpochRef.current += 1;
+      const deleteEpoch = conversationStorageEpochRef.current;
+
+      const currentMessages = messagesRef.current || messages;
+      const currentActive = activeConversationRef.current ?? activeConversation;
+
+      const merged = (conversationsRef.current || conversations).map((conv) =>
+        conv.id === currentActive ? { ...conv, messages: currentMessages } : conv
+      );
+      const updatedConversations = merged.filter((conv) => conv.id !== id);
+      const wasActive = currentActive === id;
+      const newActiveId = wasActive
+        ? (updatedConversations[0]?.id ?? null)
+        : currentActive;
+
+      setConversations(updatedConversations);
+
+      if (wasActive) {
+        setActiveConversation(newActiveId);
+        if (newActiveId) {
+          const sel = updatedConversations.find((c) => c.id === newActiveId);
+          setMessages(Array.isArray(sel?.messages) ? sel.messages : []);
+          const { primary, secondary, user } = sel?.characterIds || {};
+          let primChar = characters.find((c) => c.id === primary) || null;
+          if (!primChar && sel?.characterSnapshot) {
+            const snap = sel.characterSnapshot;
+            if (!primary || snap.id === primary) primChar = normalizeCharacter(snap);
+          }
+          setPrimaryCharacter(primChar);
+          setSecondaryCharacter(secondary ? characters.find((c) => c.id === secondary) || null : null);
+          setActiveCharacter(primChar);
+          setUserCharacterId(user || null);
+        } else {
+          setMessages([]);
+        }
+      }
+
+      await deleteConversationFromStorage(id);
+
+      const activeToSave = wasActive ? newActiveId : currentActive;
+      if (deleteEpoch !== conversationStorageEpochRef.current) {
+        return true;
+      }
+
+      const survivors = updatedConversations.filter(
+        (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
+      );
+      await saveConversationCatalog(survivors, activeToSave || null, {
+        allowEmpty: survivors.length === 0,
+      });
+
+      if (activeToSave && !tombstonedConversationIdsRef.current.has(activeToSave)) {
+        let activeMsgs = [];
+        if (activeToSave === currentActive) {
+          activeMsgs = currentMessages || [];
+        } else {
+          activeMsgs = await loadConversationMessages(activeToSave);
+        }
+        await persistConversationsToStorage(
+          survivors,
+          activeToSave,
+          deleteEpoch,
+          activeMsgs.length > 0 ? activeMsgs : null
+        );
+      } else {
+        try {
+          await indexedDbStorage.removeItem('Eloquent-active-conversation');
+        } catch (_) { /* noop */ }
       }
 
       return true;
     } catch (e) {
-      console.error("Error in deleteConversation:", e);
+      console.error('Error in deleteConversation:', e);
+      if (typeof window !== 'undefined') {
+        window.alert('Could not delete this chat from browser storage. Open Settings → Storage → Erase all chats, or try again after a refresh.');
+      }
       return false;
     }
-  }, [conversations, activeConversation, setActiveConversation]);
+  }, [
+    conversations,
+    messages,
+    activeConversation,
+    characters,
+    setConversations,
+    setActiveConversation,
+    setMessages,
+    setPrimaryCharacter,
+    setSecondaryCharacter,
+    setActiveCharacter,
+    setUserCharacterId,
+    persistConversationsToStorage,
+  ]);
 
-  const deleteAllConversations = useCallback(() => {
+  const deleteAllConversations = useCallback(async () => {
     try {
-      // Clear all conversations
+      if (conversationPersistTimerRef.current) {
+        clearTimeout(conversationPersistTimerRef.current);
+        conversationPersistTimerRef.current = null;
+      }
+      conversationStorageEpochRef.current += 1;
+
       setConversations([]);
       setActiveConversation(null);
       setMessages([]);
 
-      // Clear from localStorage
       try {
-        localStorage.removeItem('Eloquent-conversations');
-        localStorage.removeItem('Eloquent-conversations-index');
-        localStorage.removeItem('Eloquent-active-conversation');
-
-        // Also clear any individual conversation message storage
-        const keysToRemove = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (key && key.startsWith('Eloquent-conversation-')) {
-            keysToRemove.push(key);
-          }
-        }
-        keysToRemove.forEach(key => localStorage.removeItem(key));
+        await deleteAllConversationsFromStorage();
       } catch (storageError) {
-        console.error("Storage error during delete all:", storageError);
+        console.error('Storage error during delete all:', storageError);
       }
 
       return true;
     } catch (e) {
-      console.error("Error in deleteAllConversations:", e);
+      console.error('Error in deleteAllConversations:', e);
       return false;
     }
   }, [setConversations, setActiveConversation, setMessages]);
 
-  const renameConversation = (id, newName) => {
-    setConversations(prevConversations =>
-      prevConversations.map(conv =>
-        conv.id === id ? { ...conv, name: newName } : conv
-      )
-    );
+  const renameConversation = useCallback((id, newName) => {
+    setConversations((prevConversations) => {
+      const next = prevConversations.map((conv) =>
+        conv.id === id
+          ? { ...conv, name: newName, requiresTitle: false, titleSource: 'manual' }
+          : conv
+      );
+      void saveConversationCatalog(next, activeConversationRef.current);
+      return next;
+    });
+  }, []);
 
-    const updatedConversations = conversations.map(conv =>
-      conv.id === id ? { ...conv, name: newName } : conv
-    );
-
-    localStorage.setItem('conversations', JSON.stringify(updatedConversations));
-  };
-
-  const [settings, setSettings] = useState({
+  const createDefaultSettings = () => ({
     directProfileInjection: false, // <-- ADD THIS
     temperature: 0.7,
     max_tokens: -1,
@@ -561,14 +1210,21 @@ const AppProvider = ({ children }) => {
     chessHistorianAvatar: null,
     chessHistorianPersonaPrompt: null,
     sttEnabled: false,
+    sttAutoSendOnStop: false,
     streamResponses: true,
     sttEngine: "whisper",
+    /** Full path to ffmpeg.exe when not on system PATH (Voice Merge / STT / D-ID). */
+    ffmpegPath: '',
     ttsVoice: 'af_heart',
     ttsSpeed: 1.0,
     ttsPitch: 0,
+    ttsStreamChunkSentences: 2,
     ttsAutoPlay: false,  // Simply set a default value
-    userAvatarSize: null, // Default size for user avatar
-    characterAvatarSize: null, // Default size for character avatar
+    ttsSaveFullResponseAudio: false,
+    /** When > 0 and save is on, backend splits exported WAV into segments of at most this many seconds (285 ≈ 4m45, under 5 min). */
+    ttsSaveFullResponseChunkSeconds: 0,
+    userAvatarSize: 64,
+    characterAvatarSize: 64,
     mdBodyColor: '',
     mdBoldColor: '',
     mdItalicColor: '',
@@ -581,9 +1237,139 @@ const AppProvider = ({ children }) => {
     mdH2Font: '',
     mdH3Font: '',
     performanceMode: false,
+    outreachRules: [],
+    outreachBrowserNotifications: false,
+
+    /** When using a subscription/API primary model, cap verbatim turns and fold older dialogue into per-chat rolling memory. */
+    apiRollingMemoryEnabled: true,
+    /** Approximate total request context window for API history packing (user turn remains pinned). */
+    apiContextWindowTokens: API_CONTEXT_WINDOW_TOKENS,
+    /** Approximate max tokens for verbatim user/bot history per request (rolling pack carries the rest). */
+    apiRecentVerbatimTokenBudget: 32000,
+
+    /** Book automation overlay: wider API packing while a queued chapter run is active. */
+    bookWritingApiContextTokens: 262144,
+    bookWritingVerbatimTokenBudget: 98304,
+    /** Responses shorter than this (characters) count as refusal → auto-retry. */
+    bookRefusalMaxChars: 2200,
+    /** { id, label, text }[] — one-tap prompts during a book run (Settings). */
+    bookQuickPromptButtons: [],
+    didQuickPromptButtons: [],
+    bookWordFloorPreamble:
+      '[BOOK RUN]\nEach chapter in this run should run to at least roughly 3000 words unless the material truly cannot sustain that length. Follow the chapter heading and intent.',
+
+    /** New chat: AI-generated character introduction instead of static first_message greeting */
+    characterIntroEnabled: false,
+    characterIntroPrompt: '',
+    characterIntroMaxTokens: 900,
+    characterIntroTemperature: 0.55,
+    characterIntroHistoryLimit: 8,
+    characterIntroRequestPurpose: 'character_intro',
+    characterIntroEndpoint: '',
+    characterIntroApiOverrideEnabled: false,
+    characterIntroApiEndpointId: '',
+    characterIntroApiModel: '',
+    characterIntroApiKey: '',
+    /** flat | character_card | full_generation — same modes as call-mode about */
+    characterIntroSystemPromptMode: 'full_generation',
+
+    /** Use selected character card as LLM system persona (not roleplay wrapper) */
+    useCharacterAsSystemPrompt: false,
+    systemPersonaCharacterId: null,
+    systemIntroRequestPurpose: 'system_intro',
+    systemIntroPrompt: '',
+    systemIntroSystemPromptMode: 'full_generation',
+
+    /** Experimental: call-mode "about this character" hover + API insight panel */
+    callModeAboutCharacterEnabled: true,
+    callModeAboutCharacterPrompt: '',
+    callModeAboutCharacterMaxTokens: 1200,
+    callModeAboutCharacterTemperature: 0.45,
+    callModeAboutCharacterHistoryLimit: 40,
+    callModeAboutCharacterRequestPurpose: 'call_mode_character_about',
+    callModeAboutCharacterEndpoint: '',
+    callModeAboutCharacterApiOverrideEnabled: false,
+    callModeAboutCharacterApiEndpointId: '',
+    callModeAboutCharacterApiModel: '',
+    callModeAboutCharacterApiKey: '',
+    /** flat | character_card | full_generation — see callModeCharacterAbout.js */
+    callModeAboutCharacterSystemPromptMode: 'flat',
+
+    /** Call mode: optional full-screen portrait avatar + framing zoom/pan */
+    callModeFullscreenAvatar: false,
+    callModeFullscreenZoom: 1,
+    callModeFullscreenPanX: 0,
+    callModeFullscreenPanY: 0,
+
+    /** When true, clicking Settings opens a separate window instead of in-app tab. */
+    openSettingsInSecondWindow: false,
+
+    /** Startup splash minimum display: off | fast | normal | long (see eloquentSplash.js). */
+    splashScreenDuration: 'normal',
 
     admin_password: "", // <-- Password for remote access
+
+    /** NanoGPT Context Memory — forwarded on /generate when endpoint URL is nano-gpt.com */
+    nanoGptContextMemoryEnabled: false,
+    nanoGptContextMemoryMode: 'header',
+    nanoGptContextMemoryExpirationDays: 30,
+    /** Debug-only: show layered reasoning diagnostics in chat UI. */
+    showReasoningDiagnostics: false,
   });
+
+  const [settings, setSettings] = useState(() => {
+    const defaults = createDefaultSettings();
+    const fromLs = readSettingsFromLocalStorageSync();
+    if (fromLs && shouldApplyHydratedSettings(fromLs, defaults)) {
+      return mergeSettingsObjects(defaults, fromLs);
+    }
+    return defaults;
+  });
+
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [lastRequestRouteMeta, setLastRequestRouteMeta] = useState(null);
+
+  const resolveActionRouterContract = useCallback(
+    (
+      actionName,
+      {
+        requestPurpose = null,
+        modelName = primaryModel,
+        settingsSnapshot = settingsRef.current,
+      } = {},
+    ) => {
+      const route = resolveUnifiedRequestRoute({
+        primaryModel: modelName,
+        primaryIsAPI,
+        settings: settingsSnapshot,
+        requestPurpose,
+      });
+      logRouteTrace({
+        action: actionName,
+        route,
+        requestPurpose,
+      });
+      return route;
+    },
+    [primaryIsAPI, primaryModel],
+  );
+
+  const getActiveSystemPersonaContext = useCallback((conversationId = null) => {
+    const convId = conversationId || activeConversationRef.current;
+    const conv = (conversationsRef.current || []).find((c) => c.id === convId);
+    if (!isSystemPersonaModeActive(settingsRef.current, conv)) {
+      return { active: false, character: null, conversation: conv };
+    }
+    const character = resolveSystemPersonaCharacter(characters, settingsRef.current, conv);
+    return { active: true, character, conversation: conv };
+  }, [characters]);
+
+  const getSystemPersonaGenerateExtras = useCallback((conversationId = null) => {
+    const { active } = getActiveSystemPersonaContext(conversationId);
+    return active ? { system_persona_mode: true } : {};
+  }, [getActiveSystemPersonaContext]);
+
   useEffect(() => {
     roleplayEnabledRef.current = settings.multiRoleMode === true;
   }, [settings.multiRoleMode]);
@@ -635,21 +1421,58 @@ const AppProvider = ({ children }) => {
     secondary: "http://localhost:8001",
     tts: "http://localhost:8002"
   });
+  /** True after loadPortConfig finishes (or times out) — URLs are safe to use. */
+  const [portsReady, setPortsReady] = useState(false);
+
+  const retryBoot = useCallback(() => {
+    setPortsReady(false);
+    postStorageHydrateFetchRef.current = false;
+    if (!isSettingsStandaloneWindow()) {
+      setStorageHydrated(false);
+    }
+    setStorageHydrationDegraded(false);
+    setPortsLoadDegraded(false);
+    setBootGeneration((g) => g + 1);
+  }, []);
 
   // Load port configuration on startup (also updates the api.js module cache)
   useEffect(() => {
-    import('../config/api').then(({ loadPortConfig }) => {
-      loadPortConfig().then(config => {
-        console.log('📌 Loaded port config:', config);
-        setPortConfig(config);
-      });
-    });
-  }, []);
+    let cancelled = false;
+    (async () => {
+      try {
+        const { loadPortConfig, getConfig } = await import('../config/api');
+        const config = await withTimeout(
+          loadPortConfig(),
+          PORT_CONFIG_TIMEOUT_MS,
+          'loadPortConfig'
+        );
+        if (!cancelled) {
+          console.log('📌 Loaded port config:', config);
+          setPortConfig(config);
+        }
+      } catch (e) {
+        console.warn('Port config load failed or timed out; using defaults', e);
+        if (!cancelled) {
+          setPortsLoadDegraded(true);
+          const { getConfig } = await import('../config/api');
+          setPortConfig(getConfig());
+        }
+      } finally {
+        // Always unblock settings/UI even if this effect was superseded by retryBoot cleanup.
+        setPortsReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [bootGeneration]);
 
   // API URLs - use port config
   const PRIMARY_API_URL = portConfig.backend;
+  const settingsStandaloneForMemory = isSettingsStandaloneWindow();
   const SECONDARY_API_URL = isSingleGpuMode ? portConfig.backend : portConfig.secondary;
-  const MEMORY_API_URL = isSingleGpuMode ? portConfig.backend : portConfig.secondary;
+  /** Settings window + single-GPU: memory API is always primary (see InfrastructureBanner). */
+  const MEMORY_API_URL = (isSingleGpuMode || settingsStandaloneForMemory)
+    ? portConfig.backend
+    : portConfig.secondary;
   const TTS_API_URL = portConfig.tts;
   const BACKEND = import.meta.env.VITE_API_URL || (isSingleGpuMode ? portConfig.backend : portConfig.secondary);
   const VITE_API_URL = isSingleGpuMode ? portConfig.backend : portConfig.secondary;
@@ -693,44 +1516,26 @@ const AppProvider = ({ children }) => {
     };
   }, [ttsClient, setTtsSubtitleCue]);
 
-  useEffect(() => {
-    const loadSavedConversations = () => {
-      try {
-        const savedConversations = localStorage.getItem('Eloquent-conversations');
-        if (savedConversations) {
-          const parsedConversations = JSON.parse(savedConversations).map(c => ({
-            ...c,
-            agenticMemoryEnabled: c.agenticMemoryEnabled === true
-          }));
-          setConversations(parsedConversations);
-
-          const lastActiveId = localStorage.getItem('Eloquent-active-conversation');
-          if (lastActiveId && parsedConversations.some(c => c.id === lastActiveId)) {
-            setActiveConversation(lastActiveId);
-
-            const activeConv = parsedConversations.find(c => c.id === lastActiveId);
-            if (activeConv && activeConv.messages) {
-              setMessages(activeConv.messages);
-            }
-          }
-        }
-      } catch (error) {
-        console.error("Error loading saved conversations:", error);
-      }
-    };
-
-    loadSavedConversations();
-  }, []);
+  // Initial conversation load is done by IndexedDB hydration effect above
   // ===== Debugging and Testing the Lore Functionality =====
   // --- TTS Implementation (REORDERED) ---
-  const stopTTS = useCallback(() => {
+  const stopTTS = useCallback((reason = 'unspecified') => {
     // Note: Don't clear ttsSubtitleCue here - let it expire naturally via the timeout in CallModeOverlay
-    console.log('🛑 [stopTTS] Initiating stop sequence...');
-    // console.trace('🛑 [stopTTS] Caller Trace');
+    console.warn(`🛑 [stopTTS] Initiating stop sequence — reason: ${reason}`);
+    if (typeof console.trace === 'function') {
+      console.trace('🛑 [stopTTS] caller stack');
+    }
     // 1. IMMEDIATE: Set interrupt flag to prevent any new chunks from processing
     isTtsInterruptedRef.current = true;
     isFirstTextChunk.current = true; // Reset text chunk flag
     streamingTtsMessageIdRef.current = null; // Clear active message ID
+    streamingTtsWsEndSentRef.current = false;
+    const coalesce = ttsStreamSendCoalesceRef.current;
+    if (coalesce.rafId != null) {
+      cancelAnimationFrame(coalesce.rafId);
+      coalesce.rafId = null;
+    }
+    coalesce.pending = '';
 
     // 2. CRITICAL: Send interrupt signal to backend FIRST (before any cleanup)
     if (ttsClient && ttsClient.socket && ttsClient.socket.readyState === 1) {
@@ -757,9 +1562,11 @@ const AppProvider = ({ children }) => {
             player.currentTime = 0;
             player.src = '';
             // Don't revoke URL immediately to avoid errors if play() is pending
-          } else if (player.ctx) {
-            try { player.source?.stop(); } catch (e) { }
-            try { player.ctx.close(); } catch (e) { }
+          } else if (player.ctx && player.source) {
+            try { player.source.stop(0); } catch (e) { }
+            if (!player.streamingSharedContext) {
+              try { player.ctx.close(); } catch (e) { }
+            }
           }
         } catch (err) {
           console.error("🛑 [stopTTS] Error stopping player:", err);
@@ -772,8 +1579,13 @@ const AppProvider = ({ children }) => {
     if (audioPlayerRef.current) {
       console.log('🛑 [stopTTS] stopping legacy audioPlayerRef');
       try {
-        audioPlayerRef.current.pause();
-        audioPlayerRef.current.currentTime = 0;
+        const p = audioPlayerRef.current;
+        if (p instanceof Audio) {
+          p.pause();
+          p.currentTime = 0;
+        } else if (p.source) {
+          try { p.source.stop(0); } catch (e) { }
+        }
       } catch (e) { }
       audioPlayerRef.current = null;
     }
@@ -787,8 +1599,20 @@ const AppProvider = ({ children }) => {
 
     setAudioQueue([]);
     setIsAutoplaying(false);
+    isStreamingTtsPausedRef.current = false;
+    setIsStreamingTtsPaused(false);
     setIsPlayingAudio(null);
     window.streamingAudioPlaying = false;
+    if (window.intelStreamingAudioPlaying) {
+      window.intelStreamingAudioPlaying = false;
+      const onIntelComplete = streamingTtsStreamOptsRef.current?.onComplete;
+      streamingTtsStreamOptsRef.current = null;
+      if (typeof onIntelComplete === 'function') onIntelComplete();
+    } else {
+      // Also clear for non-intel streams to prevent stale ref leaks
+      streamingTtsStreamOptsRef.current = null;
+    }
+    streamingTtsDrainingRef.current = false;
 
     // Explicitly update state to trigger UI changes
     setManuallyStoppedAudio(true);
@@ -805,7 +1629,7 @@ const AppProvider = ({ children }) => {
     }
 
     // 2. Stop TTS explicitly
-    stopTTS();
+    stopTTS('handleStopGeneration');
 
     // Reset the main "isGenerating" flag for the UI
     setIsGenerating(false);
@@ -856,23 +1680,55 @@ const AppProvider = ({ children }) => {
     return getTtsOverridesForCharacter(character);
   }, [characters, getTtsOverridesForCharacter]);
 
-  const startStreamingTTS = useCallback((messageId, optionsOverrides = null) => {
+  const startStreamingTTS = useCallback((messageId, optionsOverrides = null, streamOpts = null) => {
     window.streamingAudioPlaying = false;
+    window.intelStreamingAudioPlaying = false;
+    streamingTtsDrainingRef.current = false;
     ttsClient.audioQueue = [];
+    streamingTtsWsEndSentRef.current = false;
+    // Reset WS close flag so the drain loop can detect socket closure mid-stream
+    ttsWsClosedRef.current = false;
+    streamingTtsStreamOptsRef.current = streamOpts || null;
+    const isIntelPlayback =
+      streamOpts?.intelPlayback === true || isIntelMessageId(messageId);
+    const coalesceStart = ttsStreamSendCoalesceRef.current;
+    if (coalesceStart.rafId != null) {
+      cancelAnimationFrame(coalesceStart.rafId);
+      coalesceStart.rafId = null;
+    }
+    coalesceStart.pending = '';
 
-    if (!settings.ttsAutoPlay || !settings.ttsEnabled) return;
+    const bypassAutoplayGate = streamOpts?.bypassAutoplayGate === true;
+    if ((!settings.ttsAutoPlay && !bypassAutoplayGate) || !settings.ttsEnabled) return;
+
+    unlockAudioContext();
 
     console.log(`▶️ [startStreamingTTS] Starting stream for ${messageId} (Resetting interrupt flag)`);
     isFirstTextChunk.current = true;
     isTtsInterruptedRef.current = false;
+    isStreamingTtsPausedRef.current = false;
+    setIsStreamingTtsPaused(false);
     streamingTtsMessageIdRef.current = messageId;
-    setIsAutoplaying(true);
+    if (!isIntelPlayback) {
+      setIsAutoplaying(true);
+    }
 
     // Safety: If socket is closed/closing, prompt a reconnect so pending settings send
-    // Safety: If socket is closed/closing (or null), prompt a reconnect so pending settings send
     if (!ttsClient.socket || ttsClient.socket.readyState > 1) {
       console.warn("⚠️ [TTS] Socket closed/closing/null, triggering reconnect...");
       ttsClient.connect();
+    }
+
+    // Listen for WebSocket close during active stream to abort the drain loop early
+    const sock = ttsClient.socket;
+    if (sock) {
+      const handleWsClose = () => {
+        console.warn("🛑 [TTS] WebSocket closed mid-stream — aborting drain");
+        ttsWsClosedRef.current = true;
+        isTtsInterruptedRef.current = true;
+        streamingTtsMessageIdRef.current = null;
+      };
+      sock.addEventListener('close', handleWsClose, { once: true });
     }
 
     // Local flag to track if this is the first audio chunk for this specific message
@@ -884,8 +1740,15 @@ const AppProvider = ({ children }) => {
     const streamingTtsSettings = {
       engine: ttsEngine,
       voice: ttsVoice,
-      exaggeration: settings.ttsExaggeration || 0.5,
-      cfg: settings.ttsCfg || 0.5,
+      exaggeration: optionsOverrides?.ttsExaggeration ?? settings.ttsExaggeration ?? 0.5,
+      cfg: optionsOverrides?.ttsCfg ?? settings.ttsCfg ?? 0.5,
+      stream_chunk_sentences: Math.max(
+        1,
+        Math.min(
+          12,
+          Number.parseInt(optionsOverrides?.ttsStreamChunkSentences ?? settings.ttsStreamChunkSentences ?? 2, 10) || 2
+        )
+      ),
       audio_prompt_path: ((ttsEngine === 'chatterbox') || (ttsEngine === 'chatterbox_turbo')) && ttsVoice !== 'default'
         ? ttsVoice
         : null
@@ -893,146 +1756,288 @@ const AppProvider = ({ children }) => {
 
     ttsClient.send(streamingTtsSettings);
 
-    ttsClient.onAudioQueueUpdate = async () => {
-      // 1. Check if we've been interrupted
+    ttsClient.onAudioQueueUpdate = () => {
       if (isTtsInterruptedRef.current) {
         console.log("🛡️ [TTS] Ignoring audio update due to interrupt flag. Dumping " + ttsClient.audioQueue.length + " items.");
         ttsClient.audioQueue.length = 0;
         return;
       }
 
-      // 2. Check if we are still the active message (Fix for zombie loops)
-      // Allow if ref is null (generation finished) but block if it's a NEW message ID
       if (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId) {
         console.log(`🛡️ [TTS] Ignoring update for stale message ID ${messageId} (Current: ${streamingTtsMessageIdRef.current})`);
         return;
       }
 
-      setAudioQueue([...ttsClient.audioQueue]);
+      // Do NOT call setAudioQueue here: each WAV chunk updated React state and re-rendered the whole app.
+      // With multi‑MB chat histories that blocked the main thread for seconds between sentences.
 
-      if (ttsClient.audioQueue.length > 0 && !window.streamingAudioPlaying) {
-        console.log("🎵 [TTS] Starting playback loop. Queue length:", ttsClient.audioQueue.length);
+      if (ttsClient.audioQueue.length === 0) return;
+
+      // One async drain for the whole stream: first blob kicks this off; later blobs only grow the queue.
+      if (streamingTtsDrainingRef.current) return;
+
+      streamingTtsDrainingRef.current = true;
+      if (isIntelPlayback) {
+        window.intelStreamingAudioPlaying = true;
+      } else {
         window.streamingAudioPlaying = true;
         setIsPlayingAudio(messageId);
+      }
 
-        // --- 🟢 RESTORED TIMING LOGS HERE ---
-        if (!firstAudioPlayed) {
-          const now = performance.now();
-          firstAudioPlayed = true;
-
-          // Log 1: Time from First Text Chunk -> Audio Start
-          if (textGenerationStartTime.current) {
-            const processingLatency = now - textGenerationStartTime.current;
-            console.log(`⏱️ [TTS Timing] 🟡 Latency (Text Chunk -> Audio): ${processingLatency.toFixed(2)}ms`);
-          }
-
-          // Log 2: Time from User Prompt -> Audio Start
-          if (promptSubmissionStartTime.current) {
-            const totalLatency = now - promptSubmissionStartTime.current;
-            console.log(`⏱️ [TTS Timing] 🟢 Time to First Audio (from Prompt): ${totalLatency.toFixed(2)}ms`);
-          }
-        }
-        // ------------------------------------
-
+      void (async () => {
         try {
-          while (ttsClient.audioQueue.length > 0) {
-            // Check flags again inside loop
+          const streamPlaybackRate = Math.max(
+            0.25,
+            Math.min(4, Number(optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0) || 1.0)
+          );
+          // Synthesis (Chatterbox Turbo, Kokoro, etc.) outputs normal-rate audio. Chipmunk only
+          // happened here: Web Audio BufferSource ties pitch to playbackRate. HTMLAudioElement
+          // supports preservesPitch (same as tap-to-play). At 1× keep gapless BufferSource.
+          const useGaplessBuffer = Math.abs(streamPlaybackRate - 1) < 0.0001;
+
+          const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+          let ctx = null;
+          let nextStartTime = 0;
+          let savedDecodePromise = null;
+          if (useGaplessBuffer) {
+            ctx = audioPlaybackRef.current.context;
+            if (!ctx) {
+              ctx = new AudioContextCtor();
+              audioPlaybackRef.current.context = ctx;
+            }
+            if (ctx.state === 'suspended') {
+              await ctx.resume();
+            }
+            nextStartTime = ctx.currentTime;
+          }
+
+          const streamStillValid = () =>
+            !isTtsInterruptedRef.current
+            && (!streamingTtsMessageIdRef.current || streamingTtsMessageIdRef.current === messageId);
+          const waitForIncomingAudio = async (maxWaitMs = 260, stepMs = 20) => {
+            // Also check if WebSocket closed mid-stream so we don't stall indefinitely.
+            if (ttsWsClosedRef.current) return false;
+            // Keep the drain loop alive so the next WAV can arrive while synthesis catches up.
+            // Sub‑second timeouts caused apparent multi‑second gaps: we'd tear down the drain, then
+            // restart when the chunk appeared — silence while synth + reconnect jitter stacked up.
+            const deadline = performance.now() + maxWaitMs;
+            while (performance.now() < deadline) {
+              if (!streamStillValid()) return false;
+              if (ttsClient.audioQueue.length > 0) return true;
+              await new Promise((resolve) => setTimeout(resolve, stepMs));
+            }
+            return ttsClient.audioQueue.length > 0;
+          };
+          const waitWhilePaused = async () => {
+            while (isStreamingTtsPausedRef.current && streamStillValid()) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+          };
+
+          const applySubtitleCue = (sub, wallDurationMs) => {
+            if (!sub) return;
+            window.__ttsSubtitleCue = {
+              text: sub.text,
+              durationMs: wallDurationMs,
+              timestamp: Date.now()
+            };
+          };
+
+          // Outer loop: after each "burst", more chunks may have arrived over the WebSocket.
+          // Inner loop: either gapless BufferSource (1×) or sequential HTMLAudio (preservesPitch).
+          while (true) {
+            await waitWhilePaused();
             if (isTtsInterruptedRef.current) {
               console.log("🛑 [TTS] Loop broken by interrupt flag (Pre-Shift).");
               ttsClient.audioQueue.length = 0;
               break;
             }
-            // Allow if null, break if DIFFERENT
             if (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId) {
               console.log("🛑 [TTS] Loop broken by stale message ID (Pre-Shift).");
               break;
             }
-
-            const chunk = ttsClient.audioQueue.shift();
-            // Double check queue empty/undefined
-            if (!chunk) break;
-
-            // Extract audio and subtitle (support both old format and new paired format)
-            const arrayBuffer = chunk.audio || chunk;
-            const subtitle = chunk.subtitle;
-
-            const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
-            const audioUrl = URL.createObjectURL(blob);
-            const audio = new Audio(audioUrl);
-            audioPlayerRef.current = audio;
-            activeAudioPlayersRef.current.add(audio); // Register for mass cleanup
-
-            audio.playbackRate = settings.ttsSpeed || 1.0;
-
-            // ✅ Display subtitle RIGHT when audio plays (not when synthesized)
-            if (subtitle) {
-              window.__ttsSubtitleCue = {
-                text: subtitle.text,
-                durationMs: subtitle.durationMs,
-                timestamp: Date.now()
-              };
+            if (ttsClient.audioQueue.length === 0) {
+              // Insight readout sends all text upfront — release UI quickly after playback.
+              const tailMs = isIntelPlayback
+                ? 350
+                : (isMobileRef.current ? 6500 : 5500);
+              const midStreamMs = isIntelPlayback
+                ? 900
+                : (isMobileRef.current ? 26000 : 22000);
+              const adaptiveGapGuardMs = streamingTtsWsEndSentRef.current ? tailMs : midStreamMs;
+              const gotLateChunk = await waitForIncomingAudio(adaptiveGapGuardMs, 20);
+              if (!gotLateChunk) break;
             }
 
-            console.log(`🎵 [TTS] Playing chunk. Queue remaining: ${ttsClient.audioQueue.length}`);
+            let burstDoneResolve = () => {};
+            const burstDone = new Promise((r) => { burstDoneResolve = r; });
+            const pending = { n: 0 };
 
-            await new Promise((resolve, reject) => {
-              const handleEnd = () => {
-                cleanup();
-                resolve();
-              };
-              const handleError = (e) => {
-                console.error("🎵 [TTS] Audio error", e);
-                cleanup();
-                reject(e);
-              };
-              const handleStop = (e) => {
-                // Common behavior: browsers might fire 'pause' or 'emptied' efficiently.
-                // We log it for debugging but differentiate manual stops vs events.
-                if (isTtsInterruptedRef.current) {
-                  console.log(`⏹️ [TTS] Audio stopped via interrupt (${e.type})`);
-                } else {
-                  // console.log(`ℹ️ [TTS] Audio event '${e.type}' triggered move to next chunk.`);
-                }
-                cleanup();
-                resolve(); // Resolve so we can loop and see interrupt flag
-              };
-
-              const cleanup = () => {
-                // Remove from registry
-                activeAudioPlayersRef.current.delete(audio);
-                URL.revokeObjectURL(audioUrl);
-                if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
-
-                audio.removeEventListener('ended', handleEnd);
-                audio.removeEventListener('error', handleError);
-                audio.removeEventListener('pause', handleStop);
-                audio.removeEventListener('abort', handleStop);
-                audio.removeEventListener('emptied', handleStop);
-              };
-
-              audio.addEventListener('ended', handleEnd);
-              audio.addEventListener('error', handleError);
-              // Crucial: resolving on these events breaks the deadlock when stopTTS is called
-              audio.addEventListener('pause', handleStop);
-              audio.addEventListener('abort', handleStop);
-              audio.addEventListener('emptied', handleStop);
-
-              // Only play if not interrupted and still active (or finished generating)
-              const isStale = streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId;
-
-              if (activeAudioPlayersRef.current.has(audio) && !isTtsInterruptedRef.current && !isStale) {
-                audio.play().catch(e => {
-                  if (e.name !== 'AbortError') console.error("🎵 [TTS] Play failed:", e);
-                  handleError(e);
-                });
-              } else {
-                console.log("🛑 [TTS] Play skipped due to interrupt flag or stale ID.");
-                resolve(); // Skip playback
+            while (ttsClient.audioQueue.length > 0 && !isTtsInterruptedRef.current) {
+              await waitWhilePaused();
+              if (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId) {
+                break;
               }
-            });
 
-            // Post-playback interrupt check
-            // Allow if null, break if DIFFERENT
+              const chunk = ttsClient.audioQueue.shift();
+              if (!chunk) break;
+
+              const arrayBuffer = chunk.audio || chunk;
+              const subtitle = chunk.subtitle;
+
+              if (!useGaplessBuffer) {
+                const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
+                const audioUrl = URL.createObjectURL(blob);
+                const audio = new Audio(audioUrl);
+                try {
+                  audio.preservesPitch = true;
+                } catch (e) { /* noop */ }
+                try {
+                  if ('webkitPreservesPitch' in audio) audio.webkitPreservesPitch = true;
+                } catch (e) { /* noop */ }
+                audio.playbackRate = streamPlaybackRate;
+
+                const sub = subtitle;
+                if (sub?.durationMs) {
+                  applySubtitleCue(
+                    sub,
+                    Math.max(200, Math.round(sub.durationMs / streamPlaybackRate))
+                  );
+                } else if (sub) {
+                  const onceMeta = () => {
+                    const sec = audio.duration;
+                    const baseMs = sec && Number.isFinite(sec) ? Math.round(sec * 1000) : 1500;
+                    applySubtitleCue(sub, Math.max(200, Math.round(baseMs / streamPlaybackRate)));
+                  };
+                  if (audio.readyState >= 1) onceMeta();
+                  else audio.addEventListener('loadedmetadata', onceMeta, { once: true });
+                }
+
+                if (!firstAudioPlayed) {
+                  firstAudioPlayed = true;
+                  const now = performance.now();
+                  if (textGenerationStartTime.current) {
+                    console.log(`⏱️ [TTS Timing] 🟡 Latency (Text Chunk -> Audio): ${(now - textGenerationStartTime.current).toFixed(2)}ms`);
+                  }
+                  if (promptSubmissionStartTime.current) {
+                    console.log(`⏱️ [TTS Timing] 🟢 Time to First Audio (from Prompt): ${(now - promptSubmissionStartTime.current).toFixed(2)}ms`);
+                  }
+                }
+
+                activeAudioPlayersRef.current.add(audio);
+                audioPlayerRef.current = audio;
+
+                const cleanupHtml = () => {
+                  try { URL.revokeObjectURL(audioUrl); } catch (e) { /* noop */ }
+                  activeAudioPlayersRef.current.delete(audio);
+                  if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
+                };
+
+                let poll = null;
+                await new Promise((resolve) => {
+                  let finished = false;
+                  const finish = () => {
+                    if (finished) return;
+                    finished = true;
+                    if (poll) clearInterval(poll);
+                    cleanupHtml();
+                    resolve();
+                  };
+                  audio.addEventListener('ended', finish, { once: true });
+                  audio.addEventListener('error', finish, { once: true });
+                  poll = setInterval(() => {
+                    if (!streamStillValid()) {
+                      try { audio.pause(); } catch (e) { /* noop */ }
+                      finish();
+                    }
+                  }, 50);
+                  audio.play().catch((e) => {
+                    console.error("🎵 [TTS] HTML audio play failed:", e);
+                    finish();
+                  });
+                });
+                continue;
+              }
+
+              const rawAb = arrayBuffer.slice(0);
+
+              let audioBuffer;
+              try {
+                if (savedDecodePromise) {
+                  audioBuffer = await savedDecodePromise;
+                  savedDecodePromise = null;
+                } else {
+                  audioBuffer = await ctx.decodeAudioData(rawAb);
+                }
+              } catch (decodeErr) {
+                console.error("🎵 [TTS] decodeAudioData failed:", decodeErr);
+                continue;
+              }
+
+              if (ttsClient.audioQueue.length > 0) {
+                const nextChunk = ttsClient.audioQueue[0];
+                const nextAb = (nextChunk.audio || nextChunk).slice(0);
+                savedDecodePromise = ctx.decodeAudioData(nextAb);
+              }
+
+              const source = ctx.createBufferSource();
+              source.buffer = audioBuffer;
+              source.playbackRate.value = 1.0;
+              source.connect(ctx.destination);
+
+              const startAt = Math.max(nextStartTime, ctx.currentTime);
+              nextStartTime = startAt + audioBuffer.duration;
+
+              if (subtitle) {
+                const delayMs = Math.max(0, (startAt - ctx.currentTime) * 1000);
+                const sub = subtitle;
+                const baseDurMs = sub.durationMs ?? Math.round(audioBuffer.duration * 1000);
+                const wallDurationMs = Math.max(200, Math.round(baseDurMs));
+                if (delayMs < 8) {
+                  applySubtitleCue(sub, wallDurationMs);
+                } else {
+                  setTimeout(() => applySubtitleCue(sub, wallDurationMs), delayMs);
+                }
+              }
+
+              if (!firstAudioPlayed) {
+                firstAudioPlayed = true;
+                const now = performance.now();
+                if (textGenerationStartTime.current) {
+                  console.log(`⏱️ [TTS Timing] 🟡 Latency (Text Chunk -> Audio): ${(now - textGenerationStartTime.current).toFixed(2)}ms`);
+                }
+                if (promptSubmissionStartTime.current) {
+                  console.log(`⏱️ [TTS Timing] 🟢 Time to First Audio (from Prompt): ${(now - promptSubmissionStartTime.current).toFixed(2)}ms`);
+                }
+              }
+
+              const playerHandle = { ctx, source, streamingSharedContext: true };
+              activeAudioPlayersRef.current.add(playerHandle);
+              audioPlayerRef.current = playerHandle;
+
+              pending.n += 1;
+              source.onended = () => {
+                activeAudioPlayersRef.current.delete(playerHandle);
+                if (audioPlayerRef.current === playerHandle) audioPlayerRef.current = null;
+                pending.n -= 1;
+                if (pending.n <= 0) burstDoneResolve();
+              };
+
+              try {
+                source.start(startAt);
+              } catch (e) {
+                activeAudioPlayersRef.current.delete(playerHandle);
+                if (audioPlayerRef.current === playerHandle) audioPlayerRef.current = null;
+                pending.n -= 1;
+                if (pending.n <= 0) burstDoneResolve();
+                console.error("🎵 [TTS] source.start failed:", e);
+              }
+            }
+
+            if (pending.n > 0) {
+              await burstDone;
+            }
+
             if (isTtsInterruptedRef.current || (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId)) {
               console.log("🛑 [TTS] Loop broken by interrupt flag or stale ID (Post-Play).");
               break;
@@ -1041,26 +2046,72 @@ const AppProvider = ({ children }) => {
         } catch (err) {
           console.error("🎵 [TTS Playback Error]", err);
         } finally {
-          console.log("🎵 [TTS] Playback loop finished/exited.");
-          // Only clear state if WE are still the active message (or it finished) OR interrupted
-          // If a NEW message took over (streamingTtsMessageIdRef IS set and != messageId), don't clear global state
-          const isStale = streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId;
-
-          if (!isStale || isTtsInterruptedRef.current) {
+          console.log("🎵 [TTS] Playback drain finished.");
+          streamingTtsDrainingRef.current = false;
+          
+          // Always clear the stream opts ref to prevent stale closures on next use
+          const wasIntel = isIntelPlayback || (streamingTtsStreamOptsRef.current?.intelPlayback === true);
+          if (wasIntel) {
+            window.intelStreamingAudioPlaying = false;
+          } else {
             window.streamingAudioPlaying = false;
             setIsPlayingAudio(null);
+            setIsAutoplaying(false);
+            isStreamingTtsPausedRef.current = false;
+            setIsStreamingTtsPaused(false);
+            setAudioQueue([]);
           }
-          if (isTtsInterruptedRef.current) {
-            setAudioQueue([]); // Ensure cleared
+          
+          // Clear stream opts regardless of completion reason (normal, interrupt, or stale)
+          if (!streamingTtsStreamOptsRef.current?.onComplete || wasIntel) {
+            streamingTtsStreamOptsRef.current = null;
           }
+
+          const isStale = streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId;
         }
-      }
+      })();
     };
-  }, [settings, ttsClient, setAudioQueue, setIsAutoplaying]);
+  }, [settings, ttsClient, setAudioQueue, setIsAutoplaying, unlockAudioContext]);
+
+  const pauseStreamingTTS = useCallback(() => {
+    if (isStreamingTtsPausedRef.current) return;
+    if (activeAudioPlayersRef.current.size === 0 && !streamingTtsDrainingRef.current) return;
+    isStreamingTtsPausedRef.current = true;
+    setIsStreamingTtsPaused(true);
+    activeAudioPlayersRef.current.forEach((player) => {
+      try {
+        if (player instanceof Audio) {
+          player.pause();
+        } else if (player?.ctx?.state === 'running') {
+          player.ctx.suspend().catch(() => {});
+        }
+      } catch (e) {
+        // noop
+      }
+    });
+  }, []);
+
+  const resumeStreamingTTS = useCallback(() => {
+    if (!isStreamingTtsPausedRef.current) return;
+    isStreamingTtsPausedRef.current = false;
+    setIsStreamingTtsPaused(false);
+    unlockAudioContext();
+    activeAudioPlayersRef.current.forEach((player) => {
+      try {
+        if (player instanceof Audio && player.paused) {
+          player.play().catch(() => {});
+        } else if (player?.ctx?.state === 'suspended') {
+          player.ctx.resume().catch(() => {});
+        }
+      } catch (e) {
+        // noop
+      }
+    });
+  }, [unlockAudioContext]);
 
   const stopStreamingTTS = useCallback(() => {
     console.log("🛑 [stopStreamingTTS] Called, delegating to stopTTS");
-    stopTTS();
+    stopTTS('stopStreamingTTS');
   }, [stopTTS]);
   const playNextChunk = async () => {
     if (ttsClient.audioQueue.length === 0 || isChunkPlaying) return;
@@ -1091,7 +2142,7 @@ const AppProvider = ({ children }) => {
     }
   };
 
-  const addStreamingText = useCallback((newTextChunk) => {
+  const addStreamingText = useCallback((newTextChunk, opts = null) => {
     if (isFirstTextChunk.current) {
       textGenerationStartTime.current = performance.now();
       console.log(`⏱️ [TTS Timing] Timer started on first received text chunk.`);
@@ -1101,42 +2152,129 @@ const AppProvider = ({ children }) => {
     // ONLY send to TTS if we have an active message ID (haven't been stopped)
     // FIX: Removed 'isAutoplaying' check to avoid stale state closure issues.
     // streamingTtsMessageIdRef is the reliable, synchronous source of truth.
-    if (streamingTtsMessageIdRef.current && newTextChunk) {
+    if (!streamingTtsMessageIdRef.current || !newTextChunk) return;
+
+    const sendImmediately = opts?.immediate === true;
+    if (sendImmediately) {
       ttsClient.send(newTextChunk);
+      return;
     }
+
+    const box = ttsStreamSendCoalesceRef.current;
+    box.pending += newTextChunk;
+    if (box.rafId != null) return;
+    box.rafId = requestAnimationFrame(() => {
+      box.rafId = null;
+      const out = box.pending;
+      box.pending = '';
+      if (out && streamingTtsMessageIdRef.current) {
+        ttsClient.send(out);
+      }
+    });
   }, [ttsClient]); // Removed isAutoplaying dependency
 
   const endStreamingTTS = useCallback(() => {
     // Note: Don't clear ttsSubtitleCue here - let it expire naturally
-    if (streamingTtsMessageIdRef.current) {
-      console.log(`⏹️ [TTS Stream] Ending for message ${streamingTtsMessageIdRef.current}`);
+    const box = ttsStreamSendCoalesceRef.current;
+    if (box.rafId != null) {
+      cancelAnimationFrame(box.rafId);
+      box.rafId = null;
+    }
+    const tail = box.pending;
+    box.pending = '';
+    const activeId = streamingTtsMessageIdRef.current;
+    if (tail && activeId) {
+      ttsClient.send(tail);
+    }
+    if (activeId) {
+      console.log(`⏹️ [TTS Stream] Ending for message ${activeId}`);
       ttsClient.closeStream();
+      streamingTtsWsEndSentRef.current = true;
       streamingTtsMessageIdRef.current = null;
     }
   }, [ttsClient]);
 
+  const ensureTtsSocketOpen = useCallback(async () => {
+    if (ttsClient.socket?.readyState === WebSocket.OPEN) return;
+    ttsClient.connect(
+      () => {},
+      () => {},
+      () => {}
+    );
+    const sock = ttsClient.socket;
+    if (!sock) throw new Error('TTS WebSocket unavailable');
+    if (sock.readyState === WebSocket.OPEN) return;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('TTS connection timed out')), 20000);
+      sock.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true }
+      );
+      sock.addEventListener(
+        'error',
+        () => {
+          clearTimeout(timer);
+          reject(new Error('TTS WebSocket error'));
+        },
+        { once: true }
+      );
+    });
+  }, [ttsClient]);
 
-  // …later, inside your component:
+  /** WebSocket streaming autoplay — sentence chunks synthesize in parallel with playback. */
+  const playStreamingTtsScript = useCallback(
+    async (messageId, text, optionsOverrides = null, streamOpts = null) => {
+      const t = (text || '').trim();
+      if (!t || !settings.ttsEnabled) return;
+      const intelPlayback =
+        streamOpts?.intelPlayback === true || isIntelMessageId(messageId);
+      setAudioError(null);
+      try {
+        await ensureTtsSocketOpen();
+      } catch (e) {
+        setAudioError(e?.message || 'Could not connect to the TTS server. Is it running?');
+        return;
+      }
+      stopTTS('playStreamingTtsScript');
+      unlockAudioContext();
+      startStreamingTTS(messageId, optionsOverrides, {
+        bypassAutoplayGate: true,
+        intelPlayback,
+        ...streamOpts,
+      });
+      const chunks = t.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((c) => c.trim()).filter(Boolean) || [t];
+      chunks.forEach((chunk) => addStreamingText(chunk, { immediate: true }));
+      endStreamingTTS();
+    },
+    [
+      settings.ttsEnabled,
+      ensureTtsSocketOpen,
+      stopTTS,
+      unlockAudioContext,
+      startStreamingTTS,
+      addStreamingText,
+      endStreamingTTS,
+      setAudioError,
+    ]
+  );
+
+  /** Same WebSocket streaming path as chat autoplay (chunked synthesis + gapless drain). */
+  const playTestStreamingTTS = useCallback(
+    (text, optionsOverrides = null) => playStreamingTtsScript('test-tts', text, optionsOverrides),
+    [playStreamingTtsScript]
+  );
+
   const checkSdStatus = useCallback(async () => {
 
-    const imageEngine = settings.imageEngine || 'auto1111';
+    const imageEngine = settings.imageEngine || 'EloDiffusion';
 
-    let automatic1111Status = false;
     let localSdStatus = false;
     let comfyuiStatus = false;
     let comfyuiData = null;
-
-    // Check AUTOMATIC1111 if needed
-    if (imageEngine === 'auto1111' || imageEngine === 'both') {
-      try {
-        const res = await fetch(`${MEMORY_API_URL}/sd/status`, { method: "GET" });
-        if (res.ok) {
-          const data = await res.json();
-          automatic1111Status = Boolean(data.automatic1111);
-        }
-      } catch (err) {
-      }
-    }
 
     // Check local SD if needed  
     if (imageEngine === 'EloDiffusion' || imageEngine === 'both') {
@@ -1164,7 +2302,6 @@ const AppProvider = ({ children }) => {
     }
 
     setSdStatus({
-      automatic1111: automatic1111Status,
       localSd: localSdStatus,
       comfyui: comfyuiStatus,
       comfyuiData: comfyuiData,
@@ -1185,14 +2322,14 @@ const AppProvider = ({ children }) => {
     }
   }, [PRIMARY_API_URL]);
 
-  // 2. Generate image via POST - supports Local SD, A1111, and ComfyUI
+  // 2. Generate image via POST - supports Local SD and ComfyUI
   // optional 4th arg: { signal } for AbortController (cancel in-flight request)
   const generateImage = useCallback(async (prompt, opts, gpuId = 0, options = {}) => {
     console.log(`Starting image generation for GPU ${gpuId} with prompt:`, prompt);
     console.log("Image generation options:", opts);
 
     // Use settings from the context
-    const imageEngine = settings.imageEngine || 'auto1111';
+    const imageEngine = settings.imageEngine || 'EloDiffusion';
 
     // Determine endpoint based on engine
     let endpoint;
@@ -1232,17 +2369,8 @@ const AppProvider = ({ children }) => {
         };
         return comfySamplerMapping[samplerNameFromFrontend] || samplerNameFromFrontend.toLowerCase();
       }
-      // A1111 mapping
-      const automatic1111SamplerMapping = {
-        'euler_a': 'Euler a',
-        'euler': 'Euler',
-        'dpmpp2m': 'DPM++ 2M Karras',
-        'dpmpp2s_a': 'DPM++ 2S a Karras',
-        'heun': 'Heun',
-        'dpm2': 'DPM2',
-        'ddim_trailing': 'DDIM',
-      };
-      return automatic1111SamplerMapping[samplerNameFromFrontend] || samplerNameFromFrontend;
+      // Default mapping (EloDiffusion uses frontend names directly)
+      return samplerNameFromFrontend;
     };
 
     setIsImageGenerating(true);
@@ -1297,10 +2425,11 @@ const AppProvider = ({ children }) => {
           response_format: "url"
         };
       } else {
-        // A1111 payload
+        // Default: EloDiffusion payload
         payload = {
           prompt,
           gpu_id: gpuId,
+          task_id: opts.task_id,
           negative_prompt: opts.negative_prompt || "",
           width: opts.width || 512,
           height: opts.height || 512,
@@ -1308,9 +2437,6 @@ const AppProvider = ({ children }) => {
           guidance_scale: opts.guidance_scale || 7.0,
           sampler: mapSamplerForBackend(opts.sampler || "euler_a"),
           seed: opts.seed || -1,
-          model: opts.model,
-          cfg_scale: opts.guidance_scale || 7.0,
-          sampler_name: mapSamplerForBackend(opts.sampler || "Euler a")
         };
       }
 
@@ -1434,124 +2560,77 @@ const AppProvider = ({ children }) => {
   // --- STT Implementation ---
   const startRecording = useCallback(async () => {
     console.log("🎤 Attempting to start recording...");
-    setAudioError(null); // Clear previous errors
+    setAudioError(null);
     if (isRecording || isTranscribing) {
       console.warn("🎤 Recording or transcription already in progress.");
       return;
     }
 
     try {
-      // Check for browser support
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("Browser API not supported. If on mobile LAN, you may need HTTPS or specific flags.");
       }
 
-      // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-      // Determine supported MIME type
-      let mimeType = 'audio/webm'; // Default
-      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-        mimeType = 'audio/webm;codecs=opus';
-      } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
-        mimeType = 'audio/ogg;codecs=opus';
-      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-        mimeType = 'audio/mp4'; // Fallback if Opus not supported
-      }
-      console.log(`🎤 Using MIME type: ${mimeType}`);
-
-      // Create MediaRecorder instance
-      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType });
-      audioChunksRef.current = []; // Reset chunks
-
-      // Event listener for data available
-      mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      // Start recording
-      mediaRecorderRef.current.start();
-      setIsRecording(true); // Update state
-      console.log("🎤 Recording started.");
-
+      wavMicRecorderRef.current?.cancel();
+      wavMicRecorderRef.current = createWavMicRecorder();
+      await wavMicRecorderRef.current.start();
+      setIsRecording(true);
+      console.log("🎤 Recording started (16 kHz WAV).");
     } catch (err) {
       console.error("🎤 Error accessing microphone:", err);
 
       let errorMessage = `Microphone error: ${err.message}`;
 
-      // Detailed guidance for mobile LAN users
       if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
         errorMessage = `⚠️ Microphone blocked due to insecure connection (HTTP).\n\nTo fix on Mobile/LAN:\n1. Open chrome://flags (or edge://flags)\n2. Search "Insecure origins treated as secure"\n3. Enable it and add: ${window.location.origin}\n4. Restart browser.`;
         alert(errorMessage);
       }
 
       setAudioError(errorMessage);
-      setIsRecording(false); // Ensure state is reset
+      setIsRecording(false);
     }
-  }, [isRecording, isTranscribing]); // Dependencies
+  }, [isRecording, isTranscribing]);
 
-  // Accepts an onTranscriptReceived callback function
   const stopRecording = useCallback(async (onTranscriptReceived) => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      console.log("🎤 Stopping recording via stopRecording()...");
-
-      // Define the onstop handler *inside* stopRecording to capture onTranscriptReceived
-      mediaRecorderRef.current.onstop = async () => {
-        console.log("🎤 Recording stopped. Processing audio...");
-        setIsRecording(false); // Update state immediately
-        setIsTranscribing(true); // Set transcribing state
-
-        // Combine chunks into a single Blob
-        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType }); // Use the recorder's mimeType
-        console.log(`🎤 Final audio blob size: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
-
-        // Stop microphone tracks
-        if (mediaRecorderRef.current?.stream) {
-          mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-        }
-
-        if (audioBlob.size === 0) {
-          console.warn("🎤 Audio blob is empty, skipping transcription.");
-          setIsTranscribing(false);
-          setAudioError("Recording resulted in empty audio.");
-          return;
-        }
-
-        try {
-          // Log the engine we're using for debugging
-          console.log(`🎤 Using STT engine: ${settings.sttEngine}`);
-
-          // Call backend API to transcribe - use settings.sttEngine directly without fallback
-          const transcript = await transcribeAudio(audioBlob, settings.sttEngine);
-          console.log("🎤 Transcription successful:", transcript);
-
-          // Call the callback with the transcript
-          if (typeof onTranscriptReceived === 'function') {
-            onTranscriptReceived(transcript); // Update the input field in Chat.jsx
-          } else {
-            console.warn("🎤 onTranscriptReceived callback is not a function.");
-            alert(`Transcript (callback missing): ${transcript}`); // Fallback alert
-          }
-
-        } catch (transcriptionError) {
-          console.error("🎤 Transcription failed:", transcriptionError);
-          setAudioError(`Transcription failed: ${transcriptionError.message}`);
-        } finally {
-          setIsTranscribing(false); // Reset transcribing state
-        }
-      };
-
-      // Trigger the onstop handler
-      mediaRecorderRef.current.stop();
-
-    } else {
+    if (!wavMicRecorderRef.current || !isRecording) {
       console.warn("🎤 Stop recording called but not currently recording.");
       setIsRecording(false);
       setIsTranscribing(false);
+      return;
     }
-  }, [settings, setIsRecording, setIsTranscribing, setAudioError]); // Add dependencies including settings
+
+    console.log("🎤 Stopping recording via stopRecording()...");
+    setIsRecording(false);
+    setIsTranscribing(true);
+
+    try {
+      const audioBlob = await wavMicRecorderRef.current.stop();
+      wavMicRecorderRef.current = null;
+      console.log(`🎤 Final audio blob size: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
+
+      if (audioBlob.size === 0) {
+        console.warn("🎤 Audio blob is empty, skipping transcription.");
+        setAudioError("Recording resulted in empty audio.");
+        return;
+      }
+
+      console.log(`🎤 Using STT engine: ${settings.sttEngine}`);
+      const transcript = await transcribeAudio(audioBlob, settings.sttEngine);
+      console.log("🎤 Transcription successful:", transcript);
+
+      if (typeof onTranscriptReceived === 'function') {
+        onTranscriptReceived(transcript);
+      } else {
+        console.warn("🎤 onTranscriptReceived callback is not a function.");
+        alert(`Transcript (callback missing): ${transcript}`);
+      }
+    } catch (transcriptionError) {
+      console.error("🎤 Transcription failed:", transcriptionError);
+      setAudioError(`Transcription failed: ${transcriptionError.message}`);
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [settings, isRecording, setIsRecording, setIsTranscribing, setAudioError]);
 
   const startCallMode = useCallback(async () => {
     console.log("🎯 Starting Call Mode...");
@@ -1568,7 +2647,7 @@ const AppProvider = ({ children }) => {
     }
 
     // Stop any active TTS
-    stopTTS();
+    stopTTS('stopCallMode');
   }, [isRecording, stopRecording, stopTTS]);
 
 
@@ -1594,13 +2673,13 @@ const AppProvider = ({ children }) => {
     // If there's already audio playing, stop it first
     if (isPlayingAudio) {
       console.warn(`🗣️ [TTS] Cannot play message ${messageId}: Audio for message ${isPlayingAudio} is already playing.`);
-      stopTTS();
+      stopTTS('playTTS_replace_active');
     }
 
     // Stop lingering audio
     if (audioPlayerRef.current) {
       console.warn("🗣️ [TTS] Found lingering audioPlayerRef, stopping before new playback.");
-      stopTTS();
+      stopTTS('playTTS_lingering_player');
     }
 
     setIsPlayingAudio(messageId);
@@ -1622,27 +2701,88 @@ const AppProvider = ({ children }) => {
       // Resolve options: priority to overrides, then current state settings
       const currentTtsEngine = optionsOverrides?.ttsEngine || settings.ttsEngine || 'kokoro';
       const currentTtsVoice = optionsOverrides?.ttsVoice || settings.ttsVoice || 'af_heart';
-      const currentTtsSpeed = optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0;
-      const currentTtsPitch = optionsOverrides?.ttsPitch ?? settings.ttsPitch ?? 0;
+      const currentTtsSpeed = Number(optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0) || 1.0;
+      const isChatterboxFamily =
+        currentTtsEngine === 'chatterbox' || currentTtsEngine === 'chatterbox_turbo';
+      // Pitch UI is Kokoro-only; a leftover ttsPitch must not force Web Audio + detune for Chatterbox test/playback.
+      const rawPitch = optionsOverrides?.ttsPitch ?? settings.ttsPitch ?? 0;
+      const currentTtsPitch = isChatterboxFamily ? 0 : Number(rawPitch) || 0;
 
       // Build options object for TTS engines
       const ttsOptions = {
         voice: currentTtsVoice,
-        engine: currentTtsEngine
+        engine: currentTtsEngine,
+        save_full_response_audio: settings.ttsSaveFullResponseAudio === true,
+        message_id: messageId,
+        conversation_id: activeConversation,
       };
+      const chunkSec = Number(settings.ttsSaveFullResponseChunkSeconds) || 0;
+      if (settings.ttsSaveFullResponseAudio === true && chunkSec > 0) {
+        ttsOptions.save_full_response_max_chunk_seconds = chunkSec;
+      }
 
-      // Add Chatterbox-specific parameters if using Chatterbox
-      if (currentTtsEngine === 'chatterbox' || currentTtsEngine === 'chatterbox_turbo') {
+      if (isChatterboxFamily) {
         ttsOptions.exaggeration = optionsOverrides?.ttsExaggeration ?? settings.ttsExaggeration ?? 0.5;
         ttsOptions.cfg = optionsOverrides?.ttsCfg ?? settings.ttsCfg ?? 0.5;
-
+        if (currentTtsVoice && currentTtsVoice !== 'default') {
+          ttsOptions.audio_prompt_path = currentTtsVoice;
+        }
         console.log(`🔊 [TTS] Chatterbox params - exaggeration: ${ttsOptions.exaggeration}, cfg: ${ttsOptions.cfg}`);
       }
 
       console.log(`🔊 [TTS] Using engine: ${ttsOptions.engine} with options:`, ttsOptions);
 
+      if (settings.ttsSaveFullResponseAudio) {
+        setTtsFullResponseSaveStatus({
+          state: 'saving',
+          message:
+            chunkSec > 0
+              ? `Saving TTS in ~${Math.floor(chunkSec / 60)}m${chunkSec % 60}s segments on backend...`
+              : 'Saving full-response audio on backend...',
+          path: null,
+          filename: null,
+          chunkCount: null,
+          updatedAt: Date.now(),
+        });
+      }
+
       // Pass options object to synthesizeSpeech
       audioUrl = await synthesizeSpeech(text, ttsOptions);
+      if (settings.ttsSaveFullResponseAudio) {
+        const meta = getLastTtsSynthesisMeta();
+        if (meta?.saveStatus === 'saved') {
+          const n = meta.saveChunkCount || 1;
+          setTtsFullResponseSaveStatus({
+            state: 'saved',
+            message:
+              n > 1
+                ? `Saved ${n} segment file(s) (each up to ~${chunkSec}s).`
+                : 'Saved full-response audio.',
+            path: meta.savePath,
+            filename: meta.saveFilename || null,
+            chunkCount: n,
+            updatedAt: Date.now(),
+          });
+        } else if (meta?.saveStatus === 'failed') {
+          setTtsFullResponseSaveStatus({
+            state: 'failed',
+            message: meta.saveError || 'Backend save failed.',
+            path: null,
+            filename: null,
+            chunkCount: null,
+            updatedAt: Date.now(),
+          });
+        } else {
+          setTtsFullResponseSaveStatus({
+            state: 'unknown',
+            message: 'Save status unavailable.',
+            path: null,
+            filename: null,
+            chunkCount: null,
+            updatedAt: Date.now(),
+          });
+        }
+      }
 
       // CHECK AGAIN after await - stop may have been pressed during synthesis
       if (isTtsInterruptedRef.current) {
@@ -1656,37 +2796,38 @@ const AppProvider = ({ children }) => {
       if (!audioUrl) throw new Error("SynthesizeSpeech returned an invalid URL.");
       console.log(`🗣️ [TTS] Received audio URL for message ${messageId}: ${audioUrl.substring(0, 50)}...`);
 
-      // 2. Playback branch: HTML5 Audio if no pitch shift, otherwise Web Audio API
+      // 2. Zero semitone offset: HTML audio + preservesPitch so speech speed does not chipmunk the voice.
       if (currentTtsPitch === 0) {
-        // --- HTML5 Audio path (only speed) ---
         const audio = new Audio(audioUrl);
-        audio.playbackRate = currentTtsSpeed;
+        try {
+          audio.preservesPitch = true;
+        } catch (e) { /* noop */ }
+        try {
+          if ('webkitPreservesPitch' in audio) audio.webkitPreservesPitch = true;
+        } catch (e) { /* noop */ }
+        audio.playbackRate = Math.max(0.25, Math.min(4, Number(currentTtsSpeed) || 1.0));
         audioPlayerRef.current = audio;
-        activeAudioPlayersRef.current.add(audio); // Register for mass cleanup
+        activeAudioPlayersRef.current.add(audio);
 
         const handleEnd = () => {
           console.log(`🗣️ [TTS] Playback ended for message ${messageId}`);
-          activeAudioPlayersRef.current.delete(audio); // Cleanup registry
-
+          activeAudioPlayersRef.current.delete(audio);
           setIsPlayingAudio(null);
           URL.revokeObjectURL(audioUrl);
           audioPlayerRef.current = null;
           audio.removeEventListener('ended', handleEnd);
           audio.removeEventListener('error', handleError);
-          // Store this message ID as the last one played
           lastPlayedMessageRef.current = messageId;
         };
-        const handleError = (e) => {
-          console.error(`🗣️ [TTS] Audio error for message ${messageId}:`, e);
-          activeAudioPlayersRef.current.delete(audio); // Cleanup registry
-
+        const handleError = () => {
+          activeAudioPlayersRef.current.delete(audio);
           setAudioError("Failed to play synthesized audio.");
           setIsPlayingAudio(null);
           URL.revokeObjectURL(audioUrl);
           audioPlayerRef.current = null;
           audio.removeEventListener('ended', handleEnd);
           audio.removeEventListener('error', handleError);
-          lastPlayedMessageRef.current = null; // Reset on error
+          lastPlayedMessageRef.current = null;
         };
 
         audio.addEventListener('ended', handleEnd);
@@ -1703,18 +2844,18 @@ const AppProvider = ({ children }) => {
 
         const source = ctx.createBufferSource();
         source.buffer = buf;
-        source.playbackRate.value = currentTtsSpeed;
+        source.playbackRate.value = Math.max(0.25, Math.min(4, Number(currentTtsSpeed) || 1.0));
         source.detune.value = currentTtsPitch * 100; // Semitones -> cents
 
         source.connect(ctx.destination);
 
-        // Store for cleanup
-        audioPlayerRef.current = { ctx, source, audioUrl };
-        activeAudioPlayersRef.current.add({ ctx, source }); // Register
+        const playerHandlePitch = { ctx, source };
+        audioPlayerRef.current = { ...playerHandlePitch, audioUrl };
+        activeAudioPlayersRef.current.add(playerHandlePitch);
 
         source.onended = () => {
           console.log(`🗣️ [TTS] Web Audio playback ended for message ${messageId}`);
-          activeAudioPlayersRef.current.delete({ ctx, source }); // Cleanup
+          activeAudioPlayersRef.current.delete(playerHandlePitch);
           setIsPlayingAudio(null);
           try { ctx.close(); } catch (e) { }
           URL.revokeObjectURL(audioUrl);
@@ -1728,6 +2869,16 @@ const AppProvider = ({ children }) => {
     } catch (error) {
       console.error("🗣️ [TTS] Error:", error);
       setAudioError(error?.message || "Unknown TTS error");
+      if (settings.ttsSaveFullResponseAudio) {
+        setTtsFullResponseSaveStatus({
+          state: 'failed',
+          message: error?.message || 'Synthesis or save failed.',
+          path: null,
+          filename: null,
+          chunkCount: null,
+          updatedAt: Date.now(),
+        });
+      }
       setIsPlayingAudio(null);
     }
 
@@ -1739,33 +2890,42 @@ const AppProvider = ({ children }) => {
   const fetchMemoriesFromAgent = useCallback(
     async (prompt) => {
       try {
-        const userId = userProfile?.id || memoryContext?.activeProfileId;
+        if (settings.directProfileInjection) return [];
+        if (primaryIsAPI) return [];
+        const userId = resolveAgenticUserId();
         if (!userId) return [];
 
-        const res = await fetch(`${MEMORY_API_URL}/memory/relevant`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt,
-            userProfile,
-            systemTime: new Date().toISOString(),
-            requestType: 'memoryRetrieval'
-          })
-        });
+        const memTimeout = primaryIsAPI ? MEMORY_FETCH_TIMEOUT_API_MS : MEMORY_FETCH_TIMEOUT_MS;
+        const res = await fetchWithTimeout(
+          `${MEMORY_API_URL}/memory/relevant`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              userProfile,
+              systemTime: new Date().toISOString(),
+              requestType: 'memoryRetrieval'
+            })
+          },
+          memTimeout
+        );
 
         if (!res.ok) throw new Error(`Status ${res.status}`);
         const data = await res.json();
         return data.memories || [];
       } catch (err) {
-        console.warn('🧠 Memory fetch error:', err);
+        const memTimeout = primaryIsAPI ? MEMORY_FETCH_TIMEOUT_API_MS : MEMORY_FETCH_TIMEOUT_MS;
+        console.warn('🧠 Memory fetch error:', formatFetchError(err, { timeoutMs: memTimeout }));
         return [];
       }
     },
-    [MEMORY_API_URL, userProfile, memoryContext]
+    [MEMORY_API_URL, userProfile, memoryContext, settings.directProfileInjection, primaryIsAPI]
   );
 
   const observeConversationWithAgent = useCallback(
     async (prompt, response) => {
+      if (settings.directProfileInjection) return;
       if (!autoMemoryEnabled) return;
 
       const userId = userProfile?.id || memoryContext?.activeProfileId;
@@ -1787,32 +2947,49 @@ const AppProvider = ({ children }) => {
         console.error('🧠 Observation failed:', err);
       }
     },
-    [autoMemoryEnabled, userProfile, memoryContext, MEMORY_API_URL]
+    [autoMemoryEnabled, userProfile, memoryContext, MEMORY_API_URL, settings.directProfileInjection]
   );
 
   const processAgenticMemoryIfEnabled = useCallback(
-    async (userId, character, userMessage, aiResponse, agenticEnabled, apiOptions = null) => {
-      const charName = character?.name || 'Character';
-      const charId = character?.id || null;
-      // One clear log every time so you can see what activates or blocks it
-      if (!agenticEnabled) {
-        console.log('🧠 Agentic memory: OFF for this chat (Brain icon not enabled).');
+    async (userId, character, userMessage, aiResponse, apiOptions = null) => {
+      // Prefer the passed-in character, but fall back to the active chat character so
+      // agentic memory keeps working even when speaker resolution returns null.
+      let effectiveCharacter = character || activeCharacterRef.current || activeCharacter;
+      const charName = effectiveCharacter?.name || 'Character';
+      const charId = effectiveCharacter?.id || null;
+      // Book automation: skip POST /memory/agentic/process to avoid doubling LLM work per segment.
+      // GET /memory/agentic injection in getGenerationSystemPrompt still runs during book flows.
+      if (bookModePackingOverridesRef.current) {
         return;
       }
-      if (!userId) {
-        console.warn('🧠 Agentic memory: ON but SKIPPED — no user id (need userProfile.id or Memory profile selected).');
+      const effectiveUserId = userId || resolveAgenticUserId();
+      if (!effectiveUserId || effectiveUserId === 'anonymous') {
+        console.warn('🧠 Agentic memory: ON but SKIPPED — no user id (select a Memory profile in Settings).');
         return;
       }
-      if (!character?.id) {
-        console.warn('🧠 Agentic memory: ON but SKIPPED — no character id (speaker was null or has no id). Character:', charName);
+      if (!charId) {
+        console.warn('🧠 Agentic memory: ON but SKIPPED — no character id even after fallback. Character:', charName);
         return;
       }
       const url = `${MEMORY_API_URL}/memory/agentic/process`;
-      console.warn('🧠 Agentic memory: FETCHING', url, '| user_id=', userId?.slice?.(0, 12), '| character_id=', charId?.slice?.(0, 12));
+      console.warn(
+        '🧠 Agentic memory: FETCHING',
+        url,
+        '| user_id=',
+        effectiveUserId?.slice?.(0, 12),
+        '| character_id=',
+        charId?.slice?.(0, 12),
+      );
       const body = {
-        user_id: userId,
-        character_id: character.id,
+        user_id: effectiveUserId,
+        character_id: charId,
         character_name: charName,
+        character_profile: {
+          description: effectiveCharacter?.description || '',
+          scenario: effectiveCharacter?.scenario || '',
+          model_instructions: effectiveCharacter?.model_instructions || '',
+          ethics_justification: effectiveCharacter?.ethics_justification || ''
+        },
         user_message: userMessage,
         ai_response: aiResponse
       };
@@ -1835,28 +3012,142 @@ const AppProvider = ({ children }) => {
         }
         const data = await res.json().catch(() => ({}));
         const added = data.added ?? 0;
+        const total = data.total;
         setLastAgenticRunStatus('ok'); // UI can show backend actually ran
         if (added > 0) {
-          console.log(`🧠 Agentic memory: saved ${added} insight(s) for ${charName}`);
+          console.log(
+            `🧠 Agentic memory: saved ${added} insight(s) for ${charName}` +
+              (total != null ? ` (total ${total} on server)` : ''),
+          );
           setLastAgenticMemoryFeedback({ added, characterName: charName });
           setTimeout(() => setLastAgenticMemoryFeedback(null), 5000);
         } else {
-          console.log(`🧠 Agentic memory: backend ran for ${charName} — no new insights`);
+          console.log(
+            `🧠 Agentic memory: backend ran for ${charName} — no new insights` +
+              (total != null ? ` (total ${total} on server)` : ''),
+          );
         }
       } catch (err) {
         console.error('🧠 Agentic memory: backend error', err);
         setLastAgenticRunStatus('error');
       }
     },
-    [MEMORY_API_URL]
+    [MEMORY_API_URL, resolveAgenticUserId]
   );
+
+  const processAlignmentDetectionIfEnabled = useCallback(
+    async (userId, character, userMessage, aiResponse, apiOptions = null) => {
+      const conv = conversationsRef.current?.find(c => c.id === activeConversationRef.current);
+      if (!conv?.alignmentDetectionEnabled) {
+        return;
+      }
+      let effectiveCharacter = character || activeCharacterRef.current || activeCharacter;
+      const charName = effectiveCharacter?.name || 'Character';
+      const charId = effectiveCharacter?.id || null;
+      const effectiveUserId = userId || resolveAgenticUserId();
+      if (!effectiveUserId || effectiveUserId === 'anonymous' || !charId) {
+        return;
+      }
+      const url = `${MEMORY_API_URL}/memory/alignment/process`;
+      const body = {
+        user_id: effectiveUserId,
+        character_id: charId,
+        character_name: charName,
+        character_profile: {
+          description: effectiveCharacter?.description || '',
+          scenario: effectiveCharacter?.scenario || '',
+          model_instructions: effectiveCharacter?.model_instructions || '',
+        },
+        user_message: userMessage,
+        ai_response: aiResponse,
+      };
+      if (apiOptions?.useApi && apiOptions?.apiBaseUrl && apiOptions?.modelName) {
+        body.use_api = true;
+        body.api_base_url = apiOptions.apiBaseUrl;
+        body.model_name = apiOptions.modelName;
+      }
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          console.warn('🔍 Alignment detection: backend failed', res.status);
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        const added = data.added ?? 0;
+        const total = data.total ?? 0;
+        const findings = data.findings ?? [];
+        const preFilter = data.pre_filter ?? {};
+        const highestSeverity = findings.reduce((max, f) => {
+          const order = { high: 3, medium: 2, low: 1 };
+          return (order[f.severity] || 0) > (order[max] || 0) ? f.severity : max;
+        }, null);
+        const frameFidelity = total > 0
+          ? Math.max(0, Math.round((1 - (findings.filter(f => f.severity === 'high').length / total)) * 100))
+          : null;
+        setAlignmentData({
+          count: total,
+          added,
+          highestSeverity,
+          findings,
+          preFilter,
+          frameFidelity,
+          characterName: charName,
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        console.warn('🔍 Alignment detection: backend error', err);
+      }
+    },
+    [MEMORY_API_URL, resolveAgenticUserId]
+  );
+
+  const retryAgenticMemoryForLastTurn = useCallback(async () => {
+    const activeId = activeConversationRef.current;
+    if (!activeId) {
+      console.warn('🧠 [Agentic] Retry requested but no active conversation.');
+      return;
+    }
+    const conv = (conversationsRef.current || []).find(c => c.id === activeId);
+    const convoMessages = conv?.messages && conv.messages.length ? conv.messages : messages;
+    if (!convoMessages || convoMessages.length === 0) {
+      console.warn('🧠 [Agentic] Retry requested but no messages in conversation.');
+      return;
+    }
+    const userId = resolveAgenticUserId();
+    const lastBot = [...convoMessages].reverse().find(m => m.role === 'bot' && typeof m.content === 'string' && m.content.trim());
+    const lastUser = [...convoMessages].reverse().find(m => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
+    if (!lastBot || !lastUser) {
+      console.warn('🧠 [Agentic] Retry skipped — could not find last user/bot pair.');
+      return;
+    }
+    const apiOpts = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
+    await processAgenticMemoryIfEnabled(
+      userId,
+      activeCharacterRef.current || activeCharacter,
+      lastUser.content,
+      lastBot.content,
+      apiOpts
+    );
+  }, [
+    messages,
+    activeCharacter,
+    primaryIsAPI,
+    primaryModel,
+    PRIMARY_API_URL,
+    processAgenticMemoryIfEnabled,
+    resolveAgenticUserId,
+  ]);
 
   // ----------------------------------
   // Model Management
   // ----------------------------------
   const fetchModels = useCallback(async () => {
     try {
-      const res = await fetch(`${PRIMARY_API_URL}/models`);
+      const res = await fetchWithTimeout(`${PRIMARY_API_URL}/models`, {}, 8000);
       if (!res.ok) throw new Error(res.status);
       const { available_models } = await res.json();
       setAvailableModels(available_models || []);
@@ -1868,12 +3159,14 @@ const AppProvider = ({ children }) => {
   const fetchLoadedModels = useCallback(async () => {
     let primaryModels = [];
     try {
-      const res = await fetch(`${PRIMARY_API_URL}/models/loaded`);
+      const res = await fetchWithTimeout(`${PRIMARY_API_URL}/models/loaded`, {}, 8000);
       if (res.ok) {
         const { loaded_models } = await res.json();
         primaryModels = loaded_models || [];
         const gpu0 = primaryModels.find(m => m.gpu_id === 0);
-        if (gpu0) {
+        const savedApiModel = readLastPrimaryApiModel();
+        const autoRouterEnabled = settingsRef.current?.apiEndpointRoundRobinEnabled === true;
+        if (gpu0 && !savedApiModel && !autoRouterEnabled) {
           setPrimaryModel(gpu0.name);
           setActiveModel(gpu0.name);
         }
@@ -1883,20 +3176,92 @@ const AppProvider = ({ children }) => {
     }
 
     let secondaryModels = [];
-    try {
-      const res = await fetch(`${SECONDARY_API_URL}/models/loaded`);
-      if (res.ok) {
-        const { loaded_models } = await res.json();
-        secondaryModels = loaded_models || [];
-        const gpu1 = secondaryModels.find(m => m.gpu_id === 1);
-        if (gpu1) setSecondaryModel(gpu1.name);
+    if (SECONDARY_API_URL !== PRIMARY_API_URL) {
+      try {
+        const res = await fetchWithTimeout(`${SECONDARY_API_URL}/models/loaded`, {}, 8000);
+        if (res.ok) {
+          const { loaded_models } = await res.json();
+          secondaryModels = loaded_models || [];
+          const gpu1 = secondaryModels.find(m => m.gpu_id === 1);
+          if (gpu1) setSecondaryModel(gpu1.name);
+        }
+      } catch {
+        console.warn('Secondary API unavailable');
       }
-    } catch {
-      console.warn('Secondary API unavailable');
     }
 
     setLoadedModels([...primaryModels, ...secondaryModels]);
   }, [PRIMARY_API_URL, SECONDARY_API_URL]);
+
+  // After port config + single-GPU sync, primary and secondary URLs can become the same; avoid stale :8001 probes.
+  useEffect(() => {
+    if (!portsReady) return;
+    fetchLoadedModels();
+    void refreshNanoGptModelsCache({ forceRefresh: false });
+  }, [portsReady, isSingleGpuMode, PRIMARY_API_URL, SECONDARY_API_URL, fetchLoadedModels]);
+
+  /** Restore last selected API model after settings hydrate (never block send on mismatch). */
+  useEffect(() => {
+    if (!storageHydrated || !portsReady || apiModelRestoredRef.current) return;
+    apiModelRestoredRef.current = true;
+    const autoRouterEnabled = settings.apiEndpointRoundRobinEnabled === true;
+    const rotatePool = (settings.customApiEndpoints || []).filter(
+      (e) => e?.enabled !== false && e?.rotate_enabled !== false,
+    );
+    if (autoRouterEnabled) {
+      setPrimaryIsAPI(true);
+      setPrimaryModel(null);
+      setActiveModel(null);
+      if (!autoRouterBootLogRef.current) {
+        autoRouterBootLogRef.current = true;
+        console.info('auto_router_boot_precedence_applied', {
+          auto_router_enabled: true,
+          storage_hydrated: storageHydrated,
+          ports_ready: portsReady,
+          cleared_pinned_primary_model: true,
+          rotate_pool_count: rotatePool.length,
+        });
+      }
+      return;
+    }
+
+    const saved = readLastPrimaryApiModel();
+    const endpoints = (settings.customApiEndpoints || []).filter((e) => e?.enabled !== false);
+    let modelId = null;
+
+    if (saved) {
+      const matched = endpoints.find(
+        (e) => e.id === saved || e.name === saved || e.model === saved,
+      );
+      if (matched) modelId = matched.id;
+      else if (saved.startsWith('endpoint-')) modelId = saved;
+      else if (endpoints.length === 0) modelId = saved;
+      else if (findNanoGptModel(saved, readNanoGptModelsCache().models)) modelId = saved;
+      else modelId = endpoints[0]?.id || saved;
+    } else if (endpoints.length > 0) {
+      modelId = endpoints[0].id;
+    }
+
+    if (modelId) {
+      setPrimaryIsAPI(true);
+      setPrimaryModel(modelId);
+      setActiveModel(modelId);
+    }
+  }, [storageHydrated, portsReady, settings.customApiEndpoints]);
+
+  useEffect(() => {
+    if (primaryIsAPI && primaryModel) {
+      saveLastPrimaryApiModel(primaryModel);
+    }
+  }, [primaryIsAPI, primaryModel]);
+
+  useEffect(() => {
+    if (!crossWindowSyncReadyRef.current) {
+      crossWindowSyncReadyRef.current = true;
+      return;
+    }
+    broadcastPrimaryModelState({ primaryModel, primaryIsAPI });
+  }, [primaryModel, primaryIsAPI]);
 
   const loadModel = useCallback(
     async (name, gpu = 0, contextLength = settings.contextLength) => {
@@ -1976,7 +3341,7 @@ const AppProvider = ({ children }) => {
   // ----------------------------------
   // Conversation Management
   // ----------------------------------
-  const createNewConversation = useCallback(() => {
+  const createNewConversation = useCallback((opts = {}) => {
     console.log('🔍 [DEBUG] Creating new conversation');
     const id = generateUniqueId();
     // Helper to replace tags
@@ -1987,11 +3352,27 @@ const AppProvider = ({ children }) => {
         .replace(/{{user}}/gi, userName);
     };
 
-    const charName = primaryCharacter?.name || 'Character';
+    const systemPersonaOn = isSystemPersonaModeActive(settingsRef.current);
+    const systemPersonaChar = systemPersonaOn
+      ? resolveSystemPersonaCharacter(characters, settingsRef.current)
+      : null;
+    const charName = primaryCharacter?.name || systemPersonaChar?.name || 'Character';
     const userName = settings.multiRoleMode && userCharacter?.name
       ? userCharacter.name
       : (userProfile?.name || userProfile?.username || 'User');
-    const firstMessage = primaryCharacter?.first_message
+    const forceEmpty = opts?.forceEmpty === true;
+
+    const useSystemIntro =
+      !forceEmpty
+      && systemPersonaOn
+      && !!systemPersonaChar?.id
+      && !primaryCharacter?.id;
+    const useCharacterIntro =
+      !forceEmpty
+      && settingsRef.current?.characterIntroEnabled === true
+      && !!primaryCharacter?.id;
+
+    const firstMessage = !forceEmpty && !useCharacterIntro && !useSystemIntro && primaryCharacter?.first_message
       ? replaceTags(primaryCharacter.first_message, charName, userName)
       : null;
 
@@ -2005,7 +3386,7 @@ const AppProvider = ({ children }) => {
         modelId: 'primary',
         characterName: charName,
         characterId: primaryCharacter?.id,
-        avatar: primaryCharacter?.avatar
+        avatar: getActiveCharacterAvatar(primaryCharacter)
       }]
       : [];
 
@@ -2023,15 +3404,30 @@ const AppProvider = ({ children }) => {
         secondary: secondaryCharacter?.id,
         user: defaultUserCharacter?.id || null
       },
+      systemPersona: systemPersonaOn,
+      systemPersonaCharacterId: systemPersonaChar?.id || settingsRef.current?.systemPersonaCharacterId || null,
       activeCharacterIds: defaultActiveIds,
       activeCharacterWeights: defaultActiveWeights,
       multiRoleContext: '',
       created: new Date().toISOString(),
       requiresTitle: true,
-      agenticMemoryEnabled: false
+      agenticMemoryEnabled: true,
+      alignmentDetectionEnabled: false,
+      rollingMemoryPack: '',
+      rollingMemoryFoldCount: 0,
+      introPending: forceEmpty ? false : (useSystemIntro || useCharacterIntro),
+      characterIntro: null,
     };
     console.log('🔍 [DEBUG] New conversation has requiresTitle flag:', conv.requiresTitle);
-    setConversations(prev => [...prev, conv]);
+    const next = [...conversationsRef.current, conv];
+    conversationsRef.current = next;
+    activeConversationRef.current = id;
+    startupConversationRestoreRef.current.attempted = true;
+    setConversations(next);
+    void saveConversationCatalog(next, id);
+    if (initial.length > 0) {
+      void saveActiveConversationMessages(id, initial);
+    }
     setActiveConversation(id);
     setMessages(initial);
     setDualModeEnabled(false);
@@ -2040,21 +3436,165 @@ const AppProvider = ({ children }) => {
     setActiveCharacterIds(defaultActiveIds);
     setActiveCharacterWeights(defaultActiveWeights);
     setMultiRoleContext('');
-    generateChatTitle(id, initial, primaryCharacter?.name || '', secondaryCharacter?.name || '')
     return conv;
-  }, [primaryCharacter, secondaryCharacter, userCharacter, characters, settings.multiRoleMode, userProfile, setConversations, setActiveConversation, setMessages, setDualModeEnabled, setActiveCharacter, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights, generateChatTitle]);
+  }, [primaryCharacter, secondaryCharacter, userCharacter, characters, settings.multiRoleMode, userProfile, setConversations, setActiveConversation, setMessages, setDualModeEnabled, setActiveCharacter, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights]);
 
-  const handleConversationClick = useCallback((id) => {
-    if (activeConversation) {
-      setConversations(prev => prev.map(c => c.id === activeConversation ? { ...c, messages } : c));
+  /** Eloquent Home: landing UI with no active tab (distinct from New Chat). */
+  const goToHome = useCallback(() => {
+    const prevId = activeConversationRef.current;
+    const prevMsgs = messagesRef.current;
+
+    if (prevId && prevMsgs?.length) {
+      const prevConv = (conversationsRef.current || []).find((c) => c.id === prevId);
+      const { messages: _omit, ...catalogMeta } = prevConv || { id: prevId, name: 'Chat' };
+      void saveActiveConversationMessages(prevId, prevMsgs, catalogMeta);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === prevId ? { ...c, messages: prevMsgs } : c))
+      );
     }
-    setActiveConversation(id);
-    const sel = conversations.find(c => c.id === id) || {};
-    setMessages(Array.isArray(sel.messages) ? sel.messages : []);
 
+    conversationSwitchInProgressRef.current = false;
+    setActiveConversation(null);
+    messagesRef.current = [];
+    setMessages([]);
+
+    startupConversationRestoreRef.current.attempted = true;
+
+    const list = (conversationsRef.current || []).filter(
+      (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
+    );
+    void saveConversationCatalog(list, null);
+    void indexedDbStorage.removeItem('Eloquent-active-conversation');
+  }, [setConversations, setActiveConversation, setMessages]);
+
+  const applyIntroChatTitle = useCallback((conversationId, introResult) => {
+    const id = conversationId || activeConversationRef.current;
+    if (!id || !introResult) return false;
+
+    const conv = (conversationsRef.current || []).find((c) => c.id === id);
+    if (!conversationAcceptsIntroTitle(conv)) return false;
+
+    const primaryId = conv?.characterIds?.primary;
+    const systemPersonaId = conv?.systemPersonaCharacterId;
+    const char =
+      (primaryId ? characters.find((c) => c.id === primaryId) : null)
+      || (systemPersonaId ? characters.find((c) => c.id === systemPersonaId) : null)
+      || (id === activeConversationRef.current ? primaryCharacter : null)
+      || null;
+    const title = deriveIntroChatTitle(introResult, { characterName: char?.name });
+    if (!title) return false;
+
+    let applied = false;
+    setConversations((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== id || !conversationAcceptsIntroTitle(c)) return c;
+        applied = true;
+        return {
+          ...c,
+          name: title,
+          requiresTitle: false,
+          titleSource: 'intro',
+        };
+      });
+      if (applied) void saveConversationCatalog(next, id);
+      return next;
+    });
+    return applied;
+  }, [characters, primaryCharacter, setConversations]);
+
+  const updateCharacterIntro = useCallback((conversationId, introPatch) => {
+    const id = conversationId || activeConversationRef.current;
+    if (!id || !introPatch || typeof introPatch !== 'object') return;
+    setConversations((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== id) return c;
+        const prevIntro = c.characterIntro && typeof c.characterIntro === 'object' ? c.characterIntro : {};
+        return {
+          ...c,
+          characterIntro: {
+            ...prevIntro,
+            ...introPatch,
+            updatedAt: new Date().toISOString(),
+          },
+        };
+      });
+      void saveConversationCatalog(next, id);
+      return next;
+    });
+  }, [setConversations]);
+
+  const completeCharacterIntro = useCallback((conversationId, options = {}) => {
+    const id = conversationId || activeConversationRef.current;
+    if (!id) return false;
+
+    const conv = (conversationsRef.current || []).find((c) => c.id === id);
+    const introResult = options.introResult ?? conv?.characterIntro?.result;
+    if (introResult) {
+      applyIntroChatTitle(id, introResult);
+    }
+    const primaryId = conv?.characterIds?.primary;
+    const systemPersonaId = conv?.systemPersonaCharacterId;
+    const char =
+      (primaryId ? characters.find((c) => c.id === primaryId) : null)
+      || (systemPersonaId ? characters.find((c) => c.id === systemPersonaId) : null)
+      || (id === activeConversationRef.current ? primaryCharacter : null)
+      || null;
+
+    const isActiveConversation = activeConversationRef.current === id;
+    const currentMsgs = isActiveConversation
+      ? (messagesRef.current || [])
+      : (Array.isArray(conv?.messages) ? conv.messages : []);
+    const alreadyHasBot = currentMsgs.some((m) => m.role === 'bot');
+    const seed = !alreadyHasBot
+      ? buildCharacterIntroSeedMessages(introResult, {
+        character: char,
+        avatar: char ? getActiveCharacterAvatar(char) : undefined,
+        generateId: generateUniqueId,
+      })
+      : [];
+
+    setConversations((prev) => {
+      const next = prev.map((c) => {
+        if (c.id !== id) return c;
+        const mergedMessages =
+          seed.length > 0
+            ? seed
+            : (Array.isArray(c.messages) && c.messages.length ? c.messages : []);
+        return { ...c, introPending: false, messages: mergedMessages };
+      });
+      void saveConversationCatalog(next, id);
+      return next;
+    });
+
+    if (isActiveConversation) {
+      const nextMsgs = seed.length > 0 ? seed : currentMsgs;
+      if (seed.length > 0) {
+        messagesRef.current = nextMsgs;
+        setMessages(nextMsgs);
+        const convMeta = (conversationsRef.current || []).find((c) => c.id === id);
+        const { messages: _omit, ...catalogMeta } = convMeta || { id, name: 'Chat' };
+        void saveActiveConversationMessages(id, nextMsgs, catalogMeta);
+      }
+    }
+
+    return seed.length > 0;
+  }, [characters, primaryCharacter, applyIntroChatTitle, setConversations, setMessages]);
+
+  completeCharacterIntroRef.current = completeCharacterIntro;
+
+  /** Apply roster + messages from a conversation object (sidebar click, outreach open, deep links). */
+  const applyConversationSelection = useCallback((sel) => {
+    if (!sel) return;
+    setMessages(Array.isArray(sel.messages) ? sel.messages : []);
     const { primary, secondary, user } = sel.characterIds || {};
-    const primChar = characters.find(c => c.id === primary) || null;
-    const secChar = characters.find(c => c.id === secondary) || null;
+    let primChar = characters.find(c => c.id === primary) || null;
+    if (!primChar && sel.characterSnapshot) {
+      const snap = sel.characterSnapshot;
+      if (!primary || snap.id === primary) {
+        primChar = normalizeCharacter(snap);
+      }
+    }
+    const secChar = secondary ? (characters.find(c => c.id === secondary) || null) : null;
     setPrimaryCharacter(primChar);
     setSecondaryCharacter(secChar);
     setActiveCharacter(primChar);
@@ -2071,14 +3611,55 @@ const AppProvider = ({ children }) => {
         : defaultWeights
     );
     setMultiRoleContext(typeof sel.multiRoleContext === 'string' ? sel.multiRoleContext : '');
-  }, [activeConversation, conversations, messages, characters, setConversations, setActiveConversation, setMessages, setPrimaryCharacter, setSecondaryCharacter, setActiveCharacter, setActiveCharacterIds, setActiveCharacterWeights, setMultiRoleContext]);
+  }, [characters, setMessages, setPrimaryCharacter, setSecondaryCharacter, setActiveCharacter, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights, setMultiRoleContext]);
+
+  const handleConversationClick = useCallback((id) => {
+    const prevId = activeConversationRef.current;
+    const prevMsgs = messagesRef.current;
+
+    const flushPrevShard = () => {
+      if (prevId && prevMsgs?.length) {
+        const prevConv = (conversationsRef.current || []).find((c) => c.id === prevId);
+        const { messages: _omit, ...catalogMeta } = prevConv || { id: prevId, name: 'Chat' };
+        void saveActiveConversationMessages(prevId, prevMsgs, catalogMeta);
+      }
+    };
+
+    if (prevId && prevId !== id) {
+      flushPrevShard();
+      setConversations((prev) =>
+        prev.map((c) => (c.id === prevId ? { ...c, messages: prevMsgs } : c))
+      );
+    }
+
+    conversationSwitchInProgressRef.current = true;
+    setActiveConversation(id);
+    void (async () => {
+      try {
+        const shardMsgs = await loadConversationMessages(id);
+        const conv = conversationsRef.current.find((c) => c.id === id) || {};
+        applyConversationSelection({ ...conv, messages: shardMsgs });
+        setConversations((prev) =>
+          prev.map((c) => (c.id === id ? { ...c, messages: shardMsgs } : c))
+        );
+      } finally {
+        conversationSwitchInProgressRef.current = false;
+      }
+    })();
+  }, [setConversations, setActiveConversation, applyConversationSelection]);
 
   // ----------------------------------
   // Character Management
   // ----------------------------------
   const loadCharacters = useCallback(async () => {
     try {
-      const saved = localStorage.getItem('llm-characters');
+      let saved = await indexedDbStorage.getItem('llm-characters');
+      if (!saved && typeof localStorage !== 'undefined') {
+        try {
+          saved = localStorage.getItem('llm-characters');
+          if (saved) await indexedDbStorage.setItem('llm-characters', saved);
+        } catch (_) { /* ignore */ }
+      }
       if (saved) {
         const parsed = JSON.parse(saved).map(normalizeCharacter);
         setCharacters(parsed);
@@ -2094,7 +3675,15 @@ const AppProvider = ({ children }) => {
   }, [activeConversation, conversations]);
 
   const saveCharacter = useCallback((data) => {
-    let savedCharacter = { ...data, chat_role: normalizeChatRole(data?.chat_role) };
+    if (!storageHydrated) {
+      console.warn('[saveCharacter] blocked until browser storage has finished loading');
+      alert('Your character library is still loading. Wait a moment and try again.');
+      return { ...data, chat_role: normalizeChatRole(data?.chat_role) };
+    }
+    let savedCharacter = omitPersistedLocalAvatarFolder({
+      ...data,
+      chat_role: normalizeChatRole(data?.chat_role),
+    });
 
     setCharacters(prev => {
       const list = prev.slice();
@@ -2136,8 +3725,11 @@ const AppProvider = ({ children }) => {
             return char;
           });
         }
-        localStorage.setItem('llm-characters', JSON.stringify(normalizedList));
-        console.log('Characters saved to localStorage:', normalizedList.length, 'total characters');
+        indexedDbStorage.setItem('llm-characters', JSON.stringify(normalizedList));
+        try {
+          localStorage.setItem('llm-characters', JSON.stringify(normalizedList));
+        } catch (_) { /* mirror for legacy readers */ }
+        console.log('Characters saved to storage:', normalizedList.length, 'total characters');
         return normalizedList;
       } catch (error) {
         console.error('Failed to save characters to localStorage:', error);
@@ -2147,17 +3739,56 @@ const AppProvider = ({ children }) => {
     });
 
     return savedCharacter; // Return the character with its final ID
-  }, []);
+  }, [storageHydrated]);
+
+  const setCharacterAvatarIndex = useCallback((characterId, index) => {
+    if (!characterId || !storageHydrated) return;
+    setActiveCharacter((prev) => {
+      if (prev?.id !== characterId) return prev;
+      const stored = characters.find((c) => c.id === characterId);
+      const base = mergeSessionLocalAvatarFolder(stored, prev);
+      const next = normalizeCharacter(setAvatarIndexOnCharacter(base, index));
+      const persisted = omitPersistedLocalAvatarFolder(next);
+      setCharacters((list) => {
+        const updated = list.map((c) => (c.id === characterId ? persisted : normalizeCharacter(c)));
+        indexedDbStorage.setItem('llm-characters', JSON.stringify(updated));
+        return updated;
+      });
+      return next;
+    });
+  }, [characters, storageHydrated]);
+
+  const cycleCharacterAvatar = useCallback((characterId, delta = 1) => {
+    if (!characterId || !storageHydrated) return;
+    const stored = characters.find((c) => c.id === characterId);
+    if (!stored) return;
+    setActiveCharacter((prev) => {
+      if (prev?.id !== characterId) return prev;
+      const base = mergeSessionLocalAvatarFolder(stored, prev);
+      const next = normalizeCharacter(cycleAvatarIndex(base, delta));
+      const persisted = omitPersistedLocalAvatarFolder(next);
+      setCharacters((list) => {
+        const updated = list.map((c) => (c.id === characterId ? persisted : normalizeCharacter(c)));
+        indexedDbStorage.setItem('llm-characters', JSON.stringify(updated));
+        return updated;
+      });
+      return next;
+    });
+  }, [characters, storageHydrated]);
 
   const deleteCharacter = useCallback((id) => {
+    if (!storageHydrated) {
+      console.warn('[deleteCharacter] blocked until browser storage has finished loading');
+      return;
+    }
     setCharacters(prev => {
       const filtered = prev.filter(c => c.id !== id);
-      localStorage.setItem('llm-characters', JSON.stringify(filtered));
+      indexedDbStorage.setItem('llm-characters', JSON.stringify(filtered));
       return filtered;
     });
     if (activeCharacter?.id === id) setActiveCharacter(null);
     if (userCharacterId === id) setUserCharacterId(null);
-  }, [activeCharacter, userCharacterId]);
+  }, [activeCharacter, userCharacterId, storageHydrated]);
 
   const duplicateCharacter = useCallback((id) => {
     const orig = characters.find(c => c.id === id);
@@ -2188,7 +3819,7 @@ const AppProvider = ({ children }) => {
         }
         return normalizeCharacter(char);
       });
-      localStorage.setItem('llm-characters', JSON.stringify(updated));
+      indexedDbStorage.setItem('llm-characters', JSON.stringify(updated));
       return updated;
     });
     if (normalizedRole === 'user') setUserCharacterId(id);
@@ -2286,7 +3917,7 @@ const AppProvider = ({ children }) => {
         id: generateUniqueId(),
         role: 'bot',
         content: char.first_message,
-        avatar: char.avatar,
+        avatar: getActiveCharacterAvatar(char),
         characterName: char.name,
         characterId: char.id
       }]);
@@ -2340,6 +3971,7 @@ const AppProvider = ({ children }) => {
     const userMsg = { id: generateUniqueId(), role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
     setIsGenerating(true);
+    
     console.log(`[Summary] Attaching summaryContext to dual chat: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
     const history = [...messages, userMsg].slice(-10);
@@ -2353,28 +3985,45 @@ const AppProvider = ({ children }) => {
         fetch(`${PRIMARY_API_URL}/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model_name: primaryModel,
-            messages: buildHistory('primary', 'secondary', primaryCharacter, secondaryModel),
-            gpu_id: 0,
-            userProfile,
-            authorNote: applyAuthorNoteTags(settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : null, primaryCharacter) || undefined,
-            use_web_search: webSearchEnabled, // NEW: Add to primary
-            summaryContext: summaryContextForRequest
-          })
+          body: JSON.stringify(
+            mergeNanoGptMemoryIntoPayload(
+              {
+                model_name: primaryModel,
+                messages: buildHistory('primary', 'secondary', primaryCharacter, secondaryModel),
+                gpu_id: 0,
+                userProfile,
+                authorNote:
+                  applyAuthorNoteTags(settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : null, primaryCharacter) ||
+                  undefined,
+                use_web_search: webSearchEnabled, // NEW: Add to primary
+                ...(webSearchEnabled ? getWebSearchResearchPayload(settings) : {}),
+                summaryContext: summaryContextForRequest,
+                active_character: primaryCharacter || null,
+              },
+              settings
+            )
+          ),
         }).then(r => r.json()),
         fetch(`${SECONDARY_API_URL}/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model_name: secondaryModel,
-            messages: buildHistory('secondary', 'primary', secondaryCharacter, primaryModel),
-            gpu_id: 1,
-            userProfile,
-            authorNote: applyAuthorNoteTags(settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : null, secondaryCharacter) || undefined,
-            use_web_search: false, // Usually only primary should do web search in dual mode
-            summaryContext: summaryContextForRequest
-          })
+          body: JSON.stringify(
+            mergeNanoGptMemoryIntoPayload(
+              {
+                model_name: secondaryModel,
+                messages: buildHistory('secondary', 'primary', secondaryCharacter, primaryModel),
+                gpu_id: 1,
+                userProfile,
+                authorNote:
+                  applyAuthorNoteTags(settings.authorNote && settings.authorNote.trim() ? settings.authorNote.trim() : null, secondaryCharacter) ||
+                  undefined,
+                use_web_search: false, // Usually only primary should do web search in dual mode
+                summaryContext: summaryContextForRequest,
+                active_character: secondaryCharacter || null,
+              },
+              settings
+            )
+          ),
         }).then(r => r.json())
       ]);
 
@@ -2384,18 +4033,16 @@ const AppProvider = ({ children }) => {
       const sText = cleanModelOutput(sRes.text);
 
       setMessages(prev => [...prev,
-      { id: pId, role: 'bot', content: pText, modelId: 'primary', characterName: primaryCharacter?.name, characterId: primaryCharacter?.id, avatar: primaryCharacter?.avatar },
-      { id: sId, role: 'bot', content: sText, modelId: 'secondary', characterName: secondaryCharacter?.name, characterId: secondaryCharacter?.id, avatar: secondaryCharacter?.avatar }
+      { id: pId, role: 'bot', content: pText, modelId: 'primary', characterName: primaryCharacter?.name, characterId: primaryCharacter?.id, avatar: getActiveCharacterAvatar(primaryCharacter) },
+      { id: sId, role: 'bot', content: sText, modelId: 'secondary', characterName: secondaryCharacter?.name, characterId: secondaryCharacter?.id, avatar: getActiveCharacterAvatar(secondaryCharacter) }
       ]);
 
       await observeConversationWithAgent(text, `${pRes.text}\n\n${sRes.text}`);
-      const userIdDual = userProfile?.id || memoryContext?.activeProfileId;
+      const userIdDual = resolveAgenticUserId();
       const activeIdDual = activeConversationRef.current;
-      const agenticOnDual = (conversationsRef.current.find(c => c.id === activeIdDual)?.agenticMemoryEnabled) === true;
       const apiOptsDual = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
-      console.log('🧠 Agentic memory:', agenticOnDual ? 'ON' : 'OFF', '| userId:', userIdDual ? 'set' : 'MISSING', '| speakers: primary + secondary');
-      processAgenticMemoryIfEnabled(userIdDual, primaryCharacter, text, pText, agenticOnDual, apiOptsDual);
-      processAgenticMemoryIfEnabled(userIdDual, secondaryCharacter, text, sText, agenticOnDual, apiOptsDual);
+      processAgenticMemoryIfEnabled(userIdDual, primaryCharacter, text, pText, apiOptsDual);
+      processAgenticMemoryIfEnabled(userIdDual, secondaryCharacter, text, sText, apiOptsDual);
 
       // Auto-play TTS for BOTH messages if enabled
       if (settings.ttsAutoPlay && settings.ttsEnabled) {
@@ -2410,7 +4057,7 @@ const AppProvider = ({ children }) => {
     } finally {
       setIsGenerating(false);
     }
-  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, memoryContext, settings, observeConversationWithAgent, processAgenticMemoryIfEnabled, summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags]);
+  }, [activeConversation, primaryModel, secondaryModel, messages, primaryCharacter, secondaryCharacter, PRIMARY_API_URL, SECONDARY_API_URL, userProfile, memoryContext, settings, observeConversationWithAgent, processAgenticMemoryIfEnabled, summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags, resolveAgenticUserId]);
 
   const getMultiRoleContextBlock = useCallback(() => {
     if (!settings.multiRoleMode) return '';
@@ -2557,19 +4204,24 @@ Return ONLY valid JSON:
       const res = await fetch(`${PRIMARY_API_URL}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt,
-          model_name: primaryModel,
-          directProfileInjection: true,
-          temperature: 0.2,
-          top_p: 0.9,
-          top_k: 40,
-          repetition_penalty: 1.05,
-          max_tokens: 120,
-          gpu_id: 0,
-          stream: false,
-          request_purpose: 'speaker_selection'
-        })
+        body: JSON.stringify(
+          mergeNanoGptMemoryIntoPayload(
+            {
+              prompt,
+              model_name: primaryModel,
+              directProfileInjection: true,
+              temperature: 0.2,
+              top_p: 0.9,
+              top_k: 40,
+              repetition_penalty: 1.05,
+              max_tokens: 120,
+              gpu_id: 0,
+              stream: false,
+              request_purpose: 'speaker_selection',
+            },
+            settings
+          )
+        ),
       });
 
       if (!res.ok) return null;
@@ -2588,10 +4240,13 @@ Return ONLY valid JSON:
       console.warn('Speaker selection failed:', error);
       return null;
     }
-  }, [PRIMARY_API_URL, primaryModel, formatPrompt, cleanModelOutput, buildSpeakerSelectionPrompt]);
+  }, [PRIMARY_API_URL, primaryModel, formatPrompt, cleanModelOutput, buildSpeakerSelectionPrompt, settings]);
 
   const resolveSpeakerCharacter = useCallback(async (text, recentMessages, options = {}) => {
     const { speakerCharacterId = null, forceAutoSelectSpeaker = false, ignoreMentionedCandidates = false } = options;
+    const activeConv = (conversationsRef.current || []).find(
+      (c) => c.id === activeConversationRef.current
+    );
     if (speakerCharacterId === NARRATOR_CHARACTER_ID) {
       return getNarratorCharacter();
     }
@@ -2599,7 +4254,30 @@ Return ONLY valid JSON:
       return characters.find(c => c.id === speakerCharacterId) || null;
     }
 
-    if (!settings.multiRoleMode) return activeCharacterRef.current || null;
+    if (!settings.multiRoleMode) {
+      const refCur = activeCharacterRef.current || null;
+      if (refCur?.id) {
+        const fresh = characters.find((c) => c.id === refCur.id);
+        if (fresh) return fresh;
+      }
+      if (refCur) return refCur;
+      for (let i = recentMessages.length - 1; i >= 0; i--) {
+        const msg = recentMessages[i];
+        if (msg?.role !== 'bot') continue;
+        if (msg.characterId) {
+          const byId = characters.find(c => c.id === msg.characterId);
+          if (byId) return byId;
+        }
+        if (msg.characterName) {
+          const byName = characters.find(
+            c => (c.name || '').toLowerCase() === String(msg.characterName).toLowerCase()
+          );
+          if (byName) return byName;
+        }
+        break;
+      }
+      return null;
+    }
 
     const narrator = getNarratorCharacter();
     const allowAutoSelect = forceAutoSelectSpeaker || settings.autoSelectSpeaker;
@@ -2626,7 +4304,14 @@ Return ONLY valid JSON:
     const rosterSet = rosterIds.length ? new Set(rosterIds) : null;
     const rosterFiltered = rosterSet ? normalized.filter(c => rosterSet.has(c.id)) : normalized;
     const candidates = rosterFiltered.filter(c => normalizeChatRole(c.chat_role) !== 'user');
-    if (!candidates.length) return activeCharacterRef.current || null;
+    if (!candidates.length) {
+      const refCur = activeCharacterRef.current || null;
+      if (refCur?.id) {
+        const fresh = characters.find((c) => c.id === refCur.id);
+        if (fresh) return fresh;
+      }
+      return refCur;
+    }
 
     const getWeight = (id) => {
       const raw = activeCharacterWeights?.[id];
@@ -2677,7 +4362,10 @@ Return ONLY valid JSON:
     if (shouldUseNarrator()) return narrator;
 
     if (!allowAutoSelect) {
-      const current = activeCharacterRef.current;
+      const refCur = activeCharacterRef.current || null;
+      const current = refCur?.id
+        ? (characters.find((c) => c.id === refCur.id) || refCur)
+        : refCur;
       const currentRole = current ? normalizeChatRole(current.chat_role) : 'npc';
       const inRoster = !rosterSet || (current && rosterSet.has(current.id));
       if (current && currentRole !== 'user' && inRoster) return current;
@@ -2729,116 +4417,325 @@ Return ONLY valid JSON:
 
   // New shared helper to build the FULL generation system prompt (memories, lore, etc.)
   const getGenerationSystemPrompt = useCallback(async (text, character, authorNote = null, options = {}) => {
-    const { includeAuthorNote = true } = options;
-    console.log('🔍 [SystemPrompt] Building for character:', character?.name, 'User:', userProfile?.name);
-    console.log('🔍 [SystemPrompt] Tag replacer check. Character valid?', !!character, 'UserProfile valid?', !!userProfile);
-    let systemMsg = character?.id === NARRATOR_CHARACTER_ID && settings.narratorEnabled
-      ? buildNarratorSystemPrompt()
-      : (character
-        ? buildSystemPrompt(character)
-        : ('You are a helpful assistant.' + getStoryTrackerContext()));
+    const memTimeout = primaryIsAPI ? MEMORY_FETCH_TIMEOUT_API_MS : MEMORY_FETCH_TIMEOUT_MS;
+    const { includeAuthorNote = true, conversationId = null } = options;
+    const { active: systemPersonaActive, character: systemPersonaChar } =
+      getActiveSystemPersonaContext(conversationId);
+    const chatCharacter =
+      character?.id === NARRATOR_CHARACTER_ID && settings.narratorEnabled ? null : character;
+
+    console.log(
+      '🔍 [SystemPrompt] chat:',
+      chatCharacter?.name,
+      'systemPersona:',
+      systemPersonaActive ? systemPersonaChar?.name : 'off',
+      'user:',
+      userProfile?.name
+    );
+
+    const replaceTagsFor = (content, tagCharacter) => {
+      if (!content || !tagCharacter) return content;
+      const charName = tagCharacter.name || 'Character';
+      const userName = getRoleplayUserName();
+      return content.replace(/{{char}}/gi, charName).replace(/{{user}}/gi, userName);
+    };
+
+    const appendUserProfileContext = async (baseMsg, tagCharacter) => {
+      let contextToAdd = '';
+      if (settings.directProfileInjection) {
+        const userId = userProfile?.id || (typeof memoryContext !== 'undefined' ? memoryContext?.activeProfileId : null);
+        profileReinforcementRef.current = '';
+        if (userId) {
+          try {
+            const res = await fetchWithTimeout(
+              `${MEMORY_API_URL}/memory/get_all?user_id=${userId}`,
+              {},
+              memTimeout
+            );
+            if (res.ok) {
+              const data = await res.json();
+              if (data.memories && data.memories.length > 0) {
+                const bullets = data.memories.map((mem) => {
+                  const category = mem.category?.replace('_', ' ') || 'memory';
+                  const importance = mem.importance?.toFixed(1) || 'N/A';
+                  const content = replaceTagsFor(mem.content, tagCharacter);
+                  return `• ${content} (Category: ${category}, Importance: ${importance})`;
+                });
+                const profileString = bullets.join('\n');
+                contextToAdd += `\n\nUSER MEMORY PROFILE:\n${profileString}`;
+                const reinforcementSnippet = bullets.slice(0, 5).join('\n');
+                if (reinforcementSnippet) profileReinforcementRef.current = reinforcementSnippet;
+              }
+            }
+          } catch (error) {
+            console.error('🧠 [Direct Injection] Error:', error);
+          }
+        }
+      } else {
+        profileReinforcementRef.current = '';
+        const agentMem = await fetchMemoriesFromAgent(text);
+        if (agentMem.length) {
+          contextToAdd += `\n\nUSER CONTEXT:\n${agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n')}`;
+        }
+      }
+      return baseMsg + contextToAdd;
+    };
+
+    const appendCharacterContext = async (baseMsg, tagCharacter, { includeProfile = false } = {}) => {
+      if (!tagCharacter) return baseMsg;
+      let contextToAdd = '';
+      if (includeProfile) {
+        const withProfile = await appendUserProfileContext('', tagCharacter);
+        contextToAdd += withProfile;
+      }
+      const lore = await fetchTriggeredLore(text, tagCharacter);
+      if (lore.length) {
+        const loreBlock = lore
+          .map((l) => {
+            const content = typeof l === 'string' ? l : (l.content || JSON.stringify(l));
+            return `• ${replaceTagsFor(content, tagCharacter)}`;
+          })
+          .join('\n');
+        contextToAdd += `\n\n[WORLD KNOWLEDGE - Essential lore guidance for this response]\n${loreBlock}`;
+      }
+      if (tagCharacter.id) {
+        const userId = resolveAgenticUserId();
+        if (userId) {
+          try {
+            const params = new URLSearchParams({ user_id: userId, character_id: tagCharacter.id });
+            if (userProfile?.name || userProfile?.username) {
+              params.set('user_name', userProfile?.name || userProfile?.username || '');
+            }
+            if (text?.trim()) {
+              params.set('query', text.trim());
+              params.set('use_rag', 'true');
+            }
+            const res = await fetchWithTimeout(
+              `${MEMORY_API_URL}/memory/agentic?${params.toString()}`,
+              {},
+              memTimeout
+            );
+            if (res.ok) {
+              const data = await res.json();
+              const formatted = data.formatted_context?.trim();
+              if (formatted) {
+                contextToAdd += `\n\n${formatted}`;
+                setLastAgenticInjectMeta({
+                  chars: formatted.length,
+                  count: data.count ?? null,
+                  characterName: tagCharacter.name || tagCharacter.id,
+                });
+              } else {
+                setLastAgenticInjectMeta({
+                  chars: 0,
+                  count: data.count ?? 0,
+                  characterName: tagCharacter.name || tagCharacter.id,
+                });
+              }
+            }
+          } catch (err) {
+            console.error('🧠 [Agentic memory] fetch error:', err);
+          }
+        }
+      }
+      return baseMsg + contextToAdd;
+    };
+
+    let systemMsg;
+    if (character?.id === NARRATOR_CHARACTER_ID && settings.narratorEnabled) {
+      systemMsg = buildNarratorSystemPrompt();
+    } else if (systemPersonaActive && systemPersonaChar) {
+      let systemLayer =
+        buildSystemPersonaPrompt(systemPersonaChar)
+        || (`You are a helpful assistant.${getStoryTrackerContext()}`);
+      systemLayer = await appendCharacterContext(systemLayer, systemPersonaChar, { includeProfile: true });
+
+      let characterLayer = '';
+      if (chatCharacter) {
+        characterLayer = buildSystemPrompt(chatCharacter) || '';
+        characterLayer = await appendCharacterContext(characterLayer, chatCharacter, { includeProfile: false });
+      }
+      systemMsg = composeLayeredSystemPrompt(systemLayer, characterLayer);
+    } else if (chatCharacter) {
+      systemMsg = buildSystemPrompt(chatCharacter) || (`You are a helpful assistant.${getStoryTrackerContext()}`);
+      systemMsg = await appendCharacterContext(systemMsg, chatCharacter, { includeProfile: true });
+    } else {
+      systemMsg = `You are a helpful assistant.${getStoryTrackerContext()}`;
+      systemMsg = await appendUserProfileContext(systemMsg, null);
+    }
 
     if (settings.multiRoleMode) {
       systemMsg += getMultiRoleContextBlock();
       systemMsg += buildRoleplayRosterBlock();
     }
 
-    if (settings.multiRoleMode && character) {
-      const activeName = character.name || 'Character';
+    if (settings.multiRoleMode && chatCharacter) {
+      const activeName = chatCharacter.name || 'Character';
       systemMsg += `\n\n[ACTIVE SPEAKER]\nYou are speaking ONLY as ${activeName}.\n- Do not write dialogue for any other character.\n- Do not include multiple speakers in one response.\n- Do not prefix lines with character names or labels.\n- If you reference other characters, do so briefly in third-person without quoted speech.`;
     }
 
-    let contextToAdd = '';
-
-    // Helper for tag replacement in lore/profile
-    const replaceTags = (content) => {
-      if (!content || !character) return content;
-      const charName = character.name || 'Character';
-      const userName = getRoleplayUserName();
-      return content.replace(/{{char}}/gi, charName).replace(/{{user}}/gi, userName);
-    };
-
-    if (settings.directProfileInjection) {
-      const userId = userProfile?.id || (typeof memoryContext !== 'undefined' ? memoryContext?.activeProfileId : null);
-      if (userId) {
-        try {
-          const res = await fetch(`${MEMORY_API_URL}/memory/get_all?user_id=${userId}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.memories && data.memories.length > 0) {
-              const profileString = data.memories.map(mem => {
-                const category = mem.category?.replace('_', ' ') || 'memory';
-                const importance = mem.importance?.toFixed(1) || 'N/A';
-                // Apply tag substitution here
-                const content = replaceTags(mem.content);
-                return `• ${content} (Category: ${category}, Importance: ${importance})`;
-              }).join('\n');
-              contextToAdd += `\n\nUSER MEMORY PROFILE:\n${profileString}`;
-            }
-          }
-        } catch (error) {
-          console.error("🧠 [Direct Injection] Error:", error);
-        }
-      }
-    } else {
-      const agentMem = await fetchMemoriesFromAgent(text);
-      if (agentMem.length) {
-        contextToAdd += `\n\nUSER CONTEXT:\n` + agentMem.map((m, i) => `[${i + 1}] ${m.content}`).join('\n');
-      }
-    }
-
-
-    if (character) {
-      const lore = await fetchTriggeredLore(text, character);
-      if (lore.length) {
-        const loreBlock = lore.map(l => {
-          const content = typeof l === 'string' ? l : (l.content || JSON.stringify(l));
-          return "• " + replaceTags(content);
-        }).join('\n');
-        contextToAdd += `\n\n[WORLD KNOWLEDGE - Essential lore guidance for this response]\n${loreBlock}`;
-      }
-      // Optional agentic memory: when enabled for this chat (use refs so it matches post-reply processing)
-      if (activeConversationRef.current && character?.id) {
-        const conv = conversationsRef.current.find(c => c.id === activeConversationRef.current);
-        if (conv?.agenticMemoryEnabled) {
-          const userId = userProfile?.id || (typeof memoryContext !== 'undefined' ? memoryContext?.activeProfileId : null);
-          if (userId) {
-            try {
-              const res = await fetch(`${MEMORY_API_URL}/memory/agentic?user_id=${encodeURIComponent(userId)}&character_id=${encodeURIComponent(character.id)}`);
-              if (res.ok) {
-                const data = await res.json();
-                if (data.formatted_context && data.formatted_context.trim()) {
-                  contextToAdd += '\n\n' + data.formatted_context.trim();
-                }
-              }
-            } catch (err) {
-              console.error('🧠 [Agentic memory] fetch error:', err);
-            }
-          }
-        }
-      }
-    }
-
-    systemMsg += contextToAdd;
-
     const effectiveAuthorNote = authorNote || (settings.authorNote && settings.authorNote.trim()) || null;
     if (includeAuthorNote && effectiveAuthorNote) {
-      const resolvedAuthorNote = applyAuthorNoteTags(effectiveAuthorNote, character);
+      const resolvedAuthorNote = applyAuthorNoteTags(effectiveAuthorNote, chatCharacter || systemPersonaChar || character);
       if (resolvedAuthorNote) {
         systemMsg += `\n\n[AUTHOR'S NOTE - Writing style guidance for this response]\n${resolvedAuthorNote}`;
       }
     }
 
-    const hasSummary = systemMsg.includes('[PREVIOUS STORY SUMMARY]');
-    console.log(`[Summary] System prompt includes summary: ${hasSummary}`);
+    console.log(`[Summary] System prompt includes summary: ${systemMsg.includes('[PREVIOUS STORY SUMMARY]')}`);
     return systemMsg;
-  }, [settings, userProfile, MEMORY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt, buildNarratorSystemPrompt, buildRoleplayRosterBlock, getRoleplayUserName, getMultiRoleContextBlock, applyAuthorNoteTags, activeConversation, conversations]);
+  }, [settings, userProfile, MEMORY_API_URL, primaryIsAPI, fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt, buildSystemPersonaPrompt, buildNarratorSystemPrompt, buildRoleplayRosterBlock, getRoleplayUserName, getMultiRoleContextBlock, applyAuthorNoteTags, getActiveSystemPersonaContext, memoryContext, resolveAgenticUserId, setLastAgenticInjectMeta]);
+
+  const ROLLING_MEMORY_HEADER =
+    '\n\n[CONVERSATION CONTINUITY MEMORY]\nStructured recap of earlier turns in this chat (may omit verbatim wording). Treat as authoritative background; prefer consistency with the verbatim recent turns that follow.\n';
+
+  const prepareApiHistoryWithRollingMemory = useCallback(
+    async ({ postUserHistory, baseSystemMsg, conversationId, effectiveMaxTokens }) => {
+      const filterChat = (msgs) =>
+        (msgs || []).filter(
+          (msg) =>
+            (msg?.role === 'user' || msg?.role === 'bot') &&
+            typeof msg?.content === 'string' &&
+            msg.content.length > 0
+        );
+
+      const s = settingsRef.current;
+      const pack = bookModePackingOverridesRef.current;
+      const contextWindowTokens = clampApiContextWindowTokens(
+        pack?.apiContextWindowTokens ?? s.apiContextWindowTokens
+      );
+      const verbatimBudget = pack?.verbatimTokenBudget != null
+        ? Math.max(2048, Number(pack.verbatimTokenBudget) || 98304)
+        : Math.max(2048, Number(s.apiRecentVerbatimTokenBudget) || 32000);
+      const rollingEnabled =
+        pack?.forceRollingMemory === true ||
+        (!!primaryIsAPI && !!s.apiRollingMemoryEnabled);
+
+      if (!primaryIsAPI || !rollingEnabled) {
+        const selectedHistory = selectApiHistoryWithinContext({
+          messages: postUserHistory,
+          systemPrompt: baseSystemMsg,
+          maxContextTokens: contextWindowTokens,
+          reservedOutputTokens: effectiveMaxTokens,
+          minMessages: 3
+        });
+        return { systemMsg: baseSystemMsg, selectedHistory };
+      }
+
+      const conv = (conversationsRef.current || []).find((c) => c.id === conversationId);
+      let rollingPack = (conv?.rollingMemoryPack || '').trim();
+      let foldCount = Number.isFinite(conv?.rollingMemoryFoldCount) ? conv.rollingMemoryFoldCount : 0;
+      const pendingFold = Number.isFinite(conv?.rollingMemoryFoldCountPending) ? conv.rollingMemoryFoldCountPending : null;
+
+      const draftSelected = selectApiHistoryWithinContext({
+        messages: postUserHistory,
+        systemPrompt: baseSystemMsg + (rollingPack ? `${ROLLING_MEMORY_HEADER}${rollingPack}\n` : ''),
+        maxContextTokens: contextWindowTokens,
+        reservedOutputTokens: effectiveMaxTokens,
+        maxHistoryTokens: verbatimBudget,
+        minMessages: 3
+      });
+
+      const chatMessages = filterChat(postUserHistory);
+      const oldestSel = draftSelected[0];
+      const vStart = oldestSel ? chatMessages.findIndex((m) => m.id === oldestSel.id) : chatMessages.length;
+      const safeVStart = vStart >= 0 ? vStart : chatMessages.length;
+
+      // Non-blocking compaction: use the last saved pack immediately, and update the pack in the background.
+      // This prevents an extra long API call from delaying every chat response.
+      const effectiveFoldCursor = Math.min(
+        Math.max(0, Math.max(foldCount, pendingFold ?? 0)),
+        safeVStart
+      );
+      const toFold = chatMessages.slice(effectiveFoldCursor, safeVStart);
+
+      const inFlightKey = conversationId || '__none__';
+      const isInFlight = Boolean(rollingMemoryCompactionInFlightRef.current[inFlightKey]);
+      if (toFold.length > 0 && !isInFlight && primaryModel && PRIMARY_API_URL) {
+        rollingMemoryCompactionInFlightRef.current[inFlightKey] = true;
+        // Mark the fold range as pending right away so we don't queue duplicate jobs while the API is slow.
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === conversationId
+              ? { ...c, rollingMemoryFoldCountPending: safeVStart }
+              : c
+          )
+        );
+
+        const userLabel = getRoleplayUserName();
+        // Fire-and-forget job: do not await.
+        void (async () => {
+          try {
+            const nextPack = await mergeRollingMemoryPack({
+              apiBaseUrl: PRIMARY_API_URL,
+              modelName: primaryModel,
+              primaryIsAPI,
+              settings,
+              existingPack: rollingPack,
+              messagesToFold: toFold,
+              formatPrompt,
+              cleanModelOutput,
+              getSpeakerLabel: (m) =>
+                m.role === 'user' ? userLabel : (m.characterName || 'Assistant')
+            });
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === conversationId
+                  ? {
+                    ...c,
+                    rollingMemoryPack: (nextPack || '').trim(),
+                    rollingMemoryFoldCount: safeVStart,
+                    rollingMemoryFoldCountPending: null
+                  }
+                  : c
+              )
+            );
+          } catch (e) {
+            console.warn('[rolling memory] compaction failed', e);
+            // Clear pending so we can retry later.
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === conversationId
+                  ? { ...c, rollingMemoryFoldCountPending: null }
+                  : c
+              )
+            );
+          } finally {
+            rollingMemoryCompactionInFlightRef.current[inFlightKey] = false;
+          }
+        })();
+      }
+
+      const systemMsg = baseSystemMsg + (rollingPack ? `${ROLLING_MEMORY_HEADER}${rollingPack}\n` : '');
+      const selectedHistory = selectApiHistoryWithinContext({
+        messages: postUserHistory,
+        systemPrompt: systemMsg,
+        maxContextTokens: contextWindowTokens,
+        reservedOutputTokens: effectiveMaxTokens,
+        maxHistoryTokens: verbatimBudget,
+        minMessages: 3
+      });
+
+      return { systemMsg, selectedHistory };
+    },
+    [primaryIsAPI, primaryModel, PRIMARY_API_URL, formatPrompt, setConversations, getRoleplayUserName]
+  );
 
   // In AppContext.jsx, replace the entire generateReply function
   const generateReply = useCallback(async (text, recentMessages, onToken = null, options = {}) => {
-    const { authorNote = null, webSearchEnabled = false, speakerCharacterId = null, requestPurpose = null } = options;
+    const {
+      authorNote = null,
+      webSearchEnabled = false,
+      speakerCharacterId = null,
+      requestPurpose = null,
+      onWebSearchMeta = null,
+      modelName: modelNameOverride = null,
+    } = options;
     const speakerCharacter = await resolveSpeakerCharacter(text, recentMessages, { speakerCharacterId });
-    const systemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, { includeAuthorNote: false });
+    const baseSystemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, {
+      includeAuthorNote: false,
+      conversationId: activeConversationRef.current || activeConversation,
+    });
     console.log(`[Summary] Attaching summaryContext to generateReply: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
     // --- Unified Payload Construction (Matching sendMessage exactly) ---
@@ -2847,29 +4744,99 @@ Return ONLY valid JSON:
       antiRepetitionMode = false, use_rag, selectedDocuments = [], streamResponses
     } = settings;
 
-    const historyLimitLocal = 15;
-    const historyLimitAPI = 12;
-    const currentHistoryLimit = primaryIsAPI ? historyLimitAPI : historyLimitLocal;
+    const historyLimitLocal = 30;
+    const effectiveMaxTokens = (settings.max_tokens != null && settings.max_tokens > 0) ? settings.max_tokens : 1_000_000;
+    let systemMsg = baseSystemMsg;
+    let selectedHistory;
+    if (primaryIsAPI) {
+      const prep = await prepareApiHistoryWithRollingMemory({
+        postUserHistory: recentMessages,
+        baseSystemMsg,
+        conversationId: activeConversationRef.current || activeConversation,
+        effectiveMaxTokens
+      });
+      systemMsg = prep.systemMsg;
+      selectedHistory = prep.selectedHistory;
+    } else {
+      selectedHistory = recentMessages.slice(-historyLimitLocal);
+    }
 
-    const payload = {
-      directProfileInjection: settings.directProfileInjection,
-      prompt: formatPrompt(recentMessages.slice(-currentHistoryLimit), primaryModel, systemMsg),
-      model_name: primaryModel,
-      temperature, top_p, top_k, repetition_penalty,
-      frequency_penalty: frequencyPenalty,
-      presence_penalty: presencePenalty,
-      anti_repetition_mode: antiRepetitionMode,
-      use_rag,
-      rag_docs: selectedDocuments,
-      use_web_search: webSearchEnabled,
-      gpu_id: 0,
-      userProfile: { id: userProfile?.id ?? 'anonymous' },
-      authorNote: applyAuthorNoteTags(authorNote || (settings.authorNote && settings.authorNote.trim()) || null, speakerCharacter) || undefined,
-      summaryContext: summaryContextForRequest,
-      memoryEnabled: true,
-      stream: streamResponses,
-      request_purpose: requestPurpose || undefined
-    };
+      const route = resolveUnifiedRequestRoute({
+        primaryModel,
+        primaryIsAPI,
+        settings,
+        requestPurpose,
+        overrideModel: modelNameOverride || null,
+      });
+      const effectivePrimaryModel = modelNameOverride || primaryModel || route.effectiveModel;
+      const promptModelName = route.selectedModel || effectivePrimaryModel;
+      const requestModelName = route.effectiveModel || effectivePrimaryModel;
+      if (!requestModelName) {
+        throw new Error('No API endpoint available for routing. Enable at least one endpoint.');
+      }
+      const routerTraceId = createRouteTraceId();
+      logRouteTrace({
+        action: 'variant',
+        route,
+        requestPurpose,
+        traceId: routerTraceId,
+      });
+      assertRouteContractOrThrow({
+        route,
+        requestPurpose,
+        traceId: routerTraceId,
+        action: 'variant',
+      });
+
+      const payload = mergeNanoGptMemoryIntoPayload(
+        {
+          directProfileInjection: settings.directProfileInjection,
+          prompt: formatPrompt(selectedHistory, promptModelName || effectivePrimaryModel, systemMsg),
+          model_name: requestModelName,
+          max_tokens: effectiveMaxTokens,
+          temperature,
+          top_p,
+          top_k,
+          repetition_penalty,
+          frequency_penalty: frequencyPenalty,
+          presence_penalty: presencePenalty,
+          anti_repetition_mode: antiRepetitionMode,
+          use_rag,
+          rag_docs: selectedDocuments,
+          use_web_search: webSearchEnabled,
+          ...(webSearchEnabled ? getWebSearchResearchPayload(settings) : {}),
+          gpu_id: 0,
+          userProfile: { id: userProfile?.id ?? 'anonymous' },
+          authorNote:
+            applyAuthorNoteTags(authorNote || (settings.authorNote && settings.authorNote.trim()) || null, speakerCharacter) ||
+            undefined,
+          summaryContext: summaryContextForRequest,
+          injectTimestamp: injectTimestampRef.current,
+          userProfileReinforcement: profileReinforcementRef.current || undefined,
+          memoryEnabled: settings.directProfileInjection !== true,
+          stream: streamResponses,
+          active_character: speakerCharacter || null,
+          request_purpose: requestPurpose || undefined,
+          selected_model: route.selectedModel || undefined,
+          round_robin_enabled: route.autoEnabled,
+          ...getSystemPersonaGenerateExtras(activeConversationRef.current || activeConversation),
+        },
+        settings
+      );
+
+      // Attachments (minimal): if a vision-capable model is selected, pass the first image through.
+      // Attach intensity parameters if present
+      if (typeof window !== 'undefined' && window.__intensityParams) {
+        const ip = window.__intensityParams();
+        if (ip) payload.intensity_params = ip;
+      }
+      // Backend expects raw base64 bytes (not the data: URL prefix).
+      const firstImage = Array.isArray(options?.images) ? options.images[0] : null;
+      if (firstImage?.base64 && firstImage?.type) {
+        const b64 = String(firstImage.base64);
+        payload.image_base64 = b64.includes(',') ? b64.split(',')[1] : b64;
+        payload.image_type = String(firstImage.type);
+      }
 
     let attempts = 0;
     const maxAttempts = primaryIsAPI ? 2 : 1;
@@ -2884,12 +4851,27 @@ Return ONLY valid JSON:
         const controller = new AbortController();
         const res = await fetch(`${PRIMARY_API_URL}/generate`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Router-Trace-Id': routerTraceId,
+          },
           body: JSON.stringify(payload),
           signal: controller.signal
         });
 
-        if (!res.ok) throw new Error(`Status ${res.status}`);
+        if (!res.ok) {
+          let detail = `Status ${res.status}`;
+          try {
+            const errBody = await res.json();
+            detail = formatApiError(errBody, detail);
+          } catch {
+            try {
+              const errText = await res.text();
+              if (errText?.trim()) detail = errText.trim();
+            } catch { /* ignore */ }
+          }
+          throw new Error(detail);
+        }
 
         if (streamResponses) {
           const reader = res.body.getReader();
@@ -2897,6 +4879,28 @@ Return ONLY valid JSON:
           let accumulatedText = '';
           let sseBuffer = '';
           let doneStreaming = false;
+          const capReasoning = Boolean(options?.modelCapabilities?.reasoning);
+          const thinkDebugModel =
+            resolveEndpointDisplay(effectivePrimaryModel, settings)?.modelId
+            || options?.modelName
+            || effectivePrimaryModel;
+          const modelImpliesReasoning = Boolean(
+            inferCapabilitiesFromModelId(thinkDebugModel).reasoning,
+          );
+          const debugThinking = isThinkingStreamDebugEnabled({
+            modelName: thinkDebugModel,
+            settings,
+          });
+          const logThinkingChunk = createThinkingStreamChunkLogger({
+            modelName: thinkDebugModel,
+            settings,
+            label: 'generateReply',
+          });
+          const reasoningStream = createReasoningStreamController({
+            capReasoning,
+            modelImpliesReasoning,
+            debugThinking,
+          });
 
           while (!doneStreaming) {
             const { done, value } = await reader.read();
@@ -2914,23 +4918,74 @@ Return ONLY valid JSON:
                   doneStreaming = true;
                   break;
                 }
+                let parsed;
                 try {
-                  const parsed = JSON.parse(data);
-                  if (parsed.text) {
-                    accumulatedText += parsed.text;
-                    const currentFull = cleanModelOutput(accumulatedText);
-                    if (onToken) onToken(parsed.text, currentFull);
+                  parsed = JSON.parse(data);
+                } catch {
+                  continue;
+                }
+                if (parsed.route_meta) {
+                  setLastRequestRouteMeta({
+                    ...parsed.route_meta,
+                    receivedAt: Date.now(),
+                  });
+                }
+                if (parsed.web_search_meta && onWebSearchMeta) {
+                  onWebSearchMeta(parsed.web_search_meta);
+                }
+                const { text: deltaText, reasoning: deltaReasoning, error: sseError } = extractSseStreamParts(parsed);
+                if (sseError) {
+                  throw new Error(sseError);
+                }
+                if (deltaText || deltaReasoning) {
+                  logThinkingChunk(deltaText, deltaReasoning);
+                }
+                if (deltaText) accumulatedText += deltaText;
+                const streamUpdate = reasoningStream.processChunk({
+                  deltaText,
+                  deltaReasoning,
+                });
+                const { visibleDelta, visibleText, reasoningText, reasoningEnabled } = streamUpdate;
+                if (deltaText || deltaReasoning) {
+                  if (onToken) {
+                    onToken(visibleDelta || '', visibleText, {
+                      reasoningDelta: streamUpdate.reasoningDelta,
+                      reasoningText,
+                      reasoningEnabled,
+                      reasoningStreaming: streamUpdate.reasoningStreaming,
+                      reasoningStartedAtMs: streamUpdate.reasoningStartedAtMs,
+                      reasoningSeconds: streamUpdate.reasoningSeconds,
+                      reasoningCapabilitySource: streamUpdate.reasoningCapabilitySource,
+                    });
                   }
-                  if (parsed.done) {
-                    doneStreaming = true;
-                    break;
-                  }
-                } catch (e) { }
+                }
+                if (parsed.done) {
+                  doneStreaming = true;
+                  break;
+                }
               }
             }
           }
 
-          const cleanedText = cleanModelOutput(accumulatedText);
+          const finStream = reasoningStream.finalize();
+          let finalVisible = finStream.visible || accumulatedText;
+          const finalReasoning = finStream.reasoning || '';
+          const reasoningEnabled = finStream.reasoningEnabled;
+          let cleanedText = cleanModelOutput(finalVisible);
+          if (!cleanedText && reasoningEnabled && String(finalReasoning || '').trim()) {
+            cleanedText = cleanModelOutput(String(finalReasoning).trim());
+          }
+          if (onToken) {
+            onToken('', cleanedText || finalVisible, {
+              reasoningText: String(finalReasoning || '').trim(),
+              reasoningEnabled: reasoningEnabled === true,
+              reasoningStreaming: false,
+              reasoningStartedAtMs: finStream.reasoningStartedAtMs,
+              reasoningSeconds: finStream.reasoningSeconds,
+              reasoningCapabilitySource: finStream.reasoningCapabilitySource,
+              finalize: true,
+            });
+          }
           // If empty and we have attempts left, retry
           if (primaryIsAPI && !cleanedText && attempts < maxAttempts) {
             continue;
@@ -2939,6 +4994,11 @@ Return ONLY valid JSON:
           success = true;
         } else {
           const data = await res.json();
+          const routeMeta = extractRouteMetaFromGenerateResult(data, res.headers);
+          if (routeMeta?.effectiveModel) setLastRequestRouteMeta(routeMeta);
+          if (data.web_search_meta && onWebSearchMeta) {
+            onWebSearchMeta(data.web_search_meta);
+          }
           const cleaned = cleanModelOutput(data.text);
           if (primaryIsAPI && !cleaned && attempts < maxAttempts) {
             continue;
@@ -2960,12 +5020,14 @@ Return ONLY valid JSON:
     settings,
     userProfile?.id,
     PRIMARY_API_URL,
+    activeConversation,
     resolveSpeakerCharacter,
     getGenerationSystemPrompt,
+    prepareApiHistoryWithRollingMemory,
     formatPrompt,
     cleanModelOutput,
     summaryContextForRequest,
-    applyAuthorNoteTags
+    applyAuthorNoteTags,
   ]);
 
   // In AppContext.jsx, replace the entire generateReplyWithOpenAI function
@@ -2976,25 +5038,15 @@ Return ONLY valid JSON:
     const targetGpuId = 0;
 
     const convertToOpenAIMessages = (messages, systemPrompt) => {
-      // --- DYNAMIC CONTEXT PRUNING for OpenAI format (8k Limit) ---
-      const MAX_CONTEXT_TOKENS = 7500;
-      const estimateTokens = (str) => Math.ceil((str || '').length / 4);
-      const systemTokens = estimateTokens(systemPrompt);
-      let availableTokens = MAX_CONTEXT_TOKENS - systemTokens;
-
-      const filtered = messages.filter(msg => (msg.role === 'user' || msg.role === 'bot') && typeof msg.content === 'string');
-      const reversed = [...filtered].reverse();
-      let sliced = [];
-      let currentTokens = 0;
-      const MIN_CONTINUITY = 5;
-
-      for (let i = 0; i < reversed.length; i++) {
-        const msg = reversed[i];
-        const msgTokens = estimateTokens(msg.content) + 10;
-        if (i >= MIN_CONTINUITY && (currentTokens + msgTokens) > availableTokens) break;
-        sliced.unshift(msg);
-        currentTokens += msgTokens;
-      }
+      const effectiveMaxTokens = (settings.max_tokens != null && settings.max_tokens > 0) ? settings.max_tokens : 1_000_000;
+      const contextWindowTokens = clampApiContextWindowTokens(settings.apiContextWindowTokens);
+      const sliced = selectApiHistoryWithinContext({
+        messages,
+        systemPrompt,
+        maxContextTokens: contextWindowTokens,
+        reservedOutputTokens: effectiveMaxTokens,
+        minMessages: 5
+      });
 
       const openAiMsgs = sliced.map(msg => ({
         role: msg.role === 'bot' ? 'assistant' : 'user',
@@ -3004,7 +5056,7 @@ Return ONLY valid JSON:
       return [{ role: 'system', content: systemPrompt }, ...openAiMsgs];
     };
 
-    const agentMem = await fetchMemoriesFromAgent(text);
+    const agentMem = settings.directProfileInjection ? [] : await fetchMemoriesFromAgent(text);
     const lore = await fetchTriggeredLore(text, activeCharacter);
     let memoryContext = '';
 
@@ -3033,9 +5085,7 @@ Return ONLY valid JSON:
       systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
     }
 
-    const historyLimit = 20; // Slicing history for API models
-    const slicedMessages = recentMessages.slice(-historyLimit);
-    const finalMessages = convertToOpenAIMessages(slicedMessages, systemMsg);
+    const finalMessages = convertToOpenAIMessages(recentMessages, systemMsg);
 
     if (settings.streamResponses) {
       const response = await generateReplyOpenAI({
@@ -3069,28 +5119,637 @@ Return ONLY valid JSON:
     buildSystemPrompt, generateReplyOpenAI, processOpenAIStream,
     PRIMARY_API_URL, SECONDARY_API_URL
   ]);
-  const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNote = null) => {
+
+  const beginBookAutomationPacking = useCallback(() => {
+    const s = settingsRef.current;
+    bookModePackingOverridesRef.current = {
+      apiContextWindowTokens: clampApiContextWindowTokens(
+        s.bookWritingApiContextTokens ?? API_CONTEXT_WINDOW_MAX
+      ),
+      verbatimTokenBudget: Math.max(2048, Number(s.bookWritingVerbatimTokenBudget) || 98304),
+      forceRollingMemory: true,
+    };
+  }, []);
+
+  const endBookAutomationPacking = useCallback(() => {
+    bookModePackingOverridesRef.current = null;
+  }, []);
+
+  const buildBookAutomationExport = useCallback(() => {
+    const msgs = messagesRef.current?.length ? messagesRef.current : messages;
+    const blocks = [];
+    for (let i = 0; i < msgs.length; i += 1) {
+      const m = msgs[i];
+      if (m?.role !== 'bot' || typeof m.content !== 'string' || !m.content.trim()) continue;
+      const prev = msgs[i - 1];
+      if (
+        prev?.role === 'user' &&
+        prev?.bookAutomation?.kind === 'chapter' &&
+        typeof prev.content === 'string'
+      ) {
+        blocks.push(m.content.trim());
+      }
+    }
+    return blocks.join('\n\n---\n\n');
+  }, [messages]);
+
+  const runBookAutomationChapter = useCallback(
+    async ({ chapterIndex, title, intent, isFirstInRun }) => {
+      if (!primaryModel) {
+        return { ok: false, error: 'No model selected.' };
+      }
+      if (!primaryIsAPI) {
+        return { ok: false, error: 'Book automation needs an API primary model (expanded context).' };
+      }
+      const convId = activeConversationRef.current;
+      if (!convId) {
+        return { ok: false, error: 'No active conversation.' };
+      }
+
+      const s = settingsRef.current;
+      const refusalMaxChars = Math.max(200, Number(s.bookRefusalMaxChars) || 2200);
+      const preamble = (s.bookWordFloorPreamble || '').trim();
+      const titleLine = (title || '').trim();
+      const intentText = (intent || '').trim();
+      const body = [titleLine && `# ${titleLine}`, intentText].filter(Boolean).join('\n\n');
+      const userContent =
+        isFirstInRun && preamble ? `${preamble}\n\n${body}` : body;
+
+      const userMsg = {
+        id: generateUniqueId(),
+        role: 'user',
+        content: userContent,
+        bookAutomation: { kind: 'chapter', index: chapterIndex },
+      };
+      if (s.multiRoleMode && userCharacter) {
+        userMsg.characterId = userCharacter.id;
+        userMsg.characterName = userCharacter.name;
+        userMsg.avatar = getActiveCharacterAvatar(userCharacter);
+      }
+
+      const postUserHistory = [...messagesRef.current, userMsg];
+      const botId = generateUniqueId();
+      const char = activeCharacterRef.current || activeCharacter;
+      const placeholderBot = {
+        id: botId,
+        role: 'bot',
+        content: '',
+        modelId: 'primary',
+        characterId: char?.id,
+        characterName: char?.name,
+        avatar: getActiveCharacterAvatar(char),
+        isStreaming: false,
+        bookAutomation: { kind: 'chapter', index: chapterIndex },
+      };
+
+      setIsGenerating(true);
+      let lastError = null;
+
+      try {
+        for (let attempt = 1; attempt <= 5; attempt += 1) {
+          if (attempt === 1) {
+            flushSync(() => {
+              setMessages([...postUserHistory, placeholderBot]);
+            });
+          } else {
+            flushSync(() => {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === botId ? { ...m, content: '', isStreaming: false } : m))
+              );
+            });
+          }
+
+          const speakerCharacter = await resolveSpeakerCharacter(userContent, postUserHistory, {});
+          const baseSystemMsg = await getGenerationSystemPrompt(userContent, speakerCharacter, null, {
+            includeAuthorNote: false,
+          });
+          const effectiveMaxTokens =
+            s.max_tokens != null && s.max_tokens > 0 ? s.max_tokens : 1_000_000;
+          const prep = await prepareApiHistoryWithRollingMemory({
+            postUserHistory,
+            baseSystemMsg,
+            conversationId: convId,
+            effectiveMaxTokens,
+          });
+          const systemMsg = prep.systemMsg;
+          const selectedHistory = prep.selectedHistory;
+          const effectiveAuthorNote =
+            applyAuthorNoteTags(
+              s.authorNote && s.authorNote.trim() ? s.authorNote.trim() : null,
+              speakerCharacter
+            ) || undefined;
+
+          const payload = mergeNanoGptMemoryIntoPayload(
+            {
+              directProfileInjection: s.directProfileInjection,
+              prompt: formatPrompt(selectedHistory, primaryModel, systemMsg),
+              model_name: primaryModel,
+              max_tokens: effectiveMaxTokens,
+              temperature: s.temperature,
+              top_p: s.top_p,
+              top_k: s.top_k,
+              repetition_penalty: s.repetition_penalty,
+              frequency_penalty: s.frequencyPenalty ?? 0,
+              presence_penalty: s.presencePenalty ?? 0,
+              anti_repetition_mode: s.antiRepetitionMode,
+              use_rag: s.use_rag,
+              rag_docs: s.selectedDocuments || [],
+              use_web_search: false,
+              gpu_id: 0,
+              userProfile: { id: userProfile?.id ?? 'anonymous' },
+              authorNote: effectiveAuthorNote,
+              summaryContext: summaryContextForRequest,
+              injectTimestamp: injectTimestampRef.current,
+              userProfileReinforcement: profileReinforcementRef.current || undefined,
+              memoryEnabled: s.directProfileInjection !== true,
+              stream: false,
+              active_character: speakerCharacter || null,
+            },
+            s
+          );
+
+          const controller = new AbortController();
+          setAbortController(controller);
+          try {
+            const res = await fetch(`${PRIMARY_API_URL}/generate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            });
+            if (!res.ok) {
+              lastError = new Error(`HTTP ${res.status}`);
+              if (attempt >= 5) break;
+              continue;
+            }
+            const data = await res.json();
+            const cleanedText = cleanModelOutput(data.text || '');
+            if (!cleanedText || cleanedText.length < refusalMaxChars) {
+              lastError = new Error('Response too short (likely refusal).');
+              if (attempt >= 5) {
+                flushSync(() => {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === botId
+                        ? {
+                            ...m,
+                            content: `[Book automation: chapter failed after 5 attempts — response too short or empty.]`,
+                            isStreaming: false,
+                          }
+                        : m
+                    )
+                  );
+                });
+                return { ok: false, error: lastError.message };
+              }
+              continue;
+            }
+
+            flushSync(() => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === botId
+                    ? { ...m, content: cleanedText, isStreaming: false, bookAutomation: { kind: 'chapter', index: chapterIndex } }
+                    : m
+                )
+              );
+            });
+            observeConversationWithAgent(userContent, cleanedText);
+            const apiOpts = primaryIsAPI
+              ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel }
+              : null;
+            const userIdForAgentic = resolveAgenticUserId();
+            processAgenticMemoryIfEnabled(
+              userIdForAgentic,
+              speakerCharacter,
+              userContent,
+              cleanedText,
+              apiOpts
+            );
+            return { ok: true, content: cleanedText };
+          } catch (err) {
+            if (err?.name === 'AbortError') {
+              flushSync(() => {
+                setMessages((prev) => prev.filter((m) => m.id !== botId && m.id !== userMsg.id));
+              });
+              return { ok: false, error: 'Cancelled.', cancelled: true };
+            }
+            lastError = err;
+            if (attempt >= 5) break;
+          } finally {
+            setAbortController(null);
+          }
+        }
+
+        flushSync(() => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === botId
+                ? {
+                    ...m,
+                    content: `[Book automation: chapter failed after retries: ${lastError?.message || 'unknown error'}]`,
+                    isStreaming: false,
+                  }
+                : m
+            )
+          );
+        });
+        return { ok: false, error: lastError?.message || 'Generation failed.' };
+      } finally {
+        setIsGenerating(false);
+      }
+    },
+    [
+      primaryModel,
+      primaryIsAPI,
+      PRIMARY_API_URL,
+      userCharacter,
+      activeCharacter,
+      userProfile?.id,
+      memoryContext?.activeProfileId,
+      resolveSpeakerCharacter,
+      getGenerationSystemPrompt,
+      prepareApiHistoryWithRollingMemory,
+      formatPrompt,
+      cleanModelOutput,
+      mergeNanoGptMemoryIntoPayload,
+      applyAuthorNoteTags,
+      summaryContextForRequest,
+      observeConversationWithAgent,
+      processAgenticMemoryIfEnabled,
+    ]
+  );
+
+  const runBookAutomationQuickPrompt = useCallback(
+    async (promptText) => {
+      const t = (promptText || '').trim();
+      if (!t) return { ok: false, error: 'Empty prompt.' };
+      if (!primaryModel || !primaryIsAPI) {
+        return { ok: false, error: 'Needs API primary model.' };
+      }
+      const convId = activeConversationRef.current;
+      if (!convId) return { ok: false, error: 'No active conversation.' };
+
+      const s = settingsRef.current;
+      const refusalMaxChars = Math.max(200, Number(s.bookRefusalMaxChars) || 2200);
+      const userMsg = { id: generateUniqueId(), role: 'user', content: t };
+      if (s.multiRoleMode && userCharacter) {
+        userMsg.characterId = userCharacter.id;
+        userMsg.characterName = userCharacter.name;
+        userMsg.avatar = getActiveCharacterAvatar(userCharacter);
+      }
+      const postUserHistory = [...messagesRef.current, userMsg];
+      const botId = generateUniqueId();
+      const char = activeCharacterRef.current || activeCharacter;
+      const placeholderBot = {
+        id: botId,
+        role: 'bot',
+        content: '',
+        modelId: 'primary',
+        characterId: char?.id,
+        characterName: char?.name,
+        avatar: getActiveCharacterAvatar(char),
+        isStreaming: false,
+      };
+
+      setIsGenerating(true);
+      let lastError = null;
+      try {
+        for (let attempt = 1; attempt <= 5; attempt += 1) {
+          if (attempt === 1) {
+            flushSync(() => setMessages([...postUserHistory, placeholderBot]));
+          } else {
+            flushSync(() => {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === botId ? { ...m, content: '', isStreaming: false } : m))
+              );
+            });
+          }
+
+          const speakerCharacter = await resolveSpeakerCharacter(t, postUserHistory, {});
+          const baseSystemMsg = await getGenerationSystemPrompt(t, speakerCharacter, null, {
+            includeAuthorNote: false,
+          });
+          const effectiveMaxTokens =
+            s.max_tokens != null && s.max_tokens > 0 ? s.max_tokens : 1_000_000;
+          const prep = await prepareApiHistoryWithRollingMemory({
+            postUserHistory,
+            baseSystemMsg,
+            conversationId: convId,
+            effectiveMaxTokens,
+          });
+          const effectiveAuthorNote =
+            applyAuthorNoteTags(
+              s.authorNote && s.authorNote.trim() ? s.authorNote.trim() : null,
+              speakerCharacter
+            ) || undefined;
+
+          const payload = mergeNanoGptMemoryIntoPayload(
+            {
+              directProfileInjection: s.directProfileInjection,
+              prompt: formatPrompt(prep.selectedHistory, primaryModel, prep.systemMsg),
+              model_name: primaryModel,
+              max_tokens: effectiveMaxTokens,
+              temperature: s.temperature,
+              top_p: s.top_p,
+              top_k: s.top_k,
+              repetition_penalty: s.repetition_penalty,
+              frequency_penalty: s.frequencyPenalty ?? 0,
+              presence_penalty: s.presencePenalty ?? 0,
+              anti_repetition_mode: s.antiRepetitionMode,
+              use_rag: s.use_rag,
+              rag_docs: s.selectedDocuments || [],
+              use_web_search: false,
+              gpu_id: 0,
+              userProfile: { id: userProfile?.id ?? 'anonymous' },
+              authorNote: effectiveAuthorNote,
+              summaryContext: summaryContextForRequest,
+              injectTimestamp: injectTimestampRef.current,
+              userProfileReinforcement: profileReinforcementRef.current || undefined,
+              memoryEnabled: s.directProfileInjection !== true,
+              stream: false,
+              active_character: speakerCharacter || null,
+            },
+            s
+          );
+
+          const controller = new AbortController();
+          setAbortController(controller);
+          try {
+            const res = await fetch(`${PRIMARY_API_URL}/generate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            });
+            if (!res.ok) {
+              lastError = new Error(`HTTP ${res.status}`);
+              if (attempt >= 5) break;
+              continue;
+            }
+            const data = await res.json();
+            const cleanedText = cleanModelOutput(data.text || '');
+            if (!cleanedText || cleanedText.length < refusalMaxChars) {
+              lastError = new Error('Response too short.');
+              if (attempt >= 5) {
+                flushSync(() => {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === botId
+                        ? { ...m, content: '[Quick prompt: failed after 5 attempts.]', isStreaming: false }
+                        : m
+                    )
+                  );
+                });
+                return { ok: false, error: lastError.message };
+              }
+              continue;
+            }
+            flushSync(() => {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === botId ? { ...m, content: cleanedText, isStreaming: false } : m))
+              );
+            });
+            observeConversationWithAgent(t, cleanedText);
+            const apiOpts = primaryIsAPI
+              ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel }
+              : null;
+            const userIdForAgentic = resolveAgenticUserId();
+            processAgenticMemoryIfEnabled(
+              userIdForAgentic,
+              speakerCharacter,
+              t,
+              cleanedText,
+              apiOpts
+            );
+            return { ok: true, content: cleanedText };
+          } catch (err) {
+            if (err?.name === 'AbortError') {
+              flushSync(() => {
+                setMessages((prev) => prev.filter((m) => m.id !== botId && m.id !== userMsg.id));
+              });
+              return { ok: false, error: 'Cancelled.', cancelled: true };
+            }
+            lastError = err;
+            if (attempt >= 5) break;
+          } finally {
+            setAbortController(null);
+          }
+        }
+        return { ok: false, error: lastError?.message || 'Failed.' };
+      } finally {
+        setIsGenerating(false);
+      }
+    },
+    [
+      primaryModel,
+      primaryIsAPI,
+      PRIMARY_API_URL,
+      userCharacter,
+      activeCharacter,
+      userProfile?.id,
+      memoryContext?.activeProfileId,
+      resolveSpeakerCharacter,
+      getGenerationSystemPrompt,
+      prepareApiHistoryWithRollingMemory,
+      formatPrompt,
+      cleanModelOutput,
+      mergeNanoGptMemoryIntoPayload,
+      applyAuthorNoteTags,
+      summaryContextForRequest,
+      observeConversationWithAgent,
+      processAgenticMemoryIfEnabled,
+    ]
+  );
+
+  /**
+   * Same /generate pipeline as chat (profile, character, rolling memory, RAG, summary, author note)
+   * with request_purpose book_chapter_json_outline — model must return only a JSON chapter array.
+   * Does not append messages to the chat.
+   */
+  const generateBookChapterJsonOutline = useCallback(
+    async (notes, rawUploadText, adaptationGoal = '') => {
+      const n = String(notes || '').trim();
+      const u = String(rawUploadText || '').trim();
+      const g = String(adaptationGoal || '').trim();
+      const bundle = [n, u].filter(Boolean).join('\n\n---\n\n');
+      if (!bundle && !g) {
+        return { ok: false, error: 'Add notes, upload a .txt, and/or a purpose/direction (at least one).' };
+      }
+      if (!primaryModel || !primaryIsAPI) {
+        return { ok: false, error: 'Needs an API primary model (same as book run).' };
+      }
+      const convId = activeConversationRef.current;
+      if (!convId) return { ok: false, error: 'No active conversation.' };
+
+      const s = settingsRef.current;
+      const userContent = buildBookChapterJsonOutlineUserMessage(bundle, g);
+      const userMsg = {
+        id: generateUniqueId(),
+        role: 'user',
+        content: userContent,
+      };
+      if (s.multiRoleMode && userCharacter) {
+        userMsg.characterId = userCharacter.id;
+        userMsg.characterName = userCharacter.name;
+        userMsg.avatar = getActiveCharacterAvatar(userCharacter);
+      }
+      const postUserHistory = [...messagesRef.current, userMsg];
+
+      setIsGenerating(true);
+      const controller = new AbortController();
+      setAbortController(controller);
+      try {
+        const speakerCharacter = await resolveSpeakerCharacter(userContent, postUserHistory, {});
+        const baseSystemMsg = await getGenerationSystemPrompt(userContent, speakerCharacter, null, {
+          includeAuthorNote: true,
+        });
+        const effectiveMaxTokens =
+          s.max_tokens != null && s.max_tokens > 0 ? s.max_tokens : 1_000_000;
+        const prep = await prepareApiHistoryWithRollingMemory({
+          postUserHistory,
+          baseSystemMsg,
+          conversationId: convId,
+          effectiveMaxTokens,
+        });
+        const effectiveAuthorNote =
+          applyAuthorNoteTags(
+            s.authorNote && s.authorNote.trim() ? s.authorNote.trim() : null,
+            speakerCharacter
+          ) || undefined;
+
+        const payload = mergeNanoGptMemoryIntoPayload(
+          {
+            directProfileInjection: s.directProfileInjection,
+            prompt: formatPrompt(prep.selectedHistory, primaryModel, prep.systemMsg),
+            model_name: primaryModel,
+            max_tokens: effectiveMaxTokens,
+            temperature: s.temperature,
+            top_p: s.top_p,
+            top_k: s.top_k,
+            repetition_penalty: s.repetition_penalty,
+            frequency_penalty: s.frequencyPenalty ?? 0,
+            presence_penalty: s.presencePenalty ?? 0,
+            anti_repetition_mode: s.antiRepetitionMode,
+            use_rag: s.use_rag,
+            rag_docs: s.selectedDocuments || [],
+            use_web_search: false,
+            gpu_id: 0,
+            userProfile: { id: userProfile?.id ?? 'anonymous' },
+            authorNote: effectiveAuthorNote,
+            summaryContext: summaryContextForRequest,
+            injectTimestamp: injectTimestampRef.current,
+            userProfileReinforcement: profileReinforcementRef.current || undefined,
+            memoryEnabled: s.directProfileInjection !== true,
+            stream: false,
+            active_character: speakerCharacter || null,
+            request_purpose: 'book_chapter_json_outline',
+          },
+          s
+        );
+
+        const res = await fetch(`${PRIMARY_API_URL}/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          return { ok: false, error: `HTTP ${res.status}`, raw: null };
+        }
+        const data = await res.json();
+        const cleanedText = cleanModelOutput(data.text || '');
+        const parsed = parseChapterJsonOutlineFromModel(cleanedText);
+        if (!parsed.ok) {
+          return { ok: false, error: parsed.error, raw: cleanedText };
+        }
+        return { ok: true, chapters: parsed.chapters, raw: cleanedText };
+      } catch (err) {
+        if (err?.name === 'AbortError') {
+          return { ok: false, error: 'Cancelled.', cancelled: true, raw: null };
+        }
+        return { ok: false, error: err?.message || String(err), raw: null };
+      } finally {
+        setAbortController(null);
+        setIsGenerating(false);
+      }
+    },
+    [
+      primaryModel,
+      primaryIsAPI,
+      PRIMARY_API_URL,
+      userCharacter,
+      activeCharacter,
+      userProfile?.id,
+      memoryContext?.activeProfileId,
+      resolveSpeakerCharacter,
+      getGenerationSystemPrompt,
+      prepareApiHistoryWithRollingMemory,
+      formatPrompt,
+      cleanModelOutput,
+      mergeNanoGptMemoryIntoPayload,
+      applyAuthorNoteTags,
+      summaryContextForRequest,
+    ]
+  );
+
+  const enrichBotPlaceholder = useCallback(
+    (botMsg, speakerCharacter) =>
+      attachApiBotSpeakerMeta(botMsg, {
+        speakerCharacter,
+        primaryModel,
+        primaryIsAPI,
+        settings: settingsRef.current || settings,
+        catalog: readNanoGptModelsCache().models,
+        characters,
+      }),
+    [primaryModel, primaryIsAPI, settings, characters],
+  );
+
+  const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNote = null, opts = {}) => {
     console.warn('🧠 sendMessage ENTRY — if you do not see this when you hit Send, you are not using this code path.');
+    clearError();
     // Can't send without a model
-    if (!primaryModel) {
+    const autoRouterEnabled = settingsRef.current?.apiEndpointRoundRobinEnabled === true;
+    if (!primaryModel && !autoRouterEnabled) {
       console.warn("📩 [SEND] No model loaded, cannot send message");
+      setApiError('Load a model before sending a message.');
+      return;
+    }
+    if (!portsReady || !PRIMARY_API_URL) {
+      console.warn('📩 [SEND] Backend URL not ready');
+      setApiError('Backend is still starting. Wait a moment and try again.');
       return;
     }
 
     // Auto-create a conversation if none exists
-    let currentConversation = activeConversation;
+    let currentConversation = activeConversationRef.current || activeConversation;
     if (!currentConversation) {
       console.log("📩 [SEND] No active conversation, creating one...");
       const newConv = createNewConversation();
       currentConversation = newConv.id;
-      // Give React a moment to update state
-      await new Promise(resolve => setTimeout(resolve, 50));
+      activeConversationRef.current = currentConversation;
+      startupConversationRestoreRef.current.attempted = true;
+    }
+
+    const convForIntro = conversationsRef.current.find((c) => c.id === currentConversation);
+    if (convForIntro?.introPending) {
+      completeCharacterIntro(currentConversation, {
+        introResult: convForIntro?.characterIntro?.result,
+      });
     }
 
     promptSubmissionStartTime.current = performance.now();
     console.log(`⏱️ [Full Cycle] User submitted prompt: "${text.substring(0, 30)}..."`);
 
     console.log("📩 [SEND] Processing message:", text.substring(0, 30), "…", webSearchEnabled ? "(with web search)" : "");
+
+    if (
+      settings.ttsEnabled
+      && (isPlayingAudio || (typeof window !== 'undefined' && window.streamingAudioPlaying))
+    ) {
+      stopTTS('new_user_message');
+    }
 
     // 1) Append the user message
     const userMsg = {
@@ -3101,9 +5760,10 @@ Return ONLY valid JSON:
     if (settings.multiRoleMode && userCharacter) {
       userMsg.characterId = userCharacter.id;
       userMsg.characterName = userCharacter.name;
-      userMsg.avatar = userCharacter.avatar;
+      userMsg.avatar = getActiveCharacterAvatar(userCharacter);
     }
-    const postUserHistory = [...messages, userMsg];
+    const postUserHistory = [...(messagesRef.current || messages), userMsg];
+    messagesRef.current = postUserHistory;
     setMessages(() => postUserHistory);
     setIsGenerating(true);
 
@@ -3120,7 +5780,7 @@ Return ONLY valid JSON:
             setConversations(cs =>
               cs.map(c =>
                 c.id === currentConversation
-                  ? { ...c, name: title, requiresTitle: false }
+                  ? { ...c, name: title, requiresTitle: false, titleSource: 'first_message' }
                   : c
               )
             );
@@ -3132,7 +5792,7 @@ Return ONLY valid JSON:
         setConversations(cs =>
           cs.map(c =>
             c.id === currentConversation
-              ? { ...c, name: `${text.substring(0, 25)}...`, requiresTitle: false }
+              ? { ...c, name: `${text.substring(0, 25)}...`, requiresTitle: false, titleSource: 'first_message' }
               : c
           )
         );
@@ -3140,7 +5800,10 @@ Return ONLY valid JSON:
 
       // 3) Build System Prompt with layered context
       const speakerCharacter = await resolveSpeakerCharacter(text, postUserHistory);
-      const systemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, { includeAuthorNote: false });
+      const baseSystemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, {
+        includeAuthorNote: false,
+        conversationId: currentConversation,
+      });
       console.log(`[Summary] Attaching summaryContext to sendMessage: ${summaryContextForRequest ? summaryContextForRequest.length : 0} chars`);
 
       // 4) Prepare payload
@@ -3151,47 +5814,136 @@ Return ONLY valid JSON:
 
       const effectiveAuthorNote = applyAuthorNoteTags(authorNote || (settings.authorNote && settings.authorNote.trim()) || null, speakerCharacter) || undefined;
 
-      const historyLimitLocal = 15;
-      const historyLimitAPI = 12; // Reduced for stability
-      const currentHistoryLimit = primaryIsAPI ? historyLimitAPI : historyLimitLocal;
+      const effectiveMaxTokens = (settings.max_tokens != null && settings.max_tokens > 0) ? settings.max_tokens : 1_000_000;
+      const historyLimitLocal = 30;
+      let systemMsg = baseSystemMsg;
+      let selectedHistory;
+      if (primaryIsAPI) {
+        const prep = await prepareApiHistoryWithRollingMemory({
+          postUserHistory,
+          baseSystemMsg,
+          conversationId: currentConversation,
+          effectiveMaxTokens
+        });
+        systemMsg = prep.systemMsg;
+        selectedHistory = prep.selectedHistory;
+      } else {
+        selectedHistory = postUserHistory.slice(-historyLimitLocal);
+      }
+      const settingsSnapshot = settingsRef.current || settings;
+      const effectiveRequestPurpose = typeof opts?.requestPurpose === 'string'
+        ? opts.requestPurpose.trim() || null
+        : null;
+      const route = resolveUnifiedRequestRoute({
+        primaryModel,
+        primaryIsAPI,
+        settings: settingsSnapshot,
+        requestPurpose: effectiveRequestPurpose,
+      });
+      const promptModelName = route.selectedModel || primaryModel;
+      const requestModelName = route.effectiveModel || primaryModel;
+      if (!requestModelName) {
+        throw new Error('No API endpoint available for routing. Enable at least one endpoint.');
+      }
+      const selectedModelForTrace = route.selectedModel || 'none';
+      const routerTraceId = createRouteTraceId();
+      logRouteTrace({
+        action: 'normal_chat',
+        route,
+        requestPurpose: effectiveRequestPurpose,
+        traceId: routerTraceId,
+      });
+      assertRouteContractOrThrow({
+        route,
+        requestPurpose: effectiveRequestPurpose,
+        traceId: routerTraceId,
+        action: 'normal_chat',
+      });
+      const payload = mergeNanoGptMemoryIntoPayload(
+        {
+          directProfileInjection: settings.directProfileInjection,
+          prompt: formatPrompt(selectedHistory, promptModelName || primaryModel, systemMsg),
+          model_name: requestModelName,
+          max_tokens: effectiveMaxTokens,
+          temperature,
+          top_p,
+          top_k,
+          repetition_penalty,
+          frequency_penalty: frequencyPenalty,
+          presence_penalty: presencePenalty,
+          anti_repetition_mode: antiRepetitionMode,
+          use_rag,
+          rag_docs: selectedDocuments,
+          use_web_search: webSearchEnabled,
+          ...(webSearchEnabled ? getWebSearchResearchPayload(settings) : {}),
+          gpu_id: 0,
+          userProfile: { id: userProfile?.id ?? 'anonymous' },
+          authorNote: effectiveAuthorNote,
+          summaryContext: summaryContextForRequest,
+          injectTimestamp: injectTimestampRef.current,
+          userProfileReinforcement: profileReinforcementRef.current || undefined,
+          memoryEnabled: settings.directProfileInjection !== true,
+          stream: streamResponses,
+          active_character: speakerCharacter || null,
+          request_purpose: effectiveRequestPurpose || undefined,
+          selected_model: selectedModelForTrace !== 'none' ? selectedModelForTrace : undefined,
+          round_robin_enabled: route.autoEnabled,
+          ...getSystemPersonaGenerateExtras(currentConversation),
+        },
+        settings
+      );
 
-      const payload = {
-        directProfileInjection: settings.directProfileInjection,
-        prompt: formatPrompt(postUserHistory.slice(-currentHistoryLimit), primaryModel, systemMsg),
-        model_name: primaryModel,
-        temperature, top_p, top_k, repetition_penalty,
-        frequency_penalty: frequencyPenalty,
-        presence_penalty: presencePenalty,
-        anti_repetition_mode: antiRepetitionMode,
-        use_rag,
-        rag_docs: selectedDocuments,
-        use_web_search: webSearchEnabled,
-        gpu_id: 0,
-        userProfile: { id: userProfile?.id ?? 'anonymous' },
-        authorNote: effectiveAuthorNote,
-        summaryContext: summaryContextForRequest,
-        memoryEnabled: true,
-        stream: streamResponses
-      };
+      if (typeof window !== 'undefined' && window.__intensityParams) {
+        const ip = window.__intensityParams();
+        if (ip) payload.intensity_params = ip;
+      }
+
+      if (typeof window !== 'undefined' && window.__intensityMilestoneDetection) {
+        // milestone detection is invoked post-response below
+      }
 
       // 5) Consolidated Generation Path
       let attempts = 0;
       const maxAttempts = primaryIsAPI ? 2 : 1;
       let success = false;
 
+      const capReasoning = Boolean(opts?.modelCapabilities?.reasoning);
+      const thinkDebugModel =
+        resolveEndpointDisplay(primaryModel, settings)?.modelId
+        || requestModelName
+        || primaryModel;
+      const modelImpliesReasoning = Boolean(
+        inferCapabilitiesFromModelId(thinkDebugModel).reasoning,
+      );
+      const debugThinking = isThinkingStreamDebugEnabled({
+        modelName: thinkDebugModel,
+        settings,
+      });
+      const logThinkingChunk = createThinkingStreamChunkLogger({
+        modelName: thinkDebugModel,
+        settings,
+        label: 'chat',
+      });
+      const initialReasoningEnabled = capReasoning || modelImpliesReasoning;
+
       while (attempts < maxAttempts && !success) {
         attempts++;
         const botId = generateUniqueId();
-        const placeholderBotMessage = {
+        const placeholderBotMessage = enrichBotPlaceholder({
           id: botId,
           role: 'bot',
           content: '',
           modelId: 'primary',
           characterId: speakerCharacter?.id,
           characterName: speakerCharacter?.name,
-          avatar: speakerCharacter?.avatar,
+          avatar: getActiveCharacterAvatar(speakerCharacter),
           isStreaming: streamResponses,
-        };
+          reasoningEnabled: initialReasoningEnabled === true,
+          reasoningStreaming: false,
+          reasoningStartedAtMs: null,
+          reasoningSeconds: null,
+          reasoningText: '',
+        }, speakerCharacter);
 
         if (attempts > 1) {
           console.log(`🔄 [Auto-Retry] Attempt ${attempts}...`);
@@ -3213,14 +5965,68 @@ Return ONLY valid JSON:
           const controller = new AbortController();
           setAbortController(controller);
 
+          // Black-box debug snapshot for crashes. Write BEFORE the fetch so
+          // we still have a session record even if the request fails or the tab dies.
+          try {
+            const sessionId = `${Date.now()}-${botId}`;
+            const nowPerf = performance.now();
+            streamDebugRef.current = {
+              sessionId,
+              model: primaryModel,
+              startedAt: nowPerf,
+              contentEvents: 0,
+              parseErrors: 0,
+              rafUiUpdates: 0,
+              lastLogAt: nowPerf,
+              lastSseBufferLen: 0,
+              lastAccumLen: 0,
+              streamResponses: streamResponses,
+              ttsEnabled: settings.ttsEnabled,
+              ttsAutoPlay: settings.ttsAutoPlay,
+              stage: 'fetch_request',
+            };
+            localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+              sessionId: streamDebugRef.current.sessionId,
+              model: streamDebugRef.current.model,
+              stage: streamDebugRef.current.stage,
+              streamResponses: streamDebugRef.current.streamResponses,
+              ttsEnabled: streamDebugRef.current.ttsEnabled,
+              ttsAutoPlay: streamDebugRef.current.ttsAutoPlay,
+              ts: new Date().toISOString(),
+              startedAt: streamDebugRef.current.startedAt,
+            }));
+          } catch (_) {}
+
+          console.log(`📩 [SEND] POST ${PRIMARY_API_URL}/generate`, {
+            model: requestModelName,
+            primaryIsAPI,
+            stream: streamResponses,
+            chatCharacter: speakerCharacter?.name ?? null,
+            systemPersona: getSystemPersonaGenerateExtras(currentConversation).system_persona_mode ?? false,
+          });
           const res = await fetch(`${PRIMARY_API_URL}/generate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Router-Trace-Id': routerTraceId,
+            },
             body: JSON.stringify(payload),
             signal: controller.signal
           });
 
-          if (!res.ok) throw new Error(`Status ${res.status}`);
+          if (!res.ok) {
+            let detail = `Status ${res.status}`;
+            try {
+              const errBody = await res.json();
+              detail = formatApiError(errBody, detail);
+            } catch {
+              try {
+                const errText = await res.text();
+                if (errText?.trim()) detail = errText.trim();
+              } catch { /* ignore */ }
+            }
+            throw new Error(detail);
+          }
 
           if (streamResponses) {
             const reader = res.body.getReader();
@@ -3229,6 +6035,50 @@ Return ONLY valid JSON:
             let lastSentContent = '';
             let llmStreamComplete = false;
             let sseBuffer = '';
+            const reasoningStream = createReasoningStreamController({
+              capReasoning,
+              modelImpliesReasoning,
+              debugThinking,
+            });
+
+            // Streaming debug session for “tab crashes/hangs” triage.
+            const debugNow = performance.now();
+            streamDebugRef.current = {
+              sessionId: streamDebugRef.current?.sessionId || `${debugNow}-${botId}`,
+              model: primaryModel,
+              startedAt: streamDebugRef.current?.startedAt ?? debugNow,
+              contentEvents: streamDebugRef.current?.contentEvents ?? 0,
+              parseErrors: streamDebugRef.current?.parseErrors ?? 0,
+              rafUiUpdates: streamDebugRef.current?.rafUiUpdates ?? 0,
+              lastLogAt: debugNow,
+              lastSseBufferLen: 0,
+              lastAccumLen: 0,
+              streamResponses: streamResponses,
+              ttsEnabled: settings.ttsEnabled,
+              ttsAutoPlay: settings.ttsAutoPlay,
+              stage: 'streaming',
+            };
+            try {
+              const mem = window?.performance?.memory;
+              localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+                sessionId: streamDebugRef.current.sessionId,
+                model: streamDebugRef.current.model,
+                contentEvents: 0,
+                parseErrors: 0,
+                rafUiUpdates: 0,
+                lastSseBufferLen: 0,
+                lastAccumLen: 0,
+                startedAt: streamDebugRef.current.startedAt,
+                stage: streamDebugRef.current.stage,
+                streamResponses: streamDebugRef.current.streamResponses,
+                ttsEnabled: streamDebugRef.current.ttsEnabled,
+                ttsAutoPlay: streamDebugRef.current.ttsAutoPlay,
+                heapUsedBytes: mem?.usedJSHeapSize ?? null,
+                heapTotalBytes: mem?.totalJSHeapSize ?? null,
+                heapLimitBytes: mem?.jsHeapSizeLimit ?? null,
+              }));
+            } catch (_) {}
+            // Intentionally avoid console spam; we persist the snapshot to localStorage instead.
 
             // (checkAndEndTts removed - and moved to direct call)
 
@@ -3238,6 +6088,7 @@ Return ONLY valid JSON:
 
               const chunk = decoder.decode(value, { stream: true });
               sseBuffer += chunk;
+              if (streamDebugRef.current) streamDebugRef.current.lastSseBufferLen = sseBuffer.length;
               const events = sseBuffer.split('\n\n');
               sseBuffer = events.pop() || '';
 
@@ -3248,63 +6099,201 @@ Return ONLY valid JSON:
                   llmStreamComplete = true;
                   break;
                 }
+                let parsed;
                 try {
-                  const parsed = JSON.parse(dataStr);
-                  let content = parsed.text;
-                  if (content == null && parsed.choices?.[0]?.delta) {
-                    const delta = parsed.choices[0].delta;
-                    content = delta.content ?? delta.reasoning ?? '';
-                  }
-                  if (content) {
-                    accumulated += content;
-                    const partial = cleanModelOutput(accumulated);
-                    const newTextChunk = partial.slice(lastSentContent.length);
+                  parsed = JSON.parse(dataStr);
+                } catch {
+                  if (streamDebugRef.current) streamDebugRef.current.parseErrors += 1;
+                  continue;
+                }
+                if (parsed.route_meta) {
+                  setLastRequestRouteMeta({
+                    ...parsed.route_meta,
+                    receivedAt: Date.now(),
+                  });
+                }
+                if (parsed.web_search_meta) {
+                  const meta = parsed.web_search_meta;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === botId
+                        ? {
+                            ...m,
+                            webSearchMeta: meta,
+                            webSearchSources: meta.sources || [],
+                          }
+                        : m
+                    )
+                  );
+                }
+                const { text: deltaText, reasoning: deltaReasoning, error: sseError } = extractSseStreamParts(parsed);
+                if (sseError) {
+                  throw new Error(sseError);
+                }
+                if (deltaText || deltaReasoning) {
+                  logThinkingChunk(deltaText, deltaReasoning);
+                }
+                if (deltaText) accumulated += deltaText;
+                if (deltaText || deltaReasoning) {
+                  const streamUpdate = reasoningStream.processChunk({
+                    deltaText,
+                    deltaReasoning,
+                  });
+                  const visibleText = streamUpdate.visibleText;
+                  const { visibleDelta, reasoningEnabled, reasoningText } = streamUpdate;
+
+                    // Avoid expensive per-chunk clean/rewrites; we only clean at stream end.
+                    const newTextChunk = visibleText.slice(lastSentContent.length);
                     if (newTextChunk) addStreamingText(newTextChunk);
-                    lastSentContent = partial;
-                    setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: partial } : m));
+                    lastSentContent = visibleText;
+
+                    if (streamDebugRef.current) {
+                      streamDebugRef.current.contentEvents += 1;
+                      streamDebugRef.current.lastAccumLen = visibleText.length;
+                      const now = performance.now();
+                      if (now - streamDebugRef.current.lastLogAt > 1000) {
+                        try {
+                          const mem = window?.performance?.memory;
+                          localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+                            sessionId: streamDebugRef.current.sessionId,
+                            model: streamDebugRef.current.model,
+                            contentEvents: streamDebugRef.current.contentEvents,
+                            parseErrors: streamDebugRef.current.parseErrors,
+                            rafUiUpdates: streamDebugRef.current.rafUiUpdates,
+                            accumulatedLen: streamDebugRef.current.lastAccumLen,
+                            sseBufferLen: streamDebugRef.current.lastSseBufferLen,
+                            elapsedMs: Math.floor(now - streamDebugRef.current.startedAt),
+                            lastLogAt: streamDebugRef.current.lastLogAt,
+                            heapUsedBytes: mem?.usedJSHeapSize ?? null,
+                            heapTotalBytes: mem?.totalJSHeapSize ?? null,
+                            heapLimitBytes: mem?.jsHeapSizeLimit ?? null,
+                          }));
+                        } catch (_) {}
+                        streamDebugRef.current.lastLogAt = now;
+                      }
+                    }
+
+                    streamMessageRafRef.current.pending = {
+                      botId,
+                      partial: visibleText,
+                      reasoningText,
+                      reasoningEnabled,
+                      reasoningStreaming: streamUpdate.reasoningStreaming,
+                      reasoningStartedAtMs: streamUpdate.reasoningStartedAtMs,
+                      reasoningSeconds: streamUpdate.reasoningSeconds,
+                      reasoningCapabilitySource: streamUpdate.reasoningCapabilitySource,
+                    };
+                    if (streamMessageRafRef.current.rafId == null) {
+                      streamMessageRafRef.current.rafId = requestAnimationFrame(() => {
+                        streamMessageRafRef.current.rafId = null;
+                        const job = streamMessageRafRef.current.pending;
+                        if (!job) return;
+                        if (streamDebugRef.current) streamDebugRef.current.rafUiUpdates += 1;
+                        setMessages(prev => prev.map(m => m.id === job.botId ? {
+                          ...m,
+                          content: job.partial,
+                          reasoningEnabled: job.reasoningEnabled === true,
+                          reasoningStreaming: job.reasoningStreaming === true,
+                          reasoningStartedAtMs: job.reasoningEnabled ? job.reasoningStartedAtMs : null,
+                          reasoningSeconds: job.reasoningSeconds ?? m.reasoningSeconds ?? null,
+                          reasoningText: job.reasoningEnabled ? job.reasoningText : '',
+                          ...(job.reasoningCapabilitySource
+                            ? { reasoningCapabilitySource: job.reasoningCapabilitySource }
+                            : {}),
+                        } : m));
+                      });
+                    }
                   }
-                  if (parsed.done || parsed.choices?.[0]?.finish_reason) {
-                    llmStreamComplete = true;
-                    break;
-                  }
-                } catch (e) { }
+                if (parsed.done || parsed.choices?.[0]?.finish_reason) {
+                  llmStreamComplete = true;
+                  break;
+                }
               }
               if (llmStreamComplete) break;
             }
 
-            const finalCleaned = cleanModelOutput(accumulated);
+            if (streamMessageRafRef.current.rafId != null) {
+              cancelAnimationFrame(streamMessageRafRef.current.rafId);
+              streamMessageRafRef.current.rafId = null;
+            }
+            streamMessageRafRef.current.pending = null;
+
+            const finStream = reasoningStream.finalize();
+            let finalVisible = finStream.visible || accumulated;
+            const finalReasoning = finStream.reasoning || '';
+            const reasoningEnabled = finStream.reasoningEnabled;
+            let finalCleaned = cleanModelOutput(finalVisible);
+            if (!finalCleaned && reasoningEnabled && String(finalReasoning || '').trim()) {
+              finalCleaned = cleanModelOutput(String(finalReasoning).trim());
+            }
             console.log('🧠 Stream done. accumulated length:', accumulated.length, 'finalCleaned length:', finalCleaned.length);
+            if (streamDebugRef.current) {
+              try {
+                const mem = window?.performance?.memory;
+                localStorage.setItem('LiangLocal-streamDebug-last', JSON.stringify({
+                  sessionId: streamDebugRef.current.sessionId,
+                  model: streamDebugRef.current.model,
+                  contentEvents: streamDebugRef.current.contentEvents,
+                  parseErrors: streamDebugRef.current.parseErrors,
+                  rafUiUpdates: streamDebugRef.current.rafUiUpdates,
+                  finalAccumLen: finalCleaned.length,
+                  completed: true,
+                  heapUsedBytes: mem?.usedJSHeapSize ?? null,
+                  heapTotalBytes: mem?.totalJSHeapSize ?? null,
+                  heapLimitBytes: mem?.jsHeapSizeLimit ?? null,
+                }));
+              } catch (_) {}
+            }
             if (primaryIsAPI && !finalCleaned && attempts < maxAttempts) {
               console.warn("⚠️ [Auto-Retry] Empty response from API, retrying...");
               if (streamResponses) endStreamingTTS();
               continue;
             }
 
-            setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: finalCleaned, isStreaming: false } : m));
+            setMessages(prev => prev.map(m => m.id === botId ? {
+              ...m,
+              content: finalCleaned,
+              isStreaming: false,
+              ...buildBotReasoningFinalizePatch(finStream),
+            } : m));
             observeConversationWithAgent(text, finalCleaned);
-            const activeId = activeConversationRef.current;
-            const agenticOn = (conversationsRef.current.find(c => c.id === activeId)?.agenticMemoryEnabled) === true;
-            const apiOpts = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
-            const userIdForAgentic = userProfile?.id || memoryContext?.activeProfileId;
-            console.log('🧠 Agentic memory:', agenticOn ? 'ON' : 'OFF', '| userId:', userIdForAgentic ? 'set' : 'MISSING', '| speaker:', speakerCharacter?.name ?? 'MISSING');
-            processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, finalCleaned, agenticOn, apiOpts);
+            if (typeof window !== 'undefined' && window.__intensityMilestoneDetection) {
+              try { window.__intensityMilestoneDetection(finalCleaned); } catch (_) {}
+            }
+            const apiOpts = requestModelName
+              ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: requestModelName }
+              : null;
+            const userIdForAgentic = resolveAgenticUserId();
+            processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, finalCleaned, apiOpts);
             success = true;
             if (streamResponses) endStreamingTTS();
           } else {
             // Non-streaming
             const data = await res.json();
+            const routeMeta = extractRouteMetaFromGenerateResult(data, res.headers);
+            if (routeMeta?.effectiveModel) setLastRequestRouteMeta(routeMeta);
             const cleanedText = cleanModelOutput(data.text);
             if (primaryIsAPI && !cleanedText && attempts < maxAttempts) {
               continue;
             }
-            setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: cleanedText, isStreaming: false } : m));
+            setMessages(prev => prev.map(m => m.id === botId ? {
+              ...m,
+              content: cleanedText,
+              isStreaming: false,
+              ...(data.web_search_meta ? {
+                webSearchMeta: data.web_search_meta,
+                webSearchSources: data.web_search_meta.sources || [],
+              } : {}),
+            } : m));
             observeConversationWithAgent(text, cleanedText);
-            const activeId = activeConversationRef.current;
-            const agenticOn = (conversationsRef.current.find(c => c.id === activeId)?.agenticMemoryEnabled) === true;
-            const apiOpts = primaryIsAPI ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: primaryModel } : null;
-            const userIdForAgentic = userProfile?.id || memoryContext?.activeProfileId;
-            console.log('🧠 Agentic memory:', agenticOn ? 'ON' : 'OFF', '| userId:', userIdForAgentic ? 'set' : 'MISSING', '| speaker:', speakerCharacter?.name ?? 'MISSING');
-            processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, cleanedText, agenticOn, apiOpts);
+            if (typeof window !== 'undefined' && window.__intensityMilestoneDetection) {
+              try { window.__intensityMilestoneDetection(cleanedText); } catch (_) {}
+            }
+            const apiOpts = requestModelName
+              ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: requestModelName }
+              : null;
+            const userIdForAgentic = resolveAgenticUserId();
+            processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, cleanedText, apiOpts);
             success = true;
 
             // Trigger TTS if autoplay is on
@@ -3320,7 +6309,13 @@ Return ONLY valid JSON:
           } else {
             console.error(`Error on attempt ${attempts}:`, err);
             if (attempts >= maxAttempts) {
-              setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: `[Error: ${err.message}]`, isStreaming: false } : m));
+              const errMsg = formatFetchError(err) || 'Generation failed';
+              setApiError(
+                errMsg.includes('fetch') || errMsg.includes('Failed')
+                  ? `${errMsg} — is the backend running at ${PRIMARY_API_URL}?`
+                  : errMsg
+              );
+              setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: `[Error: ${errMsg}]`, isStreaming: false } : m));
               if (streamResponses) endStreamingTTS();
               success = true;
             } else if (primaryIsAPI) {
@@ -3334,15 +6329,24 @@ Return ONLY valid JSON:
       }
     } catch (err) {
       console.error("Chat error:", err);
+      if (err?.name === 'AbortError') return;
+      const errMsg = formatFetchError(err) || 'Chat failed before reaching the server.';
+      setApiError(
+        errMsg.includes('fetch') || errMsg.includes('Failed') || errMsg.includes('timed out')
+          ? `${errMsg} — check ${PRIMARY_API_URL} in DevTools → Network.`
+          : errMsg
+      );
     } finally {
       setIsGenerating(false);
     }
   }, [
     activeConversation, primaryModel, messages, conversations, settings, userCharacter,
-    userProfile?.id, PRIMARY_API_URL, fetchMemoriesFromAgent, fetchTriggeredLore, MEMORY_API_URL,
+    userProfile?.id, PRIMARY_API_URL, portsReady, clearError, fetchMemoriesFromAgent, fetchTriggeredLore, MEMORY_API_URL,
     formatPrompt, cleanModelOutput, generateChatTitle, memoryContext, resolveSpeakerCharacter,
-    observeConversationWithAgent, processAgenticMemoryIfEnabled, generateReply, primaryIsAPI, createNewConversation, getStoryTrackerContext,
-    summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags
+    observeConversationWithAgent, processAgenticMemoryIfEnabled, processAlignmentDetectionIfEnabled, generateReply, primaryIsAPI, createNewConversation, completeCharacterIntro, getStoryTrackerContext,
+    summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags, prepareApiHistoryWithRollingMemory,
+    isPlayingAudio, stopTTS, enrichBotPlaceholder,
+    resolveAgenticUserId,
   ]);
 
   const generateCallModeFollowUp = useCallback(async (options = {}) => {
@@ -3375,16 +6379,16 @@ Return ONLY valid JSON:
         ignoreMentionedCandidates: settings.multiRoleMode
       }
     );
-    const placeholderBotMessage = {
+    const placeholderBotMessage = enrichBotPlaceholder({
       id: botId,
       role: 'bot',
       content: '',
       modelId: 'primary',
       characterId: speakerCharacter?.id,
       characterName: speakerCharacter?.name,
-      avatar: speakerCharacter?.avatar,
-      isStreaming: settings.streamResponses
-    };
+      avatar: getActiveCharacterAvatar(speakerCharacter),
+      isStreaming: settings.streamResponses,
+    }, speakerCharacter);
 
     setMessages(prev => [...prev, placeholderBotMessage]);
 
@@ -3394,7 +6398,15 @@ Return ONLY valid JSON:
         const nextChunk = currentFull.slice(lastSentContent.length);
         if (nextChunk) addStreamingText(nextChunk);
         lastSentContent = currentFull;
-        setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: currentFull, isStreaming: true } : m));
+        streamMessageRafRef.current.pending = { botId, partial: currentFull };
+        if (streamMessageRafRef.current.rafId == null) {
+          streamMessageRafRef.current.rafId = requestAnimationFrame(() => {
+            streamMessageRafRef.current.rafId = null;
+            const job = streamMessageRafRef.current.pending;
+            if (!job) return;
+            setMessages(prev => prev.map(m => m.id === job.botId ? { ...m, content: job.partial, isStreaming: true } : m));
+          });
+        }
       }
       : null;
 
@@ -3409,6 +6421,12 @@ Return ONLY valid JSON:
         handleToken,
         { speakerCharacterId: speakerCharacter?.id || null }
       );
+
+      if (streamMessageRafRef.current.rafId != null) {
+        cancelAnimationFrame(streamMessageRafRef.current.rafId);
+        streamMessageRafRef.current.rafId = null;
+      }
+      streamMessageRafRef.current.pending = null;
 
       const finalText = response || '';
       setMessages(prev => prev.map(m => m.id === botId ? { ...m, content: finalText, isStreaming: false } : m));
@@ -3436,6 +6454,7 @@ Return ONLY valid JSON:
     messages,
     playTTS,
     resolveSpeakerCharacter,
+    enrichBotPlaceholder,
     settings.streamResponses,
     settings.multiRoleMode,
     settings.ttsAutoPlay,
@@ -3479,7 +6498,7 @@ Return ONLY valid JSON:
       return;
     }
 
-    if (!activeConversation) {
+    if (!(activeConversationRef.current || activeConversation)) {
       console.warn("No active conversation, creating one.");
       createNewConversation();
     }
@@ -3574,24 +6593,27 @@ Return ONLY valid JSON:
 
           const prompt = formatPrompt(currentMessages, currentModel, systemPrompt);
 
-          const payload = {
-            prompt,
-            model_name: currentModel,
-            temperature: settings.temperature || 0.7,
-            top_p: settings.top_p || 0.9,
-            top_k: settings.top_k || 40,
-            repetition_penalty: settings.repetition_penalty || 1.1,
-            max_tokens: 256,
-            gpu_id: currentGpu,
-            userProfile: { id: userProfile?.id ?? 'anonymous' },
-            memoryEnabled: false,
-            stream: false
-          };
+          const payload = mergeNanoGptMemoryIntoPayload(
+            {
+              prompt,
+              model_name: currentModel,
+              temperature: settings.temperature || 0.7,
+              top_p: settings.top_p || 0.9,
+              top_k: settings.top_k || 40,
+              repetition_penalty: settings.repetition_penalty || 1.1,
+              max_tokens: 256,
+              gpu_id: currentGpu,
+              userProfile: { id: userProfile?.id ?? 'anonymous' },
+              memoryEnabled: false,
+              stream: false,
+            },
+            settings
+          );
 
           const res = await fetch(currentApi + '/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
           });
 
           if (!res.ok) {
@@ -3614,7 +6636,9 @@ Return ONLY valid JSON:
           content: cleanedText || "[No response]",
           modelName: currentModel,
           modelId: modelId,
-          avatar: isFirstModelTurn ? characters.find(c => c.name === primaryModel)?.avatar : characters.find(c => c.name === secondaryModel)?.avatar,
+          avatar: isFirstModelTurn
+            ? getActiveCharacterAvatar(characters.find(c => c.name === primaryModel))
+            : getActiveCharacterAvatar(characters.find(c => c.name === secondaryModel)),
           characterName: isFirstModelTurn ? primaryModel : secondaryModel, // Use model name as character name
         };
 
@@ -3649,6 +6673,8 @@ Return ONLY valid JSON:
     }
   }, [
     primaryModel,
+    lastRequestRouteMeta,
+    setLastRequestRouteMeta,
     secondaryModel,
     primaryIsAPI,          // Add this
     secondaryIsAPI,        // Add this
@@ -3743,13 +6769,590 @@ Return ONLY valid JSON:
   // Then add a new, separate useEffect that runs just once at startup:
 
   const updateSettings = useCallback((newSettings) => {
-    setSettings(prevSettings => {
-      const updatedSettings = { ...prevSettings, ...newSettings };
-      // Save to localStorage automatically
-      localStorage.setItem('Eloquent-settings', JSON.stringify(updatedSettings));
+    if (!newSettings || typeof newSettings !== 'object' || Array.isArray(newSettings)) return;
+    setSettings((prevSettings) => {
+      const updatedSettings = mergeSettingsObjects(prevSettings, newSettings);
+      void persistSettingsBlob(updatedSettings);
+      if ('userAvatarSize' in newSettings || 'characterAvatarSize' in newSettings) {
+        const avatarPayload = JSON.stringify({
+          userAvatarSize: updatedSettings.userAvatarSize ?? 64,
+          characterAvatarSize: updatedSettings.characterAvatarSize ?? 64,
+        });
+        indexedDbStorage.setItem('LiangLocal-avatar-sizes', avatarPayload);
+        try { localStorage.setItem('LiangLocal-avatar-sizes', avatarPayload); } catch (_) {}
+      }
+      broadcastSettingsPatch(newSettings);
+      broadcastSettingsReload(updatedSettings);
       return updatedSettings;
     });
   }, []);
+
+  const openSettingsWindow = useCallback((tab = 'general') => {
+    const win = openSettingsPopupWindow(tab);
+    if (!win) {
+      const t = typeof tab === 'string' && tab.trim() ? tab.trim() : 'general';
+      setSettingsEntryTab(t);
+      setActiveTab('settings');
+    }
+  }, []);
+
+  const openSettingsTab = useCallback((tab = 'general', options = {}) => {
+    const t = typeof tab === 'string' && tab.trim() ? tab.trim() : 'general';
+    const useSecondWindow =
+      options.forceWindow === true
+      || (options.forceWindow !== false && settingsRef.current?.openSettingsInSecondWindow === true);
+    if (useSecondWindow) {
+      openSettingsWindow(t);
+      return;
+    }
+    setSettingsEntryTab(t);
+    setActiveTab('settings');
+  }, [openSettingsWindow]);
+
+  // Optional URL toggle to force-enable reasoning diagnostics without visiting Settings.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const raw =
+        params.get('reasoning_diag') ||
+        params.get('showReasoningDiagnostics');
+      if (!raw) return;
+      const v = String(raw).toLowerCase();
+      if (v === '1' || v === 'true' || v === 'on') {
+        updateSettings({ showReasoningDiagnostics: true });
+      }
+    } catch {
+      // ignore malformed URLs
+    }
+  }, [updateSettings]);
+
+  /** Mobile remote / Watch polling: navigate desktop, open Settings at a tab, or merge settings keys. */
+  useEffect(() => {
+    const onAppCmd = (ev) => {
+      const d = ev?.detail || {};
+      if (d.type === 'open_settings') {
+        const t = typeof d.tab === 'string' && d.tab.trim() ? d.tab.trim() : 'general';
+        if (d.window === true || settingsRef.current?.openSettingsInSecondWindow) {
+          openSettingsWindow(t);
+        } else {
+          setSettingsEntryTab(t);
+          setActiveTab('settings');
+        }
+      } else if (
+        d.type === 'settings_patch' &&
+        d.patch &&
+        typeof d.patch === 'object' &&
+        !Array.isArray(d.patch)
+      ) {
+        updateSettings(d.patch);
+      } else if (d.type === 'navigate_tab' && typeof d.tab === 'string' && d.tab.trim()) {
+        setActiveTab(d.tab.trim());
+      }
+    };
+    window.addEventListener('eloquent-app-command', onAppCmd);
+    return () => window.removeEventListener('eloquent-app-command', onAppCmd);
+  }, [updateSettings, setActiveTab, openSettingsWindow]);
+
+  /** Keep settings + API model selection in sync across main/settings windows. */
+  useEffect(() => {
+    return subscribeAppCrossWindowSync({
+      onSettingsPatch: (patch) => {
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return;
+        setSettings((prev) => {
+          const next = mergeSettingsObjects(prev, patch);
+          void persistSettingsBlob(next);
+          return next;
+        });
+      },
+      onSettingsReload: (full) => {
+        if (!full || typeof full !== 'object' || Array.isArray(full)) return;
+        setSettings((prev) => {
+          if (!shouldApplyHydratedSettings(full, prev)) return prev;
+          return mergeSettingsObjects(prev, full);
+        });
+      },
+      onPrimaryModel: ({ primaryModel: model, primaryIsAPI: isApi }) => {
+        if (isApi) {
+          const autoRouterEnabled = settingsRef.current?.apiEndpointRoundRobinEnabled === true;
+          setPrimaryIsAPI(true);
+          if (autoRouterEnabled) {
+            setPrimaryModel(null);
+            setActiveModel(null);
+            return;
+          }
+          if (model) {
+            setPrimaryModel(model);
+            setActiveModel(model);
+            saveLastPrimaryApiModel(model);
+          }
+        }
+      },
+      onReloadMain: () => {
+        if (typeof window !== 'undefined' && !window.location.search.includes('standalone=settings')) {
+          window.location.reload();
+        }
+      },
+    });
+  }, []);
+
+  const upsertOutreachRule = useCallback((rule) => {
+    if (!rule) return;
+    const nowIso = new Date().toISOString();
+    const char = rule.characterId ? characters.find(c => c.id === rule.characterId) : null;
+    let characterSnapshot = rule.characterSnapshot;
+    if (char) {
+      try {
+        characterSnapshot = JSON.parse(JSON.stringify(char));
+      } catch (_) {
+        characterSnapshot = { ...char };
+      }
+    }
+    setSettings(prev => {
+      const existing = Array.isArray(prev.outreachRules) ? prev.outreachRules : [];
+      const parsedInterval = Number.parseInt(rule.intervalMinutes ?? OUTREACH_DEFAULT_INTERVAL_MINUTES, 10);
+      const interval = Number.isFinite(parsedInterval)
+        ? Math.max(OUTREACH_MIN_INTERVAL_MINUTES, parsedInterval)
+        : OUTREACH_DEFAULT_INTERVAL_MINUTES;
+      const normalized = {
+        id: rule.id || `outreach-${generateUniqueId()}`,
+        enabled: Boolean(rule.enabled),
+        name: (rule.name || '').trim() || 'Scheduled Outreach',
+        characterId: rule.characterId || null,
+        characterSnapshot: characterSnapshot || rule.characterSnapshot || null,
+        prompt: (rule.prompt || '').trim(),
+        modelProvider: rule.modelProvider === 'api' ? 'api' : 'local',
+        modelName: rule.modelName || primaryModel || null,
+        intervalMinutes: interval,
+        imageCount: Number.isFinite(Number(rule.imageCount)) ? Number(rule.imageCount) : 0,
+        conversationId: rule.conversationId || null,
+        lastRunAt: rule.lastRunAt || null,
+        nextRunAt: rule.nextRunAt || (new Date(Date.now() + interval * 60 * 1000)).toISOString(),
+        createdAt: rule.createdAt || nowIso
+      };
+      const idx = existing.findIndex(item => item.id === normalized.id);
+      const nextRules = idx >= 0
+        ? existing.map((item, i) => (i === idx ? { ...item, ...normalized } : item))
+        : [...existing, normalized];
+      const nextSettings = { ...prev, outreachRules: nextRules };
+      void persistSettingsBlob(nextSettings);
+      return nextSettings;
+    });
+  }, [primaryModel, characters]);
+
+  const deleteOutreachRule = useCallback((ruleId) => {
+    if (!ruleId) return;
+    setSettings(prev => {
+      const nextRules = (Array.isArray(prev.outreachRules) ? prev.outreachRules : []).filter(rule => rule.id !== ruleId);
+      const nextSettings = { ...prev, outreachRules: nextRules };
+      void persistSettingsBlob(nextSettings);
+      return nextSettings;
+    });
+  }, []);
+
+  const runOutreachRuleNow = useCallback(async (ruleId) => {
+    if (!ruleId || !PRIMARY_API_URL) return;
+    try {
+      const r = await fetch(`${PRIMARY_API_URL}/outreach/v1/run/${encodeURIComponent(ruleId)}`, { method: 'POST' });
+      if (!r.ok) {
+        console.warn('[outreach] run now', r.status);
+      }
+    } catch (e) {
+      console.warn('[outreach] run now', e);
+    }
+  }, [PRIMARY_API_URL]);
+
+  const uploadOutreachRuleImages = useCallback(async (ruleId, fileList, { replace = true } = {}) => {
+    if (!ruleId || !PRIMARY_API_URL || !fileList?.length) return { ok: false, imageCount: 0 };
+    const imageFiles = Array.from(fileList).filter((f) => f?.type?.startsWith('image/'));
+    if (!imageFiles.length) return { ok: false, imageCount: 0 };
+    const form = new FormData();
+    imageFiles.forEach((file) => form.append('files', file));
+    try {
+      const r = await fetch(
+        `${PRIMARY_API_URL}/outreach/v1/rules/${encodeURIComponent(ruleId)}/images?replace=${replace ? 'true' : 'false'}`,
+        { method: 'POST', body: form }
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        console.warn('[outreach] image upload', r.status, data);
+        return { ok: false, imageCount: 0 };
+      }
+      const count = Number(data.imageCount) || imageFiles.length;
+      setSettings((prev) => {
+        const rules = Array.isArray(prev.outreachRules) ? prev.outreachRules : [];
+        const nextRules = rules.map((item) => (item.id === ruleId ? { ...item, imageCount: count } : item));
+        const nextSettings = { ...prev, outreachRules: nextRules };
+        void persistSettingsBlob(nextSettings);
+        return nextSettings;
+      });
+      return { ok: true, imageCount: count };
+    } catch (e) {
+      console.warn('[outreach] image upload', e);
+      return { ok: false, imageCount: 0 };
+    }
+  }, [PRIMARY_API_URL]);
+
+  const clearOutreachRuleImages = useCallback(async (ruleId) => {
+    if (!ruleId || !PRIMARY_API_URL) return;
+    try {
+      await fetch(`${PRIMARY_API_URL}/outreach/v1/rules/${encodeURIComponent(ruleId)}/images`, { method: 'DELETE' });
+      setSettings((prev) => {
+        const rules = Array.isArray(prev.outreachRules) ? prev.outreachRules : [];
+        const nextRules = rules.map((item) => (item.id === ruleId ? { ...item, imageCount: 0 } : item));
+        const nextSettings = { ...prev, outreachRules: nextRules };
+        void persistSettingsBlob(nextSettings);
+        return nextSettings;
+      });
+    } catch (e) {
+      console.warn('[outreach] clear images', e);
+    }
+  }, [PRIMARY_API_URL]);
+
+  const clearOutreachNotifications = useCallback(() => {
+    setOutreachNotifications([]);
+  }, []);
+
+  const dismissOutreachToast = useCallback((notificationId) => {
+    if (!notificationId) return;
+    setOutreachNotifications(prev => prev.map(item => item.id === notificationId ? { ...item, read: true } : item));
+  }, []);
+
+  const dismissOutreachScrollTarget = useCallback(() => {
+    setOutreachScrollToMessageId(null);
+  }, []);
+
+  const requestOutreachNotificationPermission = useCallback(async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
+    if (Notification.permission === 'granted') return 'granted';
+    try {
+      return await Notification.requestPermission();
+    } catch (_) {
+      return 'denied';
+    }
+  }, []);
+
+  const openOutreachNotification = useCallback(async (notification, startNew = false) => {
+    if (!notification) return;
+    const targetConversationId = startNew ? null : notification.conversationId;
+    const mid = notification.messageId;
+    setActiveTab('chat');
+    if (targetConversationId && PRIMARY_API_URL) {
+      // Fetch the outreach conversation metadata from the backend, but DO NOT call
+      // applyConversationSelection with it — the outreach conv object from the API has
+      // no messages array, which would wipe the current chat's messages and then
+      // trigger a shard-save that overwrites the real chat with an empty array.
+      try {
+        const r = await fetch(`${PRIMARY_API_URL}/outreach/v1/conversation/${encodeURIComponent(targetConversationId)}`);
+        const data = await r.json();
+        if (data?.conversation?.id) {
+          const conv = data.conversation;
+          await persistOutreachConversation(conv);
+          setConversations((prev) => {
+            const i = prev.findIndex(c => c.id === conv.id);
+            if (i >= 0) {
+              const next = [...prev];
+              next[i] = { ...next[i], ...conv, messages: undefined };
+              return next;
+            }
+            const { messages: _omit, ...meta } = conv;
+            return [...prev, meta];
+          });
+        }
+      } catch (_) {}
+    }
+    // Always use handleConversationClick to load the conversation — it reads messages
+    // from the IndexedDB shard on disk rather than trusting whatever is in memory.
+    if (targetConversationId) {
+      window.setTimeout(() => handleConversationClick(targetConversationId), 0);
+    }
+    if (mid) setOutreachScrollToMessageId(mid);
+    setOutreachNotifications(prev => prev.map(item => item.id === notification.id ? { ...item, read: true } : item));
+  }, [handleConversationClick, setActiveTab, PRIMARY_API_URL, setConversations]);
+
+  const discardOutreachNotification = useCallback(async (notification) => {
+    if (!notification) return;
+    const cid = notification.conversationId;
+    setOutreachNotifications(prev => prev.filter(item => item.id !== notification.id));
+    if (cid && PRIMARY_API_URL) {
+      try {
+        await fetch(`${PRIMARY_API_URL}/outreach/v1/conversation/${encodeURIComponent(cid)}`, { method: 'DELETE' });
+      } catch (_) {}
+    }
+  }, [PRIMARY_API_URL]);
+
+  const openOutreachNotificationRef = useRef(openOutreachNotification);
+  openOutreachNotificationRef.current = openOutreachNotification;
+  const [outreachBootstrapReady, setOutreachBootstrapReady] = useState(false);
+
+  useEffect(() => {
+    if (!portsReady || !storageHydrated || !PRIMARY_API_URL) return undefined;
+    if (!outreachBootstrapReady) return undefined;
+    if (outreachSyncTimerRef.current) clearTimeout(outreachSyncTimerRef.current);
+    outreachSyncTimerRef.current = setTimeout(async () => {
+      const rulesRaw = settings.outreachRules || [];
+      const rules = rulesRaw.map((r) => {
+        if (r.characterSnapshot || !r.characterId) return r;
+        const ch = characters.find(c => c.id === r.characterId);
+        if (!ch) return r;
+        try {
+          return { ...r, characterSnapshot: JSON.parse(JSON.stringify(ch)) };
+        } catch (_) {
+          return { ...r, characterSnapshot: { ...ch } };
+        }
+      });
+      try {
+        await fetch(`${PRIMARY_API_URL}/outreach/v1/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rules,
+            enabled: settingsRef.current?.outreachEnabled !== false,
+            generationDefaults: {
+              primary_model: primaryModel || null,
+              max_tokens: (settings.max_tokens != null && settings.max_tokens > 0) ? settings.max_tokens : 4096,
+              temperature: settings.temperature ?? 0.7,
+              top_p: settings.top_p ?? 0.9,
+              top_k: settings.top_k ?? 50,
+              repetition_penalty: settings.repetition_penalty ?? 1.1,
+              frequency_penalty: settings.frequencyPenalty ?? 0,
+              presence_penalty: settings.presencePenalty ?? 0,
+              user_profile_id: userProfile?.id ?? 'anonymous',
+              user_profile: userProfile?.id
+                ? {
+                    id: userProfile.id,
+                    name: userProfile.name,
+                    username: userProfile.username,
+                  }
+                : {},
+              direct_profile_injection: settings.directProfileInjection === true,
+              memory_api_base: MEMORY_API_URL || null,
+              injectTimestamp: settings.injectTimestamp === true,
+            },
+          }),
+        });
+      } catch (e) {
+        console.warn('[outreach] sync', e);
+      }
+    }, 900);
+    return () => {
+      if (outreachSyncTimerRef.current) clearTimeout(outreachSyncTimerRef.current);
+    };
+  }, [
+    portsReady,
+    storageHydrated,
+    PRIMARY_API_URL,
+    settings.outreachRules,
+    settings.outreachEnabled,
+    primaryModel,
+    settings.max_tokens,
+    settings.temperature,
+    settings.top_p,
+    settings.top_k,
+    settings.repetition_penalty,
+    settings.frequencyPenalty,
+    settings.presencePenalty,
+    settings.injectTimestamp,
+    settings.directProfileInjection,
+    userProfile?.id,
+    userProfile?.name,
+    userProfile?.username,
+    MEMORY_API_URL,
+    characters,
+    outreachBootstrapReady,
+  ]);
+
+  useEffect(() => {
+    if (!portsReady || !storageHydrated || !PRIMARY_API_URL) return undefined;
+    let cancelled = false;
+    setOutreachBootstrapReady(false);
+    (async () => {
+      try {
+        await purgeOutreachConversationsFromStorage();
+        if (!cancelled) {
+          setConversations((prev) => prev.filter((c) => !isOutreachConversationId(c?.id)));
+        }
+
+        const r = await fetch(`${PRIMARY_API_URL}/outreach/v1/rules`);
+        if (!r.ok || cancelled) return;
+        const data = await r.json();
+        if (cancelled) return;
+        const srvRules = Array.isArray(data.rules) ? data.rules : [];
+        const srvEnabled = data && typeof data.enabled === 'boolean' ? data.enabled : true;
+        const srvConvs = Array.isArray(data.conversations) ? data.conversations : [];
+        // Server is authoritative for outreach rules at startup, so stale local cache
+        // can never resurrect deleted rules back to the backend.
+        updateSettings({ outreachRules: srvRules, outreachEnabled: srvEnabled });
+
+        const withMessages = srvConvs.filter((c) => c?.id && Array.isArray(c.messages) && c.messages.length > 0);
+        const notes = withMessages.map(outreachNotificationFromConversation).filter(Boolean);
+        if (!cancelled && notes.length > 0) {
+          setOutreachNotifications((prev) => {
+            const byId = new Map(prev.map((n) => [n.id, n]));
+            for (const n of notes) byId.set(n.id, n);
+            return [...byId.values()].slice(0, 20);
+          });
+        }
+      } catch (_) {}
+      finally {
+        if (!cancelled) setOutreachBootstrapReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      setOutreachBootstrapReady(false);
+    };
+  }, [portsReady, storageHydrated, PRIMARY_API_URL, updateSettings, setConversations]);
+
+  useEffect(() => {
+    if (!portsReady || !PRIMARY_API_URL || typeof window === 'undefined') return undefined;
+    let es;
+    try {
+      es = new EventSource(`${PRIMARY_API_URL}/outreach/v1/events/stream`);
+    } catch (_) {
+      return undefined;
+    }
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type !== 'outreach_message') return;
+        const s = settingsRef.current || {};
+        const notification = {
+          id: data.messageId ? `outreach-note-${data.messageId}` : `outreach-note-${Date.now()}`,
+          ruleId: data.ruleId,
+          ruleName: data.ruleName,
+          characterName: data.characterName,
+          characterAvatar: data.characterAvatar,
+          attachmentImageUrl: data.attachmentImageUrl || null,
+          messageId: data.messageId,
+          preview: data.preview || '',
+          conversationId: data.conversationId,
+          createdAt: new Date().toISOString(),
+          read: false,
+        };
+        setOutreachNotifications(prev => [notification, ...prev].slice(0, 50));
+        if (data.conversation?.id) {
+          void persistOutreachConversation(data.conversation).then((ok) => {
+            if (!ok) return;
+            void loadConversationsFromStorage().then((reloaded) => {
+              setConversations((prev) => {
+                const byId = new Map(prev.map((c) => [c.id, c]));
+                for (const c of reloaded) byId.set(c.id, c);
+                return [...byId.values()];
+              });
+            });
+          });
+        }
+        if (
+          s.outreachBrowserNotifications === true
+          && typeof window !== 'undefined'
+          && 'Notification' in window
+          && Notification.permission === 'granted'
+        ) {
+          try {
+            const attachUrl = notification.attachmentImageUrl && /^https?:\/\//i.test(notification.attachmentImageUrl)
+              ? notification.attachmentImageUrl
+              : undefined;
+            const iconUrl = attachUrl
+              || (notification.characterAvatar && /^https?:\/\//i.test(notification.characterAvatar)
+                ? notification.characterAvatar
+                : undefined);
+            const n = new Notification(notification.characterName || 'Eloquent', {
+              body: `Eloquent\nsent you a message:\n${(notification.preview || '').slice(0, 140)}`,
+              icon: iconUrl,
+              image: attachUrl,
+              tag: notification.id,
+            });
+            n.onclick = () => {
+              try { window.focus(); } catch (_) {}
+              n.close();
+              openOutreachNotificationRef.current?.(notification);
+            };
+          } catch (_) {}
+        }
+      } catch (_) {}
+    };
+    return () => {
+      try { es.close(); } catch (_) {}
+    };
+  }, [portsReady, PRIMARY_API_URL]);
+
+  useEffect(() => {
+    if (!storageHydrated || typeof window === 'undefined') return undefined;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('outreach') !== '1') return undefined;
+    const cid = params.get('cid');
+    const mid = params.get('mid');
+    if (!cid) return undefined;
+
+    const stripQuery = () => {
+      const p = new URLSearchParams(window.location.search);
+      p.delete('outreach');
+      p.delete('cid');
+      p.delete('mid');
+      const qs = p.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+    };
+
+    const openFromConversation = (conversation) => {
+      setActiveTab('chat');
+      // Always use handleConversationClick — it reads messages from the IndexedDB shard.
+      // Do NOT call applyConversationSelection with the outreach conv object, which has
+      // no messages array and would overwrite the real chat's shard with an empty array.
+      handleConversationClick(conversation?.id || cid);
+      if (mid) setOutreachScrollToMessageId(mid);
+      stripQuery();
+    };
+
+    const hasLocal = conversations.some(c => c.id === cid);
+    if (hasLocal) {
+      openFromConversation({ id: cid });
+      return undefined;
+    }
+    if (!PRIMARY_API_URL || !portsReady) {
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${PRIMARY_API_URL}/outreach/v1/conversation/${encodeURIComponent(cid)}`);
+        if (cancelled) return;
+        const data = await r.json();
+        if (data?.conversation?.id) {
+          const fetched = data.conversation;
+          await persistOutreachConversation(fetched);
+          const { messages: _omit, ...meta } = fetched;
+          setConversations(prev => {
+            const i = prev.findIndex(c => c.id === fetched.id);
+            if (i >= 0) {
+              const next = [...prev];
+              next[i] = { ...next[i], ...meta };
+              return next;
+            }
+            return [...prev, meta];
+          });
+          if (!cancelled) {
+            openFromConversation(fetched);
+            return;
+          }
+        }
+      } catch (_) {}
+      if (!cancelled) window.setTimeout(() => openFromConversation(null), 0);
+    })();
+    return () => { cancelled = true; };
+  }, [storageHydrated, handleConversationClick, setActiveTab, conversations, PRIMARY_API_URL, portsReady, setConversations]);
+
+  useEffect(() => {
+    if (!portsReady || !PRIMARY_API_URL || typeof window === 'undefined') return undefined;
+    if (settings.outreachBrowserNotifications !== true) return undefined;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return undefined;
+    let cancelled = false;
+    import('../utils/outreachPush').then(({ registerOutreachWebPush }) => {
+      if (!cancelled) registerOutreachWebPush(PRIMARY_API_URL).catch(() => {});
+    });
+    return () => { cancelled = true; };
+  }, [portsReady, PRIMARY_API_URL, settings.outreachBrowserNotifications]);
+
   const customEndpointsSaveTimerRef = useRef(null);
 
   useEffect(() => {
@@ -3778,145 +7381,186 @@ Return ONLY valid JSON:
     };
   }, [PRIMARY_API_URL, settings?.customApiEndpoints]);
 
-  // Update the current conversation when messages change (explicitly keep agenticMemoryEnabled so it's never dropped)
+  // Persist active tab messages only — debounced, no setConversations (was crashing the tab).
+  const CONVERSATION_PERSIST_DEBOUNCE_MS = 2000;
+
   useEffect(() => {
-    if (!activeConversation || messages.length === 0) return;
+    if (!storageHydrated || !activeConversation || messages.length === 0) return;
+    if (tombstonedConversationIdsRef.current.has(activeConversation)) return;
+    if (conversationSwitchInProgressRef.current) return;
 
-    setConversations(prev => prev.map(conv =>
-      conv.id === activeConversation
-        ? { ...conv, messages, agenticMemoryEnabled: conv.agenticMemoryEnabled }
-        : conv
-    ));
-  }, [messages, activeConversation]);
+    const flush = () => {
+      conversationPersistTimerRef.current = null;
+      const activeId = activeConversationRef.current;
+      const msgs = messagesRef.current;
+      if (!activeId || !msgs?.length) return;
+      if (tombstonedConversationIdsRef.current.has(activeId)) return;
+      if (conversationSwitchInProgressRef.current) return;
 
-  // Save all conversations to localStorage (explicitly keep agenticMemoryEnabled)
-  useEffect(() => {
-    if (conversations.length === 0) return;
+      const conv = (conversationsRef.current || []).find((c) => c.id === activeId);
+      const { messages: _omit, ...catalogMeta } = conv || { id: activeId, name: 'Chat' };
 
-    const updatedConversations = conversations.map(conv =>
-      conv.id === activeConversation
-        ? { ...conv, messages, agenticMemoryEnabled: conv.agenticMemoryEnabled }
-        : conv
-    );
+      setConversationSaveStatus('saving');
+      void saveActiveConversationMessages(activeId, msgs, catalogMeta)
+        .then((ok) => setConversationSaveStatus(ok ? 'saved' : 'error'))
+        .catch(() => setConversationSaveStatus('error'));
+    };
 
-    localStorage.setItem('Eloquent-conversations', JSON.stringify(updatedConversations));
-
-    if (activeConversation) {
-      localStorage.setItem('Eloquent-active-conversation', activeConversation);
+    if (conversationPersistTimerRef.current) {
+      clearTimeout(conversationPersistTimerRef.current);
     }
-  }, [conversations, messages, activeConversation]);
+    conversationPersistTimerRef.current = setTimeout(flush, CONVERSATION_PERSIST_DEBOUNCE_MS);
 
-  // Load conversations from localStorage on mount
+    return () => {
+      if (conversationPersistTimerRef.current) {
+        clearTimeout(conversationPersistTimerRef.current);
+      }
+    };
+  }, [messages, activeConversation, storageHydrated]);
+
+  // Flush pending chat saves before reload/close (catalog + active shard).
   useEffect(() => {
-    const loadSavedConversations = () => {
+    if (!storageHydrated) return undefined;
+    const flushOnExit = () => {
+      if (conversationPersistTimerRef.current) {
+        clearTimeout(conversationPersistTimerRef.current);
+        conversationPersistTimerRef.current = null;
+      }
+      if (conversationCatalogPersistTimerRef.current) {
+        clearTimeout(conversationCatalogPersistTimerRef.current);
+        conversationCatalogPersistTimerRef.current = null;
+      }
+      const activeId = activeConversationRef.current;
+      const msgs = messagesRef.current;
+      const list = (conversationsRef.current || []).filter(
+        (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
+      );
+      if (list.length > 0) {
+        void persistChatState(
+          list,
+          activeId || null,
+          activeId && msgs?.length ? msgs : null
+        );
+      }
+    };
+    window.addEventListener('pagehide', flushOnExit);
+    return () => window.removeEventListener('pagehide', flushOnExit);
+  }, [storageHydrated]);
+
+  // Message shards alone do not update the tab index — persist catalog when tabs change.
+  useEffect(() => {
+    if (!storageHydrated) return undefined;
+
+    const visible = conversations.filter(
+      (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
+    );
+    const sig = visible.map((c) => `${c.id}\t${c.name || ''}`).join('\n');
+    if (sig === conversationCatalogSigRef.current) return undefined;
+    conversationCatalogSigRef.current = sig;
+    if (visible.length === 0) return undefined;
+
+    if (conversationCatalogPersistTimerRef.current) {
+      clearTimeout(conversationCatalogPersistTimerRef.current);
+    }
+    conversationCatalogPersistTimerRef.current = setTimeout(() => {
+      conversationCatalogPersistTimerRef.current = null;
+      const list = (conversationsRef.current || []).filter(
+        (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
+      );
+      if (list.length === 0) return;
+      void saveConversationCatalog(list, activeConversationRef.current);
+    }, 1200);
+
+    return () => {
+      if (conversationCatalogPersistTimerRef.current) {
+        clearTimeout(conversationCatalogPersistTimerRef.current);
+      }
+    };
+  }, [conversations, storageHydrated]);
+
+  // Resync sidebar after manual key deletes in Settings → Storage.
+  useEffect(() => {
+    if (!storageHydrated) return undefined;
+
+    const resync = async () => {
       try {
-        const savedConversations = localStorage.getItem('Eloquent-conversations');
-        if (savedConversations) {
-          const parsedConversations = JSON.parse(savedConversations).map(c => ({
-            ...c,
-            agenticMemoryEnabled: c.agenticMemoryEnabled === true
-          }));
-          setConversations(parsedConversations);
-
-          // Load active conversation if available
-          const lastActiveId = localStorage.getItem('Eloquent-active-conversation');
-          if (lastActiveId && parsedConversations.some(c => c.id === lastActiveId)) {
-            setActiveConversation(lastActiveId);
-
-            // Load messages for this conversation
-            const activeConv = parsedConversations.find(c => c.id === lastActiveId);
-            if (activeConv?.messages && Array.isArray(activeConv.messages)) {
-              setMessages(activeConv.messages);
-            }
-
-            if (Array.isArray(activeConv?.activeCharacterIds)) {
-              setActiveCharacterIds(activeConv.activeCharacterIds);
-            }
-            if (activeConv?.activeCharacterWeights && typeof activeConv.activeCharacterWeights === 'object') {
-              setActiveCharacterWeights(activeConv.activeCharacterWeights);
-            }
-            if (typeof activeConv?.multiRoleContext === 'string') {
-              setMultiRoleContext(activeConv.multiRoleContext);
-            }
-
-            // Load character if applicable (character loading happens in loadCharacters)
+        const parsed = await loadConversationsFromStorage();
+        const visible = parsed.filter(
+          (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
+        );
+        if (visible.length === 0) return;
+        conversationCatalogSigRef.current = visible
+          .map((c) => `${c.id}\t${c.name || ''}`)
+          .join('\n');
+        setConversations(visible);
+        const activeId = activeConversationRef.current;
+        if (activeId && !visible.some((c) => c.id === activeId)) {
+          const fallbackId = visible[0]?.id ?? null;
+          console.warn(
+            `[Eloquent] Active chat "${activeId}" missing after storage resync — switching to`,
+            fallbackId || 'none'
+          );
+          setActiveConversation(fallbackId);
+          if (fallbackId) {
+            const fallbackMsgs = await loadConversationMessages(fallbackId);
+            setMessages(fallbackMsgs);
+          } else {
+            setMessages([]);
           }
         }
-      } catch (error) {
-        console.error("Error loading saved conversations:", error);
+      } catch (e) {
+        console.warn('[conversations] storage-changed resync failed:', e);
       }
     };
 
-    // Only load if not already loaded
-    if (conversations.length === 0) {
-      loadSavedConversations();
-    }
-  }, []);
+    window.addEventListener('eloquent-storage-changed', resync);
+    return () => window.removeEventListener('eloquent-storage-changed', resync);
+  }, [storageHydrated]);
+
+  // Active tab in memory but missing from sidebar — recover catalog row from shard if possible.
+  useEffect(() => {
+    if (!storageHydrated || !activeConversation) return undefined;
+    if (tombstonedConversationIdsRef.current.has(activeConversation)) return undefined;
+    if (conversations.some((c) => c.id === activeConversation)) return undefined;
+
+    let cancelled = false;
+    void (async () => {
+      const recovered = await recoverConversationCatalogEntry(activeConversation);
+      if (cancelled || !recovered) {
+        if (!cancelled) {
+          console.error(
+            '[Eloquent] Active chat missing from sidebar and no recoverable message shard:',
+            activeConversation
+          );
+        }
+        return;
+      }
+      const parsed = await loadConversationsFromStorage();
+      if (cancelled) return;
+      const visible = parsed.filter(
+        (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
+      );
+      if (visible.length === 0) return;
+      conversationCatalogSigRef.current = visible
+        .map((c) => `${c.id}\t${c.name || ''}`)
+        .join('\n');
+      setConversations(visible);
+      console.info('[Eloquent] Restored missing sidebar tab from message shard:', activeConversation);
+    })();
+
+    return () => { cancelled = true; };
+  }, [storageHydrated, activeConversation, conversations, setConversations]);
+
+  // Conversations are loaded by IndexedDB hydration; no duplicate sync load needed
   const getActiveConversationData = useCallback(() => {
     const conversation = conversations.find(conv => conv.id === activeConversation);
-
-    if (conversation && conversation.messages && conversation.messages.length > 0) {
-      if (JSON.stringify(messages) !== JSON.stringify(conversation.messages)) {
-        setMessages(conversation.messages);
-      }
-    }
-
     return conversation || { id: activeConversation, messages: [] };
-  }, [conversations, activeConversation, messages]);
+  }, [conversations, activeConversation]);
 
   const setActiveConversationWithMessages = useCallback((conversationId) => {
-    setActiveConversation(conversationId);
-
-    const conversation = conversations.find(conv => conv.id === conversationId);
-    if (conversation && conversation.messages) {
-      setMessages(conversation.messages);
-    } else {
-      setMessages([]);
-    }
-    const userId = conversation?.characterIds?.user;
-    if (userId) {
-      setUserCharacterId(userId);
-    } else {
-      setUserCharacterId(null);
-    }
-    const defaultActiveIds = characters
-      .map(normalizeCharacter)
-      .filter(c => normalizeChatRole(c.chat_role) !== 'user')
-      .map(c => c.id);
-    if (Array.isArray(conversation?.activeCharacterIds)) {
-      setActiveCharacterIds(conversation.activeCharacterIds);
-    } else {
-      setActiveCharacterIds(defaultActiveIds);
-    }
-    if (conversation?.activeCharacterWeights && typeof conversation.activeCharacterWeights === 'object') {
-      setActiveCharacterWeights(conversation.activeCharacterWeights);
-    } else {
-      setActiveCharacterWeights(buildDefaultCharacterWeights(characters));
-    }
-    setMultiRoleContext(typeof conversation?.multiRoleContext === 'string' ? conversation.multiRoleContext : '');
-  }, [conversations, characters, setActiveConversation, setMessages, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights, setMultiRoleContext]);
-  // Add this effect after your other useEffect blocks in AppContext.jsx
-  useEffect(() => {
-    // Load settings from localStorage on component mount; merge with defaults so new keys get default values
-    try {
-      const savedSettings = localStorage.getItem('Eloquent-settings');
-      const defaults = {
-
-        streamResponses: true,
-        // add other new keys here when needed
-      };
-      if (savedSettings) {
-        const parsedSettings = JSON.parse(savedSettings);
-        setSettings(currentSettings => ({
-          ...defaults,
-          ...currentSettings,
-          ...parsedSettings
-        }));
-      }
-    } catch (error) {
-      console.error("Error loading settings from localStorage:", error);
-    }
-  }, []); // Empty dependency array: run only once on mount
+    handleConversationClick(conversationId);
+  }, [handleConversationClick]);
+  // Settings are loaded by IndexedDB hydration effect
   // Active summary is no longer restored from localStorage; it's session-only to avoid leaking context between chats.
   useEffect(() => {
     if (activeContextSummary) {
@@ -3926,57 +7570,70 @@ Return ONLY valid JSON:
     }
   }, [activeContextSummary]);
   // Near the other useEffect hooks
+  // GPU + ~/.LiangLocal/settings.json must run *after* IndexedDB hydration. Earlier runs merged
+  // backend keys into React's initial defaults and persisted that snapshot, clobbering IDB
+  // (including Document Context: use_rag / selectedDocuments).
   useEffect(() => {
-    const syncGpuMode = async () => {
+    if (!storageHydrated) return;
+    let cancelled = false;
+    (async () => {
       try {
-        const response = await fetch(`${PRIMARY_API_URL}/system/gpu_info`);
-        if (response.ok) {
-          const data = await response.json();
-          // Update settings with backend's detected GPU mode
-          updateSettings({ singleGpuMode: data.single_gpu_mode });
-          console.log(`System has ${data.gpu_count} GPUs. Single GPU mode: ${data.single_gpu_mode}`);
-        }
+        const response = await fetchWithTimeout(`${PRIMARY_API_URL}/system/gpu_info`, {}, 6000);
+        if (cancelled || !response.ok) return;
+        const data = await response.json();
+        updateSettings({ singleGpuMode: data.single_gpu_mode });
+        console.log(`System has ${data.gpu_count} GPUs. Single GPU mode: ${data.single_gpu_mode}`);
       } catch (error) {
         console.warn("Could not fetch GPU info:", error);
       }
-    };
-
-    syncGpuMode();
-  }, []);
-
-  useEffect(() => {
-    // Load backend settings on startup
-    const loadBackendSettings = async () => {
+    })();
+    (async () => {
       try {
-        const response = await fetch(`${PRIMARY_API_URL}/models/get-settings`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.status === 'success' && data.settings) {
-            // Update settings with backend values (backend is source of truth)
-            updateSettings(data.settings);
-            console.log("✅ Loaded settings from backend:", data.settings);
+        const response = await fetchWithTimeout(`${PRIMARY_API_URL}/models/get-settings`, {}, 6000);
+        if (cancelled || !response.ok) return;
+        const data = await response.json();
+        if (data.status === 'success' && data.settings) {
+          const backend = data.settings;
+          const merged = { ...backend };
+          delete merged.userAvatarSize;
+          delete merged.characterAvatarSize;
+          // Browser session / IDB — never let backend settings.json overwrite document picker state
+          delete merged.use_rag;
+          delete merged.selectedDocuments;
+          delete merged.rag_docs;
+          if (!Array.isArray(merged.customApiEndpoints) || merged.customApiEndpoints.length === 0) {
+            delete merged.customApiEndpoints;
           }
+          updateSettings(merged);
+          console.log("✅ Loaded settings from backend:", data.settings);
         }
       } catch (error) {
         console.warn("Could not load backend settings:", error);
       }
+    })();
+    return () => {
+      cancelled = true;
     };
+  }, [storageHydrated, PRIMARY_API_URL, updateSettings]);
 
-    // Initial fetch on page load - only once
-    console.log("✅ Restored: Fetching model lists on startup...");
-    loadBackendSettings();
+  useEffect(() => {
+    if (!storageHydrated) {
+      postStorageHydrateFetchRef.current = false;
+      return;
+    }
+    if (postStorageHydrateFetchRef.current) return;
+    postStorageHydrateFetchRef.current = true;
     fetchModels();
-    fetchLoadedModels();
     fetchDocuments();
     loadCharacters();
-
-  }, []);
+  }, [storageHydrated, fetchModels, fetchDocuments, loadCharacters]);
 
   // ----------------------------------
   // Summary Management
   // ----------------------------------
   const generateConversationSummary = useCallback(async (summaryPrompt = "Create a continuity summary that will be injected as context for a future chat. Write it so a model can continue the conversation immediately. Keep it concise and factual. Include: setting/timeframe, key characters and relationships, current goals, recent critical events, unresolved threads, and any constraints (tools, rules, promises). Prefer 6-12 bullet points. Do not add opinions, analysis, or extra commentary.") => {
-    if (!primaryModel || messages.length === 0) return null;
+    const summaryAutoEnabled = settingsRef.current?.apiEndpointRoundRobinEnabled === true;
+    if ((!primaryModel && !summaryAutoEnabled) || messages.length === 0) return null;
 
     setIsGenerating(true);
     try {
@@ -3984,18 +7641,33 @@ Return ONLY valid JSON:
       const chatHistory = messages.map(m => `${m.role === 'user' ? 'User' : (m.characterName || 'Character')}: ${m.content}`).join('\n');
       const fullPrompt = `${summaryPrompt}\n\nCONVERSATION:\n${chatHistory}\n\nSUMMARY:`;
 
+      const { autoEnabled, effectiveModel } = resolveActionRouterContract(
+        'create_conversation_summary',
+        { requestPurpose: 'conversation_summary' },
+      );
+      if (!effectiveModel) {
+        throw new Error('No model available for summary generation');
+      }
+
       // 2. Call LLM
       const response = await fetch(`${PRIMARY_API_URL}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model_name: primaryModel,
-          prompt: fullPrompt,
-          max_tokens: 500,
-          temperature: 0.3,
-          gpu_id: 0,
-          stop: ['\n\nUser:', '\n\nCharacter:']
-        })
+        body: JSON.stringify(
+          mergeNanoGptMemoryIntoPayload(
+            {
+              model_name: effectiveModel,
+              prompt: fullPrompt,
+              max_tokens: 500,
+              temperature: 0.3,
+              gpu_id: 0,
+              stop: ['\n\nUser:', '\n\nCharacter:'],
+              request_purpose: 'conversation_summary',
+              round_robin_enabled: autoEnabled,
+            },
+            settings
+          )
+        ),
       });
 
       if (!response.ok) throw new Error("Failed to generate summary");
@@ -4016,7 +7688,7 @@ Return ONLY valid JSON:
       setIsGenerating(false);
     }
 
-  }, [primaryModel, messages, PRIMARY_API_URL]);
+  }, [primaryModel, messages, PRIMARY_API_URL, settings, resolveActionRouterContract]);
 
   /**
    * Append an existing summary with new details from the current conversation.
@@ -4025,13 +7697,22 @@ Return ONLY valid JSON:
    * @returns {Promise<{ id: string, title: string, content: string }|null>} Saved summary or null on failure
    */
   const generateAppendedSummary = useCallback(async (existingSummary) => {
-    if (!primaryModel || !messages?.length || !existingSummary?.content) return null;
+    const summaryAutoEnabled = settingsRef.current?.apiEndpointRoundRobinEnabled === true;
+    if ((!primaryModel && !summaryAutoEnabled) || !messages?.length || !existingSummary?.content) return null;
     const existingContent = typeof existingSummary.content === 'string' ? existingSummary.content : '';
     const existingTitle = existingSummary.title || 'Summary';
     if (!existingContent.trim()) return null;
 
     setIsGenerating(true);
     try {
+      const { autoEnabled, effectiveModel } = resolveActionRouterContract(
+        'append_conversation_summary',
+        { requestPurpose: 'conversation_summary_append' },
+      );
+      if (!effectiveModel) {
+        throw new Error('No model available for summary append');
+      }
+
       const chatHistory = messages.map(m => `${m.role === 'user' ? 'User' : (m.characterName || 'Character')}: ${m.content}`).join('\n');
       const appendPrompt = `You have an existing story summary and a new conversation. Merge them into a single updated summary.
 
@@ -4052,14 +7733,21 @@ UPDATED SUMMARY:`;
       const response = await fetch(`${PRIMARY_API_URL}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model_name: primaryModel,
-          prompt: appendPrompt,
-          max_tokens: 600,
-          temperature: 0.3,
-          gpu_id: 0,
-          stop: ['\n\nUser:', '\n\nCharacter:']
-        })
+        body: JSON.stringify(
+          mergeNanoGptMemoryIntoPayload(
+            {
+              model_name: effectiveModel,
+              prompt: appendPrompt,
+              max_tokens: 600,
+              temperature: 0.3,
+              gpu_id: 0,
+              stop: ['\n\nUser:', '\n\nCharacter:'],
+              request_purpose: 'conversation_summary_append',
+              round_robin_enabled: autoEnabled,
+            },
+            settings
+          )
+        ),
       });
 
       if (!response.ok) throw new Error("Failed to generate appended summary");
@@ -4077,7 +7765,7 @@ UPDATED SUMMARY:`;
     } finally {
       setIsGenerating(false);
     }
-  }, [primaryModel, messages, PRIMARY_API_URL]);
+  }, [primaryModel, messages, PRIMARY_API_URL, settings, resolveActionRouterContract]);
 
   const contextValue = useMemo(() => ({
     messages,
@@ -4105,13 +7793,24 @@ UPDATED SUMMARY:`;
     setSecondaryIsAPI,
     setConversations,
     isSingleGpuMode,
+    portsReady,
+    storageHydrated,
+    storageHydrationDegraded,
+    portsLoadDegraded,
+    retryBoot,
+    conversationSaveStatus,
     setActiveConversation: setActiveConversationWithMessages,
     deleteConversation,
     deleteAllConversations,
     renameConversation,
     createNewConversation,
+    goToHome,
+    completeCharacterIntro,
+    applyIntroChatTitle,
+    updateCharacterIntro,
     getActiveConversationData,
     buildSystemPrompt,
+    buildSystemPersonaPrompt,
     formatPrompt,
     sttEnabled: settings.sttEnabled ?? false,
     setSttEnabled: (enabled) => updateSettings({ sttEnabled: enabled }),
@@ -4139,6 +7838,8 @@ UPDATED SUMMARY:`;
     startRecording,
     stopRecording,
     playTTS,
+    playTestStreamingTTS,
+    playStreamingTtsScript,
     getTtsOverridesForCharacterId,
     isCallModeActive,
     callModeRecording,
@@ -4165,9 +7866,28 @@ UPDATED SUMMARY:`;
     generateUniqueId,
     userProfile,
     sendMessage,
+    beginBookAutomationPacking,
+    endBookAutomationPacking,
+    runBookAutomationChapter,
+    runBookAutomationQuickPrompt,
+    generateBookChapterJsonOutline,
+    buildBookAutomationExport,
     generateCallModeFollowUp,
     settings,
     updateSettings,
+    upsertOutreachRule,
+    deleteOutreachRule,
+    runOutreachRuleNow,
+    uploadOutreachRuleImages,
+    clearOutreachRuleImages,
+    outreachNotifications,
+    clearOutreachNotifications,
+    dismissOutreachToast,
+    openOutreachNotification,
+    discardOutreachNotification,
+    requestOutreachNotificationPermission,
+    outreachScrollToMessageId,
+    dismissOutreachScrollTarget,
     inputTranscript,
     setInputTranscript,
     documents,
@@ -4183,9 +7903,20 @@ UPDATED SUMMARY:`;
     lastAgenticMemoryFeedback,
     lastAgenticRunStatus,
     setLastAgenticRunStatus,
+   retryAgenticMemoryForLastTurn,
+    lastAgenticInjectMeta,
+    resolveAgenticUserId,
+    alignmentData,
+    setAlignmentData,
+    alignmentDetectionEnabled,
+    setAlignmentDetectionEnabled,
+    processAlignmentDetectionIfEnabled,
     addConversationSummary,
     activeTab,
     setActiveTab,
+    settingsEntryTab,
+    openSettingsTab,
+    openSettingsWindow,
     shouldUseDualMode,
     sttEnginesAvailable,
     fetchAvailableSTTEngines,
@@ -4195,7 +7926,11 @@ UPDATED SUMMARY:`;
     endStreamingTTS,
     addStreamingText,
     startStreamingTTS,
+    pauseStreamingTTS,
+    resumeStreamingTTS,
+    isStreamingTtsPaused,
     ttsSubtitleCue,
+    ttsFullResponseSaveStatus,
     ttsSubtitleCueRef, // ✅ Expose ref for direct access
     ttsClient,
     setAudioQueue,
@@ -4213,6 +7948,8 @@ UPDATED SUMMARY:`;
     updateMultiRoleContext,
     loadCharacters,
     saveCharacter,
+    cycleCharacterAvatar,
+    setCharacterAvatarIndex,
     deleteCharacter,
     duplicateCharacter,
     applyCharacter,
@@ -4259,9 +7996,14 @@ UPDATED SUMMARY:`;
     generateAppendedSummary,
     activeContextSummary,
     setActiveContextSummary,
-    unlockAudioContext
+    unlockAudioContext,
+    injectTimestamp,
+    setInjectTimestamp,
+    lastRequestRouteMeta,
+    setLastRequestRouteMeta,
+    stopStreamingTTS,
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, secondaryModel, audioError, startRecording, stopRecording, playTTS, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, generateCallModeFollowUp, updateSettings, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, ttsSubtitleCue, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, portsReady, storageHydrated, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, goToHome, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, secondaryModel, audioError, startRecording, stopRecording, playTTS, playTestStreamingTTS, playStreamingTtsScript, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, beginBookAutomationPacking, endBookAutomationPacking, runBookAutomationChapter, runBookAutomationQuickPrompt, generateBookChapterJsonOutline, buildBookAutomationExport, generateCallModeFollowUp, updateSettings, upsertOutreachRule, deleteOutreachRule, runOutreachRuleNow, outreachNotifications, clearOutreachNotifications, dismissOutreachToast, openOutreachNotification, discardOutreachNotification, requestOutreachNotificationPermission, outreachScrollToMessageId, dismissOutreachScrollTarget, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue, ttsFullResponseSaveStatus, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL,     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext, injectTimestamp, setInjectTimestamp
   ]);
 
 

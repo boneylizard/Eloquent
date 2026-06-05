@@ -45,6 +45,7 @@ const ControlPanel = ({
     showStoryTracker,
     showChoiceGenerator,
     isCallModeActive,
+    stopCallMode,
     // Handlers
     setShowModelSelector,
     createNewConversation,
@@ -55,7 +56,10 @@ const ControlPanel = ({
     handleSpeakerClick,
     stopTTS,
     handleAutoPlayToggle,
+    isFocusModeActive,
     setIsFocusModeActive,
+    handleDualOverlayChange,
+    handleCallModeToggle,
     updateSettings,
     handleCreateSummary,
     availableSummaries = [],
@@ -64,7 +68,6 @@ const ControlPanel = ({
     setShowAuthorNote,
     setShowStoryTracker,
     setShowChoiceGenerator,
-    handleCallModeToggle,
     getCharacterButtonState,
     // New props for identifying active audio
     skippedMessageIds,
@@ -87,8 +90,8 @@ const ControlPanel = ({
         <div
             className={cn(
                 "fixed z-50 flex flex-col transition-all duration-300 ease-in-out",
-                // Vertical positioning: Top aligned on mobile, Centered on desktop
-                "top-20 lg:top-1/2 lg:transform lg:-translate-y-1/2",
+                // Below app navbar (--app-navbar-offset); centered on large screens
+                "top-[calc(var(--app-navbar-offset,3rem)+0.5rem)] lg:top-1/2 lg:transform lg:-translate-y-1/2",
                 // Horizontal positioning
                 isOpen ? "right-2 lg:right-4" : "right-0 translate-x-[calc(100%-40px)]"
             )}
@@ -306,6 +309,50 @@ const ControlPanel = ({
                                     className="scale-75 data-[state=checked]:bg-primary"
                                 />
                                 <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Perf</span>
+                            </div>
+
+                            {/* Dual Overlay Mode Controls */}
+                            <div className="flex flex-col items-center justify-center pt-2 border-t border-border/30 mt-2" title="Dual Overlay Mode (open call mode in a second window)">
+                                <Switch
+                                    id="dual-overlay"
+                                    checked={settings?.allowDualOverlay || false}
+                                    onCheckedChange={handleDualOverlayChange}
+                                    className="scale-75 data-[state=checked]:bg-purple-500"
+                                />
+                                <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Dual Overlay</span>
+                            </div>
+
+                            {/* Independent mode toggles - always visible */}
+                            <div className={`flex flex-col items-center justify-center pt-1 ${isFocusModeActive ? '' : 'opacity-40'}`} title={isFocusModeActive ? "Exit Focus Mode" : "Toggle Focus Mode"} onClick={() => setIsFocusModeActive(!isFocusModeActive)}>
+                                {isFocusModeActive ? (
+                                    <>
+                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-purple-400 hover:text-purple-300 hover:bg-purple-500/20" onClick={() => setIsFocusModeActive(false)} title="Exit Focus Mode">
+                                            <X size={14} />
+                                        </Button>
+                                        <span className="text-[8px] text-purple-400 mt-0.5">Focus</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Focus size={14} className="text-muted-foreground" />
+                                        <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Focus</span>
+                                    </>
+                                )}
+                            </div>
+
+                            <div className={`flex flex-col items-center justify-center pt-1 ${isCallModeActive ? '' : 'opacity-40'}`} title={isCallModeActive ? "Exit Call Mode" : "Toggle Call Mode"} onClick={handleCallModeToggle}>
+                                {isCallModeActive ? (
+                                    <>
+                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/20" onClick={stopCallMode} title="Exit Call Mode">
+                                            <X size={14} />
+                                        </Button>
+                                        <span className="text-[8px] text-cyan-400 mt-0.5">Call</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <PhoneOff size={14} className="text-muted-foreground" />
+                                        <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Call</span>
+                                    </>
+                                )}
                             </div>
                         </div>
                     </>

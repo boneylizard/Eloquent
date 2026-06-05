@@ -135,6 +135,12 @@
   cursor: pointer;
 }
 
+.character-create-view,
+.character-edit-view {
+  min-height: 0;
+  padding-bottom: 5.5rem;
+}
+
 .header-buttons {
   display: flex;
   gap: 10px;

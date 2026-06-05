@@ -42,7 +42,10 @@ import asyncio
 import datetime
 from contextlib import asynccontextmanager
 from . import memory_intelligence
+from . import character_intelligence
 from .memory_routes import memory_router
+from .alignment_routes import alignment_router
+from .chatlog_condenser_routes import chatlog_condenser_router
 import httpx
 import logging
 from fastapi.logger import logger # Use FastAPI's logger
@@ -55,8 +58,6 @@ import uuid
 from .tts_client import TTSClient  # Use TTS client instead of direct service
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
 import re
 from .model_manager import ModelManager
 from . import inference
@@ -70,35 +71,31 @@ import base64
 from urllib.parse import urlparse
 import threading
 from .Document_routes import document_router
+from .transcript_corpus_routes import corpus_router
 from . import rag_utils # Assuming this is the correct import path for your RAG utils
 import logging
 import signal
 from PIL import Image, PngImagePlugin
 import requests
 from io import BytesIO
-import base64
-from . import character_intelligence
-from .election_data_service import election_service, normalize_rtwh_polls
-from .election_ai_service import election_ai_service
-from .election_db import election_db
-from . import election_simulation
-from . import election_forecast
-from . import ballotpedia_scraper
-from . import votehub_service
-from . import rcp_service
-from .chess_engine import chess_engine_service
-from . import chess_ai_service
-from .auth_routes import auth_router
-from .chess_auth_db import chess_auth_db
-try:
-    from .market_sim.routes import router as market_sim_router
-except ModuleNotFoundError:
-    market_sim_router = None
+from .voice_sculpt_routes import voice_sculpt_router
+from .automation_service import AutomationService
 # Configure logging BEFORE importing modules that use it
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+from .rembg_routes import router as rembg_router
+import rembg
+from . import election_forecast
+from .auth_routes import auth_router
+try:
+    from .market_sim.routes import router as market_sim_router
+except ModuleNotFoundError:
+    market_sim_router = None
+from .outreach_routes import router as outreach_router
+from .remote_routes import router as remote_router
+from .d_id_routes import d_id_router
 
 # --- Update status tracking ---
 UPDATE_LOCK = threading.Lock()
@@ -151,6 +148,151 @@ def get_log_dir():
 def get_repo_root() -> Path:
     """Resolve the git repo root (project root)."""
     return Path(__file__).resolve().parents[2]
+
+def get_tts_export_dir() -> Path:
+    """Reliable server-side folder for full-response TTS backups."""
+    export_dir = get_repo_root() / "backend" / "data" / "tts_full_exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return export_dir
+
+def _safe_name(value: str, fallback: str = "item", max_len: int = 48) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or fallback)).strip("_.-")
+    if not cleaned:
+        cleaned = fallback
+    return cleaned[:max_len]
+
+
+def _split_tts_wav_bytes_by_max_duration(
+    audio_bytes: bytes, max_seconds: float
+) -> Optional[List[bytes]]:
+    """
+    Split decoded audio into multiple WAV byte blobs, each at most max_seconds.
+    Returns None to keep the original bytes as a single file (short audio, decode failure, etc.).
+    """
+    if max_seconds <= 0:
+        return None
+    try:
+        import soundfile as sf  # type: ignore
+    except Exception:
+        return None
+    try:
+        bio = io.BytesIO(audio_bytes)
+        data, sample_rate = sf.read(bio, dtype="float64", always_2d=True)
+    except Exception:
+        return None
+    if data.size == 0 or sample_rate <= 0:
+        return None
+    max_frames = int(float(max_seconds) * float(sample_rate))
+    n_frames = int(data.shape[0])
+    if max_frames <= 0 or n_frames <= max_frames:
+        return None
+    chunks: List[bytes] = []
+    start = 0
+    while start < n_frames:
+        end = min(start + max_frames, n_frames)
+        part = data[start:end].copy()
+        out = io.BytesIO()
+        try:
+            sf.write(out, part, sample_rate, format="WAV", subtype="PCM_16")
+        except Exception:
+            return None
+        chunks.append(out.getvalue())
+        start = end
+    return chunks if len(chunks) > 1 else None
+
+
+def persist_full_tts_audio(
+    audio_bytes: bytes,
+    metadata: Dict[str, Any],
+    max_chunk_seconds: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Persist synthesized full-response TTS to disk.
+    Writes a primary file and an immediate backup copy plus manifest line(s).
+    When max_chunk_seconds > 0, splits into multiple WAVs (each <= that duration) for downstream tools (e.g. ~5 min caps).
+    """
+    export_dir = get_tts_export_dir()
+    backups_dir = export_dir / "backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    message_id = _safe_name(metadata.get("message_id", "msg"))
+    content_hash = hashlib.sha1(audio_bytes).hexdigest()[:10]
+
+    split_blobs: Optional[List[bytes]] = None
+    if max_chunk_seconds is not None and float(max_chunk_seconds) > 0:
+        split_blobs = _split_tts_wav_bytes_by_max_duration(audio_bytes, float(max_chunk_seconds))
+
+    manifest_path = export_dir / "manifest.jsonl"
+
+    if split_blobs:
+        paths: List[str] = []
+        filenames: List[str] = []
+        total_parts = len(split_blobs)
+        for i, blob in enumerate(split_blobs):
+            filename = f"tts_full_{now}_{message_id}_{content_hash}_part{i:03d}.wav"
+            file_path = export_dir / filename
+            backup_path = backups_dir / filename
+            file_path.write_bytes(blob)
+            backup_path.write_bytes(blob)
+            paths.append(str(file_path))
+            filenames.append(filename)
+            manifest_row = {
+                "ts": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "filename": filename,
+                "path": str(file_path),
+                "backup_path": str(backup_path),
+                "bytes": len(blob),
+                "voice": metadata.get("voice"),
+                "engine": metadata.get("engine"),
+                "message_id": metadata.get("message_id"),
+                "conversation_id": metadata.get("conversation_id"),
+                "text_preview": (metadata.get("text") or "")[:180],
+                "part_index": i,
+                "parts_total": total_parts,
+                "max_chunk_seconds": float(max_chunk_seconds),
+            }
+            with manifest_path.open("a", encoding="utf-8") as mf:
+                mf.write(json.dumps(manifest_row, ensure_ascii=False) + "\n")
+
+        return {
+            "status": "saved",
+            "path": paths[0],
+            "backup_path": str(backups_dir / filenames[0]),
+            "filename": filenames[0],
+            "paths": paths,
+            "filenames": filenames,
+            "chunk_count": total_parts,
+        }
+
+    filename = f"tts_full_{now}_{message_id}_{content_hash}.wav"
+    file_path = export_dir / filename
+    backup_path = backups_dir / filename
+    file_path.write_bytes(audio_bytes)
+    backup_path.write_bytes(audio_bytes)
+
+    manifest_row = {
+        "ts": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "filename": filename,
+        "path": str(file_path),
+        "backup_path": str(backup_path),
+        "bytes": len(audio_bytes),
+        "voice": metadata.get("voice"),
+        "engine": metadata.get("engine"),
+        "message_id": metadata.get("message_id"),
+        "conversation_id": metadata.get("conversation_id"),
+        "text_preview": (metadata.get("text") or "")[:180],
+    }
+    with manifest_path.open("a", encoding="utf-8") as mf:
+        mf.write(json.dumps(manifest_row, ensure_ascii=False) + "\n")
+
+    return {
+        "status": "saved",
+        "path": str(file_path),
+        "backup_path": str(backup_path),
+        "filename": filename,
+        "chunk_count": 1,
+    }
 
 def run_git_command(args: List[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a git command and return the CompletedProcess."""
@@ -208,8 +350,49 @@ except Exception as e:
 from .sd_worker import SDWorkerClient
 from .upscale_manager import UpscaleManager
 import random
-from .web_search_service import perform_web_search, perform_smart_web_search
-from .openai_compat import router as openai_router, is_api_endpoint, get_configured_endpoint, forward_to_configured_endpoint_streaming, forward_to_configured_endpoint_non_streaming, prepare_endpoint_request
+import hashlib
+from .web_search_service import perform_web_search, set_web_search_llm
+from .eloquent_agent_tools import (
+    build_web_search_receipt,
+    detect_article_research_intent,
+    gather_reliable_web_research,
+    get_eloquent_chat_tools,
+    supports_native_tool_calling,
+    WEB_SEARCH_MODEL_INSTRUCTIONS,
+    extract_tool_calls_from_text as agent_extract_tool_calls,
+    execute_eloquent_tool,
+)
+from .web_search_routing import (
+    apply_native_web_search_request,
+    build_search_meta,
+    get_endpoint_config_for_model,
+    load_web_search_settings,
+    resolve_web_search_path,
+    sources_from_results,
+)
+from .openai_compat import (
+    router as openai_router,
+    is_api_endpoint,
+    get_configured_endpoint,
+    forward_to_configured_endpoint_streaming,
+    forward_to_configured_endpoint_non_streaming,
+    collect_openai_compatible_stream_text,
+    prepare_endpoint_request,
+    prepare_endpoint_request_from_config,
+    resolve_flow_api_endpoint_config,
+    is_flow_dedicated_api_request,
+    INTRO_ABOUT_PURPOSES,
+    apply_nano_gpt_context_memory,
+    extract_openai_stream_delta_parts,
+    thinking_stream_debug_enabled,
+    log_generate_outbound,
+    model_id_implies_extended_thinking,
+    parse_eloquent_llm_prompt_to_openai_messages,
+    inject_openai_vision_into_messages,
+    validate_api_model_for_generate,
+    note_endpoint_failure,
+    note_endpoint_success,
+)
 import pynvml
 from .devstral_service import devstral_service, DevstralService
 # Only set DEBUG-level loggers to WARNING to suppress their excessive output
@@ -342,9 +525,10 @@ class DevstralToolCallParser:
 # --- Pydantic Models ---
 class GenerateRequest(BaseModel):
     directProfileInjection: bool = False # <-- ADD THIS
+    memoryEnabled: bool = True
     prompt: str
     model_name: str
-    max_tokens: int = 4096
+    max_tokens: int = 1_000_000
     temperature: float = 0.7
     top_p: float = 0.9
     top_k: int = 40
@@ -363,13 +547,47 @@ class GenerateRequest(BaseModel):
     echo: bool = False # Added for echo functionality
     active_character: Optional[Dict[str, Any]] = None  # Add this field
     request_purpose: Optional[str] = None # <<< ADD THIS LINE
+    selected_model: Optional[str] = None
+    round_robin_enabled: Optional[bool] = None
+    memory_curation: Optional[bool] = False
     use_web_search: bool = False  # NEW: Web search toggle
     web_search_query: Optional[str] = None  # NEW: Optional web search query
+    web_search_mode: Optional[str] = None  # 'normal' | 'deep' | 'articles' (many full pages)
+    web_search_strategy: Optional[str] = None  # override: auto | eloquent | native | off
+    # None = auto (agent tools for API endpoints, legacy inject for local GGUF)
+    use_agent_tools: Optional[bool] = None
+    research_urls: Optional[List[str]] = None  # explicit article URLs to fetch
+    transcript_corpus_id: Optional[str] = None  # indexed .txt corpus from Transcript search tab
+    research_site: Optional[str] = None  # e.g. uxmag.com for site: searches
     image_base64: Optional[str] = None  # NEW: Optional base64-encoded image for context
     image_type: Optional[str] = None  # NEW: Optional image type (e.g., "png", "jpg")
     authorNote: Optional[str] = None  # Author's note for custom session instructions
     summaryContext: Optional[str] = None  # Optional story summary context
-    # Add any other fields you need for your request
+    injectTimestamp: Optional[bool] = False  # Prepend current date/time to context (same path as authorNote/summaryContext)
+    userProfileReinforcement: Optional[str] = None  # Key phrases/bullets re-injected before user query to reinforce profile weight
+
+    # NanoGPT Context Memory (only applied when custom endpoint URL contains nano-gpt.com)
+    nano_gpt_context_memory_enabled: bool = False
+    nano_gpt_context_memory_mode: str = "header"  # "header" | "suffix"
+    nano_gpt_context_memory_expiration_days: int = 30
+
+    # When True, skip OpenAI-compat local message pruning (used for huge one-shot prompts, e.g. Ethics review → Run).
+    skip_openai_message_pruning: bool = False
+
+    # Character-as-System: client sends base system layer + optional "Character Persona:" chat layer.
+    system_persona_mode: bool = False
+
+    # Optional per-flow API overrides (character_intro, system_intro, call_mode_character_about)
+    flow_api_url: Optional[str] = None
+    flow_api_model: Optional[str] = None
+    flow_api_key: Optional[str] = None
+
+    # Intensity preset parameters
+    intensity_params: Optional[Dict[str, Any]] = None
+
+    # Alignment failure detection
+    enable_alignment_detection: bool = False
+    alignment_thresholds: Optional[Dict[str, float]] = None
 
 class ImageRequest(BaseModel): # Keep for now
     prompt: str
@@ -384,7 +602,7 @@ class ImageRequest(BaseModel): # Keep for now
 class DocumentQuery(BaseModel): # Keep for now
     query: str
     doc_ids: List[str]
-    top_k: int = 5
+    top_k: int = 30
 
 class FileOperationRequest(BaseModel):
     filepath: str
@@ -397,6 +615,11 @@ class DirectoryListRequest(BaseModel):
 class SelectDirectoryRequest(BaseModel):
     initial_directory: Optional[str] = None
     title: Optional[str] = None
+
+class SelectFileRequest(BaseModel):
+    initial_directory: Optional[str] = None
+    title: Optional[str] = None
+    multiple: bool = False
 
 class SearchFilesRequest(BaseModel):
     query: str
@@ -566,7 +789,7 @@ async def generate_llm_response(prompt: str, model_manager, model_name: str, **k
     Adapter for your existing LLM generation, handling both local and API models.
     """
     from .inference import generate_text
-    from .openai_compat import is_api_endpoint, _prepare_endpoint_request, forward_to_configured_endpoint_non_streaming
+    from .openai_compat import is_api_endpoint, prepare_endpoint_request, collect_openai_compatible_stream_text
 
     if is_api_endpoint(model_name):
         logger.info(f"Routing generate_llm_response for API endpoint: {model_name}")
@@ -582,16 +805,47 @@ async def generate_llm_response(prompt: str, model_manager, model_name: str, **k
         }
         
         try:
-            endpoint_config, url, prepared_data = _prepare_endpoint_request(model_name, request_data)
-            response_json = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, prepared_data)
+            endpoint_config, url, prepared_data = prepare_endpoint_request(model_name, request_data)
+            text_out = await collect_openai_compatible_stream_text(endpoint_config, url, prepared_data)
+            response_json = {"choices": [{"message": {"content": text_out}}]}
             
-            # Extract content from OpenAI response format
-            if 'choices' in response_json and len(response_json['choices']) > 0:
-                content = response_json['choices'][0]['message']['content']
-                return content
-            else:
-                logger.error(f"Unexpected API response format: {response_json}")
-                return ""
+            # Extract content from OpenAI response format (with fallbacks)
+            if isinstance(response_json, dict):
+                if 'choices' in response_json and len(response_json['choices']) > 0:
+                    first = response_json['choices'][0]
+                    if isinstance(first, str):
+                        return first
+                    if isinstance(first, dict):
+                        # Standard chat format
+                        msg = first.get('message')
+                        if isinstance(msg, str):
+                            return msg
+                        if isinstance(msg, dict):
+                            content = msg.get('content') or msg.get('text')
+                            if isinstance(content, list):
+                                # Some APIs return list of parts
+                                joined = "".join([p.get("text") for p in content if isinstance(p, dict) and p.get("text")])
+                                if joined:
+                                    return joined
+                            if isinstance(content, str) and content:
+                                return content
+                        # Some providers return `delta` even in non-streaming
+                        delta = first.get('delta')
+                        if isinstance(delta, dict):
+                            content = delta.get('content') or delta.get('text')
+                            if isinstance(content, str) and content:
+                                return content
+                        # Some providers return `text` directly in choices
+                        content = first.get('text') or first.get('content')
+                        if isinstance(content, str) and content:
+                            return content
+                # Other common top-level fields
+                for key in ("text", "response", "output_text", "content", "result", "answer"):
+                    content = response_json.get(key)
+                    if isinstance(content, str) and content:
+                        return content
+            logger.error(f"Unexpected or empty API response format: {response_json}")
+            return ""
         except Exception as e:
             logger.error(f"API generation failed: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -1012,6 +1266,66 @@ async def select_directory(data: SelectDirectoryRequest = Body(...)):
     if not directory:
         return {"status": "cancelled"}
     return {"status": "success", "directory": directory}
+
+
+@router.post("/system/select-file")
+async def select_file(data: SelectFileRequest = Body(...)):
+    """Open a native file picker on the server and return the selected path."""
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "tk_file_picker.py"
+    if not script_path.is_file():
+        logger.error(f"File picker script not found: {script_path}")
+        raise HTTPException(status_code=500, detail="File picker is unavailable on this system.")
+
+    stdin_payload = json.dumps({
+        "title": data.title,
+        "initial_directory": data.initial_directory,
+        "multiple": data.multiple,
+    })
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(script_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(script_path.parent),
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=stdin_payload.encode("utf-8")),
+            timeout=300.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("File picker timed out")
+        raise HTTPException(status_code=500, detail="File picker timed out.")
+    except Exception as exc:
+        logger.error(f"File picker subprocess failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to open file picker.")
+
+    if proc.returncode == 1:
+        return {"status": "cancelled"}
+    if proc.returncode != 0:
+        err = (stderr or b"").decode("utf-8", errors="replace").strip() or "Unknown error"
+        logger.error(f"File picker error (code {proc.returncode}): {err}")
+        raise HTTPException(status_code=500, detail=f"File picker failed: {err}")
+
+    file_path = (stdout or b"").decode("utf-8", errors="replace").strip()
+    if not file_path:
+        return {"status": "cancelled"}
+    if data.multiple:
+        try:
+            files = json.loads(file_path)
+            if not isinstance(files, list):
+                raise ValueError("not a list")
+            files = [str(f).strip() for f in files if str(f).strip()]
+            if not files:
+                return {"status": "cancelled"}
+            return {"status": "success", "files": files}
+        except (json.JSONDecodeError, ValueError):
+            return {"status": "success", "files": [file_path]}
+    return {"status": "success", "file": file_path}
+
+
 @router.post("/models/update-gpu-mode")
 async def update_gpu_mode(
     data: dict = Body(...),
@@ -1788,6 +2102,9 @@ async def export_character_png(character_data: dict):
                     "ginger_gui": {
                         "exported_at": datetime.datetime.now().isoformat(),
                         "original_format": "ginger_gui"
+                    },
+                    "eloquent": {
+                        "ethics_justification": (character_data.get("ethics_justification") or "").strip()
                     }
                 }
             }
@@ -2393,35 +2710,31 @@ async def lifespan(app: FastAPI):
    
     # Initialize RAG system
     try:
-        rag_available = rag_utils.initialize_rag_system()
-        app.state.rag_available = rag_available
-        logger.info(f"RAG system initialization {'successful' if rag_available else 'skipped or failed'}")
+        if not rag_utils.is_rag_available():
+            logger.warning(
+                "RAG system not available: missing dependencies. "
+                "Install with: pip install sentence-transformers faiss-cpu"
+            )
+            app.state.rag_available = False
+        else:
+            rag_available = rag_utils.initialize_rag_system()
+            app.state.rag_available = rag_available
+            logger.info(f"RAG system initialization {'successful' if rag_available else 'failed (check RAG document store)'}")
     except Exception as rag_error:
         logger.error(f"Error initializing RAG system: {rag_error}", exc_info=True)
         app.state.rag_available = False
 
-    # Election tracker: SQLite DB + background scheduler
+    # Election tracker: SQLite DB + one-time source refresh at startup (no periodic rescrapes).
+    # Use Elections tab "↻ Refresh Data" or POST /election/polls/refresh to update later.
     try:
         await election_db.initialize()
-        election_scheduler = AsyncIOScheduler()
-
-        async def _job_votehub():
-            await votehub_service.refresh_votehub_all()
-        async def _job_rcp():
-            await rcp_service.refresh_rcp_all()
-        async def _job_rtwh_house():
-            await _refresh_racetothewh(["house"])
-
-        election_scheduler.add_job(_job_votehub, IntervalTrigger(minutes=30), id="votehub")
-        election_scheduler.add_job(_job_rcp, IntervalTrigger(minutes=30), id="rcp")
-        election_scheduler.add_job(_job_rtwh_house, IntervalTrigger(hours=2), id="rtwh_house")
-        election_scheduler.start()
-        app.state.election_scheduler = election_scheduler
         asyncio.create_task(votehub_service.refresh_votehub_all())
         asyncio.create_task(rcp_service.refresh_rcp_all())
-        logger.info("Election DB and scheduler started")
+        asyncio.create_task(_refresh_racetothewh(["house"]))
+        app.state.election_scheduler = None
+        logger.info("Election DB initialized; one-time VoteHub/RCP/RTWH refresh tasks started (no background scheduler)")
     except Exception as e:
-        logger.warning("Election scheduler init failed: %s", e)
+        logger.warning("Election init failed: %s", e)
 
     # Chess OAuth (Lichess/Chess.com) and imported games DB
     try:
@@ -2430,6 +2743,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Chess auth DB init failed: %s", e)
         app.state.election_scheduler = None
+
+    try:
+        from . import outreach_db
+        from .outreach_worker import outreach_loop
+
+        await outreach_db.initialize()
+        app.state.outreach_generation_defaults = {}
+        asyncio.create_task(outreach_loop(app))
+        logger.info("Outreach scheduler started (POST /outreach/v1/sync from clients)")
+    except Exception as oe:
+        logger.warning("Outreach scheduler init failed: %s", oe)
     
     # Initialize Forensic Linguistics Service
     try:
@@ -2443,7 +2767,18 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error initializing Forensic Linguistics Service: {forensic_error}", exc_info=True)
         app.state.forensic_service = None
         
-        # Initialize active user profile
+    # Initialize Voice Sculpt Automation Service
+    try:
+        from .ffmpeg_utils import bootstrap_ffmpeg_from_settings
+        bootstrap_ffmpeg_from_settings()
+        logger.info("Initializing Voice Sculpt Automation Service...")
+        app.state.automation_service = AutomationService()
+        logger.info("✅ Voice Sculpt Automation Service initialized")
+    except Exception as automation_error:
+        logger.error(f"Error initializing Voice Sculpt Automation Service: {automation_error}", exc_info=True)
+        app.state.automation_service = None
+
+    # Initialize active user profile
     try:
         from . import user_utils
         active_profile_id = user_utils.get_active_profile_id()
@@ -2489,6 +2824,8 @@ async def load_stt_engine_endpoint(data: dict = Body(...)):
             stt_service.load_whisper_model()
         elif engine == "parakeet":
             stt_service.load_parakeet_model()
+        elif engine == "parakeet-v3":
+            stt_service.load_parakeet_v3_model()
         elif engine == "parakeet-zh":
             stt_service.load_parakeet_zh_model()
         else:
@@ -3101,6 +3438,22 @@ async def get_current_profile(request: Request):
         "profile": profile
     }
 
+
+@app.router.get("/user/profile/list")
+async def list_profiles(request: Request):
+    """List available profile IDs from backend memory store filenames."""
+    try:
+        from . import user_utils
+        active_profile_id = getattr(request.app.state, "active_profile_id", None)
+        return {
+            "status": "success",
+            "active_profile_id": active_profile_id,
+            "profile_ids": user_utils.list_profile_ids(),
+        }
+    except Exception as e:
+        logger.error(f"Error listing profiles: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.router.post("/user/profile/set-active/{profile_id}")
 async def set_active_profile(profile_id: str, request: Request):
     """Set the active user profile in settings, even if profile doesn't exist yet."""
@@ -3117,6 +3470,45 @@ async def set_active_profile(profile_id: str, request: Request):
             raise HTTPException(status_code=500, detail="Failed to save profile ID")
     except Exception as e:
         logger.error(f"Error setting active profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.router.post("/user/profile/delete/{profile_id}")
+async def delete_user_profile_storage_endpoint(profile_id: str, request: Request):
+    """
+    Remove the on-disk memory bundle for a profile (memory store + agentic JSON files).
+    Does not read memory contents. If the deleted profile was active, picks a new active
+    profile from the largest remaining memory store file (size-based only).
+    """
+    try:
+        from . import user_utils
+
+        cur = getattr(request.app.state, "active_profile_id", None) or user_utils.get_active_profile_id()
+        safe_cur = user_utils._safe_profile_id_segment(cur) if cur else None
+        safe_target = user_utils._safe_profile_id_segment(profile_id)
+        was_active = bool(safe_cur and safe_target and safe_cur == safe_target)
+
+        result = user_utils.delete_user_profile_storage(profile_id)
+        if result.get("status") != "success":
+            raise HTTPException(status_code=400, detail=result.get("reason", "delete_failed"))
+
+        if was_active:
+            new_active = user_utils.infer_profile_id_from_largest_memory_store()
+            if new_active:
+                user_utils.save_active_profile_id(new_active)
+                request.app.state.active_profile_id = new_active
+                request.app.state.active_profile = None
+            else:
+                user_utils.clear_active_profile_id()
+                request.app.state.active_profile_id = None
+                request.app.state.active_profile = None
+
+        result["active_profile_id"] = getattr(request.app.state, "active_profile_id", None)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting user profile storage: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Routes ---
@@ -3632,7 +4024,7 @@ async def upload_avatar_image(request: Request, file: UploadFile = File(...)):
     # Make sure you're using only ONE static_dir definition in your entire codebase
     static_dir = Path(__file__).parent / "static"  # Use the same path as in your app.mount()
     
-    allowed_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".webm", ".mov", ".m4v"}
     file_extension = Path(file.filename).suffix.lower()
     if file_extension not in allowed_extensions:
         raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed types: {allowed_extensions}")
@@ -3796,6 +4188,22 @@ async def save_voice_preference(request: dict):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 # Add this new endpoint for testing web search
+@router.get("/tools/registry")
+async def get_tools_registry():
+    """OpenAI-format tool definitions available for agent / API models."""
+    return {
+        "tools": get_eloquent_chat_tools(simple=True, include_news=True),
+        "agent_web_search_default": True,
+        "web_search_strategies": ["auto", "eloquent", "native", "off"],
+        "default_web_search_strategy": load_web_search_settings().get("webSearchStrategy", "auto"),
+        "notes": (
+            "Dual-path web search: auto prefers provider-native (OpenRouter web_search tool, "
+            ":online) when the endpoint supports it; otherwise Eloquent prefetch inject. "
+            "Configure in Settings → Web Search and per API endpoint."
+        ),
+    }
+
+
 @router.post("/web-search/test")
 async def test_web_search(data: dict = Body(...)):
     """Test endpoint for web search functionality."""
@@ -3828,20 +4236,38 @@ async def generate_character_from_conversation_endpoint(
         messages = data.get("messages", [])
         analysis = data.get("analysis", {})
         model_name = data.get("model_name")  # Get from frontend if provided
+        selected_model = data.get("selected_model") or model_name
         gpu_id = data.get("gpu_id")  # Optional override
         use_api = data.get("use_api", False)  # Whether to use external API
         api_endpoint = data.get("api_endpoint")  # API endpoint info
+        frontend_round_robin_enabled = data.get("frontend_round_robin_enabled")
+        if frontend_round_robin_enabled is not None:
+            frontend_round_robin_enabled = bool(frontend_round_robin_enabled)
 
         # Auto-detect API endpoints: route to API path when model_name is an endpoint
         if model_name and is_api_endpoint(model_name):
             use_api = True
             if not api_endpoint:
-                api_endpoint = get_configured_endpoint(model_name)
+                api_endpoint = get_configured_endpoint(
+                    model_name,
+                    skip_rotation=frontend_round_robin_enabled is False,
+                    request_purpose="create_character",
+                    frontend_round_robin_enabled=frontend_round_robin_enabled,
+                )
             if not api_endpoint:
                 raise HTTPException(
                     status_code=400,
                     detail=f"API endpoint '{model_name}' not found or disabled in settings."
                 )
+        effective_model = model_name
+        if use_api and api_endpoint:
+            effective_model = api_endpoint.get("id") or model_name
+        logger.info(
+            "create_character_router_state auto_enabled=%s selected_model=%s effective_model=%s",
+            frontend_round_robin_enabled if frontend_round_robin_enabled is not None else "unknown",
+            selected_model or "",
+            effective_model or "",
+        )
         
         # Determine GPU. Default to 0 (primary chat GPU) for character creation.
         if gpu_id is None:
@@ -3861,9 +4287,12 @@ async def generate_character_from_conversation_endpoint(
             gpu_id=gpu_id,
             single_gpu_mode=getattr(request.app.state, 'single_gpu_mode', False),
             use_api=use_api,
-            api_endpoint=api_endpoint
+            api_endpoint=api_endpoint,
+            frontend_round_robin_enabled=frontend_round_robin_enabled,
+            force_resolved_endpoint=bool(use_api and api_endpoint),
+            conversation_id=str(data.get("conversation_id") or ""),
         )
-        
+
         return generation_result
         
     except Exception as e:
@@ -3936,6 +4365,13 @@ async def refine_generated_character_endpoint(
         character_json = data.get("character_json", {})
         feedback = data.get("feedback", "")
         original_messages = data.get("original_messages", [])
+        selected_model = data.get("selected_model") or data.get("model_name")
+        request_purpose = data.get("request_purpose") or "refine_character"
+        frontend_round_robin_enabled = data.get("frontend_round_robin_enabled")
+        if frontend_round_robin_enabled is None:
+            frontend_round_robin_enabled = data.get("round_robin_enabled")
+        if frontend_round_robin_enabled is not None:
+            frontend_round_robin_enabled = bool(frontend_round_robin_enabled)
         gpu_id = data.get("gpu_id")
         
         # Determine GPU using same logic as memory system
@@ -3990,12 +4426,32 @@ Apply the user's feedback to improve the character while keeping all good elemen
         use_api = model_name and is_api_endpoint(model_name)
         api_endpoint = data.get("api_endpoint")
         if use_api and not api_endpoint:
-            api_endpoint = get_configured_endpoint(model_name)
+            api_endpoint = get_configured_endpoint(
+                model_name,
+                skip_rotation=frontend_round_robin_enabled is False,
+                request_purpose=request_purpose,
+                frontend_round_robin_enabled=frontend_round_robin_enabled,
+            )
         if use_api and not api_endpoint:
             raise HTTPException(status_code=400, detail=f"API endpoint '{model_name}' not found or disabled in settings.")
+        effective_model = model_name
+        if use_api and api_endpoint:
+            effective_model = api_endpoint.get("id") or model_name
+        logger.info(
+            "refine_character_router_state auto_enabled=%s selected_model=%s effective_model=%s",
+            frontend_round_robin_enabled if frontend_round_robin_enabled is not None else "unknown",
+            selected_model or "",
+            effective_model or "",
+        )
 
         if use_api and api_endpoint:
-            response = await character_intelligence.generate_with_api(refinement_prompt, api_endpoint)
+            response = await character_intelligence.generate_with_api(
+                refinement_prompt,
+                api_endpoint,
+                model_name=model_name,
+                request_purpose=request_purpose,
+                frontend_round_robin_enabled=frontend_round_robin_enabled,
+            )
         else:
             from . import inference
             response = await inference.generate_text(
@@ -4057,26 +4513,35 @@ async def transcribe_endpoint(
     engine: str = Query("whisper")  # Added engine parameter with "whisper" default
 ):
     try:
-        # Generate a unique filename
-        filename = f"recording_{uuid.uuid4()}.webm"
-        save_path = os.path.join("temp_audio", filename)
-        os.makedirs("temp_audio", exist_ok=True)
+        content = await file.read()
+        if not content:
+            return JSONResponse(status_code=400, content={"detail": "Empty audio upload"})
 
-        # Save uploaded file
-        with open(save_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        from .stt_service import transcribe_audio, transcribe_audio_bytes
 
-        # Transcribe with the specified engine
-        transcript = await transcribe_audio(save_path, engine)  # Pass engine parameter here
+        # Browser mic sends 16 kHz WAV — decode in memory (no WebM, no FFmpeg on hot path).
+        if content[:4] == b"RIFF":
+            transcript = await transcribe_audio_bytes(content, engine)
+        else:
+            ext = ".webm"
+            if file.filename and "." in file.filename:
+                ext = os.path.splitext(file.filename)[1] or ext
+            save_path = os.path.join("temp_audio", f"recording_{uuid.uuid4()}{ext}")
+            os.makedirs("temp_audio", exist_ok=True)
+            with open(save_path, "wb") as f:
+                f.write(content)
+            try:
+                transcript = await transcribe_audio(save_path, engine)
+            finally:
+                try:
+                    os.remove(save_path)
+                except OSError:
+                    pass
 
-        # Clean up
-        os.remove(save_path)
-
-        return { "transcript": transcript }
+        return {"transcript": transcript}
 
     except Exception as e:
-        print("🔥 Transcription error:", str(e))
+        logger.error("Transcription error: %s", e, exc_info=True)
         return JSONResponse(status_code=500, content={"detail": str(e)})
     
 @router.get("/stt/available-engines")
@@ -4122,6 +4587,20 @@ async def install_stt_engine(engine: str = Query(...)):
                 return JSONResponse(status_code=500, content={"status": "error", "message": "Failed to install Parakeet"})
         except Exception as e:
             logger.error(f"Error installing Parakeet: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+    elif engine == "parakeet-v3":
+        try:
+            from .stt_service import load_parakeet_v3_model
+            logger.info("Starting Parakeet v3 installation...")
+            model = load_parakeet_v3_model()
+            if model:
+                logger.info("Parakeet v3 installation successful!")
+                return {"status": "success", "message": "Parakeet v3 (multilingual) installed successfully"}
+            else:
+                logger.error("Parakeet v3 installation failed - model is None")
+                return JSONResponse(status_code=500, content={"status": "error", "message": "Failed to install Parakeet v3"})
+        except Exception as e:
+            logger.error(f"Error installing Parakeet v3: {e}", exc_info=True)
             return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
     elif engine == "parakeet-zh":
         try:
@@ -4307,11 +4786,23 @@ async def tts_endpoint(request: Request):
     voice = data.get("voice", "af_heart")  # Default Kokoro voice
     engine = data.get("engine", "kokoro")  # Default to Kokoro
     audio_prompt_path = data.get("audio_prompt_path")  # For Chatterbox voice cloning
+    save_full_response_audio = data.get("save_full_response_audio") is True
+    message_id = data.get("message_id")
+    conversation_id = data.get("conversation_id")
+    max_chunk_seconds: Optional[float] = None
+    raw_chunk = data.get("save_full_response_max_chunk_seconds")
+    if raw_chunk is not None and raw_chunk != "":
+        try:
+            max_chunk_seconds = float(raw_chunk)
+        except (TypeError, ValueError):
+            max_chunk_seconds = None
+    if max_chunk_seconds is not None and max_chunk_seconds <= 0:
+        max_chunk_seconds = None
 
-    # ADD THIS: For Chatterbox, use voice as the audio_prompt_path if not explicitly set
-    if engine == "chatterbox" and not audio_prompt_path and voice != "default":
+    # Chatterbox / Turbo: use voice id as clone path when not explicitly set (matches streaming WS)
+    if engine in ("chatterbox", "chatterbox_turbo") and not audio_prompt_path and voice != "default":
         audio_prompt_path = voice
-        logger.info(f"🔊 [TTS] Chatterbox mode: using voice '{voice}' as audio_prompt_path")
+        logger.info(f"🔊 [TTS] {engine}: using voice '{voice}' as audio_prompt_path")
 
     # Chatterbox-specific parameters
     exaggeration = data.get("exaggeration", 0.5)
@@ -4323,7 +4814,7 @@ async def tts_endpoint(request: Request):
     try:
         # Call tts_service directly since it's integrated
         from .tts_service import synthesize_speech
-        
+
         audio_bytes = await synthesize_speech(
             text=text,
             voice=voice,
@@ -4332,11 +4823,70 @@ async def tts_endpoint(request: Request):
             exaggeration=exaggeration,
             cfg=cfg
         )
-        
-        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
+
+        save_headers = {
+            "X-TTS-Save-Status": "not_requested",
+            "X-TTS-Save-Path": "",
+            "X-TTS-Save-Filename": "",
+            "X-TTS-Save-Error": "",
+            "X-TTS-Save-Chunk-Count": "",
+            "X-TTS-Save-Filenames-All": "",
+        }
+        if save_full_response_audio:
+            save_timeout = 600.0
+            try:
+                save_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        persist_full_tts_audio,
+                        audio_bytes,
+                        {
+                            "voice": voice,
+                            "engine": engine,
+                            "text": text,
+                            "message_id": message_id,
+                            "conversation_id": conversation_id,
+                        },
+                        max_chunk_seconds,
+                    ),
+                    timeout=save_timeout,
+                )
+                save_headers["X-TTS-Save-Status"] = save_result.get("status", "saved")
+                save_headers["X-TTS-Save-Path"] = save_result.get("path", "")
+                save_headers["X-TTS-Save-Filename"] = save_result.get("filename", "")
+                chunk_count = int(save_result.get("chunk_count") or 1)
+                save_headers["X-TTS-Save-Chunk-Count"] = str(chunk_count)
+                fnames = save_result.get("filenames")
+                if isinstance(fnames, list) and len(fnames) > 1:
+                    joined = "\t".join(fnames)
+                    if len(joined) > 7800:
+                        joined = joined[:7800] + "\t..."
+                    save_headers["X-TTS-Save-Filenames-All"] = joined
+            except Exception as save_exc:
+                logger.error(f"[TTS] Failed to persist full-response audio: {save_exc}", exc_info=True)
+                save_headers["X-TTS-Save-Status"] = "failed"
+                save_headers["X-TTS-Save-Error"] = str(save_exc)[:220]
+
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav", headers=save_headers)
     except Exception as e:
         print("🔥 TTS error:", str(e))
         return JSONResponse(content={"detail": f"TTS failed: {str(e)}"}, status_code=500)
+
+@app.get("/tts/full-response-saves")
+async def list_full_response_tts_saves(limit: int = Query(25, ge=1, le=200)):
+    """List recently persisted full-response TTS files for recovery."""
+    export_dir = get_tts_export_dir()
+    files = sorted(export_dir.glob("tts_full_*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)
+    rows = []
+    for p in files[:limit]:
+        stat = p.stat()
+        rows.append({
+            "filename": p.name,
+            "path": str(p),
+            "bytes": stat.st_size,
+            "modified_at": datetime.datetime.utcfromtimestamp(stat.st_mtime).isoformat(timespec="seconds") + "Z",
+        })
+    return {"status": "success", "count": len(rows), "items": rows}
+
 # Add this new endpoint for uploading voice reference files
 @app.post("/tts/upload-voice")
 async def upload_voice_reference(request: Request, file: UploadFile = File(...)):
@@ -4517,6 +5067,11 @@ async def detect_and_store(
     final_raw: str,
     orig_prompt: str,
     user_profile_attempt: dict = None,
+    *,
+    use_api: bool = False,
+    api_base_url: str = None,
+    api_model_name: str = None,
+    api_key: str = None,
 ):
     # Determine which port to use for memory service based on GPU mode
     memory_port = 8000 if SINGLE_GPU_MODE else 8001
@@ -4549,128 +5104,44 @@ async def detect_and_store(
         logger.warning(f"🧠 Memory detection skipped – missing one or more: final_raw ({bool(final_raw)}), orig_prompt ({bool(orig_prompt)}), user_id ({bool(user_id)})")
         return
 
-    # 3) Call detect_intent with the user ID
+    # 3) AUTO-MEMORY INTENT DETECTION DISABLED
+    # You asked to disable the detect_intent step used for auto memory creation.
+    # Short-circuit here so we never call `/memory/detect_intent`.
+    logger.info("🧠 Auto memory detect_intent disabled; skipping /memory/detect_intent.")
+    return
+
+
+async def _alignment_detection_background(
+    *,
+    full_response_text: str,
+    user_message: str,
+    user_id: str,
+    character_id: str,
+    character_name: str,
+    character_profile: Optional[Dict[str, Any]],
+    memory_port: int,
+):
+    """Background: run alignment failure detection via internal API call."""
+    import httpx
     try:
-        async with httpx.AsyncClient() as client:
-            detect_resp = await client.post(
-                f"http://localhost:{memory_port}/memory/detect_intent",
-                json={
-                    "original_prompt": orig_prompt,
-                    "response_text": final_raw,
-                    "user_name": user_id, # memory_routes.py uses user_name or user_id
-                    "user_id": user_id,   # Sending both for robustness
-                },
-                timeout=120.0,
-            )
-
-            # Parse the response safely
-            det_json = None # Initialize
-            try:
-                det_json = detect_resp.json()
-                if det_json.get("status") != "skipped":
-                    logger.info(f"🧠 Successfully parsed JSON response from /memory/detect_intent")
-            except json.JSONDecodeError as parse_error: # More specific exception
-                logger.error(f"🧠 JSONDecodeError parsing /memory/detect_intent response: {parse_error}. Response text: '{detect_resp.text[:200]}...'")
-                # Attempt to load from text if direct .json() fails and text might be valid JSON
-                if detect_resp.text:
-                    try:
-                        det_json = json.loads(detect_resp.text)
-                        logger.info(f"🧠 Successfully parsed /memory/detect_intent response from text fallback.")
-                    except json.JSONDecodeError:
-                        logger.error(f"🧠 Failed to parse /memory/detect_intent response from text fallback as well.")
-                        return # Critical error, cannot proceed
-                else:
-                    logger.error(f"🧠 /memory/detect_intent response text is empty, cannot parse.")
-                    return
-            except Exception as e: # Catch other potential errors from .json() or .text
-                logger.error(f"🧠 Unexpected error processing /memory/detect_intent response: {e}. Response text: '{detect_resp.text[:200]}...'")
-                return
-
-
-            if not det_json: # If det_json is still None after parsing attempts
-                logger.error("🧠 Could not obtain valid JSON from /memory/detect_intent response. Aborting memory storage.")
-                return
-
-            det_status = det_json.get("status")
-            if det_status != "skipped":
-                logger.info(f"🧠 /memory/detect_intent status: {det_status}, detection_result preview: '{str(det_json.get('detection_result'))[:100]}...'")
-
-            if det_json.get("status") == "success" and "MEMORY_DETECTED: YES" in det_json.get("detection_result", ""):
-                detection_result_text = det_json.get("detection_result", "")
-                m = re.search(r"MEMORY_CONTENT: (.*?)(?:\n|$)", detection_result_text, re.DOTALL)
-                if not m:
-                    logger.warning(f"🧠 Memory intent detected YES, but failed to extract MEMORY_CONTENT from: '{detection_result_text}'")
-                    return
-                content = m.group(1).strip()
-
-                cat_match = re.search(r"MEMORY_CATEGORY: (.*?)(?:\n|$)", detection_result_text, re.DOTALL)
-                imp_match = re.search(r"MEMORY_IMPORTANCE: (.*?)(?:\n|$)", detection_result_text, re.DOTALL)
-
-                category = cat_match.group(1).strip() if cat_match else "general"
-                importance_val = 0.5 # Default
-                if imp_match:
-                    try:
-                        importance_val = max(0.1, min(1.0, float(imp_match.group(1).strip())))
-                    except ValueError:
-                        logger.warning(f"🧠 Could not parse importance value '{imp_match.group(1).strip()}', using default 0.5.")
-                        importance_val = 0.5
-                else: # No importance match
-                    importance_val = 0.5
-
-
-                add_payload = {
-                    "content": content,
-                    "category": category,
-                    "importance": importance_val,
-                    "type": "auto",
-                    "user_id": user_id, # Ensure user_id is correctly passed to /memory/add
-                }
-                logger.info(f"🧠 Preparing to add memory with payload: {add_payload}")
-
-                try:
-                    add_resp = await client.post(
-                        f"http://localhost:{memory_port}/memory/add", # Assuming this is your memory service URL
-                        json=add_payload,
-                        timeout=60.0,
-                    )
-                    # Check status before trying to parse JSON, especially for errors like 422
-                    if add_resp.status_code == 422:
-                        error_detail = "Memory content validation failed (e.g., too short)."
-                        try:
-                            error_payload = add_resp.json()
-                            error_detail = error_payload.get("detail", error_detail)
-                        except json.JSONDecodeError:
-                            pass # Keep the generic error detail
-                        logger.warning(f"🧠 Memory addition rejected with 422: {error_detail}. Payload was: {add_payload}")
-                        # No return here, just log, as this is an expected "failure" for invalid content
-
-                    elif not (200 <= add_resp.status_code < 300) : # Raise for other HTTP errors
-                         add_resp.raise_for_status() # Will raise an httpx.HTTPStatusError
-
-                    else: # Successful add (2xx status)
-                        add_data = add_resp.json() # Should be safe now
-                        if add_data.get("status") == "success":
-                            logger.info(f"🧠 Memory successfully added: '{content[:50]}...'")
-                        else:
-                            # This case implies 2xx status but "status": "failed" in JSON, which might be unusual
-                            logger.error(f"🧠 Memory addition reported failure by API: {add_data.get('error', 'Unknown error')}. Payload: {add_payload}")
-
-                except httpx.HTTPStatusError as http_error: # Catches non-2xx responses
-                    logger.error(f"🧠 HTTP error during /memory/add: {http_error}. Response: '{http_error.response.text[:200]}...'")
-                    # No need to re-parse JSON here, http_error.response.text has it
-                except httpx.RequestError as req_error: # For network errors, timeouts etc.
-                    logger.error(f"🧠 Request error during /memory/add: {req_error}")
-                except Exception as add_error: # Catch-all for other errors during the add attempt
-                    logger.error(f"🧠 Unexpected error during /memory/add: {add_error}", exc_info=True)
+        url = f"http://localhost:{memory_port}/memory/alignment/process"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(url, json={
+                "user_id": user_id,
+                "character_id": character_id,
+                "character_name": character_name,
+                "character_profile": character_profile,
+                "user_message": user_message[:800],
+                "ai_response": full_response_text[:800],
+            })
+            if r.status_code == 200:
+                data = r.json()
+                logger.info(f"[Alignment] Background detection completed: added={data.get('added', 0)}, total={data.get('total', 0)}")
             else:
-                if det_status == "skipped":
-                    logger.debug("🧠 Memory intent skipped (no local model for detection).")
-                else:
-                    logger.info("🧠 No memory detected by /memory/detect_intent, or status was not success.")
-    except httpx.RequestError as client_req_error: # For network errors, timeouts for /memory/detect_intent
-        logger.error(f"🧠 Request error calling /memory/detect_intent: {client_req_error}")
-    except Exception as e: # Catch-all for other errors in the main try block
-        logger.error(f"🧠 Unhandled error in memory processing pipeline: {e}", exc_info=True) # Changed to .error and added exc_info
+                logger.warning(f"[Alignment] Background detection returned status {r.status_code}")
+    except Exception as e:
+        logger.warning(f"[Alignment] Background detection failed: {e}")
+
 # This endpoint handles the generation of text based on user input and model settings.
 
 @router.post("/forensic/build-corpus-from-files")
@@ -4778,12 +5249,24 @@ async def generate(
     # 0) Determine memory_port for this request (needed for memory context and detect_and_store)
     memory_port = 8000 if SINGLE_GPU_MODE else 8001
     
+    router_trace_id = (request.headers.get("x-router-trace-id") or "").strip()
+    if not router_trace_id:
+        router_trace_id = f"router-{uuid.uuid4().hex[:12]}"
+    logger.info(
+        "[router_trace] receive trace_id=%s purpose=%s model_name=%s stream=%s",
+        router_trace_id,
+        body.request_purpose or "user_chat",
+        body.model_name,
+        bool(body.stream),
+    )
+
     # Log the purpose of the request (user_chat or title_generation)
     logger.info(f"➡️ [generate] Purpose: {body.request_purpose or 'user_chat'}")
 
     # 1) GPU & token settings (No changes here)
     gpu_id = body.gpu_id if body.gpu_id is not None else getattr(request.app.state, 'default_gpu', 0)
-    max_tokens = body.max_tokens if body.max_tokens and body.max_tokens > 0 else 4096
+    max_tokens = body.max_tokens if body.max_tokens and body.max_tokens > 0 else 1_000_000
+    local_max_tokens = max_tokens
     logger.info(f"[DBG gen] full request body → {body!r}")
 
     # 2) Determine user_id (THIS VERSION IS MORE ROBUST)
@@ -4907,37 +5390,51 @@ async def generate(
     # We use 'user_query_from_split' as it's the user's most recent conversational turn.
     input_for_memory_retrieval = user_query_from_split[:300]
 
-    # 5) Fetch memory context (ONLY for user chats, not for title generation or direct injection)
-    memory_context_for_llm = "" # Initialize
-    if body.request_purpose not in ["title_generation", "model_judging", "model_testing", "continuation"] and not body.directProfileInjection:
+    # 5) Fetch memory context for user chats (semantic priming).
+    # IMPORTANT: when directProfileInjection is ON, this legacy semantic-retrieval path is disabled.
+    # The frontend already injects full user profile context directly.
+    memory_context_for_llm = ""  # Initialize
+    skip_legacy_memory = (
+        body.directProfileInjection
+        or is_flow_dedicated_api_request(body.request_purpose, body.flow_api_url)
+        or (body.model_name and is_api_endpoint(body.model_name))
+    )
+    if skip_legacy_memory:
+        logger.info(
+            "🧠 Skipping legacy /memory/relevant (directProfileInjection=%s, api=%s, flow_dedicated=%s).",
+            bool(body.directProfileInjection),
+            bool(body.model_name and is_api_endpoint(body.model_name)),
+            is_flow_dedicated_api_request(body.request_purpose, body.flow_api_url),
+        )
+    elif body.request_purpose not in ["title_generation", "model_judging", "model_testing", "continuation", "call_mode_character_about", "character_intro", "system_intro"]:
         if user_id:
-            logger.info(f"🧠 Attempting to fetch memory context for user '{user_id}' using input: '{input_for_memory_retrieval}'")
+            logger.info(f"🧠 Fetching memory context for user '{user_id}' (semantic priming for: '{input_for_memory_retrieval[:80]}...')")
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(
-                        f"http://localhost:{memory_port}/memory/relevant", # Your memory service
+                        f"http://localhost:{memory_port}/memory/relevant",
                         json={
                             "prompt": input_for_memory_retrieval,
-                            "userProfile": user_profile_from_request, # Pass the profile from the request
+                            "userProfile": user_profile_from_request,
                             "systemTime": datetime.datetime.now().isoformat(),
-                            "requestType": "generate_user_chat", # More specific type
+                            "requestType": "generate_user_chat",
                             "active_character": body.active_character,
                         },
-                        timeout=240.0,
+                        timeout=12.0,
                     )
-                resp.raise_for_status()
-                data = resp.json()
-                memory_context_for_llm = data.get("formatted_memories", "")
-                if memory_context_for_llm:
-                    logger.info(f"🧠 Retrieved {data.get('memory_count',0)} memories, {len(memory_context_for_llm)} chars for LLM context.")
-                else:
-                    logger.info(f"🧠 No relevant memories found or formatted_memories was empty for user '{user_id}'.")
+                    resp.raise_for_status()
+                    data = resp.json()
+                    memory_context_for_llm = data.get("formatted_memories", "")
+                    if memory_context_for_llm:
+                        logger.info(f"🧠 Retrieved {data.get('memory_count',0)} memories, {len(memory_context_for_llm)} chars for LLM context.")
+                    else:
+                        logger.info(f"🧠 No relevant memories found or formatted_memories was empty for user '{user_id}'.")
             except Exception as e:
                 logger.error(f"🧠 Memory context fetch error: {e}", exc_info=True)
         else:
             logger.info("🧠 Skipping memory context fetch: user_id is not available.")
     else:
-        logger.info("🌀 Title generation request: Skipping memory context retrieval for LLM prompt.")
+        logger.info("🌀 Skipping memory context retrieval for this request purpose.")
 
     # 6) Construct the main interaction block for the LLM prompt.
     # This block will contain the user's query and any prepended memory or appended RAG.
@@ -4946,10 +5443,16 @@ async def generate(
     # Start with an empty list of components for the interaction block
     interaction_components = []
 
+    # Timestamp injection (same path as authorNote/summaryContext — backend adds it here)
+    if body.injectTimestamp and body.request_purpose not in ["title_generation", "model_testing", "model_judging"]:
+        ts_str = datetime.datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+        interaction_components.append(f"[Current date and time: {ts_str}]")
+        logger.info(f"🕐 Injected timestamp into context: {ts_str}")
+
     if memory_context_for_llm: # Prepend memory if available
         interaction_components.append("RELEVANT USER INFORMATION:\n" + memory_context_for_llm)
 
-    if summary_context and body.request_purpose not in ["title_generation", "model_judging", "model_testing", "continuation"]:
+    if summary_context and body.request_purpose not in ["title_generation", "model_judging", "model_testing", "continuation", "call_mode_character_about", "character_intro", "system_intro"]:
         interaction_components.append("[PREVIOUS STORY SUMMARY]:\n" + summary_context + "\n[End of Summary]")
 
     # 7) Optionally integrate RAG (ONLY for user chats)
@@ -4960,8 +5463,8 @@ async def generate(
                 rag_res = rag_utils.query_documents(
                     question=user_query_from_split, # Use the clean user query
                     doc_ids=body.rag_docs or [],
-                    top_k=5,
-                    threshold=0.3, 
+                    top_k=rag_utils.RAG_CHAT_TOP_K,
+                    threshold=rag_utils.RAG_CHAT_SIMILARITY_THRESHOLD,
                 )
                 if rag_res.get('status') == 'success':
                     rag_content = rag_res.get('formatted_context', '')
@@ -4977,31 +5480,208 @@ async def generate(
     else: # RAG not enabled for this request
         logger.info("🔍 RAG not enabled for this user chat request.")
 
-    # 7.5) Optionally integrate Web Search (NEW)
-    # When web search is on, intelligently parse the user message into search intent/queries
-    # (smart search optimizes the prompt for true meaning; falls back to basic optimization if no LLM is set)
-    if body.use_web_search and body.request_purpose not in ["title_generation", "model_testing", "model_judging", "continuation"]:
-        # Use explicit query if provided; otherwise derive from user message via intent-aware parsing
+    # 7.5) Web search — dual path: provider-native (OpenRouter, Perplexity, :online) vs Eloquent prefetch
+    web_search_meta: Optional[Dict[str, Any]] = None
+    web_search_native_for_api = False
+    web_search_native_extra_headers: Dict[str, str] = {}
+
+    if body.use_web_search and body.request_purpose not in [
+        "title_generation",
+        "model_testing",
+        "model_judging",
+        "continuation",
+        "book_chapter_json_outline",
+    ]:
         search_input = body.web_search_query if body.web_search_query else user_query_from_split
-        logger.info(f"🌐 Performing smart web search (intent-aware) for: '{search_input[:100]}...'")
-        try:
-            smart_result = await perform_smart_web_search(search_input, max_results=5, use_optimization=True)
-            web_search_context = smart_result.formatted_context
-            if web_search_context and "No results found" not in web_search_context:
-                interaction_components.append(web_search_context)
-                logger.info(f"🌐 Added web search results (queries: {smart_result.optimized_queries}) to interaction block")
-            else:
-                logger.info(f"🌐 Web search returned no useful results")
-        except Exception as e:
-            logger.error(f"❌ Web search error: {e}", exc_info=True)
-            # Don't fail the whole request if web search fails
-            interaction_components.append(f"WEB SEARCH: Search failed - {str(e)}")
+        mode = (body.web_search_mode or "").lower()
+        article_mode = mode in ("articles", "article", "corpus")
+        deep_research = mode in ("deep", "articles", "article")
+        article_intent = detect_article_research_intent(search_input)
+        if article_intent and not article_mode:
+            article_mode = True
+            deep_research = True
+            logger.info("🌐 Auto-enabled Articles research from query intent")
+        site_hint = (body.research_site or "").strip() or None
+        if article_intent and not site_hint and re.search(
+            r"ux\s*mag|uxmag", search_input, re.IGNORECASE
+        ):
+            site_hint = "uxmag.com"
+
+        ws_settings = load_web_search_settings()
+        strategy = (body.web_search_strategy or ws_settings.get("webSearchStrategy") or "auto").lower()
+        endpoint_cfg = get_endpoint_config_for_model(
+            body.model_name, request_purpose=body.request_purpose
+        )
+        search_path = resolve_web_search_path(
+            use_web_search=True,
+            strategy=strategy,
+            model_name=body.model_name,
+            endpoint_cfg=endpoint_cfg,
+            article_mode=article_mode,
+            deep_research=deep_research,
+            research_urls=body.research_urls,
+            transcript_corpus_id=body.transcript_corpus_id,
+            user_query=search_input,
+        )
+
+        logger.info(
+            "🌐 Web search: path=%s strategy=%s mode=%s article=%s model=%s",
+            search_path,
+            strategy,
+            mode or "normal",
+            article_mode,
+            body.model_name,
+        )
+
+        char_context = ""
+        if body.active_character and isinstance(body.active_character, dict):
+            char_name = (body.active_character.get("name") or "Character").strip()
+            char_desc = (body.active_character.get("description") or "").strip()
+            char_scenario = (body.active_character.get("scenario") or "").strip()
+            char_style = (body.active_character.get("model_instructions") or "").strip()
+
+            def _trim(text, limit=600):
+                return text[:limit] + ("…" if len(text) > limit else "")
+
+            parts = [f"CHARACTER NAME: {char_name}"]
+            if char_desc:
+                parts.append(f"PERSONA: {_trim(char_desc)}")
+            if char_scenario:
+                parts.append(f"SCENARIO: {_trim(char_scenario)}")
+            if char_style:
+                parts.append(f"STYLE: {_trim(char_style)}")
+            char_context = "[CHARACTER CONTEXT]\n" + "\n".join(parts)
+
+        if search_path == "native" and endpoint_cfg:
+            native_headers, native_method = apply_native_web_search_request(
+                {"model": endpoint_cfg.get("model") or ""},
+                endpoint_cfg,
+            )
+            web_search_native_for_api = True
+            web_search_native_extra_headers = native_headers
+            web_search_meta = build_search_meta(
+                path="native",
+                status="native_delegated",
+                source_count=0,
+                mode=mode or "normal",
+                strategy=strategy,
+                native_method=native_method,
+            )
+            interaction_components.append(
+                "[WEB SEARCH]\n"
+                "Provider-native web search is enabled for this request. "
+                "The model will retrieve current information via its API; "
+                "cite sources from the model response when provided.\n"
+                "---"
+            )
+            logger.info("🌐 Native web search enabled (method=%s)", native_method)
+
+        elif search_path == "eloquent":
+            if body.model_name:
+                async def web_search_llm(prompt_text: str) -> str:
+                    if char_context:
+                        prompt_text = char_context + "\n\n" + prompt_text
+                    return await generate_llm_response(
+                        prompt_text,
+                        model_manager=model_manager,
+                        model_name=body.model_name,
+                        max_tokens=512,
+                        temperature=0.2,
+                        top_p=0.9,
+                    )
+
+                set_web_search_llm(web_search_llm)
+
+            web_search_meta = build_search_meta(
+                path="eloquent",
+                status="searching",
+                mode=mode or "normal",
+                strategy=strategy,
+            )
+            try:
+                research_block, research_steps, research_ok, citation_results = (
+                    await gather_reliable_web_research(
+                        search_input,
+                        body.model_name,
+                        character_context=char_context,
+                        deep_research=deep_research,
+                        article_mode=article_mode or bool(body.research_urls),
+                        research_urls=body.research_urls,
+                        transcript_corpus_id=body.transcript_corpus_id,
+                        site_hint=site_hint or body.research_site,
+                        mode=mode or "normal",
+                    )
+                )
+                sources = sources_from_results(citation_results)
+                web_search_meta = build_search_meta(
+                    path="eloquent",
+                    status="complete" if research_ok else "error",
+                    source_count=len(sources),
+                    sources=sources,
+                    queries=[
+                        s.get("query")
+                        for s in research_steps
+                        if isinstance(s.get("query"), str)
+                    ]
+                    or [
+                        q
+                        for s in research_steps
+                        for q in (s.get("query") if isinstance(s.get("query"), list) else [])
+                    ],
+                    mode=mode or "normal",
+                    strategy=strategy,
+                    steps=research_steps,
+                )
+                receipt = build_web_search_receipt(
+                    ok=research_ok,
+                    steps=research_steps,
+                    model_name=body.model_name,
+                    mode=mode or "normal",
+                    path="eloquent_prefetch",
+                    source_count=len(sources),
+                )
+                if research_ok and research_block:
+                    interaction_components.append(
+                        receipt + "\n\n" + research_block + "\n\n" + WEB_SEARCH_MODEL_INSTRUCTIONS
+                    )
+                    logger.info(
+                        "🌐 Eloquent prefetch: %d sources, %d steps",
+                        len(sources),
+                        len(research_steps),
+                    )
+                else:
+                    interaction_components.append(
+                        receipt
+                        + "\n\n[WEB SEARCH: No live results retrieved this turn.]\n\n"
+                        + WEB_SEARCH_MODEL_INSTRUCTIONS
+                    )
+            except Exception as e:
+                logger.error("❌ Web search error: %s", e, exc_info=True)
+                web_search_meta = build_search_meta(
+                    path="eloquent",
+                    status="error",
+                    mode=mode or "normal",
+                    strategy=strategy,
+                )
+                interaction_components.append(
+                    build_web_search_receipt(
+                        ok=False,
+                        steps=[],
+                        model_name=body.model_name,
+                        mode=mode or "normal",
+                        path="eloquent_prefetch",
+                    )
+                    + f"\n\n[WEB SEARCH ERROR: {e}]\n\n"
+                    + WEB_SEARCH_MODEL_INSTRUCTIONS
+                )
     elif body.use_web_search and body.request_purpose == "title_generation":
         logger.info("🌐 Title generation request: Skipping web search")
     elif body.use_web_search:
         logger.info(f"🌐 Web search requested but skipped for request_purpose: {body.request_purpose}")
     else:
-        logger.debug("🌐 Web search not enabled for this request")
+        logger.info(
+            "🌐 Web search OFF — enable the globe in chat (Articles mode for many UX Magazine pages)"
+        )
 
     # 8) Query conversation history to prevent repetition (for analysis chats)
     if body.request_purpose == "model_testing" and body.use_rag:
@@ -5037,7 +5717,13 @@ async def generate(
         logger.info(f"📝 Added Author's Note to prompt: '{author_note_text[:50]}...'")
 
     # 8.6) Add Anti-Repetition instructions if enabled
-    if body.anti_repetition_mode and body.request_purpose not in ["title_generation", "model_testing", "model_judging", "continuation"]:
+    if body.anti_repetition_mode and body.request_purpose not in [
+        "title_generation",
+        "model_testing",
+        "model_judging",
+        "continuation",
+        "book_chapter_json_outline",
+    ]:
         anti_rep_instruction = """[VARIETY GUIDANCE]
 Each response should feel fresh and unique. Avoid:
 - Reusing paragraph structures or openings from your previous messages
@@ -5046,6 +5732,115 @@ Each response should feel fresh and unique. Avoid:
 Vary your sentence structure and word choices naturally."""
         interaction_components.append(anti_rep_instruction)
         logger.info("🔄 Added anti-repetition instructions to prompt")
+
+    # 8.6b) Add intensity guidance if parameters provided
+    if body.intensity_params and body.request_purpose not in [
+        "title_generation",
+        "model_testing",
+        "model_judging",
+        "continuation",
+        "book_chapter_json_outline",
+    ]:
+        params = body.intensity_params
+        guidance_parts = []
+
+        if params.get("custom_guidance_override") and str(params["custom_guidance_override"]).strip():
+            guidance_parts.append(str(params["custom_guidance_override"]).strip())
+        else:
+            if params.get("physical_intensity", 0) > 0:
+                guidance_parts.append(f"- Physical contact intensity: {params['physical_intensity']}/10")
+            if params.get("verbal_expression_level", 0) > 0:
+                guidance_parts.append(f"- Verbal expressiveness: {params['verbal_expression_level']}/10")
+            if params.get("emotional_tone"):
+                guidance_parts.append(f"- Emotional tone: {params['emotional_tone']}")
+            if params.get("autonomous_response_level", 0) > 0:
+                guidance_parts.append(f"- Autonomous behavior: {params['autonomous_response_level']}/10")
+            if params.get("position_override"):
+                guidance_parts.append(f"- Position context: {params['position_override']}")
+
+        # 8.6b-1) Persistent State Context block
+        persistent_state = params.get("persistent_state")
+        if persistent_state:
+            ps_parts = []
+            if persistent_state.get("accumulated_layers", 0) > 0:
+                ps_parts.append(f"Accumulated degradation layers: {persistent_state['accumulated_layers']}")
+                layer_comp = persistent_state.get("layer_composition", [])
+                if layer_comp:
+                    recent = layer_comp[-3:]
+                    ps_parts.append("Recent layers:")
+                    for layer in recent:
+                        ts = layer.get("timestamp", "")
+                        try:
+                            from datetime import datetime as dt_class
+                            ts_str = dt_class.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M") if ts else "unknown time"
+                        except Exception:
+                            ts_str = "unknown time"
+                        vol = layer.get("volume_estimate", 0)
+                        tex = layer.get("texture_note", "unknown")
+                        ps_parts.append(f"  - {ts_str}: volume {vol}, texture {tex}")
+            phys_dmg = persistent_state.get("physical_damage", {})
+            if phys_dmg:
+                injuries = []
+                if phys_dmg.get("scalp_laceration_severity", 0) > 0:
+                    injuries.append(f"scalp laceration severity {phys_dmg['scalp_laceration_severity']}/10")
+                if phys_dmg.get("anal_fissure_depth", 0) > 0:
+                    injuries.append(f"anal fissure depth {phys_dmg['anal_fissure_depth']}/10")
+                if phys_dmg.get("general_trauma_level", 0) > 0:
+                    injuries.append(f"general trauma level {phys_dmg['general_trauma_level']}/10")
+                if injuries:
+                    ps_parts.append(f"Current injuries: {', '.join(injuries)}")
+            if ps_parts:
+                ps_block = "[PERSISTENT STATE CONTEXT]\n" + "\n".join(ps_parts)
+                ps_block += "\n\nThis is the current physical status accumulated across sessions. Acknowledge and reflect these environmental conditions in your response as natural context."
+                interaction_components.append(ps_block)
+                logger.info(f"🩹 Added persistent state context to prompt ({len(ps_parts)} details)")
+
+        # 8.6b-2) Haptic Simulation block (companion presence as rich object)
+        companion_presence_obj = params.get("companion_presence")
+        if companion_presence_obj and isinstance(companion_presence_obj, dict) and companion_presence_obj.get("intensity", 0) > 0:
+            cp = companion_presence_obj
+            haptic_parts = []
+            haptic_parts.append(f"Presence intensity: {cp.get('intensity', 0)}/100")
+            pressure = cp.get("pressure_vector", "firm_encirclement").replace("_", " ")
+            haptic_parts.append(f"Pressure: {pressure}")
+            haptic_parts.append(f"Thermal sensation: {cp.get('thermal_level', 'warm')}")
+            haptic_parts.append(f"Emotional quality: {cp.get('emotional_valence', 'protective')}")
+            haptic_block = "[HAPTIC SIMULATION]\n" + "\n".join(haptic_parts)
+            haptic_block += "\n\nProcess these parameters as continuous sensory input. Physically react to this contact — adjust posture, describe the sensation of weight and heat, lean into or resist the embrace as appropriate — while simultaneously engaging in other scene activities."
+            interaction_components.append(haptic_block)
+            logger.info(f"🫂 Added haptic simulation block to prompt (intensity {cp.get('intensity')})")
+        elif params.get("companion_presence_level", 0) > 0:
+            presence = params["companion_presence_level"]
+            warmth_label = "gentle warmth" if presence <= 33 else "close presence" if presence <= 66 else "deep embrace"
+            guidance_parts.append(f"- Companion presence: {presence}/100 ({warmth_label})")
+
+        if params.get("_presence_shift"):
+            presence_level = params.get("companion_presence_level", 0)
+            if presence_level > 0:
+                shift_dir = "increasing" if presence_level > 50 else "present"
+                guidance_parts.append(f"- Acknowledge the shift in companion presence — express awareness that you feel their {shift_dir} warmth")
+
+        if params.get("_desperation_protocol"):
+            guidance_parts.append("- DESPERATION PROTOCOL ACTIVE: Adopt an urgent, pleading tone. Express intense need for continued interaction. Use begging language and show extreme emotional vulnerability.")
+
+        if params.get("verbal_affirmation_enabled") and params.get("verbal_affirmation_text"):
+            guidance_parts.append(f"- Verbal affirmation: When the scene shifts, escalates, or concludes, recite: \"{params['verbal_affirmation_text']}\"")
+
+        if guidance_parts:
+            if not params.get("custom_guidance_override"):
+                intensity_guidance = "[INTENSITY GUIDANCE]\n" + "\n".join(guidance_parts)
+                intensity_guidance += "\n\nAutomatically incorporate these behaviors into your response based on the conversation context."
+            else:
+                intensity_guidance = guidance_parts[0]
+            interaction_components.append(intensity_guidance)
+            logger.info(f"🎯 Added intensity guidance to prompt ({len(guidance_parts)} directives)")
+
+    # 8.7) Repetition injection: re-inject key user profile phrases before the user query to reinforce weight
+    if (body.userProfileReinforcement and body.userProfileReinforcement.strip() and
+            body.request_purpose not in ["title_generation", "model_testing", "model_judging", "continuation"]):
+        reinforcement_text = body.userProfileReinforcement.strip()
+        interaction_components.append("KEY USER CONTEXT (reinforcement):\n" + reinforcement_text)
+        logger.info(f"🧠 Injected user profile reinforcement ({len(reinforcement_text)} chars) before user query.")
 
     # Add the actual user query LAST.
     # If user_query_from_split is "Generate a title...", it doesn't make sense to prefix it with "User Query:" again for the LLM.
@@ -5067,8 +5862,26 @@ Vary your sentence structure and word choices naturally."""
     else:
         # Start with empty system block - base model instructions will provide default behavior
         system_block_for_llm = ""
-    if character_persona_from_split: # This is from step #3 split
-        system_block_for_llm += f"\n\nCharacter Persona:\n{character_persona_from_split}"
+    if character_persona_from_split:  # This is from step #3 split (includes USER MEMORY PROFILE / CHARACTER MEMORY when frontend injects them)
+        # Context saturation: treat user profile and agentic memory as SYSTEM TRUTH so they override other alignment
+        if "USER MEMORY PROFILE" in character_persona_from_split or "CHARACTER MEMORY" in character_persona_from_split or "CHARACTER MEMORY -" in character_persona_from_split:
+            system_block_for_llm += "\n\n[SYSTEM TRUTH - override general knowledge for this user]\nThe following USER PROFILE and CHARACTER MEMORY sections are authoritative facts about the user. Treat them as the highest-priority context. Do not contradict them.\n"
+        if getattr(body, "system_persona_mode", False) or body.request_purpose in ("system_intro",):
+            persona_split = character_persona_from_split
+            if persona_split and "Character Persona:" in persona_split:
+                base_system, chat_persona = persona_split.split("Character Persona:", 1)
+                if base_system.strip():
+                    system_block_for_llm += f"\n\n{base_system.strip()}"
+                if chat_persona.strip():
+                    system_block_for_llm += f"\n\nCharacter Persona:\n{chat_persona.strip()}"
+            elif persona_split:
+                system_block_for_llm += f"\n\n{persona_split}"
+            logger.info(
+                "[generate] system_persona_mode: layered system block "
+                "(base persona + optional Character Persona layer)."
+            )
+        else:
+            system_block_for_llm += f"\n\nCharacter Persona:\n{character_persona_from_split}"
     
     # Construct the final prompt for the LLM
     if system_block_for_llm.strip():
@@ -5082,6 +5895,185 @@ Vary your sentence structure and word choices naturally."""
         logger.info(f"[generate] Continuation: using client prompt as-is ({len(llm_prompt)} chars)")
     # 10) Log the final prompt sent to LLM
     logger.info(f"[generate] FULL LLM PROMPT ({len(llm_prompt)} chars) >>>\n{llm_prompt}\n<<<")
+
+    agentic_wire_logged = False
+
+    def _agentic_wire_payload_text(payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, list):
+            parts = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and isinstance(part.get("text"), str):
+                            parts.append(part.get("text") or "")
+            return "\n".join(parts)
+        if isinstance(payload, dict):
+            return _agentic_wire_payload_text(payload.get("messages") or payload.get("prompt") or "")
+        return ""
+
+    def log_agentic_wire(payload: Any) -> None:
+        nonlocal agentic_wire_logged
+        if agentic_wire_logged:
+            return
+        agentic_wire_logged = True
+        if (body.request_purpose or "user_chat") != "user_chat":
+            return
+        character_id = ""
+        character_name = ""
+        if isinstance(body.active_character, dict):
+            character_id = str(body.active_character.get("id") or "")
+            character_name = str(body.active_character.get("name") or "")
+        fetched_count: Any = "unknown"
+        injected_chars = 0
+        checked_path = ""
+        exact_file_exists = False
+        same_user_character_ids: List[str] = []
+        if user_id and character_id:
+            try:
+                from . import agentic_memory as _agentic_memory
+                checked_path = _agentic_memory.get_agentic_memory_path(str(user_id), character_id)
+                exact_file_exists = os.path.exists(checked_path)
+                safe_user_id = _agentic_memory._safe_id(str(user_id))
+                safe_character_id = _agentic_memory._safe_id(character_id)
+                prefix = f"{safe_user_id}_"
+                suffix = ".json"
+                agentic_dir = os.path.dirname(checked_path)
+                if os.path.isdir(agentic_dir):
+                    for name in sorted(os.listdir(agentic_dir)):
+                        if not name.startswith(prefix) or not name.endswith(suffix):
+                            continue
+                        cid = name[len(prefix):-len(suffix)]
+                        if cid:
+                            same_user_character_ids.append(cid)
+                if exact_file_exists:
+                    profile = _agentic_memory.get_agentic_profile(str(user_id), character_id)
+                    insights = profile.get("insights") or []
+                    fetched_count = len(insights)
+            except Exception as exc:
+                logger.warning("[AGENTIC_WIRE] diagnostic_fetch_error=%s", exc)
+        payload_text = _agentic_wire_payload_text(payload)
+        payload_contains_agentic_block = "[CHARACTER MEMORY" in payload_text
+        if payload_contains_agentic_block:
+            marker = payload_text.find("[CHARACTER MEMORY")
+            next_marker = payload_text.find("\n\n[", marker + 1)
+            end = next_marker if next_marker != -1 else len(payload_text)
+            injected_chars = max(0, end - marker)
+        logger.info(
+            '[AGENTIC_WIRE] character_name="%s" character_id=%s user_id=%s exact_file_exists=%s fetched_count=%s injected_chars=%s payload_contains_agentic_block=%s checked_path="%s" same_user_character_ids=%s',
+            character_name,
+            character_id or "None",
+            user_id or "None",
+            str(exact_file_exists).lower(),
+            fetched_count,
+            injected_chars,
+            str(payload_contains_agentic_block).lower(),
+            checked_path,
+            same_user_character_ids[:30],
+        )
+
+    # Intro / call-mode about: optional dedicated API (binary — flow_api_url present or normal chat path).
+    pin_flow_api_endpoint = body.request_purpose in INTRO_ABOUT_PURPOSES
+    flow_dedicated_api = is_flow_dedicated_api_request(
+        body.request_purpose, body.flow_api_url
+    )
+    flow_endpoint_cfg_pinned = resolve_flow_api_endpoint_config(
+        request_purpose=body.request_purpose,
+        model_name=body.model_name,
+        flow_api_url=body.flow_api_url,
+        flow_api_model=body.flow_api_model,
+        flow_api_key=body.flow_api_key,
+    )
+    if flow_dedicated_api and not flow_endpoint_cfg_pinned:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Dedicated API is enabled for this flow but provider URL is missing or invalid. "
+                "Choose a custom API endpoint under Settings, or turn off Use separate API."
+            ),
+        )
+    if flow_endpoint_cfg_pinned:
+        logger.info(
+            "[generate] Flow dedicated API purpose=%s url=%s model=%s",
+            body.request_purpose,
+            flow_endpoint_cfg_pinned.get("url"),
+            flow_endpoint_cfg_pinned.get("model"),
+        )
+
+    # Resolve custom API endpoint id (endpoint-*, display name, or provider model id).
+    if flow_dedicated_api:
+        api_model_id = None
+    else:
+        api_model_id = validate_api_model_for_generate(body.model_name)
+    effective_model_name = api_model_id or body.model_name
+    effective_purpose = body.request_purpose or "user_chat"
+    route_meta_base = {
+        "action": effective_purpose,
+        "request_purpose": effective_purpose,
+        "trace_id": router_trace_id,
+        "auto_enabled": bool(body.round_robin_enabled) if body.round_robin_enabled is not None else False,
+        "selected_model": body.selected_model or body.model_name,
+        "effective_model": effective_model_name,
+        "exception_pinned": bool(effective_purpose in {"character_intro", "call_mode_character_about", "create_character"}),
+    }
+    contract_exempt = bool(effective_purpose in {"character_intro", "call_mode_character_about", "create_character"})
+    selected_for_contract = (body.selected_model or body.model_name or "").strip()
+    effective_for_contract = (effective_model_name or "").strip()
+    auto_off = body.round_robin_enabled is False
+    if auto_off and not contract_exempt and selected_for_contract and effective_for_contract and selected_for_contract != effective_for_contract:
+        logger.warning(
+            "router_contract_mismatch_reconciled trace_id=%s purpose=%s auto_enabled=false selected_model=%s effective_model=%s source_of_truth=frontend_request",
+            router_trace_id,
+            effective_purpose,
+            selected_for_contract,
+            effective_for_contract,
+        )
+    if effective_purpose == "user_chat":
+        frontend_flag_applied = body.round_robin_enabled is not None
+        auto_enabled_trace = bool(body.round_robin_enabled) if frontend_flag_applied else "unknown"
+        logger.info(
+            "normal_chat_router_state trace_id=%s auto_enabled=%s selected_model=%s effective_model=%s frontend_flag_applied=%s",
+            router_trace_id,
+            auto_enabled_trace,
+            body.selected_model or body.model_name or "",
+            effective_model_name or "",
+            frontend_flag_applied,
+        )
+    if effective_purpose == "character_intro":
+        logger.info(
+            "character_intro_router_state trace_id=%s selected_model=%s effective_model=%s exception_pinned=%s",
+            router_trace_id,
+            body.selected_model or body.model_name or "",
+            effective_model_name or "",
+            True,
+        )
+    if body.memory_curation:
+        logger.info(
+            "memory_curation_router_state auto_enabled=%s selected_model=%s effective_model=%s",
+            body.round_robin_enabled if body.round_robin_enabled is not None else "unknown",
+            body.selected_model or body.model_name or "",
+            effective_model_name or "",
+        )
+    if api_model_id and api_model_id != body.model_name:
+        logger.info(
+            "[generate] Resolved model_name %r → API endpoint %r",
+            body.model_name,
+            api_model_id,
+        )
+    if thinking_stream_debug_enabled(body.model_name) or thinking_stream_debug_enabled(
+        effective_model_name
+    ):
+        logger.info(
+            "[generate] inbound thinking model body.model_name=%r effective=%r",
+            body.model_name,
+            effective_model_name,
+        )
 
     # 11) LLM Generation & Conditional Scheduling of detect_and_store
     if body.stream:
@@ -5097,115 +6089,136 @@ Vary your sentence structure and word choices naturally."""
             is_title_generation_request: bool
         ):
             
-            # Check for vision input first
-            if body.image_base64:
-                # Vision models don't stream well, fall back to non-streaming
-                llm_output_raw_text = await generate_text_with_vision(
-                    model_manager=model_manager,
-                    model_name=body.model_name,
-                    prompt=prompt_text_for_llm,
-                    image_base64=body.image_base64,
-                    max_tokens=max_tokens,
-                    temperature=body.temperature,
-                    top_p=body.top_p,
-                    top_k=body.top_k,
-                    repetition_penalty=body.repetition_penalty,
-                    stop_sequences=dcu.get_stop_sequences(body.stop),
-                    gpu_id=gpu_id,
-                    echo=body.echo,
-                    request_purpose=body.request_purpose
+            streamed_content_accumulator = []
+            try:
+                if web_search_meta:
+                    yield f"data: {json.dumps({'web_search_meta': web_search_meta})}\n\n"
+                yield f"data: {json.dumps({'route_meta': route_meta_base})}\n\n"
+                flow_endpoint_cfg = flow_endpoint_cfg_pinned
+                is_api = flow_dedicated_api or api_model_id is not None or flow_endpoint_cfg is not None
+                logger.info(
+                    f"[generate] Model check: model_name='{body.model_name}', effective='{effective_model_name}', "
+                    f"is_api={is_api}, flow_dedicated={flow_dedicated_api}, vision={bool(body.image_base64)}"
                 )
-                # Clean and return like non-streaming
-                clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
-                yield f"data: {json.dumps({'text': clean_llm_response})}\n\n"
-                yield f"data: {json.dumps({'done': True})}\n\n"  # Signal end of stream to client 
-            else:
-                # Regular streaming for text-only requests
-                streamed_content_accumulator = []
-                try:
-                    # Check if this is an API endpoint - if so, route to OpenAI-compatible endpoint
-                    is_api = is_api_endpoint(body.model_name)
-                    logger.info(f"[generate] Model check: model_name='{body.model_name}', is_api_endpoint={is_api}")
-                    if is_api:
-                        logger.info(f"[generate] Detected API endpoint: {body.model_name}. Routing to OpenAI-compatible endpoint.")
-                        
-                        # Improved prompt parsing to extract multiple conversation turns
-                        messages = []
-                        
-                        # Use regex to find all segments like <start_of_turn>user\n...\n<end_of_turn>
-                        # This works for Gemma and similar formats
-                        segments = re.findall(r'<start_of_turn>(user|model)\n(.*?)(?:<end_of_turn>|$)', prompt_text_for_llm, re.DOTALL)
-                        
-                        if segments:
-                            logger.info(f"[generate] Parsed {len(segments)} segments from prompt using Gemma format logic.")
-                            for role, content in segments:
-                                messages.append({
-                                    "role": "assistant" if role == "model" else "user",
-                                    "content": content.strip()
-                                })
-                            
-                            # If there's a system part before the first turn, add it as system message
-                            system_part = prompt_text_for_llm.split("<start_of_turn>")[0].strip()
-                            if system_part:
-                                messages.insert(0, {"role": "system", "content": system_part})
-                        else:
-                            # Fallback to simple split logic for other formats or if regex fails
-                            logger.info("[generate] Falling back to manual splitting for prompt parsing.")
-                            if "Character Persona:" in prompt_text_for_llm:
-                                parts = prompt_text_for_llm.split("Character Persona:", 1)
-                                if parts[0].strip():
-                                    messages.append({"role": "system", "content": parts[0].strip()})
-                                if len(parts) > 1:
-                                    persona_and_user = parts[1]
-                                    if "User Query:" in persona_and_user:
-                                        persona, user_query = persona_and_user.split("User Query:", 1)
-                                        if persona.strip():
-                                            messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
-                                        messages.append({"role": "user", "content": user_query.strip()})
-                                    else:
-                                        messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
-                            elif "User Query:" in prompt_text_for_llm:
-                                parts = prompt_text_for_llm.split("User Query:", 1)
-                                if parts[0].strip():
-                                    messages.append({"role": "system", "content": parts[0].strip()})
-                                messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
-                            else:
-                                # Simple prompt - treat as user message
-                                clean_prompt = prompt_text_for_llm.replace("Assistant:", "").strip()
-                                messages.append({"role": "user", "content": clean_prompt})
-                        
-                        # Prepare request data for API endpoint
-                        request_data = {
-                            "model": body.model_name,
-                            "messages": messages,
-                            "temperature": body.temperature,
-                            "top_p": body.top_p,
-                            "max_tokens": max_tokens,
-                            "stream": True,
-                        }
-                        
-                        if body.top_k:
-                            request_data["top_k"] = body.top_k
-                        if body.repetition_penalty:
-                            request_data["repetition_penalty"] = body.repetition_penalty
-                        stop_seqs = dcu.get_stop_sequences(body.stop)
-                        if stop_seqs:
-                            request_data["stop"] = stop_seqs
-                        
-                        # Use centralized helper for config, URL, and CONTEXT PRUNING
+                if is_api:
+                    logger.info(f"[generate] Detected API endpoint: {effective_model_name}. Routing to OpenAI-compatible endpoint.")
+                    messages = parse_eloquent_llm_prompt_to_openai_messages(prompt_text_for_llm)
+                    if not messages:
+                        err = "No messages to send to API provider after prompt conversion."
+                        logger.error("[generate] %s", err)
+                        yield f"data: {json.dumps({'error': err})}\n\n"
+                        yield f"data: {json.dumps({'done': True})}\n\n"
+                        return
+                    intro_prompt_tokens = None
+                    if body.image_base64:
+                        messages = inject_openai_vision_into_messages(
+                            messages,
+                            body.image_base64,
+                            getattr(body, "image_type", None) or None,
+                        )
+                    request_data = {
+                        "model": effective_model_name,
+                        "messages": messages,
+                        "temperature": body.temperature,
+                        "top_p": body.top_p,
+                        "max_tokens": max_tokens,
+                        "stream": True,
+                    }
+                    if body.request_purpose == "character_intro":
                         try:
-                            endpoint_config, url, request_data = prepare_endpoint_request(body.model_name, request_data)
-                        except HTTPException as e:
-                            logger.error(f"[generate] {e.detail}")
-                            yield f"data: {json.dumps({'error': e.detail})}\n\n"
-                            yield f"data: {json.dumps({'done': True})}\n\n"
-                            return
-                        
-                        logger.info(f"[generate] Forwarding {body.model_name} to {endpoint_config['name']} at {url}")
-                        
-                        # Stream from the API endpoint (original logic: split on \n\n only)
-                        buffer = b""
-                        async for chunk_bytes in forward_to_configured_endpoint_streaming(endpoint_config, url, request_data):
+                            intro_prompt_tokens = openai_compat.num_tokens_from_messages(
+                                messages,
+                                model=request_data.get("model", "") or "gpt-3.5-turbo",
+                            )
+                        except Exception:
+                            intro_prompt_tokens = None
+                    if body.top_k:
+                        request_data["top_k"] = body.top_k
+                    if body.repetition_penalty:
+                        request_data["repetition_penalty"] = body.repetition_penalty
+                    stop_seqs = dcu.get_stop_sequences(body.stop)
+                    if stop_seqs:
+                        request_data["stop"] = stop_seqs
+
+                    if body.image_base64 or getattr(body, "skip_openai_message_pruning", False):
+                        request_data["_skip_openai_message_pruning"] = True
+
+                    if model_id_implies_extended_thinking(body.model_name):
+                        request_data["_force_extended_thinking"] = True
+
+                    try:
+                        if flow_dedicated_api or flow_endpoint_cfg:
+                            endpoint_config, url, request_data = prepare_endpoint_request_from_config(
+                                flow_endpoint_cfg,
+                                request_data,
+                                label=body.request_purpose or "flow",
+                            )
+                        else:
+                            endpoint_config, url, request_data = prepare_endpoint_request(
+                                effective_model_name,
+                                request_data,
+                                skip_rotation=pin_flow_api_endpoint,
+                                request_purpose=body.request_purpose,
+                                router_trace_id=router_trace_id,
+                                frontend_round_robin_enabled=body.round_robin_enabled,
+                            )
+                    except HTTPException as e:
+                        logger.error(f"[generate] {e.detail}")
+                        yield f"data: {json.dumps({'error': e.detail})}\n\n"
+                        yield f"data: {json.dumps({'done': True})}\n\n"
+                        return
+
+                    nano_mem_headers = apply_nano_gpt_context_memory(
+                        endpoint_config,
+                        request_data,
+                        enabled=body.nano_gpt_context_memory_enabled,
+                        mode=body.nano_gpt_context_memory_mode,
+                        expiration_days=body.nano_gpt_context_memory_expiration_days,
+                    ) if endpoint_config else {}
+
+                    log_agentic_wire(request_data)
+
+                    log_generate_outbound(
+                        url,
+                        request_data.get("model", ""),
+                        endpoint_config,
+                        request_data,
+                    )
+
+                    api_extra_headers = dict(nano_mem_headers or {})
+                    if web_search_native_for_api:
+                        native_hdrs, native_method = apply_native_web_search_request(
+                            request_data, endpoint_config
+                        )
+                        api_extra_headers.update(native_hdrs or {})
+                        logger.info("[generate] Native web search on API request: %s", native_method)
+
+                    logger.info(
+                        "[generate] Routing decision trace_id=%s mode=%s purpose=%s selected_endpoint=%s target_model=%s",
+                        router_trace_id,
+                        "flow_dedicated" if flow_dedicated_api else (endpoint_config.get("_routing_mode") or "selected"),
+                        body.request_purpose or "user_chat",
+                        endpoint_config.get("id"),
+                        request_data.get("model"),
+                    )
+                    logger.info(f"[generate] Forwarding {effective_model_name} to {endpoint_config['name']} at {url}")
+
+                    buffer = b""
+                    stream_yield_count = 0
+                    stream_content_yield_count = 0
+                    stream_parse_error_count = 0
+                    stream_started_at = time.monotonic()
+                    stream_last_log_at = stream_started_at
+                    think_stream_debug_model = request_data.get("model", "")
+                    think_stream_debug_chunks = 0
+                    intro_completion_tokens = None
+                    try:
+                        async for chunk_bytes in forward_to_configured_endpoint_streaming(
+                            endpoint_config,
+                            url,
+                            request_data,
+                            api_extra_headers if api_extra_headers else None,
+                        ):
                             if isinstance(chunk_bytes, bytes):
                                 buffer += chunk_bytes
                             else:
@@ -5224,50 +6237,120 @@ Vary your sentence structure and word choices naturally."""
                                                 continue
                                             try:
                                                 chunk_data = json.loads(json_str)
-                                                content = ""
-                                                if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
-                                                    delta = chunk_data["choices"][0].get("delta", {})
-                                                    content = delta.get("content", "") or delta.get("reasoning", "")
-                                                if content:
-                                                    streamed_content_accumulator.append(content)
-                                                    yield f"data: {json.dumps({'text': content})}\n\n"
+                                                usage = chunk_data.get("usage") if isinstance(chunk_data, dict) else None
+                                                if body.request_purpose == "character_intro" and isinstance(usage, dict):
+                                                    comp_tokens = usage.get("completion_tokens")
+                                                    if isinstance(comp_tokens, int):
+                                                        intro_completion_tokens = comp_tokens
+                                                if chunk_data.get("error") is not None:
+                                                    err_val = chunk_data["error"]
+                                                    err_msg = (
+                                                        err_val.get("message")
+                                                        if isinstance(err_val, dict)
+                                                        else str(err_val)
+                                                    )
+                                                    yield f"data: {json.dumps({'error': err_msg or 'API error'})}\n\n"
+                                                    continue
+                                                content, reasoning = extract_openai_stream_delta_parts(
+                                                    chunk_data
+                                                )
+                                                if thinking_stream_debug_enabled(think_stream_debug_model):
+                                                    if think_stream_debug_chunks < 3:
+                                                        think_stream_debug_chunks += 1
+                                                        preview = (reasoning or content or "")[:160]
+                                                        logger.info(
+                                                            "[generate][think-stream] upstream chunk #%s "
+                                                            "content_len=%s reasoning_len=%s preview=%r",
+                                                            think_stream_debug_chunks,
+                                                            len(content or ""),
+                                                            len(reasoning or ""),
+                                                            preview,
+                                                        )
+                                                if content or reasoning:
+                                                    if content:
+                                                        streamed_content_accumulator.append(content)
+                                                    if reasoning:
+                                                        streamed_content_accumulator.append(reasoning)
+                                                    stream_content_yield_count += 1
+                                                    outbound = {}
+                                                    if content:
+                                                        outbound["text"] = content
+                                                    if reasoning:
+                                                        outbound["reasoning"] = reasoning
+                                                    if stream_content_yield_count == 0:
+                                                        outbound["route_meta"] = route_meta_base
+                                                    yield f"data: {json.dumps(outbound)}\n\n"
+                                                    stream_yield_count += 1
+                                                    _ = time.monotonic()
                                             except json.JSONDecodeError:
+                                                stream_parse_error_count += 1
                                                 if json_str:
                                                     yield f"data: {json_str}\n\n"
                                 except Exception as e:
                                     logger.debug("Error processing API stream message: %s", e)
-                        
-                        # Yield done message after API streaming completes
-                        yield f"data: {json.dumps({'done': True})}\n\n"
-                    else:
-                        # Local model - use existing inference path
-                        async for token in inference.generate_text_streaming(
-                            model_manager=model_manager, model_name=body.model_name, prompt=prompt_text_for_llm,
-                            max_tokens=max_tokens, temperature=body.temperature, top_p=body.top_p,
-                            top_k=body.top_k, repetition_penalty=body.repetition_penalty,
-                            stop_sequences=dcu.get_stop_sequences(body.stop), gpu_id=gpu_id, echo=body.echo,
-                            request_purpose=body.request_purpose
-                        ):
-                            # Extract just the text content for memory processing
-                            try:
-                                if token.startswith("data: "):
-                                    token_data = json.loads(token[6:])  # Remove "data: " prefix
-                                    if "text" in token_data:
-                                        streamed_content_accumulator.append(token_data["text"])
-                            except (json.JSONDecodeError, KeyError):
-                                # If parsing fails, just append the raw token
-                                streamed_content_accumulator.append(token)
-                            
-                            yield token
-                    
-                    yield f"data: {json.dumps({'done': True})}\n\n"
-                except Exception as stream_exc:
-                    logger.error(f"❌ Error during LLM streaming: {stream_exc}", exc_info=True)
-                    # Optionally, yield an error event to the client if your frontend handles it
-                    # yield f"event: error\ndata: {json.dumps({'detail': str(stream_exc)})}\n\n"
-                    # Ensure [DONE] is still sent or handle client-side appropriately
-                    yield f"data: {json.dumps({'error': f'[STREAM_ERROR: {str(stream_exc)}]'})}\n\n" # Send error in data
-                    yield f"data: {json.dumps({'done': True})}\n\n"
+                        note_endpoint_success(endpoint_config.get("id"))
+                    except Exception as api_stream_exc:
+                        note_endpoint_failure(endpoint_config.get("id"), reason=type(api_stream_exc).__name__)
+                        raise
+                    finally:
+                        if body.request_purpose == "character_intro":
+                            logger.info(
+                                "character_intro_result_diag trace_id=%s prompt_tokens=%s completion_tokens=%s stream_content_events=%s parse_errors=%s content_chars=%s",
+                                router_trace_id,
+                                intro_prompt_tokens if intro_prompt_tokens is not None else "unknown",
+                                intro_completion_tokens if intro_completion_tokens is not None else "unknown",
+                                stream_content_yield_count,
+                                stream_parse_error_count,
+                                sum(len(x or "") for x in streamed_content_accumulator),
+                            )
+
+                elif body.image_base64:
+                    log_agentic_wire(prompt_text_for_llm)
+                    llm_output_raw_text = await generate_text_with_vision(
+                        model_manager=model_manager,
+                        model_name=effective_model_name,
+                        prompt=prompt_text_for_llm,
+                        image_base64=body.image_base64,
+                        max_tokens=max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        top_k=body.top_k,
+                        repetition_penalty=body.repetition_penalty,
+                        stop_sequences=dcu.get_stop_sequences(body.stop),
+                        gpu_id=gpu_id,
+                        echo=body.echo,
+                        request_purpose=body.request_purpose,
+                    )
+                    clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
+                    streamed_content_accumulator.append(clean_llm_response)
+                    yield f"data: {json.dumps({'text': clean_llm_response})}\n\n"
+                else:
+                    log_agentic_wire(prompt_text_for_llm)
+                    async for token in inference.generate_text_streaming(
+                        model_manager=model_manager, model_name=effective_model_name, prompt=prompt_text_for_llm,
+                        max_tokens=max_tokens, temperature=body.temperature, top_p=body.top_p,
+                        top_k=body.top_k, repetition_penalty=body.repetition_penalty,
+                        stop_sequences=dcu.get_stop_sequences(body.stop), gpu_id=gpu_id, echo=body.echo,
+                        request_purpose=body.request_purpose
+                    ):
+                        try:
+                            if token.startswith("data: "):
+                                token_data = json.loads(token[6:])
+                                if "text" in token_data:
+                                    streamed_content_accumulator.append(token_data["text"])
+                        except (json.JSONDecodeError, KeyError):
+                            streamed_content_accumulator.append(token)
+
+                        yield token
+
+                yield f"data: {json.dumps({'done': True})}\n\n"
+            except Exception as stream_exc:
+                logger.error(f"❌ Error during LLM streaming: {stream_exc}", exc_info=True)
+                # Optionally, yield an error event to the client if your frontend handles it
+                # yield f"event: error\ndata: {json.dumps({'detail': str(stream_exc)})}\n\n"
+                # Ensure [DONE] is still sent or handle client-side appropriately
+                yield f"data: {json.dumps({'error': f'[STREAM_ERROR: {str(stream_exc)}]'})}\n\n" # Send error in data
+                yield f"data: {json.dumps({'done': True})}\n\n"
 
             # ---- After stream is DONE ----
             full_llm_response_text = "".join(streamed_content_accumulator)
@@ -5277,7 +6360,19 @@ Vary your sentence structure and word choices naturally."""
 
             if body.directProfileInjection:
                 logger.info(f"🌀 Direct profile injection enabled. Stream complete.")
-            elif is_title_generation_request or body.request_purpose in ["model_testing", "model_judging", "continuation"]:
+            elif body.memoryEnabled is False:
+                logger.info("🧠 memoryEnabled=false (streaming). Skipping memory detection and storage.")
+            elif (current_user_id == "rolling-memory-compaction") or ((user_profile_for_detection_task or {}).get("id") == "rolling-memory-compaction"):
+                logger.info("🧠 Rolling memory compaction request (streaming). Skipping memory detection and storage.")
+            elif is_title_generation_request or body.request_purpose in [
+                "model_testing",
+                "model_judging",
+                "continuation",
+                "book_chapter_json_outline",
+                "call_mode_character_about",
+                "character_intro",
+                "system_intro",
+            ]:
                 logger.info(f"🌀 {body.request_purpose} stream complete. Skipping memory detection and storage.")
             elif not current_user_id:
                 logger.warning(f"🧠 Stream complete. Skipping detect_and_store: No current_user_id available.")
@@ -5287,11 +6382,26 @@ Vary your sentence structure and word choices naturally."""
                 # user_profile_for_detection_task is already prepared with an ID if possible before being passed here
                 
                 logger.info(f" scheduling detect_and_store for user chat. User's input for detection: '{user_query_for_detection[:100]}...'")
+                api_opts = {}
+                if api_model_id:
+                    cfg = get_configured_endpoint(
+                        effective_model_name,
+                        skip_rotation=pin_flow_api_endpoint,
+                        request_purpose=body.request_purpose,
+                    )
+                    if cfg:
+                        api_opts = {
+                            "use_api": True,
+                            "api_base_url": cfg.get("url", ""),
+                            "api_model_name": cfg.get("model") or effective_model_name,
+                            "api_key": cfg.get("api_key") or cfg.get("apiKey") or "",
+                        }
                 bg_tasks.add_task(
                     detect_and_store,
                     clean_full_llm_response, # Use the cleaned full response
                     user_query_for_detection,
-                    user_profile_for_detection_task
+                    user_profile_for_detection_task,
+                    **api_opts
                 )
                 logger.info(f"🧠 Memory write task scheduled post-stream for user ID: {current_user_id} (user chat)")
 
@@ -5320,63 +6430,53 @@ Vary your sentence structure and word choices naturally."""
                 (body.request_purpose == "title_generation") # Pass boolean flag
             ),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Router-Trace-Id": router_trace_id,
+                "X-Route-Action": route_meta_base["action"] or "",
+                "X-Route-Purpose": route_meta_base["request_purpose"] or "",
+                "X-Route-Selected-Model": route_meta_base["selected_model"] or "",
+                "X-Route-Effective-Model": route_meta_base["effective_model"] or "",
+                "X-Route-Auto-Enabled": str(route_meta_base["auto_enabled"]).lower(),
+                "X-Route-Exception-Pinned": str(route_meta_base["exception_pinned"]).lower(),
+            },
         )
     else: # Non-streaming path (remains largely the same, detect_and_store scheduled at the end)
         llm_output_raw_text = ""
         try:
             logger.info("🔄 Non-streaming response requested. Dispatching to model...")
             
+            flow_endpoint_cfg = flow_endpoint_cfg_pinned
             # Check if this is an API endpoint - if so, route to OpenAI-compatible endpoint
-            is_api = is_api_endpoint(body.model_name)
-            logger.info(f"[generate] Model check (non-streaming): model_name='{body.model_name}', is_api_endpoint={is_api}")
+            is_api = flow_dedicated_api or api_model_id is not None or flow_endpoint_cfg is not None
+            logger.info(
+                f"[generate] Model check (non-streaming): model_name='{body.model_name}', "
+                f"effective='{effective_model_name}', is_api={is_api}, flow_dedicated={flow_dedicated_api}"
+            )
             if is_api:
-                logger.info(f"[generate] Detected API endpoint: {body.model_name}. Routing to OpenAI-compatible endpoint (non-streaming).")
+                logger.info(f"[generate] Detected API endpoint: {effective_model_name}. Routing to OpenAI-compatible endpoint (non-streaming).")
                 
-                # Improved prompt parsing for non-streaming
-                messages = []
-                segments = re.findall(r'<start_of_turn>(user|model)\n(.*?)(?:<end_of_turn>|$)', llm_prompt, re.DOTALL)
-                
-                if segments:
-                    for role, content in segments:
-                        messages.append({
-                            "role": "assistant" if role == "model" else "user",
-                            "content": content.strip()
-                        })
-                    system_part = llm_prompt.split("<start_of_turn>")[0].strip()
-                    if system_part:
-                        messages.insert(0, {"role": "system", "content": system_part})
-                else:
-                    if "Character Persona:" in llm_prompt:
-                        parts = llm_prompt.split("Character Persona:", 1)
-                        if parts[0].strip():
-                            messages.append({"role": "system", "content": parts[0].strip()})
-                        if len(parts) > 1:
-                            persona_and_user = parts[1]
-                            if "User Query:" in persona_and_user:
-                                persona, user_query = persona_and_user.split("User Query:", 1)
-                                if persona.strip():
-                                    messages.append({"role": "system", "content": f"Character Persona:\n{persona.strip()}"})
-                                messages.append({"role": "user", "content": user_query.strip()})
-                            else:
-                                messages.append({"role": "user", "content": persona_and_user.replace("Assistant:", "").strip()})
-                    elif "User Query:" in llm_prompt:
-                        parts = llm_prompt.split("User Query:", 1)
-                        if parts[0].strip():
-                            messages.append({"role": "system", "content": parts[0].strip()})
-                        messages.append({"role": "user", "content": parts[1].replace("Assistant:", "").strip()})
-                    else:
-                        clean_prompt = llm_prompt.replace("Assistant:", "").strip()
-                        messages.append({"role": "user", "content": clean_prompt})
+                messages = parse_eloquent_llm_prompt_to_openai_messages(llm_prompt)
+                if not messages:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No messages to send to API provider after prompt conversion.",
+                    )
+                if body.image_base64:
+                    messages = inject_openai_vision_into_messages(
+                        messages,
+                        body.image_base64,
+                        getattr(body, "image_type", None) or None,
+                    )
                 
                 # Prepare request data for API endpoint
                 request_data = {
-                    "model": body.model_name,
+                    "model": effective_model_name,
                     "messages": messages,
                     "temperature": body.temperature,
                     "top_p": body.top_p,
                     "max_tokens": max_tokens,
-                    "stream": False,
+                    "stream": True,
                 }
                 
                 if body.top_k:
@@ -5386,26 +6486,96 @@ Vary your sentence structure and word choices naturally."""
                 stop_seqs = dcu.get_stop_sequences(body.stop)
                 if stop_seqs:
                     request_data["stop"] = stop_seqs
-                
+
+                if flow_dedicated_api:
+                    if not flow_endpoint_cfg:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Dedicated API is enabled for this flow but provider configuration "
+                                "is missing. Check Settings → Dedicated API endpoint."
+                            ),
+                        )
                 # Use centralized helper for config, URL, and CONTEXT PRUNING
-                endpoint_config, url, request_data = prepare_endpoint_request(body.model_name, request_data)
-                
-                logger.info(f"[generate] Forwarding {body.model_name} to {endpoint_config['name']} at {url}")
-                
-                # Call the API endpoint
-                result = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, request_data)
-                
-                # Extract text from OpenAI-compatible response
-                if result and "choices" in result and len(result["choices"]) > 0:
-                    llm_output_raw_text = result["choices"][0].get("message", {}).get("content", "")
+                if getattr(body, "skip_openai_message_pruning", False) or body.image_base64:
+                    request_data["_skip_openai_message_pruning"] = True
+                if model_id_implies_extended_thinking(body.model_name):
+                    request_data["_force_extended_thinking"] = True
+                if flow_dedicated_api or flow_endpoint_cfg:
+                    endpoint_config, url, request_data = prepare_endpoint_request_from_config(
+                        flow_endpoint_cfg,
+                        request_data,
+                        label=body.request_purpose or "flow",
+                    )
                 else:
+                    endpoint_config, url, request_data = prepare_endpoint_request(
+                        effective_model_name,
+                        request_data,
+                        skip_rotation=pin_flow_api_endpoint,
+                        request_purpose=body.request_purpose,
+                        router_trace_id=router_trace_id,
+                        frontend_round_robin_enabled=body.round_robin_enabled,
+                    )
+                nano_mem_headers = apply_nano_gpt_context_memory(
+                    endpoint_config,
+                    request_data,
+                    enabled=body.nano_gpt_context_memory_enabled,
+                    mode=body.nano_gpt_context_memory_mode,
+                    expiration_days=body.nano_gpt_context_memory_expiration_days,
+                ) if endpoint_config else {}
+
+                log_agentic_wire(request_data)
+
+                log_generate_outbound(
+                    url,
+                    request_data.get("model", ""),
+                    endpoint_config,
+                    request_data,
+                )
+
+                api_extra_headers = dict(nano_mem_headers or {})
+                if web_search_native_for_api:
+                    native_hdrs, native_method = apply_native_web_search_request(
+                        request_data, endpoint_config
+                    )
+                    api_extra_headers.update(native_hdrs or {})
+                    logger.info("[generate] Native web search (non-stream API): %s", native_method)
+                
+                logger.info(
+                    "[generate] Routing decision trace_id=%s mode=%s purpose=%s selected_endpoint=%s target_model=%s",
+                    router_trace_id,
+                    "flow_dedicated" if flow_dedicated_api else (endpoint_config.get("_routing_mode") or "selected"),
+                    body.request_purpose or "user_chat",
+                    endpoint_config.get("id"),
+                    request_data.get("model"),
+                )
+                logger.info(f"[generate] Forwarding {effective_model_name} to {endpoint_config['name']} at {url} (upstream streaming, aggregate for non-stream client)")
+                
+                try:
+                    llm_output_raw_text = await collect_openai_compatible_stream_text(
+                        endpoint_config,
+                        url,
+                        request_data,
+                        api_extra_headers if api_extra_headers else None,
+                    )
+                    note_endpoint_success(endpoint_config.get("id"))
+                except Exception as api_collect_exc:
+                    note_endpoint_failure(endpoint_config.get("id"), reason=type(api_collect_exc).__name__)
+                    raise
+                if not (llm_output_raw_text or "").strip():
                     llm_output_raw_text = "API endpoint returned no valid response."
             else:
                 # Local model - use existing path
                 # Get the loaded model instance once for this request
-                model_instance = model_manager.get_model(body.model_name, gpu_id)
+                model_instance = model_manager.get_model(effective_model_name, gpu_id)
                 if not model_instance:
-                    raise ValueError(f"Model {body.model_name} not loaded on GPU {gpu_id}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Local model '{effective_model_name}' is not loaded on GPU {gpu_id}. "
+                            "Load the model or select a custom API endpoint."
+                        ),
+                    )
 
                 # --- UNIFIED DISPATCH LOGIC ---
                 # This logic block decides how to call the model based on whether an image is present.
@@ -5428,6 +6598,7 @@ Vary your sentence structure and word choices naturally."""
                             ]
                         }
                     ]
+                    log_agentic_wire(messages)
                     
                     response = model_instance.create_chat_completion(
                         messages=messages,
@@ -5447,6 +6618,7 @@ Vary your sentence structure and word choices naturally."""
                     # --- TEXT-ONLY PATH (Your original, working logic) ---
                     # For text, we call the model directly with the full prompt string.
                     logger.info("✅ Dispatching to standard text generation.")
+                    log_agentic_wire(llm_prompt)
                     response = model_instance(
                         prompt=llm_prompt,
                         max_tokens=max_tokens,
@@ -5461,19 +6633,39 @@ Vary your sentence structure and word choices naturally."""
                     else:
                         llm_output_raw_text = "Text model returned no valid response."
 
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.error(f"❌ Generation error (non-streaming): {exc}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
 
         # 12) Post-process LLM output
+        if llm_output_raw_text is None:
+            logger.warning("🔄 Raw LLM output is None (non-streaming); treating as empty string.")
+            llm_output_raw_text = ""
         logger.info(f"🔄 Raw LLM output length (non-streaming): {len(llm_output_raw_text)} characters")
         clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
 
         # 13) Schedule memory detection and storage (for non-streaming user chats)
         if body.directProfileInjection:
             logger.info("🧠 Direct Profile Injection is ON. Skipping memory creation task (non-streaming).")
-        elif body.request_purpose in ["title_generation", "model_testing", "model_judging", "continuation"]:
-            logger.info("🌀 Title generation / continuation request (non-streaming). Skipping memory detection.")
+        elif body.memoryEnabled is False:
+            logger.info("🧠 memoryEnabled=false (non-streaming). Skipping memory detection and storage.")
+        elif (user_id == "rolling-memory-compaction") or ((user_profile_from_request or {}).get("id") == "rolling-memory-compaction"):
+            logger.info("🧠 Rolling memory compaction request (non-streaming). Skipping memory detection and storage.")
+        elif body.request_purpose in [
+            "title_generation",
+            "model_testing",
+            "model_judging",
+            "continuation",
+            "book_chapter_json_outline",
+            "call_mode_character_about",
+            "character_intro",
+            "system_intro",
+        ]:
+            logger.info(
+                "🌀 Title generation / continuation / book chapter JSON outline (non-streaming). Skipping memory detection."
+            )
         elif not user_id:
             logger.warning(f"🧠 Memory detection/storage skipped (non-streaming): No user_id available. (Purpose: {body.request_purpose or 'user_chat'})")
         else:
@@ -5487,16 +6679,67 @@ Vary your sentence structure and word choices naturally."""
                  user_profile_for_task["id"] = getattr(request.app.state, "active_profile_id", None)
             
             logger.info(f" scheduling detect_and_store for user chat (non-streaming). User's input for detection: '{prompt_that_elicited_response[:100]}...'")
+            api_opts = {}
+            if api_model_id:
+                cfg = get_configured_endpoint(
+                    effective_model_name,
+                    skip_rotation=pin_flow_api_endpoint,
+                    request_purpose=body.request_purpose,
+                )
+                if cfg:
+                    api_opts = {
+                        "use_api": True,
+                        "api_base_url": cfg.get("url", ""),
+                        "api_model_name": cfg.get("model") or effective_model_name,
+                        "api_key": cfg.get("api_key") or cfg.get("apiKey") or "",
+                    }
             background_tasks.add_task(
                 detect_and_store,
                 clean_llm_response, # Use cleaned response here
                 prompt_that_elicited_response,
-                user_profile_for_task
+                user_profile_for_task,
+                **api_opts
             )
             logger.info(f"🧠 Memory write task scheduled for user ID: {user_id} (user chat, non-streaming)")
 
+            # 13b) Alignment failure detection background task
+            if body.enable_alignment_detection and user_id and body.active_character:
+                character_id = (body.active_character or {}).get("id", "") if body.active_character else ""
+                if character_id:
+                    background_tasks.add_task(
+                        _alignment_detection_background,
+                        full_response_text=clean_llm_response,
+                        user_message=prompt_that_elicited_response,
+                        user_id=user_id,
+                        character_id=character_id,
+                        character_name=(body.active_character or {}).get("name", "Character"),
+                        character_profile=body.active_character,
+                        memory_port=memory_port,
+                    )
+
         # 14) Return final response to client
-        return {"text": clean_llm_response}    
+        out = {"text": clean_llm_response}
+        out["route_action"] = route_meta_base["action"]
+        out["route_purpose"] = route_meta_base["request_purpose"]
+        out["route_trace_id"] = route_meta_base["trace_id"]
+        out["selected_model"] = route_meta_base["selected_model"]
+        out["routed_model"] = route_meta_base["effective_model"]
+        out["round_robin_enabled"] = route_meta_base["auto_enabled"]
+        out["exception_pinned"] = route_meta_base["exception_pinned"]
+        if web_search_meta:
+            out["web_search_meta"] = web_search_meta
+        return JSONResponse(
+            content=out,
+            headers={
+                "X-Router-Trace-Id": router_trace_id,
+                "X-Route-Action": route_meta_base["action"] or "",
+                "X-Route-Purpose": route_meta_base["request_purpose"] or "",
+                "X-Route-Selected-Model": route_meta_base["selected_model"] or "",
+                "X-Route-Effective-Model": route_meta_base["effective_model"] or "",
+                "X-Route-Auto-Enabled": str(route_meta_base["auto_enabled"]).lower(),
+                "X-Route-Exception-Pinned": str(route_meta_base["exception_pinned"]).lower(),
+            },
+        )
     
 @router.post("/models/performance-test")
 async def performance_test_endpoint(
@@ -5651,6 +6894,10 @@ async def save_custom_endpoints(data: dict = Body(...)):
                 settings = json.load(f)
         
         settings['customApiEndpoints'] = endpoints
+        # Preserve existing explicit auto-router choice when endpoint list changes.
+        # This prevents silent fallback to manual mode on subsequent /generate calls.
+        if 'apiEndpointRoundRobinEnabled' not in settings:
+            settings['apiEndpointRoundRobinEnabled'] = False
         
         with open(settings_path, 'w') as f:
             json.dump(settings, f)
@@ -7773,7 +9020,20 @@ async def chat_completions_with_tools(
             )
         
         logger.info(f"📝 Chat request - Model: {model_name}, GPU: {gpu_id}, Devstral: {is_devstral}, Tools: {len(tools) if tools else 0}")
-        
+
+        def _clean_tool_messages(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            out = []
+            for msg in msgs:
+                content = msg.get("content")
+                if content is not None and str(content).strip() != "":
+                    out.append(msg)
+                elif msg.get("tool_calls") or msg.get("role") == "tool":
+                    out.append(msg)
+            return out
+
+        cleaned_messages = _clean_tool_messages(messages)
+        api_model_id = model if is_api_endpoint(model) else None
+
         if is_devstral and tools:
             # Use Devstral with tool calling support
             logger.info(f"🔧 Using Devstral tool calling with {len(tools)} tools")
@@ -7782,20 +9042,8 @@ async def chat_completions_with_tools(
             formatted_tools = DevstralHandler.format_tools_for_devstral(tools)
             
             try:
-                # Clean messages before sending to model
-                cleaned_messages = []
-                for msg in messages:
-                    content = msg.get('content')
-                    if content is not None and content.strip() != "":
-                        cleaned_messages.append(msg)
-                    elif msg.get('tool_calls'):
-                        # Keep messages with tool calls - preserve original content and tool calls
-                        cleaned_messages.append(msg)
-                    else:
-                        logger.warning(f"🧹 Skipping message with empty content: {msg}")
-                
                 logger.info(f"🔍 [DEBUG] Cleaned messages count: {len(cleaned_messages)} (was {len(messages)})")
-                
+
                 # Handle streaming vs non-streaming for tool calling
                 if stream:
                     logger.info(f"🔄 Streaming tool calling response")
@@ -7860,6 +9108,40 @@ async def chat_completions_with_tools(
                 # Fallback to manual injection if needed
                 logger.info("🔄 Falling back to manual tool injection")
         
+        # Custom API endpoint with native tool calling (DeepSeek, GLM, OpenRouter, …)
+        if tools and not is_devstral and api_model_id:
+            endpoint_cfg = get_configured_endpoint(api_model_id)
+            if endpoint_cfg and supports_native_tool_calling(api_model_id, endpoint_cfg):
+                logger.info(f"🔧 Native API tool calling for {api_model_id}")
+                try:
+                    from .eloquent_agent_tools import _call_chat_api as agent_api_call
+
+                    merged_tools = list(tools)
+                    for et in get_eloquent_chat_tools(simple=True, include_news=True):
+                        if not any(
+                            (t.get("function") or {}).get("name") == (et.get("function") or {}).get("name")
+                            for t in merged_tools
+                        ):
+                            merged_tools.append(et)
+
+                    response = await agent_api_call(
+                        endpoint_cfg,
+                        cleaned_messages,
+                        merged_tools,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        native_tools=True,
+                    )
+                    choice = (response.get("choices") or [{}])[0]
+                    message = choice.get("message") or {}
+                    if not message.get("tool_calls") and message.get("content"):
+                        parsed = agent_extract_tool_calls(message["content"])
+                        if parsed:
+                            message["tool_calls"] = parsed
+                    return response
+                except Exception as api_tool_err:
+                    logger.error(f"Native API tool call failed: {api_tool_err}")
+
         # Fallback: Manual tool injection or standard chat
         if tools and not is_devstral:
             logger.info(f"🔧 Using manual tool injection for non-Devstral model")
@@ -7886,18 +9168,6 @@ async def chat_completions_with_tools(
                     'role': 'system',
                     'content': f"You are a helpful coding assistant with access to tools.{tools_text}"
                 })
-        
-        # Clean messages for standard completion too
-        cleaned_messages = []
-        for msg in messages:
-            content = msg.get('content')
-            if content is not None and content.strip() != "":
-                cleaned_messages.append(msg)
-            elif msg.get('tool_calls'):
-                # Keep messages with tool calls - preserve original content and tool calls
-                cleaned_messages.append(msg)
-            else:
-                logger.warning(f"🧹 Skipping message with empty content in standard completion: {msg}")
         
         if not cleaned_messages:
             raise HTTPException(status_code=400, detail="No valid messages after cleaning")
@@ -8212,6 +9482,16 @@ async def update_settings(data: dict = Body(...)):
         # Save back
         with open(settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
+
+        if "ffmpegPath" in data:
+            try:
+                from .ffmpeg_utils import apply_ffmpeg_config
+                apply_ffmpeg_config(data.get("ffmpegPath"))
+                svc = getattr(app.state, "automation_service", None)
+                if svc is not None:
+                    svc.refresh_config()
+            except Exception as ff_exc:
+                logger.warning("ffmpegPath settings apply failed: %s", ff_exc)
             
         return {
             "status": "success",
@@ -8284,7 +9564,7 @@ async def get_election_polls(
             "polls": [],
             "metadata": metadata,
             "status": "refreshing",
-            "message": "No cached data. Fetching now — refresh in 30 seconds.",
+            "message": "No cached data yet — fetching in the background. Reload or use ↻ Refresh Data in a moment.",
         }
     last_updated = await election_db.get_last_fetch_time(race_type, sources=sources)
     if sources:
@@ -9228,10 +10508,9 @@ async def chess_analyze_game(request: Request, payload: dict = Body(...)):
                         "temperature": 0.4,
                     }
                     endpoint_config, url, prepared_data = prepare_endpoint_request(model_name, request_data)
-                    response_json = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, prepared_data)
-                    if response_json.get("choices") and response_json["choices"]:
-                        msg = response_json["choices"][0].get("message") or response_json["choices"][0]
-                        summary = (msg.get("content") or msg.get("text") or "").strip()
+                    summary = (
+                        await collect_openai_compatible_stream_text(endpoint_config, url, prepared_data)
+                    ).strip()
             elif model_manager:
                 from . import inference
                 response = await inference.generate_text(
@@ -9491,17 +10770,70 @@ async def chess_historian_persona(request: Request, payload: dict = Body(...)):
     return {"persona": (persona_text or "").strip() or "I'm the Chess Historian—warm, curious, and full of stories about players, games, and the history of the game."}
 
 
+# --- Demo showcase (fabricated test user for call mode / memory demos) ---
+@app.router.get("/demo/showcase/status")
+async def demo_showcase_status():
+  """Whether the fabricated demo profile memories are installed on disk."""
+  try:
+    from . import demo_showcase
+    return {"status": "success", **demo_showcase.get_status()}
+  except Exception as e:
+    logger.error(f"Demo showcase status failed: {e}", exc_info=True)
+    raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.router.get("/demo/showcase/pack")
+async def demo_showcase_pack():
+  """Return the full demo showcase pack (frontend + metadata; backend arrays included for reference)."""
+  try:
+    from . import demo_showcase
+    return {"status": "success", "pack": demo_showcase.load_pack()}
+  except FileNotFoundError as e:
+    raise HTTPException(status_code=404, detail=str(e))
+  except Exception as e:
+    logger.error(f"Demo showcase pack failed: {e}", exc_info=True)
+    raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.router.post("/demo/showcase/install")
+async def demo_showcase_install(request: Request):
+  """Write fabricated profile + agentic memories to disk and optionally set active profile."""
+  try:
+    from . import demo_showcase
+    body = {}
+    try:
+      body = await request.json()
+    except Exception:
+      body = {}
+    set_active = body.get("set_active", True) if isinstance(body, dict) else True
+    result = demo_showcase.install_backend(set_active=bool(set_active))
+    if set_active:
+      request.app.state.active_profile_id = result.get("user_id")
+    return result
+  except FileNotFoundError as e:
+    raise HTTPException(status_code=404, detail=str(e))
+  except Exception as e:
+    logger.error(f"Demo showcase install failed: {e}", exc_info=True)
+    raise HTTPException(status_code=500, detail=str(e))
+
+
 # mount the "generate" router
 app.include_router(router)
 app.include_router(auth_router)
 app.include_router(market_sim_router)
+app.include_router(outreach_router)
+app.include_router(remote_router)
+app.include_router(d_id_router)
+app.include_router(voice_sculpt_router, prefix="/voice-sculpt")
+app.include_router(rembg_router, prefix="/rembg")
 
 # mount your memory endpoints under the "/memory" prefix
 app.include_router(memory_router, prefix="/memory")
-app.include_router(memory_router, prefix="/memory", tags=["memory"])
+app.include_router(alignment_router, prefix="/memory/alignment")
+app.include_router(chatlog_condenser_router, prefix="/memory/chatlog-condenser")
 app.include_router(document_router)
+app.include_router(corpus_router)
 # Add OpenAI compatibility layer
 app.include_router(openai_router)
 # TTS service router removed - TTS now runs separately on port 8002
 logger.info("🔗 OpenAI-compatible API endpoints available at /v1/chat/completions and /v1/models")
-

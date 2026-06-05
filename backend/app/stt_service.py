@@ -5,13 +5,17 @@ import torch
 import librosa
 import soundfile as sf
 import tempfile
-import contextlib
 import logging
 import os
 import sys
 import importlib
 import asyncio
 import shutil
+import subprocess
+import io
+from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +23,7 @@ logger = logging.getLogger(__name__)
 whisper_processor = None
 whisper_model = None
 parakeet_model = None
+parakeet_v3_model = None
 parakeet_zh_model = None  # NeMo Mandarin Chinese ASR
 
 def get_device():
@@ -41,8 +46,102 @@ def get_device():
 DEVICE = get_device()
 WHISPER_MODEL_ID = "openai/whisper-large-v3-turbo"
 PARAKEET_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v2"
+PARAKEET_V3_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 # NeMo Conformer-Transducer Large for Mandarin Chinese (16 kHz mono WAV)
 PARAKEET_ZH_MODEL_ID = "nvidia/stt_zh_conformer_transducer_large"
+
+PARAKEET_TDT_ENGINE_IDS = frozenset({"parakeet", "parakeet-v3"})
+
+# FFmpeg decode only when librosa/audioread fails (file uploads), not on every mic clip.
+_STT_FFMPEG_FALLBACK_EXTENSIONS = {
+    ".webm", ".opus", ".ogg", ".m4a", ".aac", ".mp4", ".mkv", ".avi", ".mov",
+}
+
+
+def _convert_to_wav_with_ffmpeg(input_path: str) -> str:
+    from .ffmpeg_utils import FFMPEG_INSTALL_HINT, find_ffmpeg
+    ffmpeg_path = find_ffmpeg()
+    if not ffmpeg_path:
+        raise RuntimeError(
+            "FFmpeg is required to transcribe WebM/Opus recordings. " + FFMPEG_INSTALL_HINT
+        )
+    fd, temp_wav = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    cmd = [
+        ffmpeg_path,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        input_path,
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        temp_wav,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        try:
+            os.remove(temp_wav)
+        except OSError:
+            pass
+        err = (result.stderr or result.stdout or "unknown error").strip()
+        raise RuntimeError(f"FFmpeg could not decode audio: {err[:500]}")
+    return temp_wav
+
+
+def _read_wav_bytes(data: bytes) -> tuple:
+    """In-memory 16 kHz mono float32 — fast path for browser WAV mic uploads."""
+    audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=False)
+    if getattr(audio, "ndim", 1) > 1:
+        audio = np.mean(audio, axis=1)
+    audio = np.asarray(audio, dtype=np.float32)
+    if sr != 16000:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=16000, res_type="kaiser_fast")
+    return audio, 16000
+
+
+def _load_stt_audio_path(audio_file_path: str) -> tuple:
+    """Load audio at 16 kHz; FFmpeg subprocess only if librosa cannot decode."""
+    try:
+        audio, sr = librosa.load(
+            audio_file_path,
+            sr=16000,
+            mono=True,
+            duration=None,
+            res_type="kaiser_fast",
+        )
+        return audio, sr
+    except Exception as first_err:
+        ext = Path(audio_file_path).suffix.lower()
+        if ext not in _STT_FFMPEG_FALLBACK_EXTENSIONS:
+            raise
+        logger.warning(
+            "librosa could not decode %s (%s); one-shot FFmpeg fallback",
+            audio_file_path,
+            first_err,
+        )
+        temp_wav = _convert_to_wav_with_ffmpeg(audio_file_path)
+        try:
+            audio, sr = librosa.load(
+                temp_wav,
+                sr=16000,
+                mono=True,
+                duration=None,
+                res_type="kaiser_fast",
+            )
+            return audio, sr
+        finally:
+            try:
+                os.remove(temp_wav)
+            except OSError:
+                pass
+
 
 def load_whisper_model():
     """Loads the Processor and Model using transformers if not already loaded."""
@@ -69,87 +168,78 @@ def load_whisper_model():
     # Return both, even if one failed (will be None)
     return whisper_processor, whisper_model
 
+
+def _prepare_nemo_env() -> None:
+    os.environ["NEMO_DISABLE_ONELOGGER"] = "True"
+    os.environ["NEMO_LOGGING_LEVEL"] = "ERROR"
+    for noisy_logger in [
+        "nemo", "nemo_logging", "torch.distributed", "lhotse", "torio",
+        "pytorch_lightning", "nv_one_logger", "nemo.utils.import_utils",
+    ]:
+        logging.getLogger(noisy_logger).setLevel(logging.ERROR)
+        logging.getLogger(noisy_logger).propagate = False
+
+
+def _import_nemo_asr():
+    try:
+        import nemo.collections.asr as nemo_asr
+        return nemo_asr
+    except (ImportError, TypeError) as e:
+        logger.info(f"NeMo toolkit not found or failed to load ({e}). Attempting to install/fix automatically...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "nemo_toolkit[asr]"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "numpy<2"])
+            logger.warning("PARAKEET FIX APPLIED: NumPy may have been downgraded — restart backend if needed.")
+            importlib.invalidate_caches()
+            import nemo.collections.asr as nemo_asr
+            return nemo_asr
+        except Exception as install_err:
+            logger.error(f"Failed to automatically install NeMo: {install_err}")
+            return None
+
+
+def _load_parakeet_tdt_checkpoint(model_id: str):
+    """Load an NVIDIA Parakeet TDT checkpoint (v2 English or v3 multilingual)."""
+    _prepare_nemo_env()
+    nemo_asr = _import_nemo_asr()
+    if nemo_asr is None:
+        return None
+    try:
+        from nemo.utils import logging as nemo_logging
+        nemo_logging.set_verbosity(nemo_logging.ERROR)
+    except Exception:
+        pass
+    logger.info(f"Loading NVIDIA Parakeet TDT '{model_id}' onto device {DEVICE}...")
+    asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=model_id)
+    if DEVICE.startswith("cuda"):
+        asr_model = asr_model.to(DEVICE)
+    logger.info(f"NVIDIA Parakeet TDT '{model_id}' loaded successfully.")
+    return asr_model
+
+
 def load_parakeet_model():
-    """Loads the NVIDIA Parakeet model using NeMo."""
+    """Loads Parakeet TDT v2 (English)."""
     global parakeet_model
     if parakeet_model is None:
-        # Crucial: Disable NeMo's buggy OneLogger telemetry integration
-        # This prevents the TypeError: `OneLoggerPTLTrainer.save_checkpoint: weights_only must be a supertype...`
-        os.environ["NEMO_DISABLE_ONELOGGER"] = "True"
-        # Silence NeMo's internal logging level via environment variable
-        os.environ["NEMO_LOGGING_LEVEL"] = "ERROR"
-        
-        # Aggressively suppress noisy/verbose logs from NeMo and its internal dependencies
-        # We target specific sub-modules that are known to be chatty during setup/inference
-        for noisy_logger in [
-            'nemo', 'nemo_logging', 'torch.distributed', 'lhotse', 'torio', 
-            'pytorch_lightning', 'nv_one_logger', 'nemo.utils.import_utils'
-        ]:
-            logging.getLogger(noisy_logger).setLevel(logging.ERROR)
-            logging.getLogger(noisy_logger).propagate = False
-        
         try:
-            # Try to import nemo
-            try:
-                import nemo.collections.asr as nemo_asr
-            except (ImportError, TypeError) as e:
-                logger.info(f"NeMo toolkit not found or failed to load ({e}). Attempting to install/fix automatically...")
-                try:
-                    import subprocess
-                    import sys
-                    
-                    # Ensure pip is up to date
-                    logger.info("Ensuring pip is up to date...")
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-
-                    # Then install NeMo toolkit with ASR support
-                    logger.info("Installing NeMo toolkit with ASR support...")
-                    subprocess.check_call([
-                        sys.executable, "-m", "pip", "install", "nemo_toolkit[asr]"
-                    ])
-                    
-                    # FORCE FIX: Installation often pulls in numpy 2.x which breaks stuff
-                    # So we explicitly downgrade it immediately after
-                    logger.info("Applying NumPy compatibility fix (numpy<2)...")
-                    subprocess.check_call([
-                        sys.executable, "-m", "pip", "install", "numpy<2"
-                    ])
-                    logger.warning("************************************************************")
-                    logger.warning("PARAKEET FIX APPLIED: NumPy has been downgraded.")
-                    logger.warning("YOU MUST RESTART THE BACKEND FOR THIS TO TAKE EFFECT.")
-                    logger.warning("************************************************************")
-                    
-                    logger.info("NeMo toolkit installed successfully!")
-                    
-                    # Now import nemo after installation
-                    importlib.invalidate_caches()
-                    import nemo.collections.asr as nemo_asr
-                except Exception as install_err:
-                    logger.error(f"Failed to automatically install NeMo: {install_err}")
-                    return None
-            
-            # Additional silence for NeMo's custom logging system if it exists
-            try:
-                from nemo.utils import logging as nemo_logging
-                nemo_logging.set_verbosity(nemo_logging.ERROR)
-            except:
-                pass
-
-            logger.info(f"Loading NVIDIA Parakeet model '{PARAKEET_MODEL_ID}' onto device {DEVICE}...")
-            # Load pre-trained model (this will download the model if not present)
-            asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=PARAKEET_MODEL_ID)
-            
-            # Move to the correct device
-            if DEVICE.startswith("cuda"):
-                asr_model = asr_model.to(DEVICE)
-                
-            parakeet_model = asr_model
-            logger.info(f"NVIDIA Parakeet model '{PARAKEET_MODEL_ID}' loaded successfully.")
+            parakeet_model = _load_parakeet_tdt_checkpoint(PARAKEET_MODEL_ID)
         except Exception as e:
-            logger.error(f"Failed to load NVIDIA Parakeet model '{PARAKEET_MODEL_ID}': {e}", exc_info=True)
+            logger.error(f"Failed to load Parakeet v2 '{PARAKEET_MODEL_ID}': {e}", exc_info=True)
             parakeet_model = None
-    
     return parakeet_model
+
+
+def load_parakeet_v3_model():
+    """Loads Parakeet TDT v3 (multilingual, auto language detect)."""
+    global parakeet_v3_model
+    if parakeet_v3_model is None:
+        try:
+            parakeet_v3_model = _load_parakeet_tdt_checkpoint(PARAKEET_V3_MODEL_ID)
+        except Exception as e:
+            logger.error(f"Failed to load Parakeet v3 '{PARAKEET_V3_MODEL_ID}': {e}", exc_info=True)
+            parakeet_v3_model = None
+    return parakeet_v3_model
 
 
 def load_parakeet_zh_model():
@@ -203,102 +293,97 @@ def load_parakeet_zh_model():
 async def transcribe_audio(audio_file_path: str, engine: str = "whisper") -> str:
     """Transcribes audio using the selected STT engine."""
     logger.info(f"Transcribing using engine: {engine}")
-    
+    audio, sr = _load_stt_audio_path(audio_file_path)
+    return await _transcribe_audio_array(audio, sr, engine)
+
+
+async def transcribe_audio_bytes(data: bytes, engine: str = "whisper") -> str:
+    """Fast path: browser sends 16 kHz WAV bytes (no WebM decode, no disk write)."""
+    if len(data) >= 4 and data[:4] == b"RIFF":
+        audio, sr = _read_wav_bytes(data)
+        return await _transcribe_audio_array(audio, sr, engine)
+    suffix = ".webm"
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+        return await transcribe_audio(path, engine)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+async def _transcribe_audio_array(audio, sr: int, engine: str) -> str:
     if engine == "whisper":
-        return await transcribe_with_whisper(audio_file_path)
-    elif engine == "parakeet":
-        parakeet_model = load_parakeet_model()
-        if parakeet_model:
-            return await transcribe_with_parakeet(audio_file_path)
-        else:
-            logger.warning("Parakeet model failed to load, falling back to Whisper")
-            return await transcribe_with_whisper(audio_file_path)
-    elif engine == "parakeet-zh":
+        return await transcribe_with_whisper_array(audio, sr)
+    if engine == "parakeet":
+        model = load_parakeet_model()
+        if model:
+            return await transcribe_with_parakeet_array(audio, sr)
+        logger.warning("Parakeet model failed to load, falling back to Whisper")
+        return await transcribe_with_whisper_array(audio, sr)
+    if engine == "parakeet-v3":
+        model = load_parakeet_v3_model()
+        if model:
+            return await transcribe_with_parakeet_v3_array(audio, sr)
+        logger.warning("Parakeet v3 model failed to load, falling back to Whisper")
+        return await transcribe_with_whisper_array(audio, sr)
+    if engine == "parakeet-zh":
         zh_model = load_parakeet_zh_model()
         if zh_model:
-            return await transcribe_with_parakeet_zh(audio_file_path)
-        else:
-            logger.warning("Parakeet-ZH (Chinese) model failed to load, falling back to Whisper")
-            return await transcribe_with_whisper(audio_file_path)
-    else:
-        logger.warning(f"Unknown STT engine: {engine}, falling back to Whisper")
-        return await transcribe_with_whisper(audio_file_path)
+            return await transcribe_with_parakeet_zh_array(audio, sr)
+        logger.warning("Parakeet-ZH model failed to load, falling back to Whisper")
+        return await transcribe_with_whisper_array(audio, sr)
+    logger.warning(f"Unknown STT engine: {engine}, falling back to Whisper")
+    return await transcribe_with_whisper_array(audio, sr)
+
 
 async def transcribe_with_whisper(audio_file_path: str) -> str:
+    audio, sr = _load_stt_audio_path(audio_file_path)
+    return await transcribe_with_whisper_array(audio, sr)
+
+
+async def transcribe_with_whisper_array(audio_input, sampling_rate: int) -> str:
     """Transcribes audio using the loaded HF Whisper model."""
     processor, model = load_whisper_model()
     if not processor or not model:
         raise RuntimeError("STT processor or model is not loaded.")
 
     try:
-        logger.info(f"Loading audio file: {audio_file_path}")
-        # Load audio file using librosa, ensuring 16kHz sample rate
-        # With resampy installed, we can use the faster resampling method
-        audio_input, sampling_rate = librosa.load(
-            audio_file_path, 
-            sr=16000,
-            mono=True,       # Force mono channel
-            duration=None,   # Use entire file
-            res_type='kaiser_fast'  # Faster resampling (requires resampy)
-        )
-        
-        audio_duration = len(audio_input)/sampling_rate
-        logger.info(f"Audio loaded. Sample rate: {sampling_rate}, Duration: {audio_duration:.2f}s")
-        
-        # For longer audio, use chunking approach
-        if audio_duration > 30:  # If longer than 30 seconds
+        audio_duration = len(audio_input) / sampling_rate
+        logger.info(f"Whisper audio ready. Sample rate: {sampling_rate}, Duration: {audio_duration:.2f}s")
+
+        if audio_duration > 30:
             logger.info(f"Long audio detected ({audio_duration:.2f}s), using chunking approach")
-            
-            # Calculate chunk size (20 sec chunks with 2 sec overlap)
             chunk_size = 20 * sampling_rate
             overlap = 2 * sampling_rate
-            
             transcripts = []
-            
-            # Process audio in overlapping chunks
+
             for i in range(0, len(audio_input), chunk_size - overlap):
                 chunk = audio_input[i:i + chunk_size]
-                
-                # Skip processing tiny chunks
-                if len(chunk) < sampling_rate * 1:  # Less than 1 second
+                if len(chunk) < sampling_rate * 1:
                     continue
-                    
-                logger.info(f"Processing chunk {i/sampling_rate:.2f}s to {(i+len(chunk))/sampling_rate:.2f}s")
-                
-                # Process chunk
                 features = processor(chunk, sampling_rate=sampling_rate, return_tensors="pt").input_features
                 features = features.to(DEVICE)
                 if DEVICE.startswith("cuda"):
                     features = features.half()
-                    
                 with torch.no_grad():
-                    pred_ids = model.generate(
-                        features, 
-                        max_new_tokens=256,
-                        language="en"
-                    )
-                
+                    pred_ids = model.generate(features, max_new_tokens=256, language="en")
                 chunk_text = processor.batch_decode(pred_ids, skip_special_tokens=True)[0].strip()
                 if chunk_text:
                     transcripts.append(chunk_text)
-                    
-            # Join all chunks
+
             transcript_text = " ".join(transcripts)
-            
         else:
-            # Standard processing for shorter audio
             input_features = processor(audio_input, sampling_rate=sampling_rate, return_tensors="pt").input_features
             input_features = input_features.to(DEVICE)
             if DEVICE.startswith("cuda"):
                 input_features = input_features.half()
-
             with torch.no_grad():
-                predicted_ids = model.generate(
-                    input_features, 
-                    max_new_tokens=256,
-                    language="en"
-                )
-
+                predicted_ids = model.generate(input_features, max_new_tokens=256, language="en")
             transcript_text = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0].strip()
 
         logger.info(f"Whisper transcription complete. Output length: {len(transcript_text)}")
@@ -308,45 +393,62 @@ async def transcribe_with_whisper(audio_file_path: str) -> str:
         logger.error(f"Error during HF transcription: {e}", exc_info=True)
         raise RuntimeError(f"HF Transcription failed: {str(e)}")
 
+
+def _parakeet_chunk_paths(audio, sr: int):
+    """Write NeMo-ready WAV chunk file paths (Parakeet API needs paths, not WebM)."""
+    audio_duration = len(audio) / sr
+    temp_wav_path = None
+    temp_dir = None
+    chunk_paths = []
+
+    if audio_duration > 30:
+        chunk_size = 20 * sr
+        overlap = 2 * sr
+        temp_dir = tempfile.TemporaryDirectory()
+        for i in range(0, len(audio), chunk_size - overlap):
+            chunk = audio[i:i + chunk_size]
+            if len(chunk) < sr * 1:
+                continue
+            chunk_path = os.path.join(temp_dir.name, f"chunk_{i}.wav")
+            sf.write(chunk_path, chunk, sr)
+            chunk_paths.append(chunk_path)
+    else:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            temp_wav_path = tmp.name
+        sf.write(temp_wav_path, audio, sr)
+        chunk_paths.append(temp_wav_path)
+
+    return chunk_paths, temp_wav_path, temp_dir
+
+
 async def transcribe_with_parakeet(audio_file_path: str) -> str:
-    """Transcribes audio using the NVIDIA Parakeet model."""
     if not parakeet_model:
         raise RuntimeError("Parakeet model is not loaded.")
+    audio, sr = _load_stt_audio_path(audio_file_path)
+    return await transcribe_with_parakeet_array(audio, sr)
 
+
+async def transcribe_with_parakeet_v3(audio_file_path: str) -> str:
+    if not parakeet_v3_model:
+        raise RuntimeError("Parakeet v3 model is not loaded.")
+    audio, sr = _load_stt_audio_path(audio_file_path)
+    return await transcribe_with_parakeet_v3_array(audio, sr)
+
+
+async def _transcribe_parakeet_tdt_array(audio, sr: int, model, engine_label: str) -> str:
     temp_wav_path = None
     temp_dir = None
     try:
-        logger.info(f"Loading audio for Parakeet: {audio_file_path}")
-        audio, sr = librosa.load(audio_file_path, sr=16000, mono=True, duration=None)
         audio_duration = len(audio) / sr
-        logger.info(f"Parakeet audio loaded. Sample rate: {sr}, Duration: {audio_duration:.2f}s")
+        logger.info(f"{engine_label} audio ready. Duration: {audio_duration:.2f}s")
 
-        chunk_paths = []
-        if audio_duration > 30:
-            logger.info(f"Long audio detected ({audio_duration:.2f}s), chunking for Parakeet")
-            chunk_size = 20 * sr
-            overlap = 2 * sr
-            temp_dir = tempfile.TemporaryDirectory()
-
-            for i in range(0, len(audio), chunk_size - overlap):
-                chunk = audio[i:i + chunk_size]
-                if len(chunk) < sr * 1:
-                    continue
-                chunk_path = os.path.join(temp_dir.name, f"chunk_{i}.wav")
-                sf.write(chunk_path, chunk, sr)
-                chunk_paths.append(chunk_path)
-        else:
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                temp_wav_path = tmp.name
-            sf.write(temp_wav_path, audio, sr)
-            chunk_paths.append(temp_wav_path)
-
-        logger.info(f"Transcribing with Parakeet ({len(chunk_paths)} chunk(s))")
+        chunk_paths, temp_wav_path, temp_dir = _parakeet_chunk_paths(audio, sr)
+        logger.info(f"Transcribing with {engine_label} ({len(chunk_paths)} chunk(s))")
 
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: parakeet_model.transcribe(chunk_paths)
+            lambda: model.transcribe(chunk_paths),
         )
 
         transcripts = []
@@ -360,18 +462,16 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
                 transcripts.append(text)
 
         transcript_text = " ".join(transcripts).strip()
-
-        logger.info(f"Parakeet transcription complete. Output length: {len(transcript_text)}")
+        logger.info(f"{engine_label} transcription complete. Output length: {len(transcript_text)}")
         return transcript_text
 
     except Exception as e:
-        logger.error(f"Error during Parakeet transcription: {e}", exc_info=True)
-        raise RuntimeError(f"Parakeet transcription failed: {str(e)}")
+        logger.error(f"Error during {engine_label} transcription: {e}", exc_info=True)
+        raise RuntimeError(f"{engine_label} transcription failed: {str(e)}")
     finally:
         if temp_wav_path and os.path.exists(temp_wav_path):
             try:
                 os.remove(temp_wav_path)
-                logger.info(f"Cleaned up temporary file: {temp_wav_path}")
             except Exception as cleanup_err:
                 logger.warning(f"Could not delete temp file {temp_wav_path}: {cleanup_err}")
         if temp_dir:
@@ -381,7 +481,28 @@ async def transcribe_with_parakeet(audio_file_path: str) -> str:
                 pass
 
 
+async def transcribe_with_parakeet_array(audio, sr: int) -> str:
+    """Transcribes audio using Parakeet TDT v2 (English)."""
+    if not parakeet_model:
+        raise RuntimeError("Parakeet model is not loaded.")
+    return await _transcribe_parakeet_tdt_array(audio, sr, parakeet_model, "Parakeet")
+
+
+async def transcribe_with_parakeet_v3_array(audio, sr: int) -> str:
+    """Transcribes audio using Parakeet TDT v3 (multilingual)."""
+    if not parakeet_v3_model:
+        raise RuntimeError("Parakeet v3 model is not loaded.")
+    return await _transcribe_parakeet_tdt_array(audio, sr, parakeet_v3_model, "Parakeet v3")
+
+
 async def transcribe_with_parakeet_zh(audio_file_path: str) -> str:
+    if not parakeet_zh_model:
+        raise RuntimeError("Parakeet-ZH (Chinese) model is not loaded.")
+    audio, sr = _load_stt_audio_path(audio_file_path)
+    return await transcribe_with_parakeet_zh_array(audio, sr)
+
+
+async def transcribe_with_parakeet_zh_array(audio, sr: int) -> str:
     """Transcribes audio using the NeMo Mandarin Chinese ASR model (16 kHz mono)."""
     global parakeet_zh_model
     if not parakeet_zh_model:
@@ -390,29 +511,10 @@ async def transcribe_with_parakeet_zh(audio_file_path: str) -> str:
     temp_wav_path = None
     temp_dir = None
     try:
-        logger.info(f"Loading audio for Parakeet-ZH: {audio_file_path}")
-        audio, sr = librosa.load(audio_file_path, sr=16000, mono=True, duration=None)
         audio_duration = len(audio) / sr
-        logger.info(f"Parakeet-ZH audio loaded. Sample rate: {sr}, Duration: {audio_duration:.2f}s")
+        logger.info(f"Parakeet-ZH audio ready. Duration: {audio_duration:.2f}s")
 
-        chunk_paths = []
-        if audio_duration > 30:
-            chunk_size = 20 * sr
-            overlap = 2 * sr
-            temp_dir = tempfile.TemporaryDirectory()
-            for i in range(0, len(audio), chunk_size - overlap):
-                chunk = audio[i:i + chunk_size]
-                if len(chunk) < sr * 1:
-                    continue
-                chunk_path = os.path.join(temp_dir.name, f"chunk_{i}.wav")
-                sf.write(chunk_path, chunk, sr)
-                chunk_paths.append(chunk_path)
-        else:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                temp_wav_path = tmp.name
-            sf.write(temp_wav_path, audio, sr)
-            chunk_paths.append(temp_wav_path)
-
+        chunk_paths, temp_wav_path, temp_dir = _parakeet_chunk_paths(audio, sr)
         logger.info(f"Transcribing with Parakeet-ZH ({len(chunk_paths)} chunk(s))")
         loop = asyncio.get_event_loop()
         raw_result = await loop.run_in_executor(
@@ -459,31 +561,21 @@ def is_engine_available(engine: str) -> bool:
     if engine == "whisper":
         processor, model = load_whisper_model()
         return processor is not None and model is not None
-    elif engine == "parakeet":
+    elif engine in PARAKEET_TDT_ENGINE_IDS:
         try:
-            # More thorough check - try to import specific required modules
             import importlib.util
-            
-            # Check if NeMo is installed
-            nemo_spec = importlib.util.find_spec("nemo")
-            if nemo_spec is None:
+            if importlib.util.find_spec("nemo") is None:
                 logger.info("NeMo package not found")
                 return False
-                
-            # Check if NeMo ASR is importable
-            nemo_asr_spec = importlib.util.find_spec("nemo.collections.asr")
-            if nemo_asr_spec is None:
+            if importlib.util.find_spec("nemo.collections.asr") is None:
                 logger.info("NeMo ASR module not found")
                 return False
-                
-            # Check if we can actually import it without errors
             try:
                 import nemo.collections.asr
                 return True
             except Exception as e:
                 logger.info(f"Error importing NeMo ASR: {e}")
                 return False
-                
         except ImportError:
             logger.info("Import error checking for Parakeet")
             return False
@@ -514,6 +606,8 @@ def list_available_engines() -> list:
         engines.append("whisper")
     if is_engine_available("parakeet"):
         engines.append("parakeet")
+    if is_engine_available("parakeet-v3"):
+        engines.append("parakeet-v3")
     if is_engine_available("parakeet-zh"):
         engines.append("parakeet-zh")
     return engines
