@@ -45,6 +45,9 @@ configs/logs/
 
 # User data and settings (generated at runtime)
 backend/app/static/voice_references/
+backend/app/data/voice_sculpt/
+sculpt.env.bat
+tools/Applio/
 backend/app/static/generated_images/
 backend/app/static/tts_audio/
 backend/app/static/document_store/
@@ -84,6 +87,7 @@ forensic_cache/
 vram_snapshots.json
 
 # User data
+backend/data/preview_prompts/
 backend/app/user_memories/
 backend/user_memories/
 user_memories/
@@ -93,8 +97,18 @@ backend/app/static/
 backend/static/
 static/
 
-# Test files
-backend/app/test_*.py
-
 # Abandoned experiments
-backend/app/musetalk_service.py
+frontend/src/contexts/IntensityContext.jsx
+frontend/src/utils/intensityAIPrompt.js
+frontend/src/utils/intensityPresets.js
+frontend/src/utils/intensitySchema.js
+
+# Personal / private data (user dumps, backups, PII)
+personal/
+
+# User-generated character + docs content (may contain personal chatlogs)
+characters/
+docs/
+
+# Runtime generated entity cache (may contain pre-depersonalization output)
+backend/app/data/
