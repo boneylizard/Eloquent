@@ -1,0 +1,62 @@
+name: Mirid clean Windows install
+
+on:
+  push:
+    branches:
+      - codex/mirid-clean-install-test
+    paths:
+      - .github/workflows/mirid-clean-install.yml
+      - scripts/test_github_clean_install.ps1
+  workflow_dispatch:
+    inputs:
+      installer_url:
+        description: Direct URL for the Mirid installer candidate
+        required: true
+        type: string
+      installer_sha256:
+        description: Expected SHA-256 for the installer candidate
+        required: true
+        type: string
+      expected_version:
+        description: Expected installed Mirid version
+        required: true
+        default: 1.0.2
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  clean-install:
+    name: Fresh Windows VM
+    runs-on: windows-2025
+    timeout-minutes: 300
+    env:
+      INSTALLER_URL: ${{ inputs.installer_url || 'https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/main/candidates/v1.0.2/30e509fafcc208df/Mirid_1.0.2_x64-setup.exe?download=true' }}
+      INSTALLER_SHA256: ${{ inputs.installer_sha256 || '30E509FAFCC208DFA9A83BB06BCF53216D801EB635B96BFCBDA755BB78F6BCDB' }}
+      EXPECTED_VERSION: ${{ inputs.expected_version || '1.0.2' }}
+
+    steps:
+      - name: Check out test scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Test installer from an empty Windows profile
+        shell: powershell
+        run: |
+          .\scripts\test_github_clean_install.ps1 `
+            -InstallerUrl $env:INSTALLER_URL `
+            -InstallerSha256 $env:INSTALLER_SHA256 `
+            -ExpectedVersion $env:EXPECTED_VERSION
+
+      - name: Upload clean-install evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirid-clean-install-${{ github.run_id }}
+          path: artifacts/github-clean-install
+          if-no-files-found: warn
+          retention-days: 7
