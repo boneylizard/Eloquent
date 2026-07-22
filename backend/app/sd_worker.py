@@ -1,15 +1,16 @@
+from __future__ import annotations
+
 import logging
 import threading
 import traceback
 import multiprocessing as mp
 from multiprocessing.connection import Listener, Client
-
-from .sd_manager import SDManager
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def _handle_request(sd_manager: SDManager, request: dict):
+def _handle_request(sd_manager: Any, request: dict):
     cmd = request.get("cmd")
     args = request.get("args") or {}
 
@@ -40,7 +41,7 @@ def _handle_request(sd_manager: SDManager, request: dict):
     raise ValueError(f"Unknown SD worker command: {cmd}")
 
 
-def _client_thread(conn, sd_manager: SDManager):
+def _client_thread(conn, sd_manager: Any):
     try:
         request = conn.recv()
         result = _handle_request(sd_manager, request)
@@ -55,8 +56,15 @@ def _client_thread(conn, sd_manager: SDManager):
 
 
 def sd_worker_entry(pipe_conn, authkey: bytes):
+    try:
+        from .sd_manager import SDManager
+    except Exception as error:
+        pipe_conn.send({"error": f"Local image generation is unavailable: {error}"})
+        pipe_conn.close()
+        return
+
     listener = Listener(("127.0.0.1", 0), authkey=authkey)
-    pipe_conn.send(listener.address)
+    pipe_conn.send({"address": listener.address})
     pipe_conn.close()
 
     sd_manager = SDManager()
@@ -81,7 +89,7 @@ class SDWorkerClient:
         self._process = None
         self._lock = threading.Lock()
         self._loaded_model_paths: dict[int, str] = {}
-        self._ensure_worker()
+        logger.info("SD worker will start on first local image request")
 
     def _reload_models_after_worker_restart(self):
         """Re-load SD models in a fresh worker after a native crash killed the process."""
@@ -121,8 +129,14 @@ class SDWorkerClient:
                 daemon=True
             )
             process.start()
-            address = parent_conn.recv()
+            startup = parent_conn.recv()
             parent_conn.close()
+
+            if startup.get("error"):
+                process.join(timeout=5)
+                raise RuntimeError(startup["error"])
+
+            address = startup["address"]
 
             self._process = process
             self._address = address

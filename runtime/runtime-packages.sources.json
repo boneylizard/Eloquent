@@ -1,0 +1,408 @@
+{
+  "schemaVersion": 1,
+  "repositories": {
+    "artifacts": "boneylizardwizard/mirid-runtime-packs",
+    "registrySpace": "boneylizardwizard/mirid-runtime-registry"
+  },
+  "upstreams": {
+    "llamaCpp": {
+      "repository": "ggml-org/llama.cpp",
+      "release": "latest"
+    },
+    "stableDiffusionCpp": {
+      "repository": "leejet/stable-diffusion.cpp",
+      "release": "latest"
+    },
+    "llamaCppPython": {
+      "repository": "abetlen/llama-cpp-python",
+      "versionSource": "https://pypi.org/pypi/llama-cpp-python/json"
+    },
+    "stableDiffusionCppPython": {
+      "repository": "william-murray1204/stable-diffusion-cpp-python",
+      "versionSource": "https://pypi.org/pypi/stable-diffusion-cpp-python/json"
+    },
+    "mlxLm": {
+      "versionSource": "https://pypi.org/pypi/mlx-lm/json"
+    },
+    "mlx": {
+      "versionSource": "https://pypi.org/pypi/mlx/json"
+    },
+    "mlxMetal": {
+      "versionSource": "https://pypi.org/pypi/mlx-metal/json"
+    }
+  },
+  "nativePackages": [
+    {
+      "id": "llama-windows-x86_64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-win-cpu-x64\\.zip$"
+    },
+    {
+      "id": "llama-windows-x86_64-vulkan",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-win-vulkan-x64\\.zip$"
+    },
+    {
+      "id": "llama-windows-x86_64-hip",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "hip",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-win-hip-radeon-x64\\.zip$"
+    },
+    {
+      "id": "llama-windows-aarch64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-aarch64",
+      "accelerator": "cpu",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-win-cpu-arm64\\.zip$"
+    },
+    {
+      "id": "llama-windows-aarch64-opencl",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-aarch64",
+      "accelerator": "opencl-adreno",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-win-opencl-adreno-arm64\\.zip$"
+    },
+    {
+      "id": "llama-macos-aarch64-metal",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-macos-arm64\\.tar\\.gz$"
+    },
+    {
+      "id": "llama-linux-x86_64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-ubuntu-x64\\.tar\\.gz$"
+    },
+    {
+      "id": "llama-linux-x86_64-vulkan",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-ubuntu-vulkan-x64\\.tar\\.gz$"
+    },
+    {
+      "id": "llama-linux-x86_64-rocm",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-ubuntu-rocm-[0-9.]+-x64\\.tar\\.gz$"
+    },
+    {
+      "id": "llama-linux-aarch64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-aarch64",
+      "accelerator": "cpu",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-ubuntu-arm64\\.tar\\.gz$"
+    },
+    {
+      "id": "llama-linux-aarch64-vulkan",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-aarch64",
+      "accelerator": "vulkan",
+      "upstream": "llamaCpp",
+      "assetPattern": "^llama-b[0-9]+-bin-ubuntu-vulkan-arm64\\.tar\\.gz$"
+    },
+    {
+      "id": "sd-windows-x86_64-cpu",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-win-cpu-x64\\.zip$"
+    },
+    {
+      "id": "sd-windows-x86_64-vulkan",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-win-vulkan-x64\\.zip$"
+    },
+    {
+      "id": "sd-windows-x86_64-rocm-7.1",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "rocm-7.1",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-win-rocm-7\\.1(?:\\.[0-9]+)?-x64\\.zip$"
+    },
+    {
+      "id": "sd-windows-x86_64-rocm-7.13",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "rocm-7.13",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-win-rocm-7\\.13(?:\\.[0-9]+)?-x64\\.zip$"
+    },
+    {
+      "id": "sd-macos-aarch64-metal",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-Darwin-macOS-[0-9.]+-arm64\\.zip$"
+    },
+    {
+      "id": "sd-linux-x86_64-cpu",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-Linux-Ubuntu-[0-9.]+-x86_64\\.zip$"
+    },
+    {
+      "id": "sd-linux-x86_64-vulkan",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-Linux-Ubuntu-[0-9.]+-x86_64-vulkan\\.zip$"
+    },
+    {
+      "id": "sd-linux-x86_64-rocm-7.2",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm-7.2",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-Linux-Ubuntu-[0-9.]+-x86_64-rocm-7\\.2(?:\\.[0-9]+)?\\.zip$"
+    },
+    {
+      "id": "sd-linux-x86_64-rocm-7.13",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm-7.13",
+      "upstream": "stableDiffusionCpp",
+      "assetPattern": "^sd-master-[a-f0-9]+-bin-Linux-Ubuntu-[0-9.]+-x86_64-rocm-7\\.13(?:\\.[0-9]+)?\\.zip$"
+    }
+  ],
+  "bindingWheels": [
+    {
+      "id": "llama-python-windows-x86_64-cpu",
+      "package": "llama-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "upstream": "llamaCppPython",
+      "releaseSuffix": "",
+      "assetPattern": "^llama_cpp_python-[^-]+-py3-none-win_amd64\\.whl$"
+    },
+    {
+      "id": "llama-python-windows-x86_64-vulkan",
+      "package": "llama-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "llamaCppPython",
+      "releaseSuffix": "-vulkan",
+      "assetPattern": "^llama_cpp_python-[^-]+-py3-none-win_amd64\\.whl$"
+    },
+    {
+      "id": "llama-python-windows-x86_64-hip",
+      "package": "llama-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "hip",
+      "upstream": "llamaCppPython",
+      "releaseSuffix": "-hip-radeon",
+      "assetPattern": "^llama_cpp_python-[^-]+-py3-none-win_amd64\\.whl$"
+    },
+    {
+      "id": "llama-python-macos-aarch64-metal",
+      "package": "llama-cpp-python",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "upstream": "llamaCppPython",
+      "releaseSuffix": "-metal",
+      "assetPattern": "^llama_cpp_python-[^-]+-py3-none-macosx_11_0_arm64\\.whl$"
+    },
+    {
+      "id": "llama-python-linux-x86_64-cpu",
+      "package": "llama-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "upstream": "llamaCppPython",
+      "releaseSuffix": "",
+      "assetPattern": "^llama_cpp_python-[^-]+-py3-none-manylinux2014_x86_64\\.manylinux_2_17_x86_64\\.whl$"
+    },
+    {
+      "id": "llama-python-linux-x86_64-vulkan",
+      "package": "llama-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "llamaCppPython",
+      "releaseSuffix": "-vulkan",
+      "assetPattern": "^llama_cpp_python-[^-]+-py3-none-manylinux2014_x86_64\\.manylinux_2_17_x86_64\\.whl$"
+    },
+    {
+      "id": "llama-python-linux-x86_64-hip",
+      "package": "llama-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm",
+      "upstream": "llamaCppPython",
+      "releaseSuffix": "-hip-radeon",
+      "assetPattern": "^llama_cpp_python-[^-]+-py3-none-manylinux_2_35_x86_64\\.whl$"
+    }
+  ],
+  "pypiWheels": [
+    {
+      "id": "mlx-python-macos-aarch64-metal",
+      "package": "mlx",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "upstream": "mlx",
+      "assetPattern": "^mlx-[^-]+-cp312-cp312-macosx_14_0_arm64\\.whl$"
+    },
+    {
+      "id": "mlx-metal-macos-aarch64-metal",
+      "package": "mlx-metal",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "upstream": "mlxMetal",
+      "assetPattern": "^mlx_metal-[^-]+-py3-none-macosx_14_0_arm64\\.whl$"
+    },
+    {
+      "id": "mlx-lm-macos-aarch64-metal",
+      "package": "mlx-lm",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "upstream": "mlxLm",
+      "assetPattern": "^mlx_lm-[^-]+-py3-none-any\\.whl$"
+    }
+  ],
+  "bindingBuilds": [
+    {
+      "id": "sd-python-windows-x86_64-cpu",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "upstream": "stableDiffusionCppPython",
+      "cmakeArgs": [
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    },
+    {
+      "id": "sd-python-windows-x86_64-vulkan",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "stableDiffusionCppPython",
+      "cmakeArgs": [
+        "-DSD_VULKAN=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    },
+    {
+      "id": "sd-python-windows-x86_64-hip",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "hip",
+      "upstream": "stableDiffusionCppPython",
+      "requires": [
+        "AMD HIP SDK",
+        "GPU_TARGETS",
+        "AMDGPU_TARGETS"
+      ],
+      "cmakeArgs": [
+        "-DSD_HIPBLAS=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    },
+    {
+      "id": "sd-python-macos-aarch64-metal",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "upstream": "stableDiffusionCppPython",
+      "requires": [
+        "Apple Silicon",
+        "Xcode command-line tools"
+      ],
+      "cmakeArgs": [
+        "-DSD_METAL=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    },
+    {
+      "id": "sd-python-linux-x86_64-cpu",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "upstream": "stableDiffusionCppPython",
+      "cmakeArgs": [
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    },
+    {
+      "id": "sd-python-linux-x86_64-vulkan",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "upstream": "stableDiffusionCppPython",
+      "requires": [
+        "Vulkan SDK"
+      ],
+      "cmakeArgs": [
+        "-DSD_VULKAN=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    },
+    {
+      "id": "sd-python-linux-x86_64-rocm",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm",
+      "upstream": "stableDiffusionCppPython",
+      "requires": [
+        "ROCm",
+        "GPU_TARGETS",
+        "AMDGPU_TARGETS"
+      ],
+      "cmakeArgs": [
+        "-DSD_HIPBLAS=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    }
+  ]
+}

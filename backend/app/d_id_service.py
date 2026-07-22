@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from .runtime_paths import data_path
+
 logger = logging.getLogger("d_id_service")
 
 DEFAULT_BASE = "https://api.d-id.com"
@@ -72,15 +74,13 @@ def _headers_json() -> Dict[str, str]:
 
 
 def get_d_id_export_dir() -> Path:
-    root = Path(__file__).resolve().parents[2]
-    out = root / "backend" / "data" / "d_id_exports"
+    out = data_path("d_id_exports")
     out.mkdir(parents=True, exist_ok=True)
     return out
 
 
 def get_d_id_batch_runs_dir() -> Path:
-    root = Path(__file__).resolve().parents[2]
-    out = root / "backend" / "data" / "d_id_batch_runs"
+    out = data_path("d_id_batch_runs")
     out.mkdir(parents=True, exist_ok=True)
     return out
 

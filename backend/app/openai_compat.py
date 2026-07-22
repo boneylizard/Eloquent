@@ -1,14 +1,12 @@
-"""
-OpenAI API Compatibility Layer for Eloquent
-Provides standard OpenAI endpoints that route through Eloquent's existing inference system.
-"""
+"""OpenAI-compatible routes for Mirid's local and configured remote models."""
 
 import json
 import os
 import re
 import time
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
+from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -16,6 +14,13 @@ import asyncio
 import logging
 import httpx
 import tiktoken # Added for accurate token counting
+try:
+    import tiktoken_ext.openai_public
+    if tiktoken.registry.ENCODING_CONSTRUCTORS is None:
+        tiktoken.registry.ENCODING_CONSTRUCTORS = {}
+    tiktoken.registry.ENCODING_CONSTRUCTORS.update(tiktoken_ext.openai_public.ENCODING_CONSTRUCTORS)
+except ImportError:
+    pass
 from .model_manager import ModelManager
 from . import inference
 from pathlib import Path
@@ -35,16 +40,35 @@ _ENDPOINT_ROTATION_STATE: Dict[str, Dict[str, str]] = {}
 
 router = APIRouter(prefix="/v1", tags=["OpenAI Compatibility"])
 
+MIRID_APP_URL = os.getenv("MIRID_APP_URL", "https://mirid.ai").strip() or "https://mirid.ai"
+MIRID_APP_TITLE = os.getenv("MIRID_APP_TITLE", "Mirid").strip() or "Mirid"
+
 # === Dependency to get model manager ===
 def get_model_manager(request: Request) -> ModelManager:
     """Get the ModelManager instance from request app state"""
     return getattr(request.app.state, 'model_manager', None)
 
+
+def get_provider_attribution_headers(endpoint_config: Optional[dict]) -> Dict[str, str]:
+    """Return documented provider attribution headers without exposing user data."""
+    raw_url = str((endpoint_config or {}).get("url") or "").strip()
+    try:
+        hostname = (urlparse(raw_url).hostname or "").lower()
+    except ValueError:
+        hostname = ""
+    if hostname == "openrouter.ai" or hostname.endswith(".openrouter.ai"):
+        return {
+            "HTTP-Referer": MIRID_APP_URL,
+            "X-OpenRouter-Title": MIRID_APP_TITLE,
+            "X-OpenRouter-Categories": "roleplay,general-chat",
+        }
+    return {}
+
 # === OpenAI API Models ===
 
 class ChatMessage(BaseModel):
     role: str = Field(..., description="The role of the message author")
-    content: str = Field(..., description="The content of the message")
+    content: Any = Field(..., description="The content of the message")
 
 class ChatCompletionRequest(BaseModel):
     model: str = Field(..., description="Model to use for completion")
@@ -53,7 +77,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = Field(0.9, ge=0, le=1, description="Nucleus sampling parameter")
     max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
     stream: Optional[bool] = Field(False, description="Whether to stream responses")
-    stop: Optional[List[str]] = Field(None, description="Stop sequences")
+    stop: Optional[Union[str, List[str]]] = Field(None, description="Stop sequences")
     
     # Additional parameters that map to Eloquent's system
     top_k: Optional[int] = Field(40, ge=1, description="Top-k sampling parameter")
@@ -72,7 +96,7 @@ class ModelInfo(BaseModel):
     id: str
     object: str = "model"
     created: int
-    owned_by: str = "eloquent"
+    owned_by: str = "mirid"
 
 # === Helper Functions ===
 
@@ -478,14 +502,22 @@ def get_configured_endpoint(
                     else:
                         override_reason = "manual_override_disallowed_for_user_chat_auto"
                 if not candidates:
+                    if requested_endpoint:
+                        route_mode = "manual_fallback"
+                        correction_action = "empty_pool_used_requested_endpoint"
+                        override_ignored = False
+                        override_reason = None
+                        selected = _fmt(requested_endpoint)
+                        _log_router_decision(selected_endpoint=selected, candidates=None)
+                        return selected
                     correction_action = "no_eligible_rotate_candidates"
                     _log_router_decision(selected_endpoint=None, candidates=[])
                     if purpose == "user_chat":
                         raise HTTPException(
                             status_code=400,
                             detail=(
-                                "Auto API routing is enabled for user_chat but no eligible rotate candidates exist "
-                                "(enabled && rotate_enabled). Enable at least one rotate-enabled endpoint."
+                                "Auto API routing has no included endpoints and no individual model was selected. "
+                                "Select a model or include an endpoint in rotation."
                             ),
                         )
                     return None
@@ -625,20 +657,38 @@ def note_endpoint_success(endpoint_id: Optional[str]) -> None:
 def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
     """Return the number of tokens used by a list of messages.
     Adapted from OpenAI cookbook."""
+    encoding = None
     try:
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
         # Fallback to cl100k_base for newer models if unknown
-        encoding = tiktoken.get_encoding("cl100k_base")
-        
-    tokens_per_message = 3 # every message follows <|start|>{role/name}\n{content}<|end|>\n
+        try:
+            encoding = tiktoken.get_encoding("cl100k_base")
+        except Exception as enc_error:
+            # In a frozen/broken environment tiktoken may fail to discover its
+            # encoding plugins entirely. Never let token counting kill a
+            # request; fall back to a rough chars/4 heuristic below.
+            logger.warning(
+                "tiktoken unavailable (%s); using heuristic token estimate", enc_error
+            )
+    except Exception as enc_error:
+        logger.warning(
+            "tiktoken unavailable (%s); using heuristic token estimate", enc_error
+        )
+
+    tokens_per_message = 3 # every message follows <|start|>{role/name}\n{content}\n
     tokens_per_name = 1
     
     num_tokens = 0
     for message in messages:
         num_tokens += tokens_per_message
         for key, value in message.items():
-            num_tokens += len(encoding.encode(str(value)))
+            text = str(value)
+            if encoding is not None:
+                num_tokens += len(encoding.encode(text))
+            else:
+                # Heuristic: ~4 characters per token (OpenAI rule of thumb).
+                num_tokens += max(1, len(text) // 4)
             if key == "name":
                 num_tokens += tokens_per_name
     num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
@@ -693,16 +743,33 @@ def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str 
         token_count = num_tokens_from_messages(candidate_history, model_name)
         
         if token_count <= max_input_tokens:
+            candidate_history = _remove_orphaned_tool_messages(candidate_history)
             return candidate_history, original_tokens, token_count
             
         # If still too big, drop the oldest remaining prunable message.
-        dropped.add(prunable_indices.pop(0))
+        removed_idx = prunable_indices.pop(0)
+        dropped.add(removed_idx)
+
+        # If we dropped an assistant message with tool_calls, also remove any
+        # tool result messages referencing those tool_call_ids to avoid orphaned
+        # tool messages that would cause API errors.
+        removed_msg = messages[removed_idx]
+        if removed_msg.get("tool_calls"):
+            tool_call_ids = {tc.get("id") for tc in removed_msg["tool_calls"] if tc.get("id")}
+            for pi in list(prunable_indices):
+                msg = messages[pi]
+                if msg.get("role") == "tool" and msg.get("tool_call_id") in tool_call_ids:
+                    dropped.add(pi)
+                    prunable_indices.remove(pi)
         
     # Worst case: only system + last message
     final_fallback = []
     if system_msg:
         final_fallback.append(system_msg)
     final_fallback.append(last_msg)
+    
+    # Ensure no orphaned tool messages in fallback
+    final_fallback = _remove_orphaned_tool_messages(final_fallback)
     
     final_count = num_tokens_from_messages(final_fallback, model_name)
     
@@ -716,24 +783,56 @@ def prune_messages(messages: List[dict], max_input_tokens: int, model_name: str 
         allowed_system_tokens = max_input_tokens - last_msg_tokens - 50 # padding
         
         if allowed_system_tokens > 100:
+            encoding = None
             try:
                 encoding = tiktoken.encoding_for_model(model_name)
-            except:
-                encoding = tiktoken.get_encoding("cl100k_base")
-            
-            system_tokens = encoding.encode(system_msg['content'])
-            # Truncate from the middle of the system prompt (often lore/tracker info is there)
-            half = allowed_system_tokens // 2
-            truncated_content = (
-                encoding.decode(system_tokens[:half]) + 
-                "\n... [Truncated for Context] ...\n" + 
-                encoding.decode(system_tokens[-(half):])
-            )
+            except Exception:
+                try:
+                    encoding = tiktoken.get_encoding("cl100k_base")
+                except Exception as enc_error:
+                    logger.warning(
+                        "tiktoken unavailable (%s); truncating system message by characters", enc_error
+                    )
+
+            if encoding is not None:
+                system_tokens = encoding.encode(system_msg['content'])
+                # Truncate from the middle of the system prompt (often lore/tracker info is there)
+                half = allowed_system_tokens // 2
+                truncated_content = (
+                    encoding.decode(system_tokens[:half]) +
+                    "\n... [Truncated for Context] ...\n" +
+                    encoding.decode(system_tokens[-(half):])
+                )
+            else:
+                # Heuristic character-based truncation (~4 chars per token).
+                content = system_msg['content']
+                half_chars = (allowed_system_tokens * 4) // 2
+                truncated_content = (
+                    content[:half_chars] +
+                    "\n... [Truncated for Context] ...\n" +
+                    content[-half_chars:]
+                )
             final_fallback[0]['content'] = truncated_content
             final_count = num_tokens_from_messages(final_fallback, model_name)
             logger.info(f"[OpenAI Compat] System message truncated. New total: {final_count}")
 
     return final_fallback, original_tokens, final_count
+
+
+def _remove_orphaned_tool_messages(messages):
+    """Remove tool result messages that have no matching assistant tool_calls entry."""
+    assistant_tool_call_ids = set()
+    result = []
+    for msg in messages:
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.get("id"):
+                    assistant_tool_call_ids.add(tc["id"])
+        if msg.get("role") == "tool" and msg.get("tool_call_id") and msg["tool_call_id"] not in assistant_tool_call_ids:
+            continue
+        result.append(msg)
+    return result
+
 
 def parse_eloquent_llm_prompt_to_openai_messages(llm_prompt: str) -> List[Dict[str, Any]]:
     """
@@ -910,23 +1009,13 @@ def thinking_stream_debug_enabled(model: str) -> bool:
 
 
 def model_id_implies_extended_thinking(model: str) -> bool:
-    """True when the provider model id suggests extended thinking / reasoning output."""
+    """True only when the requested model explicitly asks us to enable provider thinking."""
     m = (model or "").lower()
     if not m:
         return False
     if ":thinking" in m or m.endswith("-thinking"):
         return True
-    hints = (
-        "deepseek-r1",
-        "reasoner",
-        "/o1-",
-        "/o1:",
-        "/o3-",
-        "/o3:",
-        "sonnet-4-thinking",
-        "opus-4-thinking",
-    )
-    return any(h in m for h in hints)
+    return False
 
 
 def _thinking_budget_tokens(request_data: dict) -> int:
@@ -960,10 +1049,12 @@ def apply_extended_thinking_request(
     if request_data.get("thinking") or request_data.get("reasoning"):
         return True
     model = (request_data.get("model") or "").strip()
+    url = (endpoint_config.get("url") or "").lower()
     if not force_thinking and not model_id_implies_extended_thinking(model):
+        if "nano-gpt.com" in url or "nanogpt" in url or "openrouter.ai" in url:
+            request_data.setdefault("reasoning_effort", "none")
         return False
 
-    url = (endpoint_config.get("url") or "").lower()
     budget = _thinking_budget_tokens(request_data)
 
     if "nano-gpt.com" in url or "nanogpt" in url:
@@ -1009,16 +1100,29 @@ def _prepare_outbound_provider_model(
     force_thinking = force_thinking or model_id_implies_extended_thinking(model_name) or model_id_implies_extended_thinking(
         request_data.get("model", "")
     )
+    url = (endpoint_config.get("url") or "").lower()
+    preserve_thinking_suffix = "nano-gpt.com" in url or "nanogpt" in url
 
     req_model = (request_data.get("model") or "").strip()
     if req_model.startswith("endpoint-") or not req_model:
         configured_model = (endpoint_config.get("model") or "").strip()
         if configured_model:
-            provider_model, had_suffix = strip_thinking_model_suffix(configured_model)
-            request_data["model"] = provider_model or configured_model
-            force_thinking = force_thinking or had_suffix
+            if preserve_thinking_suffix:
+                request_data["model"] = configured_model
+                _, had_suffix = strip_thinking_model_suffix(configured_model)
+                if had_suffix:
+                    force_thinking = False
+            else:
+                provider_model, had_suffix = strip_thinking_model_suffix(configured_model)
+                request_data["model"] = provider_model or configured_model
+                force_thinking = force_thinking or had_suffix
         elif not req_model:
             request_data["model"] = "gpt-3.5-turbo"
+
+    if preserve_thinking_suffix:
+        _, had_suffix = strip_thinking_model_suffix(request_data.get("model", ""))
+        if had_suffix:
+            return False
 
     provider_model, had_suffix = strip_thinking_model_suffix(request_data.get("model", ""))
     if had_suffix:
@@ -1028,60 +1132,208 @@ def _prepare_outbound_provider_model(
     return force_thinking
 
 
+_REASONING_FIELD_NAMES = (
+    "reasoning", "reasoning_content", "thinking", "reasoning_text",
+    "reason", "think", "internal_monologue", "chain_of_thought",
+    "thought", "thought_process",
+)
+
+
+def _extract_reasoning_from_dict(d: dict) -> str:
+    """
+    Scan a dict for reasoning/thinking content under known field names only.
+
+    Providers sometimes stamp serving metadata (deployment ids, fingerprints)
+    onto stream chunks, so unknown fields are never treated as reasoning.
+    """
+    if not isinstance(d, dict):
+        return ""
+
+    for field in _REASONING_FIELD_NAMES:
+        val = d.get(field)
+        if isinstance(val, str) and val:
+            return val
+        if isinstance(val, list) and val:
+            parts: List[str] = []
+            for item in val:
+                if isinstance(item, dict):
+                    piece = item.get("text") or item.get("content") or ""
+                    if piece:
+                        parts.append(str(piece))
+                elif isinstance(item, str) and item:
+                    parts.append(item)
+            if parts:
+                return "".join(parts)
+
+    return ""
+
+
+class ThinkingStreamParser:
+    """
+    Stateful parser for thinking model streams.
+    Handles <think>...</think> tags and untagged reasoning.
+    """
+    
+    def __init__(self):
+        self.buffer = ""
+        self.in_think_block = False
+        self.reasoning_collected = []
+        self.content_collected = []
+        self.think_tag_detected = False
+    
+    def process_chunk(self, chunk_data: dict) -> Tuple[str, str]:
+        """
+        Process a single chunk and return (content, reasoning).
+        Maintains state across chunks.
+        """
+        if not chunk_data or not isinstance(chunk_data, dict):
+            return "", ""
+        
+        # Extract raw content from chunk
+        choices = chunk_data.get("choices")
+        if not choices or not isinstance(choices, list):
+            return "", ""
+        first_choice = choices[0] if isinstance(choices[0], dict) else None
+        if not isinstance(first_choice, dict):
+            return "", ""
+        
+        delta = first_choice.get("delta")
+        if not isinstance(delta, dict):
+            return "", ""
+        
+        token = str(delta.get("content") or "")
+        if not token:
+            return "", ""
+        
+        # Add token to buffer
+        self.buffer += token
+        
+        content_out = ""
+        reasoning_out = ""
+        
+        if not self.in_think_block:
+            # Check for <think> tag
+            if "<think>" in self.buffer:
+                self.think_tag_detected = True
+                pre, _, post = self.buffer.partition("<think>")
+                if pre:
+                    content_out = pre
+                self.buffer = post
+                self.in_think_block = True
+            elif len(self.buffer) > 7:
+                # Safe to yield if we know a <think> tag isn't partially forming
+                content_out = self.buffer[:-7]
+                self.buffer = self.buffer[-7:]
+        else:
+            # Inside think block, look for </think>
+            if "</think>" in self.buffer:
+                _, _, post = self.buffer.partition("</think>")
+                reasoning_out = self.buffer[:-9]  # Everything before </think>
+                self.buffer = post
+                self.in_think_block = False
+            else:
+                # Keep buffering, but yield reasoning if buffer is large
+                if len(self.buffer) > 100:
+                    reasoning_out = self.buffer[:-8]
+                    self.buffer = self.buffer[-8:]
+        
+        return content_out, reasoning_out
+    
+    def flush(self) -> Tuple[str, str]:
+        """Flush any remaining buffered content."""
+        content_out = ""
+        reasoning_out = ""
+        
+        if self.buffer:
+            if self.in_think_block:
+                reasoning_out = self.buffer
+            else:
+                content_out = self.buffer
+            self.buffer = ""
+        
+        return content_out, reasoning_out
+
+
 def extract_openai_stream_delta_parts(chunk_data: dict) -> Tuple[str, str]:
     """
     Split upstream OpenAI-style stream JSON into visible content vs reasoning.
 
-    Supports NanoGPT ``delta.reasoning``, legacy ``reasoning_content``, and
-    OpenRouter ``delta.reasoning_details[]``.
+    Supports NanoGPT ``delta.reasoning``, ``delta.thinking``, legacy
+    ``reasoning_content``, OpenRouter ``delta.reasoning_details[]``, top-level
+    ``reasoning``/``text``, and ``choices[0].message.reasoning``.
     """
     if not chunk_data or not isinstance(chunk_data, dict):
         return "", ""
-    if chunk_data.get("text") is not None:
-        return str(chunk_data.get("text") or ""), str(chunk_data.get("reasoning") or "")
+
+    # ── Top-level fields (NanoGPT, some proxies emit flat JSON) ──
+    top_text = chunk_data.get("text")
+    top_reasoning = _extract_reasoning_from_dict(chunk_data)
+    if top_text is not None:
+        return str(top_text or ""), top_reasoning
+
+    # If top-level has reasoning but no text, still capture it
+    if top_reasoning:
+        return "", top_reasoning
+
+    # ── choices-based format (OpenAI, OpenRouter, etc.) ──
     choices = chunk_data.get("choices")
     if not choices or not isinstance(choices, list):
         return "", ""
     first_choice = choices[0] if isinstance(choices[0], dict) else None
     if not isinstance(first_choice, dict):
         return "", ""
+
+    choice_reasoning = _extract_reasoning_from_dict(first_choice)
+
+    # ── delta format (streaming) ──
     delta = first_choice.get("delta")
-    if not isinstance(delta, dict):
-        # Some providers/proxies emit non-delta chunks while streaming:
-        # - choices[0].message.content (chat-completion shape)
-        # - choices[0].text (legacy completion shape)
-        message = first_choice.get("message")
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str) and content:
-                return content, ""
-            if isinstance(content, list):
-                text_parts: List[str] = []
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text = item.get("text")
-                        if text:
-                            text_parts.append(str(text))
-                if text_parts:
-                    return "".join(text_parts), ""
-        choice_text = first_choice.get("text")
-        if choice_text:
-            return str(choice_text), ""
-        return "", ""
-    content = str(delta.get("content") or "")
-    reasoning = str(delta.get("reasoning") or delta.get("reasoning_content") or "")
-    if not reasoning:
-        details = delta.get("reasoning_details")
-        if isinstance(details, list):
-            parts: List[str] = []
-            for item in details:
-                if not isinstance(item, dict):
-                    continue
-                piece = item.get("text") or item.get("content") or ""
-                if piece:
-                    parts.append(str(piece))
-            reasoning = "".join(parts)
-    return content, reasoning
+    if isinstance(delta, dict):
+        content = str(delta.get("content") or "")
+        reasoning = _extract_reasoning_from_dict(delta) or choice_reasoning
+        # Also check reasoning_details array (OpenRouter)
+        if not reasoning:
+            details = delta.get("reasoning_details")
+            if isinstance(details, list):
+                parts2: List[str] = []
+                for item in details:
+                    if not isinstance(item, dict):
+                        continue
+                    piece = item.get("text") or item.get("content") or ""
+                    if piece:
+                        parts2.append(str(piece))
+                reasoning = "".join(parts2)
+        if content or reasoning:
+            return content, reasoning
+
+    if choice_reasoning:
+        return "", choice_reasoning
+
+    # ── message format (non-delta / chat-completion shape) ──
+    message = first_choice.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        reasoning = _extract_reasoning_from_dict(message)
+        if isinstance(content, str) and content:
+            return content, reasoning
+        if isinstance(content, list):
+            text_parts: List[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text")
+                    if text:
+                        text_parts.append(str(text))
+            if text_parts:
+                return "".join(text_parts), reasoning
+        # content may be None but reasoning present
+        if reasoning:
+            return "", reasoning
+
+    # ── legacy text field ──
+    choice_text = first_choice.get("text")
+    if choice_text:
+        return str(choice_text), ""
+
+    return "", ""
 
 
 def resolve_flow_api_endpoint_config(
@@ -1110,16 +1362,37 @@ def resolve_flow_api_endpoint_config(
     }
 
 
+def _build_nanogpt_url(base_url: str, request_data: dict, endpoint_config: dict = None) -> str:
+    """Build NanoGPT URL - use /api/v1thinking/ for thinking models to merge reasoning into content."""
+    is_nanogpt = "nano-gpt.com" in base_url.lower() or "nanogpt" in base_url.lower()
+    is_subscription_route = "/api/subscription/v1" in base_url.lower()
+    # Check both request_data model and endpoint_config model
+    model_name = request_data.get("model", "") or (endpoint_config.get("model", "") if endpoint_config else "")
+    is_thinking_model = model_id_implies_extended_thinking(model_name) or request_data.get("thinking")
+    
+    if is_nanogpt and is_thinking_model and not is_subscription_route:
+        # Use /api/v1thinking/ endpoint - reasoning merges into content stream
+        if base_url.endswith("/v1"):
+            return f"{base_url}thinking/chat/completions"
+        elif "/api/v1" in base_url:
+            return base_url.replace("/api/v1", "/api/v1thinking") + "/chat/completions"
+        else:
+            return f"{base_url}/api/v1thinking/chat/completions"
+    
+    # Standard endpoint
+    if base_url.endswith("/v1"):
+        return f"{base_url}/chat/completions"
+    else:
+        return f"{base_url}/v1/chat/completions"
+
+
 def prepare_endpoint_request_from_config(endpoint_config: dict, request_data: dict, label: str = "custom"):
     """Like prepare_endpoint_request but uses a pre-built endpoint_config dict (flow overrides)."""
     if not endpoint_config:
         raise HTTPException(status_code=400, detail="No endpoint configuration for API request.")
 
     base_url = endpoint_config["url"]
-    if base_url.endswith("/v1"):
-        url = f"{base_url}/chat/completions"
-    else:
-        url = f"{base_url}/v1/chat/completions"
+    url = _build_nanogpt_url(base_url, request_data, endpoint_config)
 
     force_thinking = _prepare_outbound_provider_model("", request_data, endpoint_config)
     if request_data.pop("_skip_openai_message_pruning", False):
@@ -1128,6 +1401,7 @@ def prepare_endpoint_request_from_config(endpoint_config: dict, request_data: di
             label,
             len(request_data.get("messages", [])),
         )
+        request_data["max_tokens"] = min(request_data.get("max_tokens", 16384) or 16384, 32768)
         apply_extended_thinking_request(endpoint_config, request_data, force_thinking=force_thinking)
         log_generate_outbound(url, request_data.get("model", ""), endpoint_config, request_data)
         return endpoint_config, url, request_data
@@ -1144,6 +1418,7 @@ def prepare_endpoint_request_from_config(endpoint_config: dict, request_data: di
 
     SAFETY_MARGIN = 1000
     requested_gen_tokens = min(request_data.get("max_tokens", 16384) or 16384, 32768)
+    request_data["max_tokens"] = requested_gen_tokens
     max_input_tokens = CONTEXT_WINDOW_LIMIT - requested_gen_tokens - SAFETY_MARGIN
     if max_input_tokens < 1000:
         max_input_tokens = 1000
@@ -1210,11 +1485,7 @@ def prepare_endpoint_request(
         )
     
     base_url = endpoint_config['url']
-    # Avoid double /v1 if the base URL already ends with /v1
-    if base_url.endswith('/v1'):
-        url = f"{base_url}/chat/completions"
-    else:
-        url = f"{base_url}/v1/chat/completions"
+    url = _build_nanogpt_url(base_url, request_data, endpoint_config)
     
     force_thinking = _prepare_outbound_provider_model(model_name, request_data, endpoint_config)
 
@@ -1224,6 +1495,7 @@ def prepare_endpoint_request(
         char_count = approx_openai_messages_payload_chars(request_data.get("messages", []))
         logger.info(f"[OpenAI Compat] Outgoing API Payload (unpruned): {msg_count} messages, ~{char_count} chars")
         logger.info(f"[OpenAI Compat] Forwarding {model_name} to {endpoint_config['name']} at {url}")
+        request_data["max_tokens"] = min(request_data.get("max_tokens", 16384) or 16384, 32768)
         apply_extended_thinking_request(endpoint_config, request_data, force_thinking=force_thinking)
         log_generate_outbound(url, request_data.get("model", ""), endpoint_config, request_data)
         return endpoint_config, url, request_data
@@ -1246,6 +1518,7 @@ def prepare_endpoint_request(
     SAFETY_MARGIN = 1000 # Increased safety margin to account for tokenizer mismatch (tiktoken vs Llama)
     
     requested_gen_tokens = min(request_data.get('max_tokens', 16384) or 16384, 32768)
+    request_data['max_tokens'] = requested_gen_tokens
     # The budget for INPUT tokens is Total - Output - Safety
     max_input_tokens = CONTEXT_WINDOW_LIMIT - requested_gen_tokens - SAFETY_MARGIN
     
@@ -1323,6 +1596,7 @@ async def forward_to_configured_endpoint_streaming(
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        **get_provider_attribution_headers(endpoint_config),
     }
     
     api_key = endpoint_config.get('api_key', '')
@@ -1374,19 +1648,42 @@ async def forward_to_configured_endpoint_streaming(
                                     yield "data: [DONE]\n\n"
                                     return
                                 chunk_count = 0
-                                async for chunk in redir_response.aiter_raw():
-                                    chunk_count += 1
-                                    if chunk_count % 50 == 0:
-                                        logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
-                                    try:
-                                        chunk_str = chunk.decode('utf-8')
-                                        if chunk_count == 1:
-                                            logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
-                                        if "error" in chunk_str.lower() and '"message":' in chunk_str:
-                                            logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
-                                    except Exception:
-                                        pass
-                                    yield chunk
+                                buffer = b""
+                                async for chunk_bytes in redir_response.aiter_raw():
+                                    if isinstance(chunk_bytes, bytes):
+                                        buffer += chunk_bytes
+                                    else:
+                                        buffer += chunk_bytes.encode('utf-8') if isinstance(chunk_bytes, str) else b""
+                                    while b'\n\n' in buffer:
+                                        message, buffer = buffer.split(b'\n\n', 1)
+                                        if not message.strip():
+                                            continue
+                                        chunk_count += 1
+                                        if chunk_count % 50 == 0:
+                                            logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
+                                        try:
+                                            message_str = message.decode('utf-8', errors='ignore')
+                                            if chunk_count == 1:
+                                                logger.info(f"[OpenAI Compat] First chunk received: {message_str[:200]}...")
+                                            lines = message_str.split('\n')
+                                            for line in lines:
+                                                if line.startswith('data: '):
+                                                    json_str = line[6:].strip()
+                                                    if json_str == '[DONE]':
+                                                        yield "data: [DONE]\n\n"
+                                                        continue
+                                                    if json_str:
+                                                        upstream_data = json.loads(json_str)
+                                                        if "error" in str(upstream_data).lower() and '"message":' in str(upstream_data):
+                                                            logger.warning(f"[OpenAI Compat] Detected error in successful stream: {json_str[:200]}")
+                                                        enriched = dict(upstream_data)
+                                                        enriched["raw"] = upstream_data
+                                                        yield f"data: {json.dumps(enriched)}\n\n"
+                                        except json.JSONDecodeError:
+                                            yield f"{message.decode('utf-8', errors='ignore')}\n\n"
+                                        except Exception as e:
+                                            logger.debug(f"[OpenAI Compat] Stream parse error: {e}")
+                                            yield f"{message.decode('utf-8', errors='ignore')}\n\n"
                                 logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
                         else:
                             error_msg = f"Redirect with no Location header ({response.status_code})"
@@ -1412,19 +1709,44 @@ async def forward_to_configured_endpoint_streaming(
                         return
 
                     chunk_count = 0
-                    async for chunk in response.aiter_raw():
-                        chunk_count += 1
-                        if chunk_count % 50 == 0:
-                            logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
-                        try:
-                            chunk_str = chunk.decode('utf-8')
-                            if chunk_count == 1:
-                                logger.info(f"[OpenAI Compat] First chunk received: {chunk_str[:100]}...")
-                            if "error" in chunk_str.lower() and '"message":' in chunk_str:
-                                logger.warning(f"[OpenAI Compat] Detected error in successful stream: {chunk_str}")
-                        except Exception:
-                            pass
-                        yield chunk
+                    buffer = b""
+                    async for chunk_bytes in response.aiter_raw():
+                        if isinstance(chunk_bytes, bytes):
+                            buffer += chunk_bytes
+                        else:
+                            buffer += chunk_bytes.encode('utf-8') if isinstance(chunk_bytes, str) else b""
+                        while b'\n\n' in buffer:
+                            message, buffer = buffer.split(b'\n\n', 1)
+                            if not message.strip():
+                                continue
+                            chunk_count += 1
+                            if chunk_count % 50 == 0:
+                                logger.debug(f"[OpenAI Compat] Received {chunk_count} chunks from remote...")
+                            try:
+                                message_str = message.decode('utf-8', errors='ignore')
+                                if chunk_count == 1:
+                                    logger.info(f"[OpenAI Compat] First chunk received: {message_str[:200]}...")
+                                lines = message_str.split('\n')
+                                for line in lines:
+                                    if line.startswith('data: '):
+                                        json_str = line[6:].strip()
+                                        if json_str == '[DONE]':
+                                            yield "data: [DONE]\n\n"
+                                            continue
+                                        if json_str:
+                                            upstream_data = json.loads(json_str)
+                                            if "error" in str(upstream_data).lower() and '"message":' in str(upstream_data):
+                                                logger.warning(f"[OpenAI Compat] Detected error in successful stream: {json_str[:200]}")
+                                            # Re-emit with ALL original fields PLUS raw field
+                                            enriched = dict(upstream_data)
+                                            enriched["raw"] = upstream_data
+                                            yield f"data: {json.dumps(enriched)}\n\n"
+                            except json.JSONDecodeError:
+                                # Not JSON, pass through as-is
+                                yield f"{message.decode('utf-8', errors='ignore')}\n\n"
+                            except Exception as e:
+                                logger.debug(f"[OpenAI Compat] Stream parse error: {e}")
+                                yield f"{message.decode('utf-8', errors='ignore')}\n\n"
                     logger.info(f"[OpenAI Compat] Stream completed successfully. Total chunks: {chunk_count}")
             return
 
@@ -1535,6 +1857,7 @@ async def forward_to_configured_endpoint_non_streaming(
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        **get_provider_attribution_headers(endpoint_config),
     }
     
     api_key = endpoint_config.get('api_key', '')
@@ -1704,45 +2027,210 @@ async def stream_eloquent_to_openai(inference_module, model_manager, params: dic
 
 # === API Endpoints ===
 
+def _chat_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content or "")
+
+
+def _local_chat_messages(messages: List[ChatMessage]) -> List[Dict[str, str]]:
+    return [
+        {"role": message.role, "content": _chat_content_text(message.content)}
+        for message in messages
+    ]
+
+
+def _available_local_model_names(model_manager: ModelManager) -> List[str]:
+    available = model_manager.list_available_models()
+    if isinstance(available, dict):
+        available = available.get("available_models", [])
+    return [str(name) for name in (available or [])]
+
+
+def _resolve_local_model(model_manager: ModelManager, requested_model: str, requested_gpu: Optional[int]):
+    loaded = model_manager.get_loaded_models().get("loaded_models", [])
+    if requested_model in {"default", "mirid", "local"}:
+        if not loaded:
+            raise HTTPException(status_code=409, detail="No local GGUF model is loaded in Mirid.")
+        selected = loaded[0]
+        return selected["name"], int(selected["gpu_id"])
+
+    for model in loaded:
+        if model.get("name") == requested_model and (
+            requested_gpu is None or int(model.get("gpu_id", 0)) == requested_gpu
+        ):
+            return requested_model, int(model.get("gpu_id", 0))
+
+    if requested_model not in _available_local_model_names(model_manager):
+        raise HTTPException(status_code=404, detail=f"Model not found: {requested_model}")
+    return requested_model, int(requested_gpu or 0)
+
+
+async def _get_local_chat_model(model_manager: ModelManager, model_name: str, gpu_id: int):
+    try:
+        return model_manager.get_model(model_name, gpu_id)
+    except ValueError:
+        await model_manager.load_model(model_name, gpu_id=gpu_id)
+        return model_manager.get_model(model_name, gpu_id)
+
+
+def _local_chat_kwargs(request: ChatCompletionRequest) -> Dict[str, Any]:
+    stop = request.stop
+    if isinstance(stop, str):
+        stop = [stop]
+    return {
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "repeat_penalty": request.repetition_penalty,
+        "max_tokens": request.max_tokens,
+        "stop": stop or [],
+    }
+
+
+async def _stream_local_chat(model, request: ChatCompletionRequest, model_name: str):
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
+    yield create_openai_chunk(chunk_id, model_name, "", None)
+    try:
+        chunks = model.create_chat_completion(
+            messages=_local_chat_messages(request.messages),
+            stream=True,
+            **_local_chat_kwargs(request),
+        )
+        for chunk in chunks:
+            if isinstance(chunk, dict) and chunk.get("error"):
+                raise RuntimeError(str(chunk["error"]))
+            choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
+            choice = choices[0] if choices else {}
+            content = choice.get("text", "") or (choice.get("delta") or {}).get("content", "")
+            if content:
+                yield create_openai_chunk(chunk_id, model_name, content, None)
+            await asyncio.sleep(0)
+        yield create_openai_chunk(chunk_id, model_name, "", "stop")
+    except Exception as error:
+        logger.exception("Local OpenAI-compatible stream failed for %s", model_name)
+        error_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model_name,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+            "error": {"message": str(error), "type": "server_error"},
+        }
+        yield f"data: {json.dumps(error_chunk)}\n\n"
+    finally:
+        yield "data: [DONE]\n\n"
+
+
+async def _complete_local_chat(model, request: ChatCompletionRequest, model_name: str):
+    result = await asyncio.to_thread(
+        model.create_chat_completion,
+        messages=_local_chat_messages(request.messages),
+        stream=False,
+        **_local_chat_kwargs(request),
+    )
+    if not isinstance(result, dict) or result.get("error"):
+        error = result.get("error") if isinstance(result, dict) else "Local generation failed."
+        raise HTTPException(status_code=500, detail=str(error))
+    choices = result.get("choices", [])
+    choice = choices[0] if choices else {}
+    content = (choice.get("message") or {}).get("content") or choice.get("text", "")
+    return {
+        "id": result.get("id") or f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": result.get("created") or int(time.time()),
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": choice.get("finish_reason") or "stop",
+        }],
+        "usage": result.get("usage"),
+    }
+
 @router.get("/models")
 async def list_models(model_manager: ModelManager = Depends(get_model_manager)):
-    """List available models - uses Eloquent's model manager directly"""
+    """List local GGUF models and enabled configured endpoints."""
     try:
         if not model_manager:
             raise HTTPException(status_code=500, detail="Model manager not available")
-        
-        # Get available models from your model manager
-        available_models = model_manager.list_available_models()
-        
-        # Convert to OpenAI format
-        openai_models = []
-        if isinstance(available_models, list):
-            for model in available_models:
-                openai_models.append(ModelInfo(
-                    id=model if isinstance(model, str) else model.get("name", "unknown"),
-                    created=int(time.time()),
-                ))
-        elif isinstance(available_models, dict):
-            # Handle different response formats from your model manager
-            model_list = available_models.get("available_models", available_models.get("models", []))
-            for model in model_list:
-                openai_models.append(ModelInfo(
-                    id=model if isinstance(model, str) else model.get("name", "unknown"),
-                    created=int(time.time()),
-                ))
-        
+
+        openai_models = [
+            ModelInfo(id=model_name, created=int(time.time()), owned_by="mirid-local")
+            for model_name in _available_local_model_names(model_manager)
+        ]
+        for endpoint in _load_custom_api_endpoints():
+            endpoint_id = str(endpoint.get("id") or "").strip()
+            if endpoint.get("enabled") and endpoint_id:
+                openai_models.append(
+                    ModelInfo(id=endpoint_id, created=int(time.time()), owned_by="mirid-provider")
+                )
         return {"object": "list", "data": openai_models}
-    
     except Exception as e:
         logger.error(f"Error fetching models: {e}")
-        # Return a basic response if we can't fetch the list
-        return {
-            "object": "list", 
-            "data": [ModelInfo(id="default", created=int(time.time()))]
-        }
+        return {"object": "list", "data": []}
+
 
 @router.post("/chat/completions")
-async def chat_completions(raw_request: Request, model_manager: ModelManager = Depends(get_model_manager)):
+async def serve_chat_completions(raw_request: Request, model_manager: ModelManager = Depends(get_model_manager)):
+    """Serve local GGUF models or proxy an explicitly selected configured endpoint."""
+    try:
+        request_payload = await raw_request.json()
+        request = (
+            ChatCompletionRequest.model_validate(request_payload)
+            if hasattr(ChatCompletionRequest, "model_validate")
+            else ChatCompletionRequest.parse_obj(request_payload)
+        )
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON received.") from error
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=f"Unprocessable Entity: {error}") from error
+
+    logger.info(
+        "[/v1/chat/completions] model=%s stream=%s messages=%d",
+        request.model,
+        request.stream,
+        len(request.messages),
+    )
+    try:
+        if request.model and is_api_endpoint(request.model):
+            request_data = (
+                request.model_dump()
+                if hasattr(request, "model_dump")
+                else request.dict()
+            )
+            request_data["messages"] = _local_chat_messages(request.messages)
+            endpoint_config, url, request_data = prepare_endpoint_request(request.model, request_data)
+            if request.stream:
+                return StreamingResponse(
+                    forward_to_configured_endpoint_streaming(endpoint_config, url, request_data),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            return await forward_to_configured_endpoint_non_streaming(endpoint_config, url, request_data)
+
+        model_name, gpu_id = _resolve_local_model(model_manager, request.model, request.gpu_id)
+        model = await _get_local_chat_model(model_manager, model_name, gpu_id)
+        if request.stream:
+            return StreamingResponse(
+                _stream_local_chat(model, request, model_name),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        return await _complete_local_chat(model, request, model_name)
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error("Error in chat completions: %s", error, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+async def _legacy_chat_completions(raw_request: Request, model_manager: ModelManager = Depends(get_model_manager)):
     """OpenAI-compatible chat completions endpoint with raw request logging."""
 
     # --- START DEBUG LOG ---
@@ -1768,65 +2256,57 @@ async def chat_completions(raw_request: Request, model_manager: ModelManager = D
 
     # The rest of your original function logic remains the same...
     try:
-        if not model_manager:
-            raise HTTPException(status_code=500, detail="Model manager not available")
+        # ALWAYS resolve through API endpoints — never fall through to local GGUF.
+        # If the model name is empty or not a recognized API endpoint, pick one
+        # from the round-robin pool so every request routes to a remote API.
+        endpoint_config = None
+        url = None
+        effective_model = request.model
 
-        if is_api_endpoint(request.model):
+        if request.model and is_api_endpoint(request.model):
             logger.info(f"[OpenAI Compat] Detected API endpoint: {request.model}")
-
-            request_data = {
-                "model": request.model,
-                "messages": [{"role": msg.role, "content": msg.content} for msg in request.messages],
-                "temperature": request.temperature,
-                "top_p": request.top_p,
-                "max_tokens": request.max_tokens,
-                "stream": request.stream,
-            }
-
-            if request.stop: request_data["stop"] = request.stop
-            if request.top_k: request_data["top_k"] = request.top_k
-            if request.repetition_penalty: request_data["repetition_penalty"] = request.repetition_penalty
-
-            # Prepare endpoint config BEFORE starting stream - this ensures errors are raised
-            # before the response starts, so CORS headers are properly applied
-            endpoint_config, url, request_data = prepare_endpoint_request(request.model, request_data)
-
-            if request.stream:
-                return StreamingResponse(
-                    forward_to_configured_endpoint_streaming(endpoint_config, url, request_data),
-                    media_type="text/event-stream"
-                )
-            else:
-                result = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, request_data)
-                return result
-
         else:
-            prompt = convert_messages_to_prompt(request.messages, request.model)
-            chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-
-            if request.stream:
-                inference_params = {
-                    "model_name": request.model, "prompt": prompt, "max_tokens": request.max_tokens,
-                    "temperature": request.temperature, "top_p": request.top_p, "top_k": request.top_k,
-                    "repetition_penalty": request.repetition_penalty, "gpu_id": request.gpu_id or 0,
-                    "stop_sequences": request.stop or []
-                }
-                return StreamingResponse(
-                    stream_eloquent_to_openai(inference, model_manager, inference_params, chunk_id, request.model),
-                    media_type="text/event-stream"
+            # Empty or unknown model name — grab the first available API endpoint
+            fallback_endpoint = get_configured_endpoint(
+                model_id=None,
+                request_purpose="user_chat",
+                frontend_round_robin_enabled=True,
+            )
+            if fallback_endpoint:
+                effective_model = fallback_endpoint.get("model") or request.model or ""
+                logger.info(
+                    "[OpenAI Compat] Model '%s' not a known API endpoint — forced to round-robin endpoint '%s' (%s)",
+                    request.model, fallback_endpoint.get("id"), effective_model,
                 )
             else:
-                generated_text = await inference.generate_text(
-                    model_manager=model_manager, model_name=request.model, prompt=prompt,
-                    max_tokens=request.max_tokens, temperature=request.temperature, top_p=request.top_p,
-                    top_k=request.top_k, repetition_penalty=request.repetition_penalty,
-                    stop_sequences=request.stop or [], gpu_id=request.gpu_id or 0
+                raise HTTPException(
+                    status_code=400,
+                    detail="No API endpoints configured. Add one in Settings → Custom API Endpoints.",
                 )
-                return ChatCompletionResponse(
-                    id=chunk_id, created=int(time.time()), model=request.model,
-                    choices=[{ "index": 0, "message": { "role": "assistant", "content": generated_text }, "finish_reason": "stop" }],
-                    usage={ "prompt_tokens": len(prompt.split()), "completion_tokens": len(generated_text.split()), "total_tokens": len(prompt.split()) + len(generated_text.split()) }
-                )
+
+        request_data = {
+            "model": effective_model,
+            "messages": [{"role": msg.role, "content": msg.content} for msg in request.messages],
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "max_tokens": request.max_tokens,
+            "stream": request.stream,
+        }
+
+        if request.stop: request_data["stop"] = request.stop
+        if request.top_k: request_data["top_k"] = request.top_k
+        if request.repetition_penalty: request_data["repetition_penalty"] = request.repetition_penalty
+
+        endpoint_config, url, request_data = prepare_endpoint_request(effective_model, request_data)
+
+        if request.stream:
+            return StreamingResponse(
+                forward_to_configured_endpoint_streaming(endpoint_config, url, request_data),
+                media_type="text/event-stream"
+            )
+        else:
+            result = await forward_to_configured_endpoint_non_streaming(endpoint_config, url, request_data)
+            return result
 
     except Exception as e:
         logger.error(f"Error in chat completions: {e}", exc_info=True)
@@ -1851,4 +2331,4 @@ async def sync_custom_endpoints(request: Request, endpoints_data: dict):
 @router.get("/health")
 async def health_check():
     """Health check for OpenAI compatibility layer"""
-    return {"status": "ok", "service": "eloquent-openai-compat"}
+    return {"status": "ok", "service": "mirid-openai-compat"}

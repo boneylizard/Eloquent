@@ -60,10 +60,10 @@ function IntroLoadingPanel() {
       aria-busy="true"
     >
       <p className="text-sm font-medium text-foreground/90 intro-reality-pulse">
-        Working on your current reality…
+        Generating character introduction…
       </p>
       <p className="mt-2 text-xs text-muted-foreground">
-        Shaping who they are, how they meet you, and the tone of this chat.
+        Local inference running — assembling context from profile, chat history, and memory.
       </p>
       <div className="mt-8 flex justify-center items-end gap-2 h-8" aria-hidden>
         {[0, 1, 2, 3, 4].map((i) => (
@@ -168,7 +168,7 @@ export default function CharacterIntroExperience({
 
       {isPartial && (
         <p className="w-full mb-3 text-center text-xs text-amber-600 dark:text-amber-500/90 animate-in fade-in">
-          Partial introduction — some sections were recovered from incomplete JSON. Regenerate for a fuller card.
+          Partial introduction — some sections could not be generated. Try regenerating for a complete card.
         </p>
       )}
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import librosa
+import numpy as np
 import torch
 import perth
 import pyloudnorm as ln
@@ -212,7 +213,7 @@ class ChatterboxTurboTTS:
         except Exception as e:
             print(f"Warning: Error in norm_loudness, skipping: {e}")
 
-        return wav
+        return np.asarray(wav, dtype=np.float32)
 
     def prepare_conditionals(self, wav_fpath, exaggeration=0.5, norm_loudness=True):
         ## Load and norm reference wav
@@ -224,7 +225,7 @@ class ChatterboxTurboTTS:
             s3gen_ref_wav = self.norm_loudness(s3gen_ref_wav, _sr)
 
         ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
-
+        ref_16k_wav = np.asarray(ref_16k_wav, dtype=np.float32)
         s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]
         s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR, device=self.device)
 

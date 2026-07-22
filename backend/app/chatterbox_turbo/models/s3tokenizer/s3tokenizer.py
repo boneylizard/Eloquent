@@ -150,7 +150,7 @@ class S3Tokenizer(S3TokenizerV2):
         if not torch.is_tensor(audio):
             audio = torch.from_numpy(audio)
 
-        audio = audio.to(self.device)
+        audio = audio.to(self.device).float()
         if padding > 0:
             audio = F.pad(audio, (0, padding))
         stft = torch.stft(

@@ -1,6 +1,6 @@
 // CharacterCardUtils.js - Import/Export utilities for TavernAI/SillyTavern character cards
 
-import { getBackendUrl } from '../config/api';
+import { getBackendUrl } from '../config/api.js';
 
 /**
  * Utility functions for importing and exporting character cards in various formats
@@ -119,110 +119,166 @@ async function extractCharacterFromPNG(file) {
   }
 }
 
-// Convert TavernAI format to GingerGUI format
-export function convertTavernToGinger(tavernData) {
-  // Handle both v1 and v2 formats
-  const data = tavernData.data || tavernData;
-  
-  const eloquentExt = (data.extensions && data.extensions.eloquent) || {};
-  const importedAvatars = Array.isArray(eloquentExt.avatars)
-    ? eloquentExt.avatars.filter((u) => typeof u === 'string' && u.trim())
-    : [];
-  const gingerCharacter = {
-    id: null, // Will be generated when saved
-    name: data.name || '',
-    description: data.description || '', // This becomes "persona" in your format
-    model_instructions: data.system_prompt || '', // Map system_prompt to model_instructions
-    scenario: data.scenario || '',
-    first_message: data.first_mes || data.first_message || '',
-    example_dialogue: [],
-    loreEntries: [],
-    avatar: null, // Will be set separately if importing from PNG
-    avatars: importedAvatars,
-    activeAvatarIndex: Number.isInteger(eloquentExt.activeAvatarIndex) ? eloquentExt.activeAvatarIndex : 0,
-    created_at: '',
-    ethics_justification:
-      (typeof eloquentExt.ethics_justification === 'string' && eloquentExt.ethics_justification) ||
-      (typeof data.ethics_justification === 'string' && data.ethics_justification) ||
-      '',
-  };
-  
-  // Convert example messages
-  if (data.mes_example || data.example_dialogue) {
-    const examples = data.mes_example || data.example_dialogue || '';
-    if (examples.trim()) {
-      // Parse example dialogue - TavernAI uses various formats
-      const dialogueLines = examples.split('\n').filter(line => line.trim());
-      const parsedDialogue = [];
-      
-      for (const line of dialogueLines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('{{user}}:') || trimmed.startsWith('<USER>:') || trimmed.startsWith('You:')) {
-          parsedDialogue.push({
-            role: 'user',
-            content: trimmed.replace(/^({{user}}|<USER>|You):\s*/, '')
-          });
-        } else if (trimmed.startsWith('{{char}}:') || trimmed.startsWith('<BOT>:') || 
-                   trimmed.startsWith(data.name + ':')) {
-          parsedDialogue.push({
-            role: 'character', 
-            content: trimmed.replace(new RegExp(`^({{char}}|<BOT>|${data.name}):\\s*`), '')
-          });
-        } else if (trimmed && parsedDialogue.length === 0) {
-          // If no clear format, assume first line is user, second is character, etc.
-          parsedDialogue.push({
-            role: parsedDialogue.length % 2 === 0 ? 'user' : 'character',
-            content: trimmed
-          });
-        }
-      }
-      
-      gingerCharacter.example_dialogue = parsedDialogue.length > 0 ? parsedDialogue : [
-        { role: 'user', content: '' },
-        { role: 'character', content: '' }
-      ];
+const KNOWN_CARD_FIELDS = new Set([
+  'name',
+  'description',
+  'personality',
+  'scenario',
+  'first_mes',
+  'first_message',
+  'mes_example',
+  'example_dialogue',
+  'creator_notes',
+  'system_prompt',
+  'post_history_instructions',
+  'alternate_greetings',
+  'character_book',
+  'tags',
+  'creator',
+  'character_version',
+  'extensions',
+]);
+
+const asObject = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
+const asStringArray = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);
+
+function parseExampleDialogue(value, characterName = '') {
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry) => entry && typeof entry === 'object')
+      .map((entry) => ({
+        role: entry.role === 'user' ? 'user' : 'character',
+        content: String(entry.content || ''),
+      }));
+  }
+
+  const lines = String(value || '').split('\n');
+  const parsed = [];
+  let fallbackRole = 'user';
+  const escapedName = characterName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const characterPrefix = escapedName ? new RegExp(`^(${escapedName}):\\s*`, 'i') : null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || /^<START>$/i.test(line)) continue;
+
+    if (/^({{user}}|<USER>|You):\s*/i.test(line)) {
+      parsed.push({ role: 'user', content: line.replace(/^({{user}}|<USER>|You):\s*/i, '') });
+      fallbackRole = 'character';
+    } else if (/^({{char}}|<BOT>):\s*/i.test(line) || characterPrefix?.test(line)) {
+      parsed.push({
+        role: 'character',
+        content: characterPrefix?.test(line)
+          ? line.replace(characterPrefix, '')
+          : line.replace(/^({{char}}|<BOT>):\s*/i, ''),
+      });
+      fallbackRole = 'user';
+    } else {
+      parsed.push({ role: fallbackRole, content: line });
+      fallbackRole = fallbackRole === 'user' ? 'character' : 'user';
     }
   }
-  
-  // Convert character book/world info to loreEntries
-  if (data.character_book && data.character_book.entries) {
-    gingerCharacter.loreEntries = data.character_book.entries.map(entry => ({
-      content: entry.content || entry.value || '',
-      keywords: entry.keys || entry.key || []
-    }));
-  }
-  
+
+  return parsed;
+}
+
+// Convert TavernAI / SillyTavern V1 or V2 data to Mirid's internal format.
+export function convertTavernToGinger(tavernData) {
+  const source = asObject(tavernData);
+  const data = asObject(source.data && typeof source.data === 'object' ? source.data : source);
+  const extensions = asObject(data.extensions);
+  const miridExt = asObject(extensions.mirid || extensions.eloquent || extensions.ginger_gui);
+  const characterBook = asObject(data.character_book);
+  const importedAvatars = Array.isArray(miridExt.avatars)
+    ? miridExt.avatars.filter((url) => typeof url === 'string' && url.trim())
+    : [];
+  const cardDataPassthrough = Object.fromEntries(
+    Object.entries(data).filter(([key]) => !KNOWN_CARD_FIELDS.has(key)),
+  );
+  const cardTopLevel = Object.fromEntries(
+    Object.entries(source).filter(([key]) => !['spec', 'spec_version', 'data'].includes(key)),
+  );
+
+  const gingerCharacter = {
+    id: null,
+    name: data.name || '',
+    description: data.description || '',
+    personality: data.personality || '',
+    background: miridExt.background || '',
+    model_instructions: data.system_prompt || '',
+    post_history_instructions: data.post_history_instructions || '',
+    speech_style: miridExt.speech_style || '',
+    scenario: data.scenario || '',
+    first_message: data.first_mes || data.first_message || '',
+    alternate_greetings: asStringArray(data.alternate_greetings),
+    example_dialogue: parseExampleDialogue(data.mes_example || data.example_dialogue, data.name || ''),
+    loreEntries: Array.isArray(characterBook.entries)
+      ? characterBook.entries.map((entry) => ({
+          content: entry?.content || entry?.value || '',
+          keywords: Array.isArray(entry?.keys) ? entry.keys : (Array.isArray(entry?.key) ? entry.key : []),
+          tavern_entry: asObject(entry),
+        }))
+      : [],
+    creator_notes: data.creator_notes || '',
+    tags: asStringArray(data.tags),
+    creator: data.creator || '',
+    character_version: data.character_version || '',
+    avatar: null,
+    avatars: importedAvatars,
+    activeAvatarIndex: Number.isInteger(miridExt.activeAvatarIndex) ? miridExt.activeAvatarIndex : 0,
+    chat_role: miridExt.chat_role === 'user' ? 'user' : 'npc',
+    created_at: '',
+    ethics_justification: typeof miridExt.ethics_justification === 'string'
+      ? miridExt.ethics_justification
+      : (typeof data.ethics_justification === 'string' ? data.ethics_justification : ''),
+    card_extensions: extensions,
+    card_data_passthrough: cardDataPassthrough,
+    card_top_level: cardTopLevel,
+    character_book_metadata: Object.fromEntries(
+      Object.entries(characterBook).filter(([key]) => key !== 'entries'),
+    ),
+  };
+
   return gingerCharacter;
 }
 
-// Replace the convertGingerToTavern function with this:
-export function convertGingerToTavern(gingerCharacter, creatorName = 'Eloquent') {
+export function convertGingerToTavern(gingerCharacter, creatorName = 'Mirid') {
+  const preservedExtensions = asObject(gingerCharacter.card_extensions);
+  const preservedMirid = asObject(preservedExtensions.mirid);
+  const extensions = {
+    ...preservedExtensions,
+    mirid: {
+      ...preservedMirid,
+      exported_at: new Date().toISOString(),
+      original_format: preservedMirid.original_format || 'mirid',
+      background: gingerCharacter.background || '',
+      speech_style: gingerCharacter.speech_style || '',
+      chat_role: gingerCharacter.chat_role === 'user' ? 'user' : 'npc',
+      ethics_justification: (gingerCharacter.ethics_justification || '').trim(),
+      avatars: Array.isArray(gingerCharacter.avatars) ? gingerCharacter.avatars : [],
+      activeAvatarIndex: gingerCharacter.activeAvatarIndex ?? 0,
+    },
+  };
   const tavernData = {
+    ...asObject(gingerCharacter.card_top_level),
     spec: 'chara_card_v2',
     spec_version: '2.0',
     data: {
+      ...asObject(gingerCharacter.card_data_passthrough),
       name: gingerCharacter.name || '',
-      description: gingerCharacter.description || '', 
-      personality: '', // Not used in Eloquent, but required by spec
+      description: gingerCharacter.description || '',
+      personality: gingerCharacter.personality || '',
       scenario: gingerCharacter.scenario || '',
-      first_mes: gingerCharacter.first_message || '', // FIX: Ensure first_message maps to first_mes
+      first_mes: gingerCharacter.first_message || '',
       mes_example: '',
-      creator_notes: 'Exported from Eloquent',
+      creator_notes: gingerCharacter.creator_notes || '',
       system_prompt: gingerCharacter.model_instructions || '',
-      post_history_instructions: '',
-      alternate_greetings: [],
-      tags: [],
-      creator: creatorName,
-      character_version: '1.0',
-      extensions: {
-        eloquent: { // FIX: Changed from ginger_gui to eloquent
-          exported_at: new Date().toISOString(),
-          original_format: 'eloquent',
-          ethics_justification: (gingerCharacter.ethics_justification || '').trim(),
-          avatars: Array.isArray(gingerCharacter.avatars) ? gingerCharacter.avatars : [],
-          activeAvatarIndex: gingerCharacter.activeAvatarIndex ?? 0,
-        }
-      }
+      post_history_instructions: gingerCharacter.post_history_instructions || '',
+      alternate_greetings: asStringArray(gingerCharacter.alternate_greetings),
+      tags: asStringArray(gingerCharacter.tags),
+      creator: gingerCharacter.creator || creatorName,
+      character_version: gingerCharacter.character_version || '1.0',
+      extensions,
     }
   };
   
@@ -241,29 +297,22 @@ export function convertGingerToTavern(gingerCharacter, creatorName = 'Eloquent')
     }
   }
   
-  // FIX: Convert loreEntries to character_book - ENSURE PROPER STRUCTURE
-  if (gingerCharacter.loreEntries && Array.isArray(gingerCharacter.loreEntries) && gingerCharacter.loreEntries.length > 0) {
+  const loreEntries = Array.isArray(gingerCharacter.loreEntries) ? gingerCharacter.loreEntries : [];
+  const bookMetadata = asObject(gingerCharacter.character_book_metadata);
+  if (loreEntries.length > 0 || Object.keys(bookMetadata).length > 0) {
     tavernData.data.character_book = {
-      name: gingerCharacter.name + ' Lorebook',
-      description: 'Lorebook for ' + gingerCharacter.name,
-      scan_depth: 100,
-      token_budget: 500,
-      recursive_scanning: false,
-      entries: gingerCharacter.loreEntries.map((entry, index) => ({
-        id: index,
+      ...bookMetadata,
+      name: bookMetadata.name || `${gingerCharacter.name || 'Character'} Lorebook`,
+      description: bookMetadata.description || '',
+      extensions: asObject(bookMetadata.extensions),
+      entries: loreEntries.map((entry, index) => ({
+        ...asObject(entry.tavern_entry),
+        id: entry.tavern_entry?.id ?? index,
         keys: Array.isArray(entry.keywords) ? entry.keywords : [], // FIX: Ensure keywords is array
         content: entry.content || '',
-        extensions: {},
-        enabled: true,
-        insertion_order: index,
-        case_sensitive: false,
-        name: `Entry ${index + 1}`,
-        priority: 100,
-        comment: '',
-        selective: true,
-        secondary_keys: [],
-        constant: false,
-        position: 'before_char'
+        extensions: asObject(entry.tavern_entry?.extensions),
+        enabled: entry.tavern_entry?.enabled ?? true,
+        insertion_order: entry.tavern_entry?.insertion_order ?? index,
       }))
     };
   }
@@ -376,7 +425,10 @@ export async function exportAsPNG(gingerCharacter, apiUrl = null) {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(gingerCharacter)
+      body: JSON.stringify({
+        ...gingerCharacter,
+        tavern_card: convertGingerToTavern(gingerCharacter),
+      })
     });
 
     if (!response.ok) {

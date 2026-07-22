@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "market_sim.db"
-INITIAL_CASH = 10_000.0
+INITIAL_CASH = 250_000.0
 
 
 def _now_iso() -> str:
@@ -37,7 +37,7 @@ class MarketDB:
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS portfolio (
                     id INTEGER PRIMARY KEY,
-                    cash REAL NOT NULL DEFAULT 10000.0,
+                    cash REAL NOT NULL DEFAULT 250000.0,
                     positions_json TEXT NOT NULL DEFAULT '{}',
                     total_value REAL NOT NULL,
                     sp500_baseline REAL,
@@ -102,7 +102,7 @@ class MarketDB:
         }
 
     def init_portfolio_if_needed(self, sp500_value: Optional[float] = None) -> Dict[str, Any]:
-        """Initialize portfolio with $10,000 if not exists."""
+        """Initialize portfolio with INITIAL_CASH if not exists."""
         p = self.get_portfolio()
         if p:
             return p
@@ -127,6 +127,14 @@ class MarketDB:
                 (cash, positions_json, total_value, sp500_value, _now_iso()),
             )
 
+    def reset_to_starting_capital(self, sp500_value: Optional[float] = None) -> Dict[str, Any]:
+        """New portfolio snapshot: 100% cash at INITIAL_CASH, no positions (same row pattern as trades)."""
+        self.update_portfolio(INITIAL_CASH, {}, INITIAL_CASH, sp500_value)
+        p = self.get_portfolio()
+        if p is None:
+            raise RuntimeError("portfolio missing after reset_to_starting_capital")
+        return p
+
     def record_trade(
         self,
         symbol: str,
@@ -147,6 +155,11 @@ class MarketDB:
                 (symbol, side, shares, price, total, strategy_id, strategy_name, ai_reasoning, conf_json, _now_iso()),
             )
             return c.lastrowid
+
+    def count_tournaments(self) -> int:
+        with self._conn() as c:
+            row = c.execute("SELECT COUNT(*) AS n FROM strategy_tournaments").fetchone()
+        return int(row["n"]) if row else 0
 
     def get_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self._conn() as c:
@@ -199,12 +212,14 @@ class MarketDB:
             return None
         results = json.loads(row["results_json"] or "{}")
         regime_performance = results.pop("_regime_performance", None)
+        simulation_calibration = results.pop("_simulation_calibration", None)
         return {
             "run_id": row["run_id"],
             "strategies": json.loads(row["strategies_json"] or "[]"),
             "scenarios_preview": json.loads(row["scenarios_json"] or "{}") if row["scenarios_json"] else None,
             "results": results,
             "regime_performance": regime_performance,
+            "simulation_calibration": simulation_calibration,
             "winner_id": row["winner_id"],
             "winner_reasoning": row["winner_reasoning"],
             "created_at": row["created_at"],

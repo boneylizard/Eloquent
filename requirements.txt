@@ -133,6 +133,7 @@ Levenshtein
 lhotse
 libcst
 librosa
+pyworld
 lightning
 lightning-utilities
 lilcom
@@ -174,7 +175,7 @@ numpy
 nvidia-ml-py
 oauthlib
 omegaconf
-onnx
+onnx>=1.17.0  # 1.16.x breaks with protobuf 5.x; audio-separator pulls onnx-weekly
 onnxruntime
 openai
 openai-whisper
@@ -240,7 +241,6 @@ python-dateutil
 python-dotenv
 python-json-logger
 python-multipart
-python-chess
 python-rtmidi
 pytorch-lightning
 pytz
@@ -282,6 +282,7 @@ smmap
 sniffio
 sortedcontainers
 sounddevice
+keyboard
 soundfile
 soupsieve
 sox
@@ -338,6 +339,7 @@ wcwidth
 weasel
 webdataset
 websockets
+pywebpush
 Werkzeug
 wget
 wheel

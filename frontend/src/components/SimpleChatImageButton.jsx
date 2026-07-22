@@ -6,10 +6,14 @@ import { Textarea } from './ui/textarea';
 import { Slider } from './ui/slider';
 import { Label } from './ui/label';
 import { Progress } from './ui/progress';
-import { AlertTriangle, Image, Loader2, X, Sparkles, Info, Video } from 'lucide-react';
+import { AlertTriangle, Image, Loader2, X, Sparkles, Info, Video, Download, FolderOpen, RefreshCw } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import * as Path from 'path-browserify';
 import { getActiveCharacterAvatar } from '../utils/characterAvatars';
+
+
+
+
 
 const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose }) => {
     const {
@@ -26,9 +30,26 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
         activeCharacter,
         generateUniqueId,
         generateVideo, // NEW
+        primaryModel,
+        loadedModels,
+        primaryIsAPI,
+        openSettingsTab,
     } = useApp();
 
-    const [isDialogOpen, setIsDialogOpen] = useState(!!defaultOpen);
+    const [isDialogOpen, setIsDialogOpen] = useState(() => {
+        if (defaultOpen) return true;
+        try {
+            const shouldOpen = sessionStorage.getItem('mirid-open-image-generator') === 'true';
+            return shouldOpen;
+        } catch (_) {
+            return false;
+        }
+    });
+
+    useEffect(() => {
+        if (!isDialogOpen) return;
+        try { sessionStorage.removeItem('mirid-open-image-generator'); } catch (_) {}
+    }, [isDialogOpen]);
 
     useEffect(() => {
         const onOpen = () => setIsDialogOpen(true);
@@ -62,6 +83,8 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
 
     const [localModels, setLocalModels] = useState([]);
     const [isLocalModelLoading, setIsLocalModelLoading] = useState(false);
+    const [localModelListError, setLocalModelListError] = useState('');
+    const [localSetupError, setLocalSetupError] = useState('');
 
     // NEW: ADetailer state - persistent auto-enhance toggle
     const [autoEnhanceEnabled, setAutoEnhanceEnabled] = useState(() => {
@@ -179,7 +202,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
 
             // Merge the results from both servers into a single state object
             const mergedStatus = {
-                available: (primaryRes && primaryRes.ok) || (memoryRes && memoryRes.ok),
+                available: Boolean(primaryStatus.available || memoryStatus.available),
                 loaded_models: {
                     ...primaryStatus.loaded_models,
                     ...memoryStatus.loaded_models
@@ -195,18 +218,43 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
     }, [PRIMARY_API_URL, MEMORY_API_URL]);
 
     const fetchLocalModels = useCallback(async () => {
+        setLocalModelListError('');
         try {
-            const res = await fetch(`${MEMORY_API_URL}/sd-local/list-models`);
-            if (res.ok) {
-                const data = await res.json();
+            const responses = await Promise.all([
+                fetch(`${PRIMARY_API_URL}/sd-local/list-models`).catch(() => null),
+                fetch(`${MEMORY_API_URL}/sd-local/list-models`).catch(() => null),
+            ]);
+            const modelNames = new Set();
+            let readableResponse = false;
+            for (const response of responses) {
+                if (!response?.ok) continue;
+                const data = await response.json();
                 if (data.status === 'success') {
-                    setLocalModels(data.models || []);
+                    readableResponse = true;
+                    for (const model of data.models || []) modelNames.add(model);
                 }
             }
+            setLocalModels(Array.from(modelNames).sort());
+            if (!readableResponse) setLocalModelListError('Mirid could not read the image model folder.');
         } catch (err) {
             console.error('Failed to fetch local SD models:', err);
+            setLocalModelListError('Mirid could not read the image model folder.');
         }
-    }, [MEMORY_API_URL]);
+    }, [PRIMARY_API_URL, MEMORY_API_URL]);
+
+    const openImageModelLibrary = useCallback((focus = 'search') => {
+        try {
+            sessionStorage.setItem('mirid-model-library-intent', JSON.stringify({
+                mode: 'image',
+                source: 'huggingface',
+                focus,
+                searchQuery: focus === 'search' ? 'stable diffusion checkpoint' : '',
+            }));
+        } catch (_) { /* Continue without the optional focus hint. */ }
+        setIsDialogOpen(false);
+        onClose?.();
+        openSettingsTab('models', { forceWindow: false });
+    }, [onClose, openSettingsTab]);
 
     // NEW: Fetch ADetailer models
     const fetchAdetailerModels = useCallback(async () => {
@@ -248,6 +296,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
         }
 
         setIsLocalModelLoading(true);
+        setLocalSetupError('');
         const targetApiUrl = selectedGpuId === 0 ? PRIMARY_API_URL : MEMORY_API_URL;
 
         try {
@@ -284,7 +333,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
             console.log(`UI State directly updated for GPU ${selectedGpuId} with model ${modelFilename}`);
 
         } catch (err) {
-            alert(`Failed to load model: ${err.message}`);
+            setLocalSetupError(`Mirid could not load ${modelFilename}. ${err.message}`);
             console.error('Model loading failed:', err);
         } finally {
             setIsLocalModelLoading(false);
@@ -382,6 +431,12 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
     }, [sdStatus, selectedModel]);
 
     const handleGenerateImage = async () => {
+        if (isLocalEngine && !isModelLoadedForSelectedGpu) {
+            setLocalSetupError(localModels.length > 0
+                ? 'Choose an installed image model before generating.'
+                : 'Install an image model before generating.');
+            return;
+        }
         if (!prompt.trim() || !isAvailable || isImageGenerating) {
             return;
         }
@@ -569,8 +624,8 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                     >
                         <div className="flex items-start justify-between border-b pb-3 mb-4">
                             <div>
-                                <h3 className="text-lg font-semibold">EloDiffusion Generator</h3>
-                                <p className="text-sm text-muted-foreground">Configure and generate an image.</p>
+                                <h3 className="text-lg font-semibold">Image generation</h3>
+                                <p className="text-sm text-muted-foreground">Describe an image, choose how it runs, then generate it.</p>
                             </div>
                             <Button variant="ghost" size="icon" className="-mt-1 -mr-2" onClick={() => { setIsDialogOpen(false); onClose?.(); }}>
                                 <X className="h-4 w-4" />
@@ -609,21 +664,43 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                                     <span>{apiError}</span>
                                 </div>
                             )}
-                            {imageEngine === 'EloDiffusion' && (
-                                <div className="p-3 border rounded-md bg-muted/20 text-xs text-muted-foreground">
-                                    <div className="font-medium text-foreground">Local SD (Built-in)</div>
-                                    <ul className="mt-1 list-disc pl-5 space-y-1">
-                                        <li>Supported files: .safetensors, .ckpt, .gguf</li>
-                                        <li>Model type is auto-detected by filename (flux, sdxl/xl)</li>
-                                        <li>FLUX needs clip_l.safetensors, t5xxl_fp16.safetensors, ae.safetensors in the same folder</li>
-                                        <li>SDXL uses more VRAM; lower resolution or steps if you hit limits</li>
-                                        <li>Use Settings &gt; Image Generation to refresh the model list</li>
-                                    </ul>
+                            {isLocalEngine && localModels.length === 0 && (
+                                <div className="rounded-lg border border-primary/35 bg-primary/5 p-4">
+                                    <div className="flex items-start gap-3">
+                                        <Image className="mt-0.5 h-5 w-5 text-primary" />
+                                        <div className="min-w-0 flex-1">
+                                            <p className="font-medium text-foreground">No local image model found</p>
+                                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                                                Mirid's image engine is installed, but the model weights are not. Download a compatible checkpoint or point Mirid to one you already have.
+                                            </p>
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                <Button size="sm" onClick={() => openImageModelLibrary('search')}>
+                                                    <Download className="mr-2 h-4 w-4" />Find an image model
+                                                </Button>
+                                                <Button size="sm" variant="outline" onClick={() => openImageModelLibrary('folders')}>
+                                                    <FolderOpen className="mr-2 h-4 w-4" />Use an existing folder
+                                                </Button>
+                                                <Button size="sm" variant="ghost" onClick={fetchLocalModels}>
+                                                    <RefreshCw className="mr-2 h-4 w-4" />Check again
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            {isLocalEngine && localModels.length > 0 && !isModelLoadedForSelectedGpu && (
+                                <div className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+                                    Choose one of your installed image models below. Mirid loads it only when you need it.
+                                </div>
+                            )}
+                            {(localModelListError || localSetupError) && (
+                                <div className="rounded-md bg-destructive/10 p-3 text-xs text-destructive">
+                                    {localSetupError || localModelListError}
                                 </div>
                             )}
 
                             {/* FIXED AUTO-ENHANCE SECTION WITH MODEL SELECTION */}
-                            {adetailerAvailable && (
+                            {isModelLoadedForSelectedGpu && adetailerAvailable && (
                                 <div className={`p-3 rounded-lg border-2 transition-all ${autoEnhanceEnabled
                                     ? 'border-purple-500 bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-900/30 dark:to-pink-900/30'
                                     : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50'
@@ -742,7 +819,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                                 </div>
                             )}
 
-                            {!adetailerAvailable && (
+                            {isModelLoadedForSelectedGpu && !adetailerAvailable && (
                                 <div className="p-3 border rounded-md bg-yellow-50 dark:bg-yellow-900/20">
                                     <div className="flex items-start gap-2 text-xs text-yellow-800 dark:text-yellow-200">
                                         <Info className="h-3 w-3 mt-0.5 flex-shrink-0" />
@@ -819,11 +896,11 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                             {/* LOCAL SD MODEL SELECTION - RESTORED */}
                             {imageEngine === 'EloDiffusion' && localModels.length > 0 && (
                                 <div className="space-y-2">
-                                    <Label htmlFor="local-model" className="text-xs">Local SD Model</Label>
+                                    <Label htmlFor="local-model" className="text-xs">Installed image model</Label>
                                     <div className="flex gap-2">
                                         <select
                                             id="local-model"
-                                            value={localSdStatus.current_model || ''}
+                                            value={localSdStatus.loaded_models?.[selectedGpuId] || ''}
                                             onChange={e => {
                                                 if (e.target.value) {
                                                     handleLoadLocalModel(e.target.value);
@@ -832,7 +909,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                                             disabled={isImageGenerating || isLocalModelLoading}
                                             className="flex-1 rounded border border-input bg-background text-foreground px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                         >
-                                            <option value="">Select a model...</option>
+                                            <option value="">Choose a model...</option>
                                             {localModels.map((model, i) => (
                                                 <option key={i} value={model} className="bg-background text-foreground">
                                                     {model}
@@ -853,7 +930,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                                 </div>
                             )}
                             {/* GPU SELECTION - NEW */}
-                            {imageEngine === 'EloDiffusion' && (
+                            {imageEngine === 'EloDiffusion' && localModels.length > 0 && (
                                 <div className="space-y-2">
                                     <Label htmlFor="gpu-select" className="text-xs">GPU for Image Generation</Label>
                                     <select
@@ -880,10 +957,9 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                                     value={prompt}
                                     onChange={e => setPrompt(e.target.value)}
                                     rows={2}
-                                    disabled={isImageGenerating || !isAvailable}
+                                    disabled={isImageGenerating}
                                 />
                             </div>
-
                             {imageEngine !== 'nanogpt' && generationMode !== 'video' && (
                                 <>
                                     <div className="space-y-2">
@@ -1016,6 +1092,11 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                                         )}
                                     </>
                                 </Button>
+                            )}
+                            {!isImageGenerating && isLocalEngine && !isModelLoadedForSelectedGpu && (
+                                <p className="text-center text-xs text-muted-foreground" role="status">
+                                    {localModels.length > 0 ? 'Choose an installed model to enable generation.' : 'Install a model to enable generation.'}
+                                </p>
                             )}
                         </div>
                     </div>

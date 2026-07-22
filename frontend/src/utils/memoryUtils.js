@@ -198,7 +198,7 @@ export const getRelevantMemoriesFromBackend = async (prompt, memoryContext) => {
     }
 
     console.log(`🧠 [INFO] Calling backend /relevant for prompt: ${prompt.substring(0, 50)}...`);
-    const response = await fetch(`${MEMORY_API_URL}/relevant`, {
+    const response = await fetch(`${MEMORY_API_URL}/memory/relevant`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

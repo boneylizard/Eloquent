@@ -180,7 +180,7 @@ export default function VoiceQuickPicker({
 
   const primaryApiUrl = primaryApiUrlProp || PRIMARY_API_URL || getBackendUrl();
   const ttsEngine = settings?.ttsEngine || 'kokoro';
-  const isChatterboxEngine = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo';
+  const isChatterboxEngine = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo' || ttsEngine === 'chatterbox_nano' || ttsEngine === 'voxcpm';
   const isKokoroEngine = ttsEngine === 'kokoro';
   const multiRoleMode = settings?.multiRoleMode === true;
 

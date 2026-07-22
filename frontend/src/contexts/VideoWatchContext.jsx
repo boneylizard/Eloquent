@@ -413,6 +413,41 @@ export function VideoWatchProvider({ children }) {
         case 'theme_toggle':
           window.dispatchEvent(new CustomEvent('eloquent-app-command', { detail: { type: 'theme_toggle' } }));
           break;
+        case 'chat_delete_last':
+          setActiveTab('chat');
+          setTimeout(() => fireHandsFree('delete_last'), 50);
+          break;
+        case 'chat_clear_input':
+          setActiveTab('chat');
+          setTimeout(() => fireHandsFree('clear_input'), 50);
+          break;
+        case 'chat_new':
+          setActiveTab('chat');
+          setTimeout(() => fireHandsFree('new_conversation'), 50);
+          break;
+        case 'chat_web_search_on':
+          setActiveTab('chat');
+          setTimeout(() => fireHandsFree('web_search_on'), 50);
+          break;
+        case 'chat_web_search_off':
+          setActiveTab('chat');
+          setTimeout(() => fireHandsFree('web_search_off'), 50);
+          break;
+        case 'chat_regenerate':
+          setActiveTab('chat');
+          setTimeout(() => fireHandsFree('regenerate'), 50);
+          break;
+        case 'chat_send_text':
+          setActiveTab('chat');
+          setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent('eloquent-remote', {
+                detail: { action: 'send_text', text: String(payload?.text || '').trim() },
+                bubbles: true,
+              })
+            );
+          }, 50);
+          break;
         default:
           break;
       }

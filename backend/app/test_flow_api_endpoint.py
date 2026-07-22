@@ -56,6 +56,23 @@ def test_chat_purpose_rotates(round_robin_settings):
     assert second["url"] == "https://b.example/v1"
 
 
+def test_chat_falls_back_to_selected_endpoint_when_rotation_pool_is_empty(round_robin_settings):
+    settings = json.loads(round_robin_settings.read_text(encoding="utf-8"))
+    for endpoint in settings["customApiEndpoints"]:
+        endpoint["rotate_enabled"] = False
+    round_robin_settings.write_text(json.dumps(settings), encoding="utf-8")
+
+    selected = oc.get_configured_endpoint(
+        "endpoint-b",
+        request_purpose="user_chat",
+        frontend_round_robin_enabled=True,
+    )
+
+    assert selected["id"] == "endpoint-b"
+    assert selected["url"] == "https://b.example/v1"
+    assert selected["_routing_mode"] == "manual_fallback"
+
+
 def test_resolve_flow_without_flow_api_url_returns_none(round_robin_settings):
     cfg = oc.resolve_flow_api_endpoint_config(
         request_purpose="character_intro",

@@ -4,6 +4,7 @@ import {
   emergencyRecoverAllConversations,
   recoverChatsFromShards,
   repairAndPurgeGhostChats,
+  deleteAllConversationsFromStorage,
 } from '../utils/conversationStorage';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -289,7 +290,6 @@ export default function LocalStorageManager({ conversations = [] }) {
     setDeleting(true);
     setStatusNote('');
     try {
-      const { deleteAllConversationsFromStorage } = await import('../utils/conversationStorage');
       await deleteAllConversationsFromStorage();
       window.location.reload();
     } catch (e) {

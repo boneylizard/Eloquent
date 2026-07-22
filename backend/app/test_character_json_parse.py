@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import importlib
+import sys
 
 import pytest
 
@@ -72,3 +74,15 @@ def test_build_character_repair_prompt_includes_schema():
     prompt = cjp.build_character_repair_prompt('{"name": "broken')
     assert "name" in prompt
     assert "BROKEN_JSON" in prompt
+
+
+def test_character_parser_imports_without_retired_condenser(monkeypatch):
+    monkeypatch.setitem(sys.modules, "backend.app.chatlog_condenser", None)
+    monkeypatch.setitem(sys.modules, "backend.app.chatlog_condenser_prompt", None)
+
+    reloaded = importlib.reload(cjp)
+    character, partial, _salvaged, _error = reloaded.parse_character_json(
+        '{"name":"Mira","description":"An archivist."}'
+    )
+
+    assert (character or partial)["name"] == "Mira"

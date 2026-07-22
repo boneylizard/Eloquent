@@ -48,7 +48,13 @@ class TTSClient:
         voice: str = "default",
         audio_prompt_path: Optional[str] = None,
         exaggeration: float = 0.5,
-        cfg: float = 0.5
+        cfg: float = 0.5,
+        voxcpm_cfg_value: float = 2.0,
+        voxcpm_inference_timesteps: int = 10,
+        voxcpm_normalize: bool = True,
+        voxcpm_denoise: bool = True,
+        voxcpm_retry_badcase: bool = False,
+        voxcpm_voice_design: Optional[str] = None,
     ) -> Optional[bytes]:
         """Synthesize speech using the TTS service"""
         try:
@@ -66,13 +72,20 @@ class TTSClient:
                 "engine": engine,
                 "voice": voice,
                 "exaggeration": exaggeration,
-                "cfg": cfg
+                "cfg": cfg,
+                "voxcpm_cfg_value": voxcpm_cfg_value,
+                "voxcpm_inference_timesteps": voxcpm_inference_timesteps,
+                "voxcpm_normalize": voxcpm_normalize,
+                "voxcpm_denoise": voxcpm_denoise,
+                "voxcpm_retry_badcase": voxcpm_retry_badcase,
             }
             
             if audio_prompt_path:
                 payload["audio_prompt_path"] = audio_prompt_path
+            if voxcpm_voice_design:
+                payload["voxcpm_voice_design"] = voxcpm_voice_design
             
-            logger.info(f"🎤 Sending TTS request to service: engine={engine}, text='{text[:50]}...'")
+            logger.debug(f"🎤 Sending TTS request to service: engine={engine}, text='{text[:50]}...'")
             
             # Send request to TTS service
             response = await client.post(
@@ -216,7 +229,13 @@ async def synthesize_speech_via_service(
     voice: str = "default",
     audio_prompt_path: Optional[str] = None,
     exaggeration: float = 0.5,
-    cfg: float = 0.5
+    cfg: float = 0.5,
+    voxcpm_cfg_value: float = 2.0,
+    voxcpm_inference_timesteps: int = 10,
+    voxcpm_normalize: bool = True,
+    voxcpm_denoise: bool = True,
+    voxcpm_retry_badcase: bool = True,
+    voxcpm_voice_design: Optional[str] = None,
 ) -> Optional[bytes]:
     """Convenience function to synthesize speech via TTS service"""
     client = await get_tts_client()
@@ -226,5 +245,11 @@ async def synthesize_speech_via_service(
         voice=voice,
         audio_prompt_path=audio_prompt_path,
         exaggeration=exaggeration,
-        cfg=cfg
+        cfg=cfg,
+        voxcpm_cfg_value=voxcpm_cfg_value,
+        voxcpm_inference_timesteps=voxcpm_inference_timesteps,
+        voxcpm_normalize=voxcpm_normalize,
+        voxcpm_denoise=voxcpm_denoise,
+        voxcpm_retry_badcase=voxcpm_retry_badcase,
+        voxcpm_voice_design=voxcpm_voice_design,
     )

@@ -1,23 +1,27 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { CheckCircle2, ChevronRight, Copy, Loader2, Sparkles } from 'lucide-react';
 import { fetchWithTimeout, formatFetchError } from '../config/api';
 import { useApp } from '../contexts/AppContext';
 import { mergeNanoGptMemoryIntoPayload } from '../utils/nanoGptMemoryPayload';
 import { cleanModelOutput } from '../utils/cleanOutput';
-import { createRouteTraceId, extractRouteMetaFromGenerateResult, logRouteTrace, resolveUnifiedRequestRoute } from '../utils/requestRouting';
+import {
+  createRouteTraceId,
+  extractRouteMetaFromGenerateResult,
+  logRouteTrace,
+  resolveUnifiedRequestRoute,
+} from '../utils/requestRouting';
 import { Button } from './ui/button';
-import { Checkbox } from './ui/checkbox';
 import { Label } from './ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Textarea } from './ui/textarea';
-import { Alert, AlertDescription, AlertTitle } from './ui/alert';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
-import { Loader2, Copy, Sparkles, CheckCircle2, Play } from 'lucide-react';
 
 const CURATOR_GENERATE_TIMEOUT_MS = 1_200_000;
+const NEUTRAL_REVIEWER = '__neutral__';
 
 function toCharacterCard(character) {
   if (!character || typeof character !== 'object') return null;
-  const pick = (k) => (character[k] != null ? String(character[k]).trim() : '');
-  const card = {
+  const pick = (key) => (character[key] != null ? String(character[key]).trim() : '');
+  return Object.fromEntries(Object.entries({
     name: pick('name') || undefined,
     description: pick('description') || undefined,
     personality: pick('personality') || undefined,
@@ -26,15 +30,9 @@ function toCharacterCard(character) {
     background: pick('background') || undefined,
     model_instructions: pick('model_instructions') || undefined,
     ethics_justification: pick('ethics_justification') || undefined,
-  };
-  return Object.fromEntries(Object.entries(card).filter(([, v]) => v));
+  }).filter(([, value]) => value));
 }
 
-/**
- * In-character memory curator for Settings Memory Browser (profile + agentic tabs).
- *
- * @param {'profile'|'agentic'} scope
- */
 export default function MemoryCuratorPanel({
   apiUrl,
   apiReady,
@@ -52,516 +50,382 @@ export default function MemoryCuratorPanel({
     loadedModels = [],
     settings,
   } = useApp();
-  const [runModelBusy, setRunModelBusy] = useState(false);
-
-  const autoRouterEnabled = settings?.apiEndpointRoundRobinEnabled === true;
-
-  /** Same resolution order as chat: navbar primary → active → GPU0 local load. */
-  const curatorSelectedModel = useMemo(() => {
-    if (primaryModel) return primaryModel;
-    if (typeof activeModel === 'string' && activeModel.trim()) return activeModel.trim();
-    const gpu0 = loadedModels.find((m) => m.gpu_id === 0);
-    return gpu0?.name || null;
-  }, [primaryModel, activeModel, loadedModels]);
-
-  const curatorRoute = useMemo(
-    () =>
-      resolveUnifiedRequestRoute({
-        primaryModel: curatorSelectedModel,
-        primaryIsAPI,
-        settings,
-        requestPurpose: 'memory_curation',
-      }),
-    [curatorSelectedModel, primaryIsAPI, settings]
-  );
-
-  const canRunCuratorModel = Boolean(PRIMARY_API_URL && curatorRoute.effectiveModel);
+  const [reviewerCharacterId, setReviewerCharacterId] = useState(NEUTRAL_REVIEWER);
+  const [targetCharacterId, setTargetCharacterId] = useState('');
+  const [extraNotes, setExtraNotes] = useState('');
+  const [stage, setStage] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [promptPack, setPromptPack] = useState(null);
+  const [rawResponse, setRawResponse] = useState('');
+  const [parsedPreview, setParsedPreview] = useState(null);
 
   const npcCharacters = useMemo(
-    () => (characters || []).filter((c) => c?.id && c.chat_role !== 'user'),
+    () => (characters || []).filter((character) => character?.id && character.chat_role !== 'user'),
     [characters]
   );
 
-  const [curatorCharacterId, setCuratorCharacterId] = useState('');
-  const [agenticTargetId, setAgenticTargetId] = useState('');
-  const [extraNotes, setExtraNotes] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const [pack, setPack] = useState(null);
-  const [pastedRaw, setPastedRaw] = useState('');
-  const [parsedPreview, setParsedPreview] = useState(null);
-  const [parseError, setParseError] = useState(null);
-  const [applyBusy, setApplyBusy] = useState(false);
-  const [savePreviewToDisk, setSavePreviewToDisk] = useState(false);
-
   useEffect(() => {
-    if (!curatorCharacterId && npcCharacters.length) {
-      setCuratorCharacterId(npcCharacters[0].id);
-    }
-  }, [curatorCharacterId, npcCharacters]);
+    if (scope !== 'agentic' || targetCharacterId || npcCharacters.length === 0) return;
+    setTargetCharacterId(npcCharacters[0].id);
+  }, [npcCharacters, scope, targetCharacterId]);
 
-  useEffect(() => {
-    if (scope !== 'agentic') return;
-    if (!agenticTargetId && npcCharacters.length) {
-      setAgenticTargetId(npcCharacters[0].id);
-    }
-  }, [scope, agenticTargetId, npcCharacters]);
-
-  const curatorCharacter = useMemo(
-    () => npcCharacters.find((c) => c.id === curatorCharacterId),
-    [npcCharacters, curatorCharacterId]
+  const reviewerCharacter = useMemo(
+    () => npcCharacters.find((character) => character.id === reviewerCharacterId) || null,
+    [npcCharacters, reviewerCharacterId]
   );
-
   const targetCharacter = useMemo(
-    () => npcCharacters.find((c) => c.id === agenticTargetId),
-    [npcCharacters, agenticTargetId]
+    () => npcCharacters.find((character) => character.id === targetCharacterId) || null,
+    [npcCharacters, targetCharacterId]
   );
 
   const userProfileSummary = useMemo(() => {
     if (!userProfile || typeof userProfile !== 'object') return '';
     try {
-      const slice = {
+      return JSON.stringify({
         name: userProfile.name,
         username: userProfile.username,
         preferences: userProfile.preferences,
         activeContextSummary: userProfile.activeContextSummary,
-      };
-      return JSON.stringify(slice, null, 0).slice(0, 8000);
+      }).slice(0, 8000);
     } catch {
       return '';
     }
   }, [userProfile]);
 
-  const buildPack = useCallback(async () => {
-    if (!activeProfileId || !curatorCharacterId) {
-      setError('Select a profile and a curator character.');
-      return;
-    }
-    if (scope === 'agentic' && !agenticTargetId) {
-      setError('Select which character’s agentic memory file to curate.');
-      return;
-    }
+  const selectedModel = useMemo(() => {
+    if (primaryModel) return primaryModel;
+    if (typeof activeModel === 'string' && activeModel.trim()) return activeModel.trim();
+    return loadedModels.find((model) => model.gpu_id === 0)?.name || null;
+  }, [activeModel, loadedModels, primaryModel]);
 
-    setBusy(true);
-    setError(null);
-    setPack(null);
-    setParsedPreview(null);
-    setParseError(null);
+  const requestRoute = useMemo(
+    () => resolveUnifiedRequestRoute({
+      primaryModel: selectedModel,
+      primaryIsAPI,
+      settings,
+      requestPurpose: 'memory_curation',
+    }),
+    [primaryIsAPI, selectedModel, settings]
+  );
+  const canRunModel = Boolean(PRIMARY_API_URL && requestRoute.effectiveModel);
 
-    const card = toCharacterCard(curatorCharacter);
+  const requestPromptPack = useCallback(async () => {
+    if (!activeProfileId) throw new Error('Choose a user profile first.');
+    if (scope === 'agentic' && !targetCharacterId) throw new Error('Choose whose memories should be cleaned.');
     const body = {
       mode: scope,
       user_id: activeProfileId,
-      user_display_name: (userProfile?.name || userProfile?.username || '').trim() || undefined,
+      user_display_name: (userProfile?.name || userProfile?.username || '').trim() || 'User',
       user_profile_summary: userProfileSummary || undefined,
-      curator_character_name: curatorCharacter?.name || undefined,
-      curator_character_card: card || undefined,
+      curator_character_name: reviewerCharacter?.name || 'Neutral reviewer',
+      curator_character_card: toCharacterCard(reviewerCharacter) || undefined,
       extra_notes: extraNotes.trim() || undefined,
-      save_preview_to_disk: savePreviewToDisk,
     };
     if (scope === 'agentic') {
-      body.target_character_id = agenticTargetId;
-      body.target_character_name = targetCharacter?.name || undefined;
+      body.target_character_id = targetCharacterId;
+      body.target_character_name = targetCharacter?.name || targetCharacterId;
     }
+    const response = await fetchWithTimeout(
+      `${apiUrl}/memory/curator/prompt_pack`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      120000
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.status !== 'success' || !data.prompt_pack) {
+      throw new Error(data.detail || data.message || 'Mirid could not gather these memories.');
+    }
+    setPromptPack(data.prompt_pack);
+    return data.prompt_pack;
+  }, [
+    activeProfileId,
+    apiUrl,
+    extraNotes,
+    reviewerCharacter,
+    scope,
+    targetCharacter,
+    targetCharacterId,
+    userProfile,
+    userProfileSummary,
+  ]);
 
+  const runSelectedModel = useCallback(async (pack) => {
+    if (!canRunModel) throw new Error('Choose or load a text model before reviewing memories.');
+    const traceId = createRouteTraceId();
+    logRouteTrace({ action: 'memory_curation', route: requestRoute, requestPurpose: 'memory_curation', traceId });
+    const configuredMaxTokens = settings?.max_tokens;
+    const maxTokens = typeof configuredMaxTokens === 'number' && configuredMaxTokens > 0
+      ? Math.min(configuredMaxTokens, 262144)
+      : 65536;
+    const payload = mergeNanoGptMemoryIntoPayload({
+      prompt: typeof pack === 'string' ? pack : JSON.stringify(pack),
+      model_name: requestRoute.effectiveModel || selectedModel,
+      selected_model: requestRoute.selectedModel || undefined,
+      round_robin_enabled: requestRoute.autoEnabled,
+      max_tokens: maxTokens,
+      temperature: typeof settings?.temperature === 'number' ? settings.temperature : 0.3,
+      top_p: settings?.top_p ?? 0.9,
+      top_k: settings?.top_k ?? 40,
+      repetition_penalty: settings?.repetition_penalty ?? 1.05,
+      frequency_penalty: settings?.frequencyPenalty ?? 0,
+      presence_penalty: settings?.presencePenalty ?? 0,
+      memoryEnabled: false,
+      directProfileInjection: false,
+      stream: false,
+      use_rag: false,
+      use_web_search: false,
+      gpu_id: 0,
+      request_purpose: 'model_testing',
+      memory_curation: true,
+      skip_openai_message_pruning: true,
+    }, settings);
+    const response = await fetchWithTimeout(
+      `${PRIMARY_API_URL}/generate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Router-Trace-Id': traceId },
+        body: JSON.stringify(payload),
+      },
+      CURATOR_GENERATE_TIMEOUT_MS
+    );
+    const data = await response.json().catch(() => ({}));
+    extractRouteMetaFromGenerateResult(data, response.headers);
+    if (!response.ok) throw new Error(data.detail || data.message || `Status ${response.status}`);
+    const raw = data.text ?? data.response ?? data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
+    if (!String(raw).trim()) throw new Error('The selected model returned no review.');
+    const cleaned = cleanModelOutput(String(raw));
+    setRawResponse(cleaned);
+    return cleaned;
+  }, [PRIMARY_API_URL, canRunModel, requestRoute, selectedModel, settings]);
+
+  const parseResponse = useCallback(async (raw) => {
+    const response = await fetchWithTimeout(
+      `${apiUrl}/memory/curator/parse_response`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw_response: raw, mode: scope }),
+      },
+      60000
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.status !== 'success') {
+      throw new Error(data.detail || 'The model replied, but Mirid could not read the reviewed memory list.');
+    }
+    setParsedPreview(data);
+    return data;
+  }, [apiUrl, scope]);
+
+  const reviewMemories = useCallback(async () => {
+    setError('');
+    setSuccess('');
+    setParsedPreview(null);
     try {
-      const res = await fetchWithTimeout(
-        `${apiUrl}/memory/curator/prompt_pack`,
+      setStage('gathering');
+      const pack = await requestPromptPack();
+      setStage('reviewing');
+      const raw = await runSelectedModel(pack);
+      setStage('reading');
+      await parseResponse(raw);
+      setSuccess('Review complete. Nothing has been changed yet.');
+    } catch (reviewError) {
+      setError(formatFetchError(reviewError, { timeoutMs: CURATOR_GENERATE_TIMEOUT_MS }));
+    } finally {
+      setStage('');
+    }
+  }, [parseResponse, requestPromptPack, runSelectedModel]);
+
+  const buildForAnotherModel = useCallback(async () => {
+    setError('');
+    setSuccess('');
+    try {
+      setStage('gathering');
+      await requestPromptPack();
+    } catch (buildError) {
+      setError(formatFetchError(buildError, { timeoutMs: 120000 }));
+    } finally {
+      setStage('');
+    }
+  }, [requestPromptPack]);
+
+  const parseEditedResponse = useCallback(async () => {
+    if (!rawResponse.trim()) return;
+    setError('');
+    setSuccess('');
+    try {
+      setStage('reading');
+      await parseResponse(rawResponse);
+      setSuccess('Response read successfully. Nothing has been changed yet.');
+    } catch (parseError) {
+      setError(formatFetchError(parseError, { timeoutMs: 60000 }));
+    } finally {
+      setStage('');
+    }
+  }, [parseResponse, rawResponse]);
+
+  const applyCurated = useCallback(async () => {
+    if (!parsedPreview || parsedPreview.status !== 'success') return;
+    const rows = scope === 'profile' ? parsedPreview.memories : parsedPreview.insights;
+    if (!Array.isArray(rows)) return;
+    const targetName = scope === 'profile' ? 'your profile memories' : `${targetCharacter?.name || 'this character'}’s memories`;
+    if (!window.confirm(`Replace ${targetName} with these ${rows.length} reviewed entries? This cannot be undone automatically.`)) return;
+    setError('');
+    setSuccess('');
+    try {
+      setStage('saving');
+      const endpoint = scope === 'profile' ? 'apply_profile' : 'apply_agentic';
+      const body = scope === 'profile'
+        ? { user_id: activeProfileId, memories: rows }
+        : { user_id: activeProfileId, character_id: targetCharacterId, insights: rows };
+      const response = await fetchWithTimeout(
+        `${apiUrl}/memory/curator/${endpoint}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         },
-        120000
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
-      if (data.status !== 'success' || !data.combined) throw new Error('Unexpected response');
-      setPack(data);
-    } catch (e) {
-      setError(formatFetchError(e, { timeoutMs: 120000 }));
-    } finally {
-      setBusy(false);
-    }
-  }, [
-    activeProfileId,
-    curatorCharacterId,
-    curatorCharacter,
-    userProfile,
-    userProfileSummary,
-    extraNotes,
-    scope,
-    agenticTargetId,
-    targetCharacter,
-    apiUrl,
-    savePreviewToDisk,
-  ]);
-
-  const copyCombined = async () => {
-    if (!pack?.combined) return;
-    try {
-      await navigator.clipboard.writeText(pack.combined);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const runModelOnCuratorPrompt = useCallback(async () => {
-    if (!pack?.combined?.trim()) {
-      setError('Build the curator prompt first.');
-      return;
-    }
-    if (!canRunCuratorModel) {
-      setError(
-        autoRouterEnabled
-          ? 'No model in the auto-routing pool. Add enabled API endpoints under Settings → LLM Settings → Custom API Endpoints, or pick a model from the navbar pill.'
-          : 'No model available. Pick a model from the navbar pill (top) or load a local model on GPU 0.'
-      );
-      return;
-    }
-    setRunModelBusy(true);
-    setError(null);
-    setParsedPreview(null);
-    setParseError(null);
-    try {
-      const route = curatorRoute;
-      const traceId = createRouteTraceId();
-      logRouteTrace({
-        action: 'memory_curation',
-        route,
-        requestPurpose: 'memory_curation',
-        traceId,
-      });
-      const mt = settings?.max_tokens;
-      const maxTok = typeof mt === 'number' && mt > 0 ? Math.min(mt, 262144) : 65536;
-      const payload = mergeNanoGptMemoryIntoPayload(
-        {
-          prompt: pack.combined,
-          model_name: route.effectiveModel || curatorSelectedModel,
-          selected_model: route.selectedModel || undefined,
-          round_robin_enabled: route.autoEnabled,
-          max_tokens: maxTok,
-          temperature: typeof settings?.temperature === 'number' ? settings.temperature : 0.35,
-          top_p: settings?.top_p ?? 0.9,
-          top_k: settings?.top_k ?? 40,
-          repetition_penalty: settings?.repetition_penalty ?? 1.05,
-          frequency_penalty: settings?.frequencyPenalty ?? 0,
-          presence_penalty: settings?.presencePenalty ?? 0,
-          memoryEnabled: false,
-          directProfileInjection: false,
-          stream: false,
-          use_rag: false,
-          use_web_search: false,
-          gpu_id: 0,
-          request_purpose: 'continuation',
-          memory_curation: true,
-          skip_openai_message_pruning: true,
-        },
-        settings
-      );
-      const res = await fetchWithTimeout(
-        `${PRIMARY_API_URL}/generate`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Router-Trace-Id': traceId },
-          body: JSON.stringify(payload),
-        },
-        CURATOR_GENERATE_TIMEOUT_MS
-      );
-      const data = await res.json().catch(() => ({}));
-      extractRouteMetaFromGenerateResult(data, res.headers);
-      if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
-      const raw =
-        data.text ??
-        data.response ??
-        data?.choices?.[0]?.message?.content ??
-        data?.choices?.[0]?.text ??
-        '';
-      if (!String(raw).trim()) {
-        throw new Error('Model returned empty text.');
-      }
-      setPastedRaw(cleanModelOutput(String(raw)));
-    } catch (e) {
-      let msg = e?.message || String(e);
-      if (e?.name === 'AbortError') {
-        msg = `Run model timed out after ${CURATOR_GENERATE_TIMEOUT_MS / 60000} minutes. Try a smaller pack or lower max_tokens.`;
-      } else if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-        msg = `${msg}\n\nPrimary API: ${PRIMARY_API_URL || '(not set)'}`;
-      }
-      setError(msg);
-    } finally {
-      setRunModelBusy(false);
-    }
-  }, [pack, PRIMARY_API_URL, curatorRoute, curatorSelectedModel, canRunCuratorModel, autoRouterEnabled, settings]);
-
-  const parsePasted = async () => {
-    setParseError(null);
-    setParsedPreview(null);
-    if (!pastedRaw.trim()) {
-      setParseError('Paste the model JSON response first.');
-      return;
-    }
-    try {
-      const res = await fetchWithTimeout(
-        `${apiUrl}/memory/curator/parse_response`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            raw_text: pastedRaw,
-            mode: scope,
-          }),
-        },
         60000
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      setParsedPreview(data);
-    } catch (e) {
-      setParseError(e?.message || String(e));
-    }
-  };
-
-  const applyCurated = async () => {
-    if (!parsedPreview || parsedPreview.status !== 'success') {
-      alert('Parse the response first.');
-      return;
-    }
-    const noun = scope === 'profile' ? 'profile memories' : 'agentic insights';
-    if (
-      !window.confirm(
-        `Replace all ${noun} on disk with this curated list (${parsedPreview.memories?.length ?? parsedPreview.insights?.length ?? 0} rows)? This cannot be undone automatically.`
-      )
-    ) {
-      return;
-    }
-
-    setApplyBusy(true);
-    setError(null);
-    try {
-      if (scope === 'profile') {
-        const memories = parsedPreview.memories;
-        if (!Array.isArray(memories)) throw new Error('Invalid parse payload');
-        const res = await fetchWithTimeout(
-          `${apiUrl}/memory/curator/apply_profile`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: activeProfileId, memories }),
-          },
-          60000
-        );
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      } else {
-        const insights = parsedPreview.insights;
-        if (!Array.isArray(insights)) throw new Error('Invalid parse payload');
-        const res = await fetchWithTimeout(
-          `${apiUrl}/memory/curator/apply_agentic`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              user_id: activeProfileId,
-              character_id: agenticTargetId,
-              insights,
-            }),
-          },
-          60000
-        );
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      }
-      setPastedRaw('');
-      setParsedPreview(null);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Status ${response.status}`);
+      setSuccess(`${rows.length} reviewed ${rows.length === 1 ? 'memory was' : 'memories were'} saved.`);
       onApplied?.();
-    } catch (e) {
-      setError(e?.message || String(e));
+    } catch (applyError) {
+      setError(formatFetchError(applyError, { timeoutMs: 60000 }));
     } finally {
-      setApplyBusy(false);
+      setStage('');
     }
-  };
+  }, [activeProfileId, apiUrl, onApplied, parsedPreview, scope, targetCharacter, targetCharacterId]);
 
-  if (!apiReady) return null;
+  const copyPrompt = useCallback(async () => {
+    if (!promptPack?.combined) return;
+    try {
+      await navigator.clipboard.writeText(promptPack.combined);
+      setSuccess('Prompt copied.');
+    } catch {
+      setError('Mirid could not copy the prompt to the clipboard.');
+    }
+  }, [promptPack]);
+
+  if (!apiReady) return <p className="text-sm text-muted-foreground">Connecting to memory storage…</p>;
+
+  const reviewedRows = scope === 'profile' ? parsedPreview?.memories : parsedPreview?.insights;
+  const stageText = {
+    gathering: 'Gathering saved memories…',
+    reviewing: `Asking ${requestRoute.effectiveModel || 'the selected model'} to review them…`,
+    reading: 'Reading the reviewed list…',
+    saving: 'Saving reviewed memories…',
+  }[stage];
 
   return (
-    <Alert className="mb-6 border-primary/25 bg-muted/30">
-      <Sparkles className="h-4 w-4" />
-      <AlertTitle>In-character memory curator</AlertTitle>
-      <AlertDescription className="mt-3 space-y-4 text-sm">
-        <p className="text-muted-foreground">
-          Build a prompt where a character you choose reviews{' '}
-          {scope === 'profile'
-            ? 'your backend profile memories'
-            : 'the agentic insight file for the character you pick'}
-          . Use <strong>Run model</strong> with the same model as chat (navbar pill or ⟳ auto-routing), or paste JSON
-          from another client. Then <strong>Parse JSON</strong> and <strong>Apply to disk</strong>.
-        </p>
+    <div className="space-y-5 rounded-xl border bg-card/70 p-5">
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <Label>Review in the voice of</Label>
+          <Select value={reviewerCharacterId} onValueChange={setReviewerCharacterId}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NEUTRAL_REVIEWER}>Neutral reviewer</SelectItem>
+              {npcCharacters.map((character) => (
+                <SelectItem key={character.id} value={character.id}>{character.name || character.id}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            This keeps the review in a familiar voice. It does not permit invented memories.
+          </p>
+        </div>
 
-        <div className="grid gap-3 md:grid-cols-2">
+        {scope === 'agentic' ? (
           <div className="space-y-2">
-            <Label>Review as (persona)</Label>
-            <Select value={curatorCharacterId} onValueChange={setCuratorCharacterId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Character" />
-              </SelectTrigger>
+            <Label>Whose memories should change?</Label>
+            <Select value={targetCharacterId} onValueChange={setTargetCharacterId}>
+              <SelectTrigger><SelectValue placeholder="Choose a character" /></SelectTrigger>
               <SelectContent>
-                {npcCharacters.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name || c.id}
-                  </SelectItem>
+                {npcCharacters.map((character) => (
+                  <SelectItem key={character.id} value={character.id}>{character.name || character.id}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </div>
-
-          {scope === 'agentic' && (
-            <div className="space-y-2">
-              <Label>Agentic memory file (character)</Label>
-              <Select value={agenticTargetId} onValueChange={setAgenticTargetId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Character" />
-                </SelectTrigger>
-                <SelectContent>
-                  {npcCharacters.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name || c.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                This is whose JSON insight store gets replaced when you apply — independent of “review as”.
-              </p>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <Label>Notes for this pass (optional)</Label>
-          <Textarea
-            value={extraNotes}
-            onChange={(e) => setExtraNotes(e.target.value)}
-            placeholder="e.g. prioritize emotional boundaries, drop stale tech prefs…"
-            className="min-h-[72px] text-sm"
-          />
-        </div>
-
-        <label className="flex items-start gap-2 text-sm cursor-pointer rounded-md border border-border/50 bg-muted/15 px-3 py-2">
-          <Checkbox checked={savePreviewToDisk} onCheckedChange={(v) => setSavePreviewToDisk(!!v)} className="mt-0.5" />
-          <span>
-            <span className="font-medium">Test pass:</span> save the full prompt to{' '}
-            <code className="text-[11px] px-1 rounded bg-muted">backend/data/preview_prompts/</code> on the server (no LLM call).
-          </span>
-        </label>
-
-        <div className="flex flex-wrap gap-2 items-center">
-          <Button type="button" size="sm" onClick={buildPack} disabled={busy || !activeProfileId}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
-            Build curator prompt
-          </Button>
-          {pack?.combined && (
-            <Button type="button" size="sm" variant="outline" onClick={copyCombined}>
-              <Copy className="h-4 w-4 mr-2" />
-              Copy prompt
-            </Button>
-          )}
-          {pack?.combined && (
-            <Button
-              type="button"
-              size="sm"
-              variant="default"
-              onClick={runModelOnCuratorPrompt}
-              disabled={runModelBusy || !canRunCuratorModel}
-            >
-              {runModelBusy ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Play className="h-4 w-4 mr-2" />}
-              Run model
-            </Button>
-          )}
-          {pack?.stats && (
-            <span className="text-xs text-muted-foreground">
-              ~{pack.stats.bundle_chars?.toLocaleString?.() ?? pack.stats.bundle_chars} chars ·{' '}
-              {pack.stats.indexed_rows} rows indexed
-            </span>
-          )}
-        </div>
-
-        {pack?.combined && !canRunCuratorModel && (
-          <p className="text-xs text-amber-800 dark:text-amber-300">
-            {autoRouterEnabled ? (
-              <>
-                <strong>Run model</strong> needs at least one enabled endpoint in your auto-routing pool (Settings →
-                LLM Settings → Custom API Endpoints). Or turn off ⟳ Auto-routing and pick a model from the{' '}
-                <strong>navbar</strong> pill.
-              </>
-            ) : (
-              <>
-                Pick a model from the <strong>navbar</strong> pill at the top of the app, or load a local model on GPU
-                0, to use <strong>Run model</strong> (otherwise copy the prompt and run it elsewhere).
-              </>
-            )}
-          </p>
-        )}
-
-        {error && (
-          <div className="text-sm text-red-600 bg-red-50 dark:bg-red-950/30 rounded px-3 py-2 border border-red-200/60">
-            {error}
-          </div>
-        )}
-
-        {pack?.preview_saved && (
-          <div className="text-xs rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-900 dark:text-emerald-200 space-y-1">
-            <p className="font-medium">Saved preview on disk</p>
-            <p className="font-mono break-all opacity-90">{pack.preview_saved.absolute_path}</p>
-            <p className="text-muted-foreground">
-              {pack.preview_saved.bytes_written?.toLocaleString?.() ?? pack.preview_saved.bytes_written} bytes
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Only this character’s memory list can be replaced when you approve the result.
             </p>
           </div>
+        ) : (
+          <div className="rounded-lg border bg-muted/15 p-3 text-sm">
+            <p className="font-medium">Memories being reviewed</p>
+            <p className="mt-1 text-muted-foreground">Facts saved with {userProfile?.name || userProfile?.username || 'the current user profile'}.</p>
+          </div>
         )}
+      </div>
 
-        {pack?.combined && (
-          <details className="text-xs">
-            <summary className="cursor-pointer text-muted-foreground">Output schema (what the model must return)</summary>
-            <pre className="mt-2 max-h-40 overflow-auto rounded border bg-background/80 p-2 whitespace-pre-wrap">
-              {pack.output_spec}
-            </pre>
+      <div className="space-y-2">
+        <Label htmlFor={`memory-review-notes-${scope}`}>What should the review preserve or correct? <span className="font-normal text-muted-foreground">Optional</span></Label>
+        <Textarea
+          id={`memory-review-notes-${scope}`}
+          value={extraNotes}
+          onChange={(event) => setExtraNotes(event.target.value)}
+          placeholder="For example: preserve emotional boundaries; remove outdated preferences."
+          className="min-h-[72px]"
+        />
+      </div>
+
+      <div className="rounded-lg border bg-muted/15 p-3 text-sm">
+        <p className="font-medium">Model used for the review</p>
+        <p className="mt-1 text-muted-foreground">{canRunModel ? requestRoute.effectiveModel : 'No text model selected'}</p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button type="button" onClick={reviewMemories} disabled={Boolean(stage) || !activeProfileId || !canRunModel || (scope === 'agentic' && !targetCharacterId)}>
+          {stage && stage !== 'saving' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+          Review memories
+        </Button>
+        {stageText ? <span className="text-sm text-muted-foreground">{stageText}</span> : null}
+      </div>
+
+      {error ? <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}
+      {success ? <p className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800 dark:text-emerald-200"><CheckCircle2 className="h-4 w-4" />{success}</p> : null}
+
+      {Array.isArray(reviewedRows) ? (
+        <div className="space-y-3 rounded-xl border border-primary/25 bg-primary/5 p-4">
+          <div>
+            <h3 className="font-semibold">Reviewed memory list</h3>
+            <p className="mt-1 text-xs text-muted-foreground">{reviewedRows.length} entries proposed. Nothing changes until you save them.</p>
+          </div>
+          {parsedPreview?.summary ? <p className="text-sm text-muted-foreground">{parsedPreview.summary}</p> : null}
+          <details className="rounded-md border bg-background/60 px-3 py-2 text-xs">
+            <summary className="cursor-pointer font-medium">Preview reviewed entries</summary>
+            <ul className="mt-3 space-y-2">
+              {reviewedRows.slice(0, 12).map((row, index) => <li key={row.id || `${index}-${row.content}`}>{row.content}</li>)}
+            </ul>
           </details>
-        )}
-
-        <div className="space-y-2 border-t border-border/60 pt-4">
-          <Label className="text-xs">Model JSON response (filled by Run model, or paste)</Label>
-          <Textarea
-            value={pastedRaw}
-            onChange={(e) => setPastedRaw(e.target.value)}
-            className="min-h-[120px] text-xs font-mono"
-            spellCheck={false}
-            placeholder='Paste the JSON object (starts with "{") … or use Run model above.'
-          />
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" size="sm" variant="secondary" onClick={parsePasted} disabled={!pastedRaw.trim()}>
-              Parse JSON
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="default"
-              onClick={applyCurated}
-              disabled={applyBusy || !parsedPreview || parsedPreview.status !== 'success'}
-            >
-              {applyBusy ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
-              Apply to disk
-            </Button>
-          </div>
-          {parseError && <p className="text-xs text-red-600">{parseError}</p>}
-          {parsedPreview?.status === 'success' && (
-            <p className="text-xs text-green-700 dark:text-green-400">
-              Parsed{' '}
-              {(scope === 'profile' ? parsedPreview.memories?.length : parsedPreview.insights?.length) ?? 0} rows
-              {parsedPreview.summary ? ` — ${parsedPreview.summary}` : ''}
-            </p>
-          )}
+          <Button type="button" onClick={applyCurated} disabled={stage === 'saving'}>
+            {stage === 'saving' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
+            Save reviewed memories
+          </Button>
         </div>
-      </AlertDescription>
-    </Alert>
+      ) : null}
+
+      <details className="group rounded-lg border bg-muted/10">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-muted/30">
+          <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
+          Run elsewhere or inspect the generated prompt
+        </summary>
+        <div className="space-y-3 border-t px-3 py-4">
+          <p className="text-xs leading-relaxed text-muted-foreground">Use this only when you want to run the review in another application or repair a model response manually.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={buildForAnotherModel} disabled={Boolean(stage) || !activeProfileId}>Build prompt</Button>
+            <Button type="button" size="sm" variant="ghost" onClick={copyPrompt} disabled={!promptPack?.combined}><Copy className="mr-2 h-4 w-4" />Copy prompt</Button>
+          </div>
+          {promptPack?.combined ? <Textarea readOnly value={promptPack.combined} className="min-h-[140px] font-mono text-xs" spellCheck={false} /> : null}
+          <Textarea value={rawResponse} onChange={(event) => setRawResponse(event.target.value)} className="min-h-[120px] font-mono text-xs" placeholder="Paste a model response here" spellCheck={false} />
+          <Button type="button" size="sm" variant="secondary" onClick={parseEditedResponse} disabled={Boolean(stage) || !rawResponse.trim()}>Read pasted response</Button>
+        </div>
+      </details>
+    </div>
   );
 }

@@ -17,15 +17,21 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.wheel-build/
+.portable-wheel-build/
+wheelhouse/
 
 # Ignore frontend build system artifacts
 frontend/node_modules/
 frontend/.next/
-frontend/package-lock.json
 frontend/.vite/
 frontend/.cache/
 frontend/dist/
 frontend/public/ports.json
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
 
 # Ignore system stuff
 .DS_Store
@@ -58,6 +64,7 @@ settings.json
 
 # Stockfish (downloaded by scripts/install_stockfish.py; optional)
 tools/stockfish/
+tools/LongCat-Video/
 
 # Model files (too large for git)
 *.gguf
@@ -78,8 +85,8 @@ test_output/
 # Backup/original folders (if any)
 eloquent-original/
 
-# NOTE: We intentionally KEEP wheels/ in the repo for easier Windows installation
-# (llama-cpp-python and other packages that are hard to compile)
+# Compiled inference wheels are published through the Mirid Hugging Face registry.
+wheels/
 
 # Temp/cache directories
 temp_audio/
@@ -109,6 +116,109 @@ personal/
 # User-generated character + docs content (may contain personal chatlogs)
 characters/
 docs/
+!docs/
+docs/*
+!docs/LAUNCH_UI_CONTROL_AUDIT.md
+!docs/CROSS_PLATFORM_RUNTIME.md
+!docs/RELEASE_TESTING.md
 
 # Runtime generated entity cache (may contain pre-depersonalization output)
 backend/app/data/
+
+# ---------------------------------------------------------------------------
+# Added during repo cleanup: loose scratch files, build artifacts, personal data
+# ---------------------------------------------------------------------------
+
+# Built launcher executable (produced by `tauri build`, not source)
+/Eloquent.exe
+*.exe
+
+# Opencode operational files
+.opencode/
+
+# Root loose media dumps (generated/recorded, not source)
+/Eloquent SPLASH.mp4
+/Eloquent SPLASH_lossless.mkv
+/audiobook.wav
+
+# Backend runtime data + secrets (databases, keys, generated corpora)
+backend/data/*.db
+backend/data/outreach.db
+backend/data/outreach_assets/
+backend/data/outreach_vapid.json
+backend/data/outreach_vapid_private.pem
+backend/data/transcript_corpora/
+backend/data/tts_full_exports/
+
+# Personal / private extraction & chat dumps (KEEP on disk, never commit)
+soul_extraction/
+txt_in/
+chat-persistence-debug/
+leafedout_scraper/
+audiobook_checkbacks/
+audiobook_checkpoints/
+personal/
+
+# Scratch single-purpose scripts at repo root
+/1.bat
+/2.py
+/a.py
+/e.py
+/clean_audio.py
+/compress_wav_audio.py
+/fix_json.py
+/fix_parser.py
+/desktop_asr.lnk
+/SHUTDOWN_SIGNAL
+/Chat_HEAD.jsx
+/_panel_block.jsx
+/vram_snapshots.json
+
+# Scratch chat/video extraction scripts
+/auto_extract_5th.js
+/auto_extract_chat.js
+/corrected_extract.js
+/debug_extract.js
+/final_extract.js
+/fixed_extract_chat.js
+/extract_5th_chat.js
+/extract_chat.html
+/extract_chat.js
+/minicpm-chat.js
+/chat_diff.txt
+/chat_diff_utf8.txt
+
+# Scratch markdown notes
+/failurelog.md
+/EXTRACT_INSTRUCTIONS.md
+/KNOWN_ISSUES.md
+/LATTICE_MIRROR_LOGGING_MEMORY_AUDIT.md
+/MOBILE_SUPPORT.md
+/accountingformyself.md
+
+# Frontend loose media dumps
+frontend/russianwoman.m4a
+frontend/russianwomanlong.m4a
+
+# Moonshine virtual environment (downloaded deps, not source)
+backend/moonshine_env/
+
+# Vite temporary config cache
+frontend/vite.config.js.timestamp-*.mjs
+*.timestamp-*.mjs
+frontend/test-results/
+frontend/playwright-report/
+artifacts/first-run/
+
+# Local IDE state and release-review artefacts
+/.vs/
+/artifacts/
+
+# Superseded local material retained outside the public source snapshot
+/_archive/
+/website-app/
+/MirrorAIDATINGlogos/
+/AGENTS2.md
+
+# Accidental duplicate image exports
+/frontend/public/* - Copy.png

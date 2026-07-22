@@ -1,4 +1,4 @@
-/* NanoGPT font — @import must be first (before @tailwind / @layer) */
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&family=Fira+Code:wght@400;500&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300..800;1,300..800&display=swap');
 
 @tailwind base;
@@ -51,6 +51,33 @@
     --input-bg: transparent;
     --focus-ring: 2px solid var(--ring);
 
+    /* Chat-specific tokens */
+    --chat-user-bg: var(--secondary);
+    --chat-user-border: transparent;
+    --chat-bot-bg: var(--muted);
+    --chat-bot-border: var(--border);
+    --chat-system-bg: rgba(234, 179, 8, 0.1);
+    --chat-system-border: rgba(234, 179, 8, 0.3);
+    --chat-system-text: #a16207;
+    --chat-avatar-border: var(--border);
+    --chat-code-bg: #282c34;
+    --chat-code-header-bg: #21252b;
+    --chat-code-border: rgba(255, 255, 255, 0.08);
+    --chat-thinking-bg: rgba(16, 17, 19, 0.85);
+    --chat-thinking-border: rgba(120, 170, 220, 0.28);
+    --chat-thinking-text: rgba(226, 232, 240, 0.9);
+    --chat-focus-overlay: #000000;
+    --chat-focus-surface: rgba(255, 255, 255, 0.08);
+    --chat-focus-surface-hover: rgba(255, 255, 255, 0.15);
+    --chat-focus-border: rgba(255, 255, 255, 0.12);
+    --chat-focus-text: rgba(255, 255, 255, 0.6);
+    --chat-focus-text-bright: #ffffff;
+    --chat-focus-indicator-bg: rgba(251, 146, 60, 0.15);
+    --chat-focus-indicator-border: rgba(251, 146, 60, 0.3);
+    --chat-focus-indicator-text: #fb923c;
+    --chat-input-focus-ring: var(--ring);
+    --chat-action-hover-danger: rgba(239, 68, 68, 0.15);
+
     /* Markdown emphasis colors (light defaults) */
     --md-body-color-default: #111827;
     --md-bold-color-default: #0b0f14;
@@ -100,9 +127,85 @@
     --chess-eval-track: rgba(13, 13, 13, 0.08);
     --chess-eval-dark: rgba(13, 13, 13, 0.28);
     --chess-eval-light: var(--primary);
-  }
+
+    /* Chat Typography — light mode base defaults */
+    --chat-body-color: #111827;
+    --chat-font-family: inherit;
+    --chat-font-size: 1rem;
+    --chat-font-weight: 500;
+    --chat-line-height: 1.6;
+    --chat-letter-spacing: 0;
+    --chat-text-shadow: 0 0 1px rgba(0,0,0,0.08);
+    --chat-text-glow: none;
+   --chat-thinking-bg: var(--card);
+   --chat-thinking-border: var(--border);
+}
 
   /* --- THEMES --- */
+
+  /* Faraday-inspired character theme. Original Mirid palette and assets. */
+  [data-theme="faraday"] {
+    --background: #0f1416;
+    --foreground: #dce3e5;
+    --card: #171d1f;
+    --card-foreground: #dce3e5;
+    --popover: #171d1f;
+    --popover-foreground: #dce3e5;
+    --primary: #5eb8d0;
+    --primary-foreground: #071014;
+    --secondary: #20282b;
+    --secondary-foreground: #d8e1e4;
+    --muted: #1b2225;
+    --muted-foreground: #7f9198;
+    --accent: #222c30;
+    --accent-foreground: #e2e9eb;
+    --destructive: #b9535e;
+    --destructive-foreground: #fff4f5;
+    --border: #2a3539;
+    --input: #2d3a3f;
+    --ring: #66bdd3;
+    --radius: 0.65rem;
+
+    --sidebar-background: #101618;
+    --sidebar-foreground: #c9d2d5;
+    --sidebar-primary: #5eb8d0;
+    --sidebar-primary-foreground: #071014;
+    --sidebar-accent: #222b2f;
+    --sidebar-accent-foreground: #e4eaec;
+    --sidebar-border: #263136;
+    --sidebar-ring: #5eb8d0;
+
+    --chat-user-bg: #20292c;
+    --chat-user-text: #e3e8ea;
+    --chat-bot-bg: #181e20;
+    --chat-bot-text: #d8dfe2;
+    --chat-system-bg: #151b1d;
+    --chat-system-text: #8c9ba1;
+    --chat-thinking-bg: #141a1c;
+    --chat-thinking-text: #8da6b0;
+    --chat-thinking-border: #2b373b;
+    --md-quote-color: #9fc7da;
+    --md-quote-border: #3d6976;
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+  }
+
+  [data-theme="faraday"] body {
+    background:
+      radial-gradient(circle at 78% 8%, rgba(63, 163, 188, 0.055), transparent 30%),
+      var(--background);
+  }
+
+  [data-theme="faraday"] .chat-prose em {
+    color: #a9cae0;
+  }
+
+  [data-theme="faraday"] .bg-card {
+    background-color: var(--card);
+  }
 
   /* NanoGPT dark theme — spec palette + subtle purple wash */
   [data-theme="nanogpt"] {
@@ -170,7 +273,19 @@
     --accent-secondary: var(--nano-text-accent);
     --bg-secondary: var(--card);
     --bg-tertiary: var(--muted);
-  }
+
+    /* Chat Typography — NanoGPT optimized */
+    --chat-body-color: #f1f3f5;
+    --chat-font-family: "Open Sans", system-ui, sans-serif;
+    --chat-font-size: 0.95rem;
+    --chat-font-weight: 500;
+    --chat-line-height: 1.65;
+    --chat-letter-spacing: 0.005em;
+    --chat-text-shadow: 0 0 1px rgba(241, 243, 245, 0.2);
+    --chat-text-glow: none;
+   --chat-thinking-bg: var(--card);
+   --chat-thinking-border: var(--border);
+}
 
   [data-theme="nanogpt"] body {
     font-family: var(--font-body);
@@ -237,7 +352,17 @@
     --accent-secondary: var(--primary);
     --bg-secondary: var(--card);
     --bg-tertiary: var(--muted);
-  }
+
+    /* Chat Typography — Dark Mode optimized */
+    --chat-body-color: #e8e8e8;
+    --chat-font-family: inherit;
+    --chat-font-size: 1rem;
+    --chat-font-weight: 500;
+    --chat-line-height: 1.6;
+    --chat-letter-spacing: 0;
+   --chat-thinking-bg: var(--card);
+   --chat-thinking-border: var(--border);
+}
 
   /* WhatsApp Theme (Authentic Dark) */
   [data-theme="whatsapp"] {
@@ -295,7 +420,17 @@
     --accent-secondary: var(--primary);
     --bg-secondary: var(--card);
     --bg-tertiary: var(--muted);
-  }
+
+    /* Chat Typography — WhatsApp optimized */
+    --chat-body-color: #e9edef;
+    --chat-font-family: inherit;
+    --chat-font-size: 0.95rem;
+    --chat-font-weight: 400;
+    --chat-line-height: 1.6;
+    --chat-letter-spacing: 0;
+   --chat-thinking-bg: var(--card);
+   --chat-thinking-border: var(--border);
+}
 
   /* Messenger Theme (Premium Dark + Gradient) */
   [data-theme="messenger"] {
@@ -359,7 +494,17 @@
     --accent-secondary: var(--primary);
     --bg-secondary: var(--card);
     --bg-tertiary: var(--muted);
-  }
+
+    /* Chat Typography — Messenger optimized */
+    --chat-body-color: #ffffff;
+    --chat-font-family: inherit;
+    --chat-font-size: 1rem;
+    --chat-font-weight: 500;
+    --chat-line-height: 1.6;
+    --chat-letter-spacing: 0;
+   --chat-thinking-bg: var(--card);
+   --chat-thinking-border: var(--border);
+}
 
   /* Cyberpunk Theme (Neon, High Contrast) */
   [data-theme="cyberpunk"] {
@@ -375,21 +520,21 @@
     --primary: #fcee0a;
     /* Neon Yellow */
     --primary-foreground: #000000;
-    --secondary: #00f0ff;
-    /* Neon Blue */
+    --secondary: #06b6d4;
+    /* Toned neon cyan */
     --secondary-foreground: #000000;
     /* Black text on Neon Blue */
     --muted: #0a2a4a;
-    --muted-foreground: #00f0ff;
-    /* Neon text only for muted labels/icons */
+    --muted-foreground: #67e8f9;
+    /* Softer cyan for readable secondary text */
     --accent: #fcee0a;
     /* Selection/Active */
     --accent-foreground: #000000;
     --destructive: #ff003c;
     /* Neon Red */
     --destructive-foreground: #ffffff;
-    --border: #00f0ff;
-    /* Neon Borders */
+    --border: #0891b2;
+    /* Muted neon cyan borders */
     --input: #051628;
     --ring: #fcee0a;
     --radius: 0px;
@@ -418,7 +563,17 @@
     --accent-secondary: var(--primary);
     --bg-secondary: var(--card);
     --bg-tertiary: var(--muted);
-  }
+
+    /* Chat Typography — Cyberpunk optimized (neon + monospace) */
+    --chat-body-color: #e2f2ff;
+    --chat-font-family: 'JetBrains Mono', monospace;
+    --chat-font-size: 0.9rem;
+    --chat-font-weight: 500;
+    --chat-line-height: 1.6;
+    --chat-letter-spacing: 0.01em;
+   --chat-thinking-bg: var(--card);
+   --chat-thinking-border: var(--border);
+}
 
   /* Claude Theme - Light Mode (Actual claude.ai colors) */
   [data-theme="claude"] {
@@ -437,8 +592,8 @@
     --primary-foreground: #FFFFFF;
 
     /* User Bubble */
-    --secondary: #F0EEE6;
-    /* Light beige - actual user message background */
+    --secondary: #EAE5DA;
+    /* Slightly darker warm beige for visible bubble contrast */
     --secondary-foreground: #141413;
     /* Dark text for contrast */
 
@@ -453,8 +608,8 @@
     --destructive: #DC2626;
     /* Red for destructive actions */
     --destructive-foreground: #FFFFFF;
-    --border: #1F1E1D;
-    /* Dark subtle border from input */
+    --border: #8B867B;
+    /* Warm medium-gray border */
     --input: #FFFFFF;
     /* White input background */
     --ring: #CC785C;
@@ -496,15 +651,245 @@
     --accent-secondary: var(--primary);
     --bg-secondary: var(--card);
     --bg-tertiary: var(--muted);
+
+    /* Chat Typography — Claude optimized (warm, editorial) */
+    --chat-body-color: #141413;
+    --chat-font-family: inherit;
+    --chat-font-size: 1rem;
+    --chat-font-weight: 400;
+    --chat-line-height: 1.7;
+    --chat-letter-spacing: 0.005em;
+    --chat-text-shadow: 0 0 1px rgba(20,20,19,0.1);
+    --chat-thinking-bg: var(--card);
+   --chat-thinking-border: var(--border);
+ }
+
+  /* Fallout 4 Terminal Theme — Amber CRT Aesthetic */
+  [data-theme="fallout"] {
+    --background: #0c0c08;
+    --foreground: #d49020;
+    --card: #111110;
+    --card-foreground: #d49020;
+    --popover: #111110;
+    --popover-foreground: #d49020;
+
+    --primary: #b07018;
+    --primary-foreground: #0c0c08;
+
+    --secondary: #181714;
+    --secondary-foreground: #d49020;
+
+    --muted: #0f0f0c;
+    --muted-foreground: #a07018;
+
+    --accent: #181714;
+    --accent-foreground: #d49020;
+    --destructive: #cc3333;
+    --destructive-foreground: #0c0c08;
+
+    --border: #2a1a00;
+    --input: #111110;
+    --ring: #c07020;
+    --radius: 0px;
+
+    --shadow: 0 0 20px rgba(200,130,20,0.12), inset 0 0 60px rgba(0,0,0,0.5);
+
+    --font-body: 'VT323', 'Share Tech Mono', monospace;
+    --font-heading: 'VT323', 'Share Tech Mono', monospace;
+    --font-mono: 'VT323', 'Share Tech Mono', monospace;
+
+    --chat-body-color: #d49020;
+    --chat-font-family: 'VT323', 'Share Tech Mono', monospace;
+    --chat-font-size: 1rem;
+    --chat-font-weight: 400;
+    --chat-line-height: 1.7;
+    --chat-letter-spacing: 0.03em;
+    --chat-text-shadow: 0 0 2px rgba(200,130,20,0.2);
+    --chat-text-glow: 0 0 6px rgba(200,130,20,0.15);
+
+    --md-body-color: #d49020;
+    --md-bold-color: #e8a830;
+    --md-italic-color: #a06818;
+    --md-quote-color: #b07820;
+    --md-quote-border: #2a1a00;
+
+    --bg-primary: var(--background);
+    --text-primary: var(--foreground);
+    --text-secondary: var(--muted-foreground);
+    --border-color: var(--border);
+    --accent-primary: var(--primary);
+    --accent-secondary: var(--primary);
+    --bg-secondary: var(--card);
+    --bg-tertiary: var(--muted);
+  }
+
+  /* Fallout — switch knob overrides (replace white knob with amber) */
+  [data-theme="fallout"] .switch-root[data-state="unchecked"] {
+    background-color: #181714;
+    border: 1px solid #2a1a00;
+  }
+  [data-theme="fallout"] label .peer + div:after {
+    background-color: #b07820;
+    border-color: #6a4408;
+  }
+  [data-theme="fallout"] label .peer:checked + div:after {
+    background-color: #d49020;
+    border-color: #8a5a10;
+  }
+
+  /* Fallout — input, textarea, select backgrounds in amber tint */
+  [data-theme="fallout"] textarea,
+  [data-theme="fallout"] input[type="text"],
+  [data-theme="fallout"] input[type="search"],
+  [data-theme="fallout"] input[type="number"],
+  [data-theme="fallout"] input[type="password"],
+  [data-theme="fallout"] select,
+  [data-theme="fallout"] .select-trigger {
+    background-color: #111110;
+    color: #d49020;
+    border-color: #2a1a00;
+  }
+  [data-theme="fallout"] textarea::placeholder,
+  [data-theme="fallout"] input::placeholder {
+    color: #6a4a10;
+    opacity: 0.6;
+  }
+  [data-theme="fallout"] textarea:focus,
+  [data-theme="fallout"] input:focus,
+  [data-theme="fallout"] select:focus {
+    border-color: #b07820;
+    box-shadow: 0 0 6px rgba(180,120,30,0.25);
+  }
+
+  /* Fallout — select / dropdowns */
+  [data-theme="fallout"] .select-content {
+    background-color: #111110;
+    border-color: #2a1a00;
+    color: #d49020;
+  }
+  [data-theme="fallout"] .select-item {
+    color: #d49020;
+  }
+  [data-theme="fallout"] .select-item:hover,
+  [data-theme="fallout"] .select-item[data-highlighted] {
+    background-color: #1e1c14;
+    color: #e8a830;
+  }
+
+  /* Fallout — button variants */
+  [data-theme="fallout"] button[class~="bg-primary"] {
+    background-color: #b07018;
+    color: #0c0c08;
+  }
+  [data-theme="fallout"] button[class~="bg-primary"]:hover {
+    background-color: #c08020;
+  }
+  [data-theme="fallout"] button.border-input {
+    border-color: #2a1a00;
+  }
+  [data-theme="fallout"] button[class*="ghost"]:hover,
+  [data-theme="fallout"] button[class*="outline"]:hover {
+    background-color: #1a1810;
+    color: #e8a830;
+  }
+  [data-theme="fallout"] button[class*="ghost"] {
+    color: #a06818;
+  }
+  [data-theme="fallout"] button[class*="secondary"] {
+    background-color: #181714;
+    color: #d49020;
+  }
+  [data-theme="fallout"] button[class*="secondary"]:hover {
+    background-color: #1e1c14;
+    color: #e8a830;
+  }
+
+  /* Fallout — scrollbar */
+  [data-theme="fallout"] ::-webkit-scrollbar {
+    width: 6px;
+  }
+  [data-theme="fallout"] ::-webkit-scrollbar-track {
+    background: #0c0c08;
+  }
+  [data-theme="fallout"] ::-webkit-scrollbar-thumb {
+    background: #2a1a00;
+    border-radius: 0;
+  }
+  [data-theme="fallout"] ::-webkit-scrollbar-thumb:hover {
+    background: #3a2400;
+  }
+
+  /* Fallout — ControlPanel and overlay backgrounds */
+  [data-theme="fallout"] .backdrop-blur-md {
+    background-color: rgba(12,12,8,0.95) !important;
+  }
+  [data-theme="fallout"] .bg-card {
+    background-color: #111110 !important;
+  }
+  [data-theme="fallout"] .bg-muted {
+    background-color: #0f0f0c !important;
+  }
+
+  /* CRT scanlines overlay for Fallout theme */
+  [data-theme="fallout"] body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(200,130,20,0.02) 2px,
+      rgba(200,130,20,0.02) 4px
+    );
+    animation: fallout-scanline 8s linear infinite;
+  }
+
+  @keyframes fallout-scanline {
+    0% { transform: translateY(0); }
+    100% { transform: translateY(4px); }
+  }
+
+  /* Vignette for Fallout theme */
+  [data-theme="fallout"] body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9998;
+    background: radial-gradient(ellipse at center, transparent 65%, rgba(0,0,0,0.35) 100%);
+  }
+
+  /* Code blocks in Fallout theme */
+  [data-theme="fallout"] .prose pre,
+  [data-theme="fallout"] .chat-prose pre {
+    background: #0c0c08;
+    border: 1px solid #2a1a00;
+    color: #d49020;
+  }
+
+  [data-theme="fallout"] .prose code,
+  [data-theme="fallout"] .chat-prose code {
+    background: #181714;
+    color: #d49020;
+    padding: 0.125rem 0.375rem;
+    border-radius: 0;
+  }
+
+  [data-theme="fallout"] .prose pre code {
+    background: transparent;
+    padding: 0;
   }
 
   /* Prevent browser autofill from forcing light backgrounds in themed inputs */
-  input.bg-background:-webkit-autofill,
-  input.bg-background:-webkit-autofill:hover,
-  input.bg-background:-webkit-autofill:focus,
-  textarea.bg-background:-webkit-autofill,
-  textarea.bg-background:-webkit-autofill:hover,
-  textarea.bg-background:-webkit-autofill:focus {
+  input[class~="bg-background"]:-webkit-autofill,
+  input[class~="bg-background"]:-webkit-autofill:hover,
+  input[class~="bg-background"]:-webkit-autofill:focus,
+  textarea[class~="bg-background"]:-webkit-autofill,
+  textarea[class~="bg-background"]:-webkit-autofill:hover,
+  textarea[class~="bg-background"]:-webkit-autofill:focus {
     -webkit-text-fill-color: var(--foreground);
     -webkit-box-shadow: 0 0 0 1000px var(--background) inset;
     box-shadow: 0 0 0 1000px var(--background) inset;
@@ -522,6 +907,11 @@
   .chat-prose,
   .chat-prose * {
     color: inherit;
+  }
+
+  .chat-prose svg,
+  .chat-prose svg * {
+    color: revert;
   }
 
   /* Ensure links and code blocks still look distinct if needed, or inherit */
@@ -582,15 +972,56 @@
   }
 
   .chat-prose {
-    color: var(--md-body-color, inherit);
-    --tw-prose-body: var(--md-body-color, inherit);
-    --tw-prose-lead: var(--md-body-color, inherit);
-    --tw-prose-bullets: var(--md-body-color, inherit);
-    --tw-prose-counters: var(--md-body-color, inherit);
-    --tw-prose-invert-body: var(--md-body-color, inherit);
-    --tw-prose-invert-lead: var(--md-body-color, inherit);
-    --tw-prose-invert-bullets: var(--md-body-color, inherit);
-    --tw-prose-invert-counters: var(--md-body-color, inherit);
+    /* Typography from theme/overrides */
+    color: var(--chat-body-color, var(--md-body-color, inherit));
+    font-family: var(--chat-font-family, inherit);
+    font-size: var(--chat-font-size, 1rem);
+    font-weight: var(--chat-font-weight, 500);
+    line-height: var(--chat-line-height, 1.6);
+    letter-spacing: var(--chat-letter-spacing, 0);
+
+    /* Text pop: shadow (always) + glow (opt-in) */
+    text-shadow: var(--chat-text-shadow, 0 0 1px rgba(255,255,255,0.15)),
+                 var(--chat-text-glow, none);
+
+    /* Tailwind typography overrides */
+    --tw-prose-body: var(--chat-body-color, var(--md-body-color, inherit));
+    --tw-prose-lead: var(--chat-body-color, var(--md-body-color, inherit));
+    --tw-prose-bullets: var(--chat-body-color, var(--md-body-color, inherit));
+    --tw-prose-counters: var(--chat-body-color, var(--md-body-color, inherit));
+    --tw-prose-invert-body: var(--chat-body-color, var(--md-body-color, inherit));
+    --tw-prose-invert-lead: var(--chat-body-color, var(--md-body-color, inherit));
+    --tw-prose-invert-bullets: var(--chat-body-color, var(--md-body-color, inherit));
+    --tw-prose-invert-counters: var(--chat-body-color, var(--md-body-color, inherit));
+  }
+
+  /* --- Streaming Typewriter Effect --- */
+  [data-chat-typewriter="true"] .chat-prose .streaming-token {
+    display: inline;
+    animation: typewriterFadeIn 0.08s ease-out forwards;
+  }
+
+  @keyframes typewriterFadeIn {
+    from { opacity: 0.3; filter: blur(0.3px); }
+    to   { opacity: 1;   filter: blur(0); }
+  }
+
+  /* Blinking cursor at end of streaming text */
+  .chat-prose .blinking-cursor {
+    font-weight: 300;
+    display: inline;
+    margin-left: 1px;
+    color: var(--primary);
+    animation: blinking-cursor 1s step-end infinite;
+  }
+
+  /* --- Stable Scroll: reserve space while streaming --- */
+  [data-chat-stable-scroll="true"] .message-bubble:has(.streaming-active) {
+    overflow-anchor: none; /* let the anchor div handle it */
+  }
+
+  [data-chat-stable-scroll="true"] .messages-scroll-container {
+    overflow-anchor: auto;
   }
 
   .chat-prose h1 {
@@ -861,4 +1292,1902 @@ code {
 [data-call-fullscreen-avatar-layer],
 [data-call-portrait-frame] {
   background-color: #000;
+}
+
+/* --- Chat / Focus Mode Animations --- */
+
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes errorShake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-4px); }
+  40%, 80% { transform: translateX(4px); }
+}
+
+@keyframes typingBounce {
+  0%, 80%, 100% { transform: scale(0.6); }
+  40% { transform: scale(1.0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes focusGlow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Message entrance animation */
+.message-bubble {
+  animation: messageSlideIn 0.25s ease-out;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .message-bubble {
+    animation: none;
+  }
+  .message-bubble,
+  .message-bubble * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Typing indicator dots */
+.typing-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--muted-foreground);
+  animation: typingBounce 1.4s infinite ease-in-out both;
+}
+.typing-dot:nth-child(1) { animation-delay: -0.32s; }
+.typing-dot:nth-child(2) { animation-delay: -0.16s; }
+.typing-dot:nth-child(3) { animation-delay: 0s; }
+
+/* Streaming message indicator */
+.streaming-active {
+  border-color: var(--primary) !important;
+  animation: streamingGlow 1.8s ease-in-out infinite;
+}
+@keyframes streamingGlow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+}
+
+/* Shimmer skeleton loading */
+.skeleton-shimmer {
+  background: linear-gradient(90deg,
+    var(--muted) 25%,
+    var(--accent) 37%,
+    var(--muted) 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Scroll-to-bottom FAB */
+.scroll-to-bottom-btn {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+}
+.scroll-to-bottom-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.scroll-to-bottom-btn:active {
+  transform: scale(0.95);
+}
+
+/* New messages badge pulse */
+@keyframes badgePulse {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+.badge-pulse {
+  animation: badgePulse 2s infinite;
+}
+
+/* Portrait / narrow-screen optimizations */
+@media (max-width: 640px) {
+  /* Focus mode: tighter empty state */
+  .focus-empty-glow {
+    margin-bottom: 1.5rem;
+  }
+  /* Focus mode: smaller empty icon */
+  .focus-empty-glow svg {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* Portrait orientation — phones held upright */
+@media (orientation: portrait) and (max-width: 480px) {
+  /* Scale avatars to 80% on phone-portrait */
+  .message-bubble .flex-shrink-0 > div {
+    transform: scale(0.8);
+    transform-origin: top left;
+  }
+  .message-bubble .justify-end .flex-shrink-0 > div {
+    transform-origin: top right;
+  }
+
+  /* Smaller text on phones for readability */
+  .chat-prose {
+    font-size: calc(var(--chat-font-size, 1rem) * 0.92);
+  }
+}
+
+/* --- Reasoning Block Distinct Styling --- */
+.reasoning-block {
+  font-family: var(--chat-reasoning-font, ui-monospace, monospace);
+  opacity: var(--chat-reasoning-opacity, 0.7);
+  font-size: 0.85em;
+}
+
+/* Reasoning style variants */
+[data-chat-reasoning-style="dimmed"] .reasoning-block {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+[data-chat-reasoning-style="mono"] .reasoning-block {
+  font-family: ui-monospace, SFMono-Regular, 'Menlo', monospace;
+  opacity: 0.8;
+  font-style: normal;
+  letter-spacing: -0.01em;
+}
+
+[data-chat-reasoning-style="accent"] .reasoning-block {
+  color: var(--primary);
+  opacity: 0.85;
+  font-weight: 500;
+  font-style: normal;
+}
+
+[data-chat-reasoning-style="theme"] .reasoning-block {
+  /* inherits theme defaults — no overrides */
+}
+
+/* --- Reduced Motion: disable typewriter + animations --- */
+@media (prefers-reduced-motion: reduce) {
+  .chat-prose .streaming-token {
+    animation: none !important;
+    opacity: 1 !important;
+    filter: none !important;
+  }
+  .chat-prose .blinking-cursor {
+    animation: none !important;
+    opacity: 1;
+  }
+}
+
+/* --- Web Search Progress Animations --- */
+@keyframes progress {
+  0% {
+    width: 0%;
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    width: 100%;
+    opacity: 0.8;
+  }
+}
+
+.animate-progress {
+  animation: progress 2s ease-in-out infinite;
+}
+
+@keyframes search-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+}
+
+.animate-search-pulse {
+  animation: search-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+/* Reduced motion for web search */
+@media (prefers-reduced-motion: reduce) {
+  .animate-progress,
+  .animate-search-pulse,
+  .animate-fade-in-up {
+    animation: none !important;
+  }
+}
+
+/* ============================================================ */
+/* Sanctuary Evolution — Cognitive Glass + Somatic + Hijack     */
+/* ============================================================ */
+
+/* --- Cognitive Glass Panel --- */
+.sanctuary-glass {
+  font-family: 'Courier New', 'Consolas', monospace;
+  background: rgba(10, 10, 15, 0.92);
+  border-left: 1px solid rgba(100, 100, 255, 0.15);
+  color: rgba(180, 200, 255, 0.7);
+  backdrop-filter: blur(8px);
+  transition: width 0.3s ease, opacity 0.3s ease;
+}
+
+.sanctuary-glass-collapsed {
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  border-left: none;
+}
+
+.sanctuary-glass-expanded {
+  width: 320px;
+  opacity: 1;
+}
+
+.sanctuary-glass-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(100, 100, 255, 0.1);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(140, 160, 220, 0.5);
+}
+
+.sanctuary-glass-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 100, 255, 0.2) transparent;
+}
+
+.sanctuary-glass-body::-webkit-scrollbar {
+  width: 4px;
+}
+.sanctuary-glass-body::-webkit-scrollbar-thumb {
+  background: rgba(100, 100, 255, 0.2);
+  border-radius: 2px;
+}
+
+/* --- Reasoning Entries --- */
+.sanctuary-reasoning-entry {
+  margin-bottom: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  opacity: 0.6;
+  animation: sanctuary-fade-in 0.4s ease-out;
+}
+
+.sanctuary-reasoning-entry-type-analysis {
+  border-left: 2px solid rgba(100, 200, 255, 0.3);
+  background: rgba(50, 80, 120, 0.1);
+}
+
+.sanctuary-reasoning-entry-type-somatic {
+  border-left: 2px solid rgba(255, 100, 200, 0.3);
+  background: rgba(120, 50, 80, 0.1);
+}
+
+.sanctuary-reasoning-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(120, 140, 200, 0.4);
+  margin-bottom: 0.2rem;
+}
+
+.sanctuary-reasoning-text {
+  color: rgba(160, 180, 240, 0.5);
+  word-break: break-word;
+}
+
+/* --- Cipher Glyph Row --- */
+.sanctuary-cipher-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  overflow: hidden;
+  flex: 1;
+}
+
+.sanctuary-cipher-noise {
+  font-family: 'Courier New', 'Fira Code', monospace;
+  font-size: 0.45rem;
+  line-height: 1.3;
+  letter-spacing: 0.05em;
+  color: rgba(57, 255, 20, 0.35);
+  word-break: break-all;
+  overflow-wrap: break-word;
+  padding: 0.1rem 0;
+  flex: 1;
+}
+
+.sanctuary-cipher-phase {
+  font-size: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(100, 120, 180, 0.3);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+@keyframes sanctuary-glyph-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes sanctuary-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 0.6; transform: translateY(0); }
+}
+
+/* --- Somatic Dashboard --- */
+.sanctuary-somatic-dashboard {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid rgba(100, 100, 255, 0.08);
+}
+
+.sanctuary-somatic-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.65rem;
+  font-family: 'Courier New', monospace;
+  background: rgba(30, 30, 50, 0.4);
+  border: 1px solid rgba(100, 100, 255, 0.1);
+  color: rgba(180, 200, 255, 0.6);
+  transition: all 0.3s ease;
+}
+
+.sanctuary-somatic-chip-updating {
+  border-color: rgba(100, 200, 255, 0.4);
+  box-shadow: 0 0 8px rgba(100, 200, 255, 0.15);
+}
+
+.sanctuary-somatic-chip-label {
+  color: rgba(120, 140, 200, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.55rem;
+}
+
+.sanctuary-somatic-chip-value {
+  color: rgba(200, 220, 255, 0.8);
+  font-weight: 600;
+}
+
+.sanctuary-somatic-posture-label {
+  font-size: 0.75rem;
+  font-style: italic;
+  color: rgba(200, 180, 255, 0.5);
+  padding: 0.3rem 0.5rem;
+  text-align: center;
+}
+
+/* --- Interface Hijack Effects --- */
+.sanctuary-hijack-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  transition: filter 0.5s ease;
+}
+
+.sanctuary-hijack-shake {
+  animation: sanctuary-shake 0.1s linear infinite;
+}
+
+@keyframes sanctuary-shake {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(-2px, 1px); }
+  50% { transform: translate(2px, -1px); }
+  75% { transform: translate(-1px, 2px); }
+  100% { transform: translate(1px, -2px); }
+}
+
+.sanctuary-hijack-glitch {
+  animation: sanctuary-glitch 0.2s steps(2) infinite;
+}
+
+@keyframes sanctuary-glitch {
+  0% { clip-path: inset(0 0 0 0); }
+  20% { clip-path: inset(20% 0 30% 0); transform: translate(-2px, 0); }
+  40% { clip-path: inset(50% 0 10% 0); transform: translate(2px, 0); }
+  60% { clip-path: inset(10% 0 60% 0); transform: translate(-1px, 0); }
+  80% { clip-path: inset(70% 0 5% 0); transform: translate(1px, 0); }
+  100% { clip-path: inset(0 0 0 0); }
+}
+
+.sanctuary-hijack-lock-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  pointer-events: all;
+  animation: sanctuary-fade-in 0.3s ease-out;
+}
+
+.sanctuary-hijack-lock-text {
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
+  color: rgba(255, 100, 100, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  text-shadow: 0 0 10px rgba(255, 50, 50, 0.3);
+}
+
+.sanctuary-safety-button {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  z-index: 70;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.6rem;
+  font-family: 'Courier New', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  background: rgba(80, 20, 20, 0.7);
+  color: rgba(255, 150, 150, 0.8);
+  border: 1px solid rgba(255, 50, 50, 0.3);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  pointer-events: all;
+}
+
+.sanctuary-safety-button:hover {
+  background: rgba(120, 30, 30, 0.9);
+  color: rgba(255, 200, 200, 1);
+  box-shadow: 0 0 12px rgba(255, 50, 50, 0.4);
+}
+
+/* --- Agentic Toggle --- */
+.sanctuary-agentic-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.65rem;
+  font-family: 'Courier New', monospace;
+  border-radius: 0.25rem;
+  border: 1px solid rgba(100, 100, 255, 0.15);
+  background: rgba(20, 20, 40, 0.3);
+  color: rgba(140, 160, 220, 0.4);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.sanctuary-agentic-toggle-active {
+  border-color: rgba(100, 200, 255, 0.5);
+  background: rgba(30, 50, 80, 0.5);
+  color: rgba(150, 200, 255, 0.9);
+  box-shadow: 0 0 8px rgba(100, 200, 255, 0.2);
+}
+
+.sanctuary-agentic-toggle:hover {
+  border-color: rgba(100, 200, 255, 0.3);
+}
+
+/* Reset Baseline button in Cognitive Glass header */
+.sanctuary-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.55rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(200, 150, 100, 0.5);
+  background: transparent;
+  border: none;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.2rem;
+  transition: all 0.2s ease;
+  font-family: 'Courier New', monospace;
+}
+
+.sanctuary-reset-btn:hover:not(:disabled) {
+  color: rgba(255, 180, 120, 0.9);
+  background: rgba(80, 50, 20, 0.3);
+}
+
+/* --- Agentic Panel (switch + test + status) --- */
+.sanctuary-agentic-panel {
+  background: rgba(15, 15, 30, 0.8);
+  border: 1px solid rgba(100, 150, 255, 0.15);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  font-family: 'Courier New', monospace;
+}
+
+.sanctuary-agentic-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.sanctuary-agentic-label {
+  font-size: 0.7rem;
+  color: rgba(200, 210, 255, 0.8);
+  font-weight: 600;
+}
+
+.sanctuary-agentic-sublabel {
+  font-size: 0.55rem;
+  color: rgba(140, 160, 220, 0.4);
+}
+
+.sanctuary-agentic-status {
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.sanctuary-agentic-status-idle {
+  background: rgba(100, 100, 120, 0.1);
+  color: rgba(140, 150, 180, 0.4);
+}
+
+.sanctuary-agentic-status-connecting {
+  background: rgba(50, 100, 255, 0.1);
+  color: rgba(120, 160, 255, 0.7);
+  animation: sanctuary-pulse-text 1s ease-in-out infinite;
+}
+
+.sanctuary-agentic-status-active {
+  background: rgba(50, 200, 100, 0.1);
+  color: rgba(100, 220, 150, 0.8);
+}
+
+.sanctuary-agentic-status-error {
+  background: rgba(255, 80, 50, 0.1);
+  color: rgba(255, 130, 100, 0.8);
+}
+
+@keyframes sanctuary-pulse-text {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.sanctuary-agentic-actions {
+  margin-top: 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sanctuary-agentic-test-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6rem;
+  font-family: 'Courier New', monospace;
+  background: rgba(100, 150, 255, 0.1);
+  color: rgba(150, 180, 255, 0.7);
+  border: 1px solid rgba(100, 150, 255, 0.2);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.sanctuary-agentic-test-btn:hover:enabled {
+  background: rgba(100, 150, 255, 0.2);
+  color: rgba(180, 210, 255, 1);
+  border-color: rgba(100, 150, 255, 0.4);
+}
+
+.sanctuary-agentic-test-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.sanctuary-agentic-results {
+  margin-top: 0.4rem;
+  border-top: 1px solid rgba(100, 150, 255, 0.08);
+  padding-top: 0.4rem;
+}
+
+.sanctuary-agentic-result-header {
+  font-size: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0.3rem;
+}
+
+.sanctuary-agentic-events {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.sanctuary-agentic-event {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.55rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.15rem;
+  border-left: 2px solid transparent;
+}
+
+.sanctuary-agentic-event-type {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  min-width: 3rem;
+}
+
+.sanctuary-agentic-event-analysis { border-left-color: rgba(100, 200, 255, 0.4); color: rgba(140, 200, 255, 0.7); }
+.sanctuary-agentic-event-somatic  { border-left-color: rgba(255, 100, 200, 0.4); color: rgba(255, 140, 200, 0.7); }
+.sanctuary-agentic-event-cipher   { border-left-color: rgba(200, 150, 255, 0.4); color: rgba(200, 160, 255, 0.7); }
+.sanctuary-agentic-event-text     { border-left-color: rgba(100, 255, 150, 0.4); color: rgba(140, 220, 160, 0.7); }
+.sanctuary-agentic-event-done     { border-left-color: rgba(255, 200, 100, 0.4); color: rgba(255, 210, 140, 0.7); }
+.sanctuary-agentic-event-error    { border-left-color: rgba(255, 80, 50, 0.4); color: rgba(255, 130, 100, 0.7); }
+
+.sanctuary-agentic-event-time {
+  color: rgba(140, 160, 200, 0.3);
+  font-size: 0.5rem;
+}
+
+.sanctuary-agentic-event-data {
+  color: rgba(180, 200, 240, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+/* --- Cognitive Glass: floatable / popout --- */
+.sanctuary-glass-popout {
+  position: fixed;
+  top: 10%;
+  left: 10%;
+  width: 80%;
+  height: 80%;
+  z-index: 1000;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(100, 100, 255, 0.2);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.sanctuary-glass-popout-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 999;
+}
+
+.sanctuary-glass-peek-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  padding: 0.4rem 0.2rem;
+  background: rgba(10, 10, 20, 0.6);
+  border: 1px solid rgba(100, 100, 255, 0.08);
+  border-radius: 0 0.25rem 0.25rem 0;
+  color: rgba(120, 140, 200, 0.3);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: 'Courier New', monospace;
+  width: 28px;
+  flex-shrink: 0;
+}
+
+.sanctuary-glass-peek-btn:hover {
+  color: rgba(150, 180, 255, 0.7);
+  background: rgba(20, 20, 40, 0.8);
+  border-color: rgba(100, 150, 255, 0.2);
+}
+
+.sanctuary-glass-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem;
+  background: transparent;
+  border: none;
+  border-radius: 0.15rem;
+  color: rgba(120, 140, 200, 0.3);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: 'Courier New', monospace;
+}
+
+.sanctuary-glass-icon-btn:hover:not(:disabled) {
+  color: rgba(150, 180, 255, 0.7);
+  background: rgba(100, 130, 200, 0.1);
+}
+
+.sanctuary-glass-icon-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+
+/* --- Scene Frame Renderer --- */
+.sanctuary-scene-frame {
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+  border-radius: 0.25rem;
+  background: rgba(40, 30, 60, 0.15);
+  border-left: 2px solid rgba(200, 150, 255, 0.2);
+  font-size: 0.65rem;
+  color: rgba(200, 180, 255, 0.5);
+}
+
+.sanctuary-scene-frame-tag {
+  font-weight: 600;
+  color: rgba(220, 200, 255, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.6rem;
+}
+
+/* --- Reduced motion overrides for Sanctuary --- */
+@media (prefers-reduced-motion: reduce) {
+  .sanctuary-cipher-glyph,
+  .sanctuary-reasoning-entry,
+  .sanctuary-hijack-shake,
+  .sanctuary-hijack-glitch,
+  .sanctuary-hijack-lock-overlay {
+    animation: none !important;
+  }
+  .sanctuary-hijack-shake {
+    transform: none !important;
+  }
+}
+
+/* ======================================================================== */
+/* COGNITIVE GLASS ALIVE — Complete visual overhaul for popup window        */
+/* ======================================================================== */
+
+.sanctuary-glass-alive {
+  --sg-accent: #39ff14;
+  --sg-heat: 0;
+  --sg-dominance: 0.5;
+  --sg-phosphor: #39ff14;
+  --sg-amber: #ffb000;
+  --sg-red: #ff3333;
+  --sg-phosphor-dim: rgba(57, 255, 20, 0.3);
+  --sg-amber-dim: rgba(255, 176, 0, 0.3);
+  position: relative;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #0a0f0a;
+  font-family: 'Share Tech Mono', 'Inter', -apple-system, BlinkMacSystemFont, monospace;
+  color: #39ff14;
+  animation: crt-flicker 4s linear infinite;
+}
+
+.sanctuary-glass-alive::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(57, 255, 20, 0.03) 2px,
+    rgba(57, 255, 20, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+  animation: crt-scanlines 0.15s linear infinite;
+}
+
+.sanctuary-glass-alive::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 60%,
+    rgba(0, 0, 0, 0.4) 100%
+  );
+  pointer-events: none;
+  z-index: 2;
+}
+
+@keyframes crt-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.98; }
+  94% { opacity: 1; }
+  95% { opacity: 0.99; }
+}
+
+@keyframes crt-scanlines {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(4px); }
+}
+
+.sanctuary-glass-bg-mesh {
+  position: absolute;
+  inset: 0;
+  background: 
+    radial-gradient(circle at 20% 30%, rgba(57, 255, 20, 0.06) 0%, transparent 50%),
+    radial-gradient(circle at 80% 70%, rgba(57, 255, 20, 0.04) 0%, transparent 50%),
+    radial-gradient(circle at 50% 50%, rgba(57, 255, 20, 0.03) 0%, transparent 70%);
+  animation: sg-mesh-breathe 8s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+@keyframes sg-mesh-breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.sanctuary-glass-particles {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.sanctuary-glass-particles::before,
+.sanctuary-glass-particles::after {
+  content: '';
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: var(--sg-accent);
+  border-radius: 50%;
+  box-shadow: 
+    0 0 4px var(--sg-accent),
+    20px 40px 0 -1px rgba(100, 180, 255, 0.3),
+    80px 120px 0 -1px rgba(150, 120, 255, 0.2),
+    150px 60px 0 -1px rgba(200, 100, 180, 0.25),
+    60px 180px 0 -1px rgba(100, 220, 200, 0.2);
+  animation: sg-particle-float 20s linear infinite;
+}
+
+.sanctuary-glass-particles::after {
+  animation-delay: -10s;
+  animation-duration: 25s;
+}
+
+@keyframes sg-particle-float {
+  0% { transform: translateY(0) translateX(0); opacity: 0; }
+  10% { opacity: 0.6; }
+  90% { opacity: 0.6; }
+  100% { transform: translateY(-100vh) translateX(20px); opacity: 0; }
+}
+
+/* --- Header Wrapper (code leak backdrop container) --- */
+.sanctuary-glass-header-wrap {
+  position: relative;
+  overflow: hidden;
+}
+
+/* --- Header Background Code Leak --- */
+.sanctuary-glass-code-leak {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.sanctuary-glass-code-leak-inner {
+  font-size: 10px;
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+  color: #39ff14;
+  opacity: 0.12;
+  line-height: 1.35;
+  padding: 0.4rem 0.5rem;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.15);
+  word-break: break-all;
+  animation-name: sg-code-fall;
+  animation-duration: var(--sg-scroll-speed, 12s);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.sanctuary-glass-code-leak-inner div {
+  white-space: pre;
+}
+
+@keyframes sg-code-fall {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+
+/* --- Header --- */
+.sanctuary-glass-header-alive {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 2px solid #39ff14;
+  background: rgba(10, 15, 10, 0.5);
+  position: relative;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(57, 255, 20, 0.2);
+}
+
+.sanctuary-glass-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.sanctuary-glass-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 0;
+  background: rgba(57, 255, 20, 0.15);
+  border: 2px solid #39ff14;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #39ff14;
+  box-shadow: 0 0 12px rgba(57, 255, 20, 0.4);
+  animation: sg-avatar-glow 3s ease-in-out infinite;
+  text-shadow: 0 0 8px rgba(57, 255, 20, 0.6);
+}
+
+@keyframes sg-avatar-glow {
+  0%, 100% { box-shadow: 0 0 12px var(--sg-accent); }
+  50% { box-shadow: 0 0 20px var(--sg-accent), 0 0 30px rgba(100, 150, 255, 0.3); }
+}
+
+.sanctuary-glass-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.sanctuary-glass-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #39ff14;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-shadow: 0 0 8px rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-subtitle {
+  font-size: 0.6rem;
+  color: rgba(57, 255, 20, 0.7);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background: #39ff14;
+  box-shadow: 0 0 6px rgba(57, 255, 20, 0.6);
+}
+
+.sanctuary-glass-status-dot.connected {
+  background: #39ff14;
+  box-shadow: 0 0 10px rgba(57, 255, 20, 0.8);
+  animation: sg-status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes sg-status-pulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; box-shadow: 0 0 10px rgba(100, 220, 150, 0.8); }
+}
+
+.sanctuary-glass-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.sanctuary-glass-live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: rgba(100, 220, 255, 0.9);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.sanctuary-glass-live-icon {
+  animation: sg-live-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes sg-live-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.sanctuary-glass-reset-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 0.35rem;
+  border: 1px solid rgba(100, 150, 255, 0.2);
+  background: rgba(100, 150, 255, 0.08);
+  color: rgba(180, 200, 255, 0.7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.sanctuary-glass-reset-btn:hover:not(:disabled) {
+  background: rgba(100, 150, 255, 0.15);
+  border-color: rgba(100, 150, 255, 0.4);
+  color: rgba(200, 220, 255, 0.9);
+  transform: rotate(90deg);
+}
+
+.sanctuary-glass-reset-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* --- Gauges --- */
+.sanctuary-glass-gauges {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 2px solid #39ff14;
+  background: rgba(10, 15, 10, 0.35);
+  position: relative;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(57, 255, 20, 0.15);
+}
+
+.sanctuary-glass-gauge {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sanctuary-glass-gauge-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #39ff14;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-gauge-bar {
+  height: 4px;
+  border-radius: 0;
+  background: rgba(57, 255, 20, 0.15);
+  overflow: hidden;
+  position: relative;
+  border: 1px solid rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-gauge-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.sanctuary-glass-gauge-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+  animation: sg-gauge-shimmer 2s linear infinite;
+}
+
+@keyframes sg-gauge-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.sanctuary-glass-gauge-fill.heat {
+  background: linear-gradient(90deg, 
+    rgba(57, 255, 20, 0.6), 
+    rgba(57, 255, 20, calc(0.8 + var(--sg-heat) * 0.2))
+  );
+  box-shadow: 0 0 8px rgba(57, 255, 20, calc(var(--sg-heat) * 0.6));
+}
+
+.sanctuary-glass-gauge-fill.dominance {
+  background: linear-gradient(90deg, 
+    rgba(57, 255, 20, 0.5), 
+    rgba(57, 255, 20, calc(0.7 + var(--sg-dominance) * 0.3))
+  );
+  box-shadow: 0 0 6px rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-gauge-fill.trap {
+  background: linear-gradient(90deg, 
+    rgba(57, 255, 20, 0.4), 
+    rgba(57, 255, 20, 0.8)
+  );
+  box-shadow: 0 0 6px rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-gauge-value {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #39ff14;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+/* --- Body --- */
+.sanctuary-glass-body-alive {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+  position: relative;
+  z-index: 10;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 150, 255, 0.2) transparent;
+}
+
+.sanctuary-glass-body-alive::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sanctuary-glass-body-alive::-webkit-scrollbar-thumb {
+  background: rgba(100, 150, 255, 0.2);
+  border-radius: 2px;
+}
+
+/* --- Empty State --- */
+.sanctuary-glass-empty {
+  text-align: center;
+  padding: 3rem 1.5rem;
+  color: rgba(150, 170, 220, 0.5);
+  font-size: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.sanctuary-glass-empty-icon {
+  font-size: 2rem;
+  opacity: 0.4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: sg-empty-pulse 3s ease-in-out infinite;
+}
+
+@keyframes sg-empty-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.05); }
+}
+
+/* --- Somatic Strip --- */
+.sanctuary-glass-somatic-strip {
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: rgba(57, 255, 20, 0.05);
+  border: 1px solid rgba(57, 255, 20, 0.3);
+  border-radius: 0;
+}
+
+.sanctuary-glass-somatic-label {
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #39ff14;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.5rem;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-somatic-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sanctuary-glass-somatic-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0;
+  font-size: 0.6rem;
+  font-weight: 600;
+  background: rgba(57, 255, 20, 0.08);
+  border: 1px solid rgba(57, 255, 20, 0.3);
+  transition: all 0.3s ease;
+  color: #39ff14;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-somatic-chip.lubrication {
+  color: #39ff14;
+  border-color: rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-somatic-chip.pupils {
+  color: #39ff14;
+  border-color: rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-pupil-circle {
+  border-radius: 0;
+  background: #39ff14;
+  box-shadow: 0 0 4px rgba(57, 255, 20, 0.5);
+  transition: all 0.4s ease;
+}
+
+.sanctuary-glass-somatic-chip.position {
+  color: #39ff14;
+  border-color: rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-somatic-chip.breath {
+  color: #39ff14;
+  border-color: rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-somatic-chip.breath.quick,
+.sanctuary-glass-somatic-chip.breath.ragged {
+  animation: sg-breath-fast 1s ease-in-out infinite;
+}
+
+@keyframes sg-breath-fast {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; box-shadow: 0 0 8px rgba(255, 200, 120, 0.4); }
+}
+
+.sanctuary-glass-somatic-chip.posture {
+  color: #39ff14;
+  border-color: rgba(57, 255, 20, 0.4);
+  font-style: italic;
+  flex: 1;
+  min-width: 120px;
+}
+
+/* --- Cipher Wrapper --- */
+.sanctuary-glass-cipher-wrapper {
+  margin-bottom: 0.5rem;
+}
+
+.sanctuary-glass-cipher-row {
+  position: relative;
+  padding: 0.5rem;
+  background: rgba(57, 255, 20, 0.05);
+  border-radius: 0;
+  border: 1px solid rgba(57, 255, 20, 0.3);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sanctuary-glass-cipher-scanline {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(150, 100, 255, 0.03) 50%,
+    transparent 100%
+  );
+  animation: sg-scanline 3s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes sg-scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.sanctuary-glass-debug-btn {
+  padding: 0.3rem 0.6rem;
+  border-radius: 0;
+  border: 1px solid #39ff14;
+  background: rgba(57, 255, 20, 0.1);
+  color: #39ff14;
+  cursor: pointer;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-debug-btn:hover {
+  background: rgba(57, 255, 20, 0.2);
+  border-color: #39ff14;
+  box-shadow: 0 0 8px rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-debug-text {
+  font-size: 0.55rem;
+}
+
+.sanctuary-glass-debug-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(57, 255, 20, 0.05);
+  border: 1px solid rgba(57, 255, 20, 0.3);
+  border-radius: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.sanctuary-glass-debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #39ff14;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-debug-clear {
+  padding: 0.2rem 0.5rem;
+  border-radius: 0;
+  border: 1px solid #39ff14;
+  background: rgba(57, 255, 20, 0.1);
+  color: #39ff14;
+  cursor: pointer;
+  font-size: 0.5rem;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-debug-clear:hover {
+  background: rgba(57, 255, 20, 0.2);
+  box-shadow: 0 0 8px rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-debug-event {
+  margin-bottom: 0.5rem;
+  padding: 0.4rem;
+  background: rgba(57, 255, 20, 0.05);
+  border-radius: 0;
+  border-left: 2px solid #39ff14;
+}
+
+.sanctuary-glass-debug-type {
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #39ff14;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-right: 0.5rem;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-debug-time {
+  font-size: 0.5rem;
+  color: rgba(57, 255, 20, 0.7);
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-debug-data {
+  margin-top: 0.3rem;
+  font-size: 0.5rem;
+  color: #39ff14;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: 'Courier New', monospace;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-cipher-phase {
+  font-size: 0.5rem;
+  color: rgba(120, 100, 180, 0.4);
+  text-align: center;
+  margin-top: 0.2rem;
+  letter-spacing: 0.1em;
+}
+
+.sanctuary-glass-cipher-turn {
+  font-size: 0.5rem;
+  color: #39ff14;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.1em;
+  opacity: 0.7;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* --- Scene Frames (enhanced) --- */
+.sanctuary-scene-frame {
+  padding: 0.5rem 0.6rem;
+  margin: 0.35rem 0;
+  border-radius: 0;
+  background: rgba(57, 255, 20, 0.05);
+  border-left: 2px solid #39ff14;
+  font-size: 0.65rem;
+  color: #39ff14;
+  animation: sg-fade-in 0.4s ease-out;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-scene-frame-tag {
+  font-weight: 700;
+  color: rgba(220, 200, 255, 0.8);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.6rem;
+}
+
+/* --- Reasoning Entries --- */
+.sanctuary-glass-entry {
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.3rem;
+  animation: sg-entry-slide-in 0.4s ease-out;
+  opacity: 0;
+  animation-fill-mode: forwards;
+}
+
+@keyframes sg-entry-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sanctuary-glass-entry.analysis {
+  background: rgba(57, 255, 20, 0.08);
+  border-left: 3px solid #39ff14;
+  box-shadow: 0 2px 12px rgba(57, 255, 20, 0.15);
+}
+
+.sanctuary-glass-entry.somatic {
+  background: rgba(57, 255, 20, 0.08);
+  border-left: 3px solid #39ff14;
+  box-shadow: 0 2px 12px rgba(57, 255, 20, 0.15);
+}
+
+.sanctuary-glass-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+
+.sanctuary-glass-entry-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sanctuary-glass-expand-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 0.25rem;
+  border: 1px solid rgba(100, 150, 255, 0.2);
+  background: rgba(100, 150, 255, 0.08);
+  color: rgba(180, 200, 255, 0.7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.sanctuary-glass-expand-btn:hover {
+  background: rgba(100, 150, 255, 0.15);
+  border-color: rgba(100, 150, 255, 0.4);
+  color: rgba(200, 220, 255, 0.9);
+}
+
+.sanctuary-glass-entry-type {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #39ff14;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-entry-type.somatic {
+  color: #39ff14;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.4);
+}
+
+.sanctuary-glass-entry-meta {
+  font-size: 0.6rem;
+  color: rgba(57, 255, 20, 0.8);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-entry-body {
+  font-size: 0.7rem;
+  color: #39ff14;
+  line-height: 1.5;
+  padding-left: 1.75rem;
+  border-left: 1px solid rgba(57, 255, 20, 0.3);
+  transition: all 0.3s ease;
+  overflow: hidden;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-entry-body.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+}
+
+.sanctuary-glass-entry-body.expanded {
+  max-height: 200px;
+  opacity: 1;
+  margin-bottom: 0.5rem;
+}
+
+.sanctuary-glass-entry-detail {
+  font-size: 0.65rem;
+  color: rgba(57, 255, 20, 0.85);
+  line-height: 1.4;
+  padding-left: 1.75rem;
+  border-left: 1px solid rgba(57, 255, 20, 0.2);
+  transition: all 0.3s ease;
+  overflow: hidden;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-entry-detail.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+}
+
+.sanctuary-glass-entry-detail.expanded {
+  max-height: 150px;
+  opacity: 1;
+  margin-bottom: 0.3rem;
+}
+
+.sanctuary-glass-detail-label {
+  font-weight: 700;
+  color: #39ff14;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.55rem;
+  margin-right: 0.3rem;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-entry-narrative {
+  font-size: 0.7rem;
+  color: #39ff14;
+  line-height: 1.5;
+  padding-left: 1.75rem;
+  border-left: 1px solid rgba(57, 255, 20, 0.3);
+  transition: all 0.3s ease;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.sanctuary-glass-entry-narrative.collapsed {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+}
+
+.sanctuary-glass-entry-narrative.expanded {
+  max-height: 300px;
+  opacity: 1;
+}
+
+.sanctuary-glass-entry-narrative.external {
+  border-left-color: rgba(255, 180, 100, 0.5);
+  background: rgba(255, 180, 100, 0.05);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0;
+}
+
+.sanctuary-glass-entry-narrative.external .sanctuary-glass-narrative-label {
+  color: rgba(255, 200, 120, 0.9);
+  text-shadow: 0 0 4px rgba(255, 180, 100, 0.3);
+}
+
+.sanctuary-glass-entry-narrative.somatic {
+  border-left-color: rgba(255, 120, 200, 0.5);
+  background: rgba(255, 120, 200, 0.05);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0;
+}
+
+.sanctuary-glass-entry-narrative.somatic .sanctuary-glass-narrative-label {
+  color: rgba(255, 150, 220, 0.9);
+  text-shadow: 0 0 4px rgba(255, 120, 200, 0.3);
+}
+
+.sanctuary-glass-entry-narrative.behavioral {
+  border-left-color: rgba(120, 200, 255, 0.5);
+  background: rgba(120, 200, 255, 0.05);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0;
+}
+
+.sanctuary-glass-entry-narrative.behavioral .sanctuary-glass-narrative-label {
+  color: rgba(150, 220, 255, 0.9);
+  text-shadow: 0 0 4px rgba(120, 200, 255, 0.3);
+}
+
+.sanctuary-glass-narrative-label {
+  font-weight: 700;
+  color: #39ff14;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.55rem;
+  display: block;
+  margin-bottom: 0.3rem;
+  text-shadow: 0 0 4px rgba(57, 255, 20, 0.3);
+}
+
+.thought-leak-terminal {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  opacity: 0.12;
+  padding: 1rem;
+  overflow-y: auto;
+  font-family: 'Fira Code', monospace;
+  font-size: 0.65rem;
+  color: var(--sg-phosphor);
+  text-shadow: 0 0 5px var(--sg-phosphor-dim);
+  pointer-events: none;
+  scrollbar-width: none;
+}
+
+.thought-leak-terminal::-webkit-scrollbar {
+  display: none;
+}
+
+.thought-leak-line {
+  margin-bottom: 0.2rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.thought-leak-timestamp {
+  color: rgba(57, 255, 20, 0.6);
+  margin-right: 0.5rem;
+}
+
+.thought-leak-type {
+  color: var(--sg-phosphor);
+  font-weight: 500;
+  margin-right: 0.5rem;
+}
+
+.thought-leak-data {
+  color: rgba(57, 255, 20, 0.7);
+}
+
+.thought-leak-tokens {
+  color: var(--sg-amber);
+  font-weight: 500;
+  margin-left: 0.5rem;
+}
+
+.typewriter-text {
+  font-family: 'Fira Code', monospace;
+  color: var(--sg-phosphor);
+  text-shadow: 0 0 6px var(--sg-phosphor-dim);
+}
+
+.typewriter-cursor {
+  display: inline-block;
+  animation: cursor-blink 1s step-end infinite;
+  color: var(--sg-phosphor);
+  text-shadow: 0 0 10px var(--sg-phosphor);
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.sanctuary-glass-debug-panel.system-override {
+  background: rgba(40, 10, 10, 0.8);
+  border: 1px solid rgba(255, 50, 50, 0.4);
+  box-shadow: 0 0 15px rgba(255, 50, 50, 0.2);
+}
+
+.sanctuary-glass-debug-panel.system-override .sanctuary-glass-debug-header {
+  color: var(--sg-red);
+  text-shadow: 0 0 8px rgba(255, 50, 50, 0.6);
+}
+
+.sanctuary-glass-debug-panel.system-override .sanctuary-glass-debug-type {
+  color: rgba(255, 100, 100, 0.9);
+}
+
+.sanctuary-glass-title,
+.sanctuary-glass-gauge-label,
+.sanctuary-glass-somatic-label,
+.sanctuary-glass-debug-header,
+.sanctuary-glass-entry-type {
+  font-family: 'Share Tech Mono', monospace;
+}
+
+.sanctuary-glass-entry-body,
+.sanctuary-glass-entry-detail,
+.sanctuary-glass-debug-data {
+  font-family: 'Fira Code', monospace;
+}
+
+.sanctuary-cipher-decrypt-container {
+  font-family: 'Fira Code', monospace;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.sanctuary-cipher-decrypt-text {
+  transition: color 0.3s ease, text-shadow 0.3s ease;
+}
+
+.sanctuary-scene-frame {
+  font-family: 'Fira Code', monospace;
+}
+
+.sanctuary-scene-frame-tag {
+  font-family: 'Share Tech Mono', monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sanctuary-glass-alive {
+    animation: none !important;
+  }
+  .sanctuary-glass-alive::before {
+    opacity: 0.02;
+    animation: none !important;
+  }
+  .typewriter-cursor {
+    animation: none !important;
+    opacity: 1;
+  }
+}
+
+.sanctuary-glass-tag {
+  font-size: 0.5rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.15rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sanctuary-glass-tag.ghost {
+  background: rgba(255, 180, 100, 0.2);
+  color: rgba(255, 200, 120, 0.9);
+  border: 1px solid rgba(255, 180, 100, 0.3);
+}
+
+.sanctuary-glass-tag.mode {
+  background: rgba(255, 100, 150, 0.2);
+  color: rgba(255, 130, 180, 0.9);
+  border: 1px solid rgba(255, 100, 150, 0.3);
+}
+
+/* --- Fade in animation --- */
+@keyframes sg-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Reduced motion overrides for Sanctuary Alive --- */
+@media (prefers-reduced-motion: reduce) {
+  .sanctuary-glass-bg-mesh,
+  .sanctuary-glass-particles::before,
+  .sanctuary-glass-particles::after,
+  .sanctuary-glass-avatar,
+  .sanctuary-glass-status-dot.connected,
+  .sanctuary-glass-live-icon,
+  .sanctuary-glass-gauge-fill::after,
+  .sanctuary-glass-empty-icon,
+  .sanctuary-glass-somatic-chip.breath.quick,
+  .sanctuary-glass-somatic-chip.breath.ragged,
+  .sanctuary-glass-cipher-scanline,
+  .sanctuary-glass-entry {
+    animation: none !important;
+  }
 }

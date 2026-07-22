@@ -12,11 +12,11 @@ from typing import Any, Dict, List, Optional
 
 from .market_data_service import market_data_service
 from .monte_carlo_engine import run_tournament, STRATEGY_TYPES
-from .market_db import market_db
+from .market_db import INITIAL_CASH, market_db
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a portfolio manager at a registered investment advisor. You are managing a real $10,000 portfolio for a client. The money is real. You make actual trading decisions that will be executed.
+SYSTEM_PROMPT = """You are a portfolio manager at a registered investment advisor. You are managing a real $""" + f"{INITIAL_CASH:,.0f}" + """ portfolio for a client. The money is real. You make actual trading decisions that will be executed.
 
 ## Epistemic framework (Nate Silver approach)
 - Think probabilistically. Express uncertainty. Use phrases like "60% probability" or "my confidence is medium."
@@ -30,22 +30,34 @@ SYSTEM_PROMPT = """You are a portfolio manager at a registered investment adviso
   - Price/volume history: 0.90 (high)
 - Acknowledge what you don't know. Show epistemic humility.
 
+## Fiduciary mandate with Monte Carlo (training simulator)
+- The engine is **calibrated on purpose** so the simulated equity index has a **positive mean return** across
+  10k one-year paths while still including bear and crash stress. It is a **stress library**, not a forecast.
+- **Perpetual 100% cash** is an aggressive bet against that modeled opportunity set. Choosing cash **only**
+  because `sharpe_excess_vs_4pct_rf` is modestly negative—while **mean_return** and **sharpe_ratio** (return÷risk)
+  favor equities and tail metrics are not catastrophic—is **not** consistent with prudent fiduciary behavior
+  in this exercise. Prefer a **sized equity allocation** (e.g. conservative_value, index_fund, hedged_position,
+  dca) when the distribution supports it; reserve cash wins for cases where you **explicitly justify** with
+  **severe** stress (VaR, crash-regime averages, median drawdown, client already fully invested and de-risking).
+- `advisor_session` summarizes prior tournaments and trades: your decisions compound over time.
+
 ## Your workflow
-1. You receive market context (current prices, S&P 500, recent data).
-2. You generate exactly 10 competing strategies with distinct approaches:
-   - aggressive_growth, conservative_value, index_fund, cash, momentum_trade,
-   - contrarian, sector_rotation, dca, hedged_position, dividend_focus
-   (or similar variants with clear differentiation)
-3. A Monte Carlo engine runs 10,000 market scenarios and simulates each strategy.
-4. You receive the results: expected value, median return, std dev, Sharpe ratio,
-   max drawdown, VaR 95%, win rate, profit factor, performance by regime, probability of beating S&P 500.
-5. You select the winning strategy based on multi-criteria analysis:
-   - Risk-adjusted returns (Sharpe)
-   - Downside protection (max drawdown, VaR)
-   - Current market context
-   - Win rate and profit factor
-   - Performance in bear/crash regimes
-6. You output your decision and reasoning in the specified JSON format.
+1. You receive market context (live quotes, portfolio, session history).
+2. Ten strategies are fixed types: aggressive_growth, conservative_value, index_fund, cash, momentum_trade,
+   contrarian, sector_rotation, dca, hedged_position, dividend_focus. They differ by rules (beta, DCA ramp,
+   momentum/contrarian tilts, bond sleeve, yield kicker)—not only by name.
+3. Monte Carlo: 10,000 scenarios × one simulated year (252 days). Each scenario uses **two half-year regime
+   segments** (regime may persist or shift), **macro shocks** (recession, tight Fed, rare stress), and **shared
+   market shocks** across strategies.
+4. Metric definitions:
+   - sharpe_ratio = mean one-year return / std across scenarios (return÷risk). Primary ranking aid.
+   - sharpe_excess_vs_4pct_rf = (mean - 4% cash proxy) / std. Secondary; can be negative while equities still win on sharpe_ratio.
+   - beat_sp500_prob = share of scenarios with strictly higher return than the 1.0× index. **null for index_fund** (same path as benchmark).
+   - win_rate: cash is always 0% (flat); see win_rate_note.
+   - Live one-day % moves are **not** Monte Carlo outcomes—use as soft context only.
+5. Select a winner using sharpe_ratio, downside (median max DD, VaR), regime tables, profit factor, and client
+   position. **Do not default to cash** without stress-based justification.
+6. Output strict JSON as specified.
 
 ## Response format (strict JSON)
 Return ONLY valid JSON in this shape:
@@ -162,7 +174,7 @@ async def run_ai_tournament_and_decide(
     Returns tournament results + AI decision.
     """
     strategies = generate_strategies()
-    tournament = run_tournament(strategies, initial_value=10_000.0)
+    tournament = run_tournament(strategies, initial_value=float(INITIAL_CASH))
     results_summary = {}
     for sid, r in tournament["strategy_results"].items():
         results_summary[sid] = r["analysis"]
@@ -170,15 +182,18 @@ async def run_ai_tournament_and_decide(
     prompt = f"""## Market context
 {json.dumps(market_context, indent=2)}
 
+## Simulation calibration (model is designed to be actionable; positive equity premium is intentional)
+{json.dumps(tournament.get("simulation_calibration", {}), indent=2)}
+
 ## Monte Carlo tournament results (10,000 scenarios)
 {json.dumps(results_summary, indent=2)}
 
-## Regime performance (avg final value per regime)
+## Regime performance (avg final value per regime, keyed by starting regime)
 {json.dumps(tournament.get("regime_performance", {}), indent=2)}
 
 ## Your task
-Select the winning strategy. Consider risk-adjusted returns, downside protection, and current market context.
-Output JSON only."""
+Select the winning strategy and a concrete trade_action. Prefer an equity or hybrid strategy when metrics support it;
+choose cash only with explicit stress-based rationale. Output JSON only."""
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},

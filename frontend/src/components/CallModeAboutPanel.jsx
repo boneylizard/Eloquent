@@ -429,7 +429,7 @@ function IntelVoicePicker({
   const [isFetching, setIsFetching] = useState(false);
 
   const ttsEngine = settings?.ttsEngine || 'kokoro';
-  const isChatterbox = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo';
+  const isChatterbox = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo' || ttsEngine === 'chatterbox_nano' || ttsEngine === 'voxcpm';
   const isKokoro = ttsEngine === 'kokoro';
 
   useEffect(() => {

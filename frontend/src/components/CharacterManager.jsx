@@ -1,6 +1,8 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useApp } from '../contexts/AppContext';
 import CharacterEditor from './CharacterEditor';
+import CharacterCreatorStudio from './CharacterCreatorStudio';
+import CharacterDatasetImporter from './CharacterDatasetImporter';
 import { CharacterCardIntegration } from '../utils/CharacterCardUtils';
 import './CharacterManager.css';
 
@@ -13,7 +15,9 @@ const CharacterManager = ({ onSelectCharacter }) => {
     applyCharacter,
     PRIMARY_API_URL,
     setActiveCharacter,
-    buildSystemPrompt
+    setPrimaryCharacter,
+    buildSystemPrompt,
+    setActiveTab,
   } = useApp();
 
   const [activeView, setActiveView] = useState('list');
@@ -113,9 +117,23 @@ const CharacterManager = ({ onSelectCharacter }) => {
   }, [PRIMARY_API_URL]);
 
   const handleSaveCharacter = (characterData) => {
-    saveCharacter(characterData);
+    const savedCharacter = saveCharacter(characterData);
+    if (!savedCharacter?.id) return;
+    setActiveCharacter(savedCharacter);
+    setPrimaryCharacter(savedCharacter);
+    setActiveTab('chat');
+  };
+
+  const handleOpenFullEditor = (characterData) => {
+    const nextCharacter = { ...characterData, id: characterData?.id || null };
+    setActiveCharacter(nextCharacter);
+    setEditingCharacter(nextCharacter);
+    setActiveView('edit');
+  };
+
+  const handleImportDatasetCharacters = (importedCharacters) => {
+    importedCharacters.forEach((character) => saveCharacter(character));
     setActiveView('list');
-    setEditingCharacter(null);
   };
 
   const handleEditCharacter = (character) => {
@@ -144,6 +162,11 @@ const CharacterManager = ({ onSelectCharacter }) => {
     }
   };
 
+  const handleSelectAssistant = () => {
+    applyCharacter(null);
+    setActiveTab('chat');
+  };
+
 
   // Get all unique tags from all characters
   const allTags = [...new Set((characters || []).flatMap(char => char.tags || []))].sort();
@@ -170,7 +193,10 @@ const CharacterManager = ({ onSelectCharacter }) => {
       {activeView === 'list' && (
         <div className="character-list-view">
           <div className="character-list-header">
-            <h2>Character Library</h2>
+            <div>
+              <h2>Character Library</h2>
+              <p className="character-library-intro">Create a character by hand, import a compatible card, or ask Mirid for a starting draft.</p>
+            </div>
             <div className="header-buttons">
               {/* Import/Export Controls */}
               <input
@@ -182,6 +208,17 @@ const CharacterManager = ({ onSelectCharacter }) => {
               />
 
               <button
+                className="create-btn"
+                onClick={() => {
+                  setActiveCharacter(null);
+                  setEditingCharacter(null);
+                  setActiveView('create');
+                }}
+              >
+                New Character
+              </button>
+
+              <button
                 className="import-btn"
                 onClick={() => importFileRef.current?.click()}
                 disabled={isImporting}
@@ -189,17 +226,25 @@ const CharacterManager = ({ onSelectCharacter }) => {
                 {isImporting ? 'Importing...' : '📥 Import Card'}
               </button>
 
+              <button className="import-btn" onClick={() => setActiveView('dataset')}>
+                Import Dataset
+              </button>
+
               <button
-                className="create-btn"
+                className="import-btn mirid-builder-btn"
                 onClick={() => {
                   setActiveCharacter(null);
-                  setActiveView('create');
+                  setActiveView('builder');
                 }}
               >
-                + Create New Character
+                <span aria-hidden="true">✦</span> Build with Mirid
               </button>
             </div>
           </div>
+
+          <p className="character-import-note">
+            Import supports TavernAI and SillyTavern V1 or V2 character cards in JSON or PNG format. Imported cards open here for review before they are saved.
+          </p>
 
           <div className="character-filters">
             <div className="search-box">
@@ -225,8 +270,28 @@ const CharacterManager = ({ onSelectCharacter }) => {
           </div>
 
           <div className="character-grid">
-            {sortedCharacters.length > 0 ? (
-              sortedCharacters.map(character => (
+            <div
+              className="character-card assistant-card"
+              onClick={handleSelectAssistant}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handleSelectAssistant();
+                }
+              }}
+            >
+              <div className="character-avatar assistant-avatar">
+                <div className="avatar-placeholder">A</div>
+              </div>
+              <div className="character-info">
+                <h3>Assistant</h3>
+                <p className="assistant-card-copy">Plain chat. No character card or roleplay instructions.</p>
+              </div>
+            </div>
+
+            {sortedCharacters.map(character => (
                 <div
                   key={character.id}
                   className="character-card"
@@ -334,13 +399,14 @@ const CharacterManager = ({ onSelectCharacter }) => {
                     </div>
                   </div>
                 </div>
-              ))
-            ) : (
-              <div className="no-characters">
-                <p>No characters found. Create your first character to get started!</p>
-              </div>
-            )}
+              ))}
           </div>
+
+          {sortedCharacters.length === 0 && (
+            <div className="no-characters">
+              <p>Your library has no character cards yet. The plain Assistant remains available whenever you want a blank-slate chat.</p>
+            </div>
+          )}
         </div>
       )}
 
@@ -357,6 +423,21 @@ const CharacterManager = ({ onSelectCharacter }) => {
 
           <CharacterEditor onSave={handleSaveCharacter} />
         </div>
+      )}
+
+      {activeView === 'builder' && (
+        <CharacterCreatorStudio
+          onSave={handleSaveCharacter}
+          onOpenFullEditor={handleOpenFullEditor}
+          onCancel={() => setActiveView('list')}
+        />
+      )}
+
+      {activeView === 'dataset' && (
+        <CharacterDatasetImporter
+          onImport={handleImportDatasetCharacters}
+          onCancel={() => setActiveView('list')}
+        />
       )}
 
       {activeView === 'edit' && editingCharacter && (

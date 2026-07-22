@@ -43,17 +43,14 @@ const IDB_KEYS = new Set([
   'Eloquent-conversations-index',
   'LiangLocal-avatar-sizes', // dedicated persistence for avatar sizes (survives backend overwrite)
   'LiangLocal-tts-full-audio-dir', // FileSystemDirectoryHandle for full-response TTS backups
-  'LiangLocal-intensity-presets',
-  'LiangLocal-intensity-session-log-index',
-  'LiangLocal-intensity-persistent-state',
-  'LiangLocal-intensity-milestones',
+
 ]);
 
 // Key prefixes: any key starting with these is stored in IDB
 const IDB_KEY_PREFIXES = [
   'Eloquent-conversation-',
   'LiangLocal-variants-',
-  'LiangLocal-intensity-session-logs-',
+
 ];
 
 /** Never read/write these via localStorage fallback — prevents deleted chats resurrecting. */

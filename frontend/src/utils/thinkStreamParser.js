@@ -34,13 +34,35 @@ export function createThinkStreamParser() {
 
 
 
-/** Tag pairs seen from NanoGPT / GLM / DeepSeek-style streams */
+/** Tag pairs seen from various thinking model streams */
 
 const THINK_TAG_VARIANTS = [
 
-  { open: '<think>', close: '</think>' },
+  { open: '<?xml', close: '?>' },
 
   { open: '<thinking>', close: '</thinking>' },
+
+  { open: '<think>', close: '</think>' },
+
+  { open: '<reasoning>', close: '</reasoning>' },
+
+  { open: '<analysis>', close: '</analysis>' },
+
+  { open: '<internal>', close: '</internal>' },
+
+  { open: '<thought>', close: '</thought>' },
+
+  { open: '<thought_process>', close: '</thought_process>' },
+
+  { open: '<chain_of_thought>', close: '</chain_of_thought>' },
+
+  { open: '【thinking】', close: '【/thinking】' },
+
+  { open: '[THINKING]', close: '[/THINKING]' },
+
+  { open: '<|thinking|>', close: '<|end_thinking|>' },
+
+  { open: '<|reasoning|>', close: '<|end_reasoning|>' },
 
 ];
 
@@ -556,8 +578,6 @@ export function createReasoningStreamController({
 
     const dedicatedReasoning = String(deltaReasoning || '');
 
-
-
     if (dedicatedReasoning) {
 
       thinkBlockStartedAtMs = thinkBlockStartedAtMs ?? Date.now();
@@ -620,11 +640,23 @@ export function createReasoningStreamController({
 
     }
 
-
-
+    // CRITICAL: When provider sends dedicated reasoning (deltaReasoning),
+    // deltaText should be treated as pure visible content - NOT parsed for think tags.
+    // NanoGPT separates reasoning from content, so we trust that separation.
+    // Only parse deltaText for inline think tags if provider hasn't sent dedicated reasoning.
     const wasInThink = thinkState.inThink;
-
-    const { visibleDelta, reasoningDelta } = consumeThinkStreamChunk(thinkState, chunkText);
+    let visibleDelta = '';
+    let reasoningDelta = '';
+    
+    if (providerReasoningDetected) {
+      // Provider sent dedicated reasoning - deltaText is already clean visible content
+      visibleDelta = chunkText;
+    } else {
+      // No dedicated reasoning yet - check for inline think tags in content
+      const parsed = consumeThinkStreamChunk(thinkState, chunkText);
+      visibleDelta = parsed.visibleDelta;
+      reasoningDelta = parsed.reasoningDelta;
+    }
 
 
 
@@ -690,6 +722,13 @@ export function createReasoningStreamController({
 
       reasoningStreaming = false;
 
+    } else if (visibleText && providerReasoningDetected) {
+
+      // Provider sends reasoning + text in every chunk (e.g. OpenRouter).
+      // Once visible text has started, the thinking phase is over — stop the
+      // live timer even if the chunk still carries a reasoning field.
+      reasoningStreaming = false;
+
     }
 
     if (!reasoningStreaming && thinkBlockStartedAtMs != null) {
@@ -742,10 +781,13 @@ export function createReasoningStreamController({
 
     const fin = finalizeThinkStream(thinkState);
 
-    if (fin.visible) {
-
+    // When providerReasoningDetected is true, the think parser was bypassed for
+    // later chunks so fin.visible only contains content up to the point where
+    // provider reasoning was first detected — stale data that would truncate
+    // visibleText. Only use fin.visible when it has more content than what
+    // visibleText already accumulated.
+    if (fin.visible && fin.visible.length > visibleText.length) {
       visibleText = fin.visible;
-
     }
 
     if (fin.reasoning) {

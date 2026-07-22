@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { useVideoWatch } from '../contexts/VideoWatchContext';
+import { useMobileRemote } from '../contexts/MobileRemoteContext';
 import { Input } from './ui/input';
 import { Switch } from './ui/switch';
 import { Label } from './ui/label';
@@ -10,8 +10,7 @@ function defaultSessionId() {
 }
 
 /**
- * Settings → General: Tailscale / LAN phone remote for Watch + Chat (remote.html).
- * Session id and enabled flag persist in localStorage via VideoWatchContext.
+ * Settings → General: Tailscale / LAN phone remote for Chat and desktop controls.
  */
 export default function MobileRemoteSettings() {
   const {
@@ -21,7 +20,7 @@ export default function MobileRemoteSettings() {
     setRemoteEnabled,
     remoteLastSeenAt,
     remoteError,
-  } = useVideoWatch();
+  } = useMobileRemote();
 
   const remoteUrl = `${window.location.origin}/remote.html?session=${encodeURIComponent(
     remoteSessionId || ''
@@ -92,7 +91,7 @@ export default function MobileRemoteSettings() {
         </div>
         <p className="text-xs text-muted-foreground">
           Remote: mic <strong>start</strong> / <strong>stop &amp; send</strong> (tap twice, no hold),
-          stop TTS, chunk replay, plus Watch controls.
+          stop TTS, replay the last reply, and control the desktop interface.
         </p>
         <p className="text-xs text-muted-foreground leading-relaxed">
           The phone page also has a <strong className="text-foreground">Desktop</strong> card: open Settings on a chosen tab, jump to Models/Characters/Documents, toggle light/dark, and send{' '}

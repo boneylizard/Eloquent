@@ -19,24 +19,24 @@ const RAGIndicator = () => {
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Badge variant="outline" className="bg-yellow-50 text-yellow-800 border-yellow-200 dark:bg-yellow-900/20 dark:text-yellow-400 dark:border-yellow-800/30">
+            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400">
               <AlertCircle className="h-3 w-3 mr-1" />
               Document Context: No Files Selected
             </Badge>
           </TooltipTrigger>
           <TooltipContent>
-            <p>Document context is enabled but no documents are selected in Settings</p>
+            <p>Document context is on, but no files are checked for context. Open Documents to select some.</p>
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
     );
   }
-  
+
   return (
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>
-          <Badge variant="outline" className="bg-green-50 text-green-800 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-800/30">
+          <Badge variant="outline" className="border-primary/40 bg-primary/10 text-primary">
             <FileText className="h-3 w-3 mr-1" />
             Document Context: {docCount} {docCount === 1 ? 'file' : 'files'}
           </Badge>

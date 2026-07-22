@@ -969,7 +969,7 @@ const ForensicLinguistics = ({ isOpen = true, onClose }) => {
                 </div>
 
                 {loading ? (
-                  <p className="text-center py-4">Loading...</p>
+                  <p className="text-center py-4">Loading corpora…</p>
                 ) : (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {availableFigures.map(f => (

@@ -1,7 +1,19 @@
 import os
+import shutil
 # Disable problematic Torch optimizations for Python 3.12+
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
+
+from pathlib import Path
+
+# Load optional .env from project root (voice sculpt, Applio, D-ID, etc.)
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).resolve().parent / ".env"
+    if _env_path.is_file():
+        load_dotenv(_env_path)
+except ImportError:
+    pass
 
 import sys
 import uvicorn
@@ -11,7 +23,6 @@ import time
 import webbrowser
 import threading
 import json
-from pathlib import Path
 import datetime
 
 RUN_TAG = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -470,6 +481,18 @@ def start_backend(host, port, gpu_id, root_path, tts_port=8002, startup_report_p
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
 
+        # Ensure FFmpeg is visible to audioread/librosa for non-WAV file uploads.
+        try:
+            sys.path.insert(0, root_path)
+            from backend.app.ffmpeg_utils import find_ffmpeg
+            ffmpeg_bin = find_ffmpeg()
+        except Exception:
+            ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            ffmpeg_dir = os.path.dirname(ffmpeg_bin)
+            env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
+            env["FFMPEG_BIN"] = ffmpeg_bin
+
         backend_log_path = get_backend_log_path(port)
         env["ELOQUENT_LOG_DIR"] = str(get_log_dir(root_path))
         env["BACKEND_LOG_PATH"] = str(backend_log_path)
@@ -578,8 +601,42 @@ def start_tts_service(root_path, port=8002, startup_report_path=None):
 
 
 
+def kill_process_on_port(port):
+    """Forcefully kill any Windows process listening on the given port."""
+    try:
+        import subprocess
+        # Find PID using netstat
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return
+            
+        pid_to_kill = None
+        for line in result.stdout.splitlines():
+            # Look for lines like: TCP    0.0.0.0:8000    0.0.0.0:0    LISTENING    12345
+            if f":{port} " in line and "LISTENING" in line:
+                parts = line.split()
+                if len(parts) >= 5:
+                    pid_to_kill = parts[-1]
+                    break
+                    
+        if pid_to_kill and pid_to_kill != "0":
+            print(f"🧹 Port {port} is locked by PID {pid_to_kill}. Terminating it...")
+            subprocess.run(["taskkill", "/F", "/PID", pid_to_kill], capture_output=True)
+            time.sleep(1) # Give the OS a second to actually release the port
+    except Exception as e:
+        print(f"⚠️ Could not kill process on port {port}: {e}")
+
 def main():
     project_root = get_project_root()
+
+    # Pre-emptively kill any orphaned processes on our standard ports
+    print("🧹 Cleaning up standard ports...")
+    kill_process_on_port(8000)
+    kill_process_on_port(8001)
+    kill_process_on_port(8002)
 
     startup_report_path = get_startup_report_path(project_root)
     try:

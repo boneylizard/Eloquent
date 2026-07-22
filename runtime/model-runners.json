@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": 1,
+  "versions": {
+    "llamaCpp": "b10068",
+    "mlxLm": "0.31.3",
+    "appleFoundationModels": "macOS 26+"
+  },
+  "runners": [
+    {
+      "id": "windows-nvidia-cuda12",
+      "platform": "windows-x86_64",
+      "engine": "llama.cpp",
+      "accelerator": "nvidia",
+      "priority": 500,
+      "modelFormats": ["gguf"],
+      "executable": "windows-x86_64/cuda12/llama-server.exe",
+      "probeArgs": ["--list-devices"],
+      "probeMarkers": ["CUDA"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "windows-amd-hip",
+      "platform": "windows-x86_64",
+      "engine": "llama.cpp",
+      "accelerator": "amd",
+      "priority": 450,
+      "modelFormats": ["gguf"],
+      "executable": "windows-x86_64/hip/llama-server.exe",
+      "probeArgs": ["--list-devices"],
+      "probeMarkers": ["ROCm", "HIP", "AMD"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "windows-vulkan",
+      "platform": "windows-x86_64",
+      "engine": "llama.cpp",
+      "accelerator": "vulkan",
+      "priority": 350,
+      "modelFormats": ["gguf"],
+      "executable": "windows-x86_64/vulkan/llama-server.exe",
+      "probeArgs": ["--list-devices"],
+      "probeMarkers": ["Vulkan"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "windows-cpu",
+      "platform": "windows-x86_64",
+      "engine": "llama.cpp",
+      "accelerator": "cpu",
+      "priority": 100,
+      "modelFormats": ["gguf"],
+      "executable": "windows-x86_64/cpu/llama-server.exe",
+      "probeArgs": ["--version"],
+      "probeMarkers": ["version", "llama"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "windows-arm-adreno",
+      "platform": "windows-aarch64",
+      "engine": "llama.cpp",
+      "accelerator": "opencl",
+      "priority": 400,
+      "modelFormats": ["gguf"],
+      "executable": "windows-aarch64/opencl/llama-server.exe",
+      "probeArgs": ["--list-devices"],
+      "probeMarkers": ["OpenCL", "Adreno"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "windows-arm-cpu",
+      "platform": "windows-aarch64",
+      "engine": "llama.cpp",
+      "accelerator": "cpu",
+      "priority": 100,
+      "modelFormats": ["gguf"],
+      "executable": "windows-aarch64/cpu/llama-server.exe",
+      "probeArgs": ["--version"],
+      "probeMarkers": ["version", "llama"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "macos-apple-intelligence",
+      "platform": "macos-aarch64",
+      "engine": "Apple Foundation Models",
+      "accelerator": "apple",
+      "priority": 700,
+      "modelFormats": ["system"],
+      "executable": "macos-aarch64/apple/mirid-apple-runner",
+      "probeArgs": ["--probe"],
+      "probeMarkers": ["available"],
+      "launchKind": "apple-foundation"
+    },
+    {
+      "id": "macos-mlx",
+      "platform": "macos-aarch64",
+      "engine": "MLX LM",
+      "accelerator": "apple",
+      "priority": 600,
+      "modelFormats": ["mlx"],
+      "executable": "macos-aarch64/mlx/mirid-mlx-runner",
+      "probeArgs": ["--probe"],
+      "probeMarkers": ["available"],
+      "launchKind": "mlx-server"
+    },
+    {
+      "id": "macos-metal",
+      "platform": "macos-aarch64",
+      "engine": "llama.cpp",
+      "accelerator": "metal",
+      "priority": 500,
+      "modelFormats": ["gguf"],
+      "executable": "macos-aarch64/metal/llama-server",
+      "probeArgs": ["--list-devices"],
+      "probeMarkers": ["Metal"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "macos-cpu",
+      "platform": "macos-aarch64",
+      "engine": "llama.cpp",
+      "accelerator": "cpu",
+      "priority": 100,
+      "modelFormats": ["gguf"],
+      "executable": "macos-aarch64/cpu/llama-server",
+      "probeArgs": ["--version"],
+      "probeMarkers": ["version", "llama"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "linux-amd-rocm",
+      "platform": "linux-x86_64",
+      "engine": "llama.cpp",
+      "accelerator": "amd",
+      "priority": 450,
+      "modelFormats": ["gguf"],
+      "executable": "linux-x86_64/rocm/llama-server",
+      "probeArgs": ["--list-devices"],
+      "probeMarkers": ["ROCm", "HIP", "AMD"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "linux-vulkan",
+      "platform": "linux-x86_64",
+      "engine": "llama.cpp",
+      "accelerator": "vulkan",
+      "priority": 350,
+      "modelFormats": ["gguf"],
+      "executable": "linux-x86_64/vulkan/llama-server",
+      "probeArgs": ["--list-devices"],
+      "probeMarkers": ["Vulkan"],
+      "launchKind": "llama-server"
+    },
+    {
+      "id": "linux-cpu",
+      "platform": "linux-x86_64",
+      "engine": "llama.cpp",
+      "accelerator": "cpu",
+      "priority": 100,
+      "modelFormats": ["gguf"],
+      "executable": "linux-x86_64/cpu/llama-server",
+      "probeArgs": ["--version"],
+      "probeMarkers": ["version", "llama"],
+      "launchKind": "llama-server"
+    }
+  ]
+}

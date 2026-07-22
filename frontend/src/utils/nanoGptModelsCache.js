@@ -22,6 +22,9 @@ export function normalizeNanoGptModel(m) {
     || inferProviderFromName(id)
     || inferProviderFromName(name);
   const category = String(m.category || m.group || 'Models');
+  const capabilityList = Array.isArray(m.capabilities)
+    ? new Set(m.capabilities.map((capability) => String(capability).toLowerCase()))
+    : null;
   return {
     id: String(id),
     name,
@@ -29,12 +32,14 @@ export function normalizeNanoGptModel(m) {
     category,
     visible: m.visible !== false,
     api: String(m.api || m.type || 'chat'),
-    capabilities: m.capabilities && typeof m.capabilities === 'object'
+    description: String(m.description || ''),
+    contextLength: Number(m.maxInputTokens || m.context_length || 0) || null,
+    capabilities: m.capabilities && typeof m.capabilities === 'object' && !Array.isArray(m.capabilities)
       ? m.capabilities
       : {
-        reasoning: Boolean(m.reasoning),
-        vision: Boolean(m.vision),
-        pdf: Boolean(m.pdf),
+        reasoning: Boolean(m.reasoning || capabilityList?.has('reasoning')),
+        vision: Boolean(m.vision || capabilityList?.has('vision')),
+        pdf: Boolean(m.pdf || capabilityList?.has('pdf')),
       },
     raw: m,
   };

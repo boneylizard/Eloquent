@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Body, Request, Query
 
-from .market_db import market_db
+from .market_db import INITIAL_CASH, market_db
 from .market_data_service import market_data_service
 from .monte_carlo_engine import run_tournament
 from .trading_agent import generate_strategies
@@ -19,8 +19,8 @@ router = APIRouter(prefix="/market-sim", tags=["Market Simulator"])
 async def get_status():
     """Health check and feature availability."""
     try:
-        market_data_service.get_sp500_value()
-        data_ok = True
+        sp = market_data_service.get_sp500_value()
+        data_ok = sp is not None and sp > 0
     except Exception:
         data_ok = False
     return {
@@ -36,6 +36,15 @@ async def get_portfolio():
     p = market_db.init_portfolio_if_needed()
     sp500 = market_data_service.get_sp500_value()
     return {"portfolio": p, "sp500_current": sp500}
+
+
+@router.post("/portfolio/reset")
+async def reset_portfolio_to_starting_capital():
+    """Append a new state: full cash at INITIAL_CASH, empty positions. Does not delete trade/tournament history."""
+    market_db.init_portfolio_if_needed()
+    sp500 = market_data_service.get_sp500_value()
+    p = market_db.reset_to_starting_capital(sp500_value=sp500)
+    return {"portfolio": p, "sp500_current": sp500, "starting_capital": INITIAL_CASH}
 
 
 @router.get("/quotes")
@@ -87,10 +96,29 @@ async def run_tournament_endpoint(
     p = market_db.get_portfolio()
     if not p:
         p = market_db.init_portfolio_if_needed(sp500)
+    recent_trades = market_db.get_trades(10)
     market_context = {
         "sp500": sp500,
         "quotes": quotes,
         "portfolio": p,
+        "advisor_session": {
+            "tournaments_completed_prior": market_db.count_tournaments(),
+            "recent_trades": [
+                {
+                    "symbol": t.get("symbol"),
+                    "side": t.get("side"),
+                    "shares": t.get("shares"),
+                    "total": t.get("total"),
+                    "created_at": t.get("created_at"),
+                    "strategy_id": t.get("strategy_id"),
+                }
+                for t in recent_trades
+            ],
+            "note": (
+                "Paper capital for training, but you must treat it as a live fiduciary mandate. "
+                "Decisions compound over time across tournaments and trades."
+            ),
+        },
     }
 
     model_manager = getattr(request.app.state, "model_manager", None)
@@ -115,6 +143,7 @@ async def run_tournament_endpoint(
     results_with_regime = {
         **results_summary,
         "_regime_performance": tournament.get("regime_performance"),
+        "_simulation_calibration": tournament.get("simulation_calibration"),
     }
     market_db.save_tournament(
         run_id=tournament["run_id"],
@@ -148,8 +177,8 @@ async def run_tournament_endpoint(
         price = q.get("price")
         p = market_db.get_portfolio()
         if price and price > 0 and p:
-            cash = p.get("cash", 10_000)
-            shares = min(cash * 0.95 / price, 100)  # Use up to 95% cash, max 100 shares
+            cash = p.get("cash", INITIAL_CASH)
+            shares = cash * 0.95 / price  # Up to 95% of cash (no arbitrary share cap)
             if shares >= 0.01:
                 total = round(shares * price, 2)
                 tid = market_db.record_trade(
@@ -184,6 +213,7 @@ async def run_tournament_endpoint(
             "strategies": strategies,
             "results": results_summary,
             "regime_performance": tournament.get("regime_performance"),
+            "simulation_calibration": tournament.get("simulation_calibration"),
         },
         "trade_executed": trade_executed,
     }

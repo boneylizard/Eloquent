@@ -8,11 +8,13 @@ import {
   SelectItem,
 } from '@/components/ui/select';
 
+const DEFAULT_ASSISTANT_VALUE = '__mirid_default_assistant__';
+
 const CharacterSelector = () => {
   const {
     characters,
     primaryCharacter,
-    setPrimaryCharacter,
+    applyCharacter,
     loadCharacters,
     settings,
     activeCharacterIds
@@ -33,21 +35,20 @@ const CharacterSelector = () => {
     if (!settings?.multiRoleMode) return;
     const isUserRole = primaryCharacter?.chat_role === 'user';
     if (isUserRole) {
-      setPrimaryCharacter(filteredCharacters[0] || null);
+      applyCharacter(filteredCharacters[0]?.id || null);
     }
-  }, [filteredCharacters, primaryCharacter, setPrimaryCharacter, settings?.multiRoleMode]);
+  }, [applyCharacter, filteredCharacters, primaryCharacter, settings?.multiRoleMode]);
 
   return (
     <Select
-      value={primaryCharacter?.id || ''}
-      onValueChange={id =>
-        setPrimaryCharacter(filteredCharacters.find(c => c.id === id) || null)
-      }
+      value={primaryCharacter?.id || DEFAULT_ASSISTANT_VALUE}
+      onValueChange={(value) => applyCharacter(value === DEFAULT_ASSISTANT_VALUE ? null : value)}
     >
       <SelectTrigger className="w-[180px]">
-        <SelectValue placeholder="Select Character" />
+        <SelectValue />
       </SelectTrigger>
       <SelectContent>
+        <SelectItem value={DEFAULT_ASSISTANT_VALUE}>Assistant · plain chat</SelectItem>
         {filteredCharacters.map(c => (
           <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
         ))}

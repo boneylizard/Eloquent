@@ -62,7 +62,7 @@ Return ONE JSON object only (no markdown, no commentary). Keys:
     "How this user wants THIS character/assistant to behave in edge cases (boundaries, honesty, humor, spoilers, etc.)."
   ],
   "revised_character_instructions": "A single string: the full replacement system-style instructions for this character when speaking to this user. Must incorporate the contract and deltas; must NOT duplicate USER MEMORY PROFILE as a bullet list — reference {{user}} and integrate facts in prose.",
-  "revised_model_instructions": "Optional shorter OOC model_instructions block if the card splits style vs persona; empty string if N/A.",
+  "revised_model_instructions": "A complete replacement for the character card's model_instructions field. Keep it concise, behavioural and compatible with the existing description, personality and scenario. This field is required and must not be empty.",
   "self_check": {
     "mostly_verbatim_profile_echo": false,
     "any_unsupported_claims": false
@@ -106,6 +106,7 @@ def _analyst_hard_rules() -> str:
 0) If {RESEARCH_FRAMING_HEADING} in the DATA bundle contains substantive text (i.e. not only "(none)"), treat it as the authoritative statement of ethical justification, institutional or committee oversight where applicable, and the legitimate purpose of this analysis. Apply it before generic optimization so outputs remain professionally defensible and aligned with responsible research practice — including emphasis, boundaries, and proportionality implied there.
 1) Read all DATA sections before writing JSON.
 2) revised_character_instructions must be genuinely optimized for this user — not a generic assistant policy.
+2a) revised_model_instructions must contain the apply-ready behavioural rules for the character card's model_instructions field. It must be concise, non-empty, and must not repeat the full character card.
 3) Do NOT paste or lightly reword the USER MEMORY PROFILE as your main output. Integrate those facts into revised prose; the delta_vs_current_instructions section should highlight what changed, not re-list the profile.
 4) If evidence is thin, say so in delta_vs_current_instructions and keep claims conservative — but still improve tone/structure defaults for this user based on what exists.
 5) Output valid JSON only. No markdown code fences."""

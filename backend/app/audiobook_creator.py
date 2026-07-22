@@ -109,9 +109,9 @@ async def main() -> int:
     )
     parser.add_argument(
         "--engine", "-e",
-        choices=["chatterbox", "chatterbox_turbo"],
+        choices=["chatterbox", "chatterbox_turbo", "chatterbox_nano"],
         default="chatterbox",
-        help="TTS engine: chatterbox (Faster) or chatterbox_turbo (default: chatterbox)",
+        help="TTS engine: chatterbox (Faster), chatterbox_turbo, or chatterbox_nano (default: chatterbox)",
     )
     parser.add_argument(
         "--no-voice",

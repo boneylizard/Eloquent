@@ -15,7 +15,7 @@ import {
   introJsonIsPartialUsable,
   buildCharacterIntroRepairPrompt,
 } from './characterIntro.js';
-import { buildFlowGenerateRequestBody, readFlowGenerateError, resolveFlowGenerateConfig } from './flowGenerateApi';
+import { buildFlowGenerateRequestBody, readFlowGenerateError, resolveFlowGenerateConfig } from './flowGenerateApi.js';
 
 export const SYSTEM_INTRO_REQUEST_PURPOSE = 'system_intro';
 

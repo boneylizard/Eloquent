@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "python": "3.12",
+  "platform": "win_amd64",
+  "cuda": "12.8",
+  "publishBaseUrl": "https://huggingface.co/datasets/boneylizardwizard/mirid-cuda-wheels/resolve/main/wheelhouse",
+  "cudaArchitectures": ["75", "80", "86", "89", "100", "120"],
+  "packages": [
+    {
+      "name": "llama-cpp-python",
+      "importName": "llama_cpp",
+      "version": "0.3.34",
+      "sourceUrl": "https://files.pythonhosted.org/packages/c1/2f/46487e949da42b31847853793ddbfd44c7414e94d4364c9a41f91f30af27/llama_cpp_python-0.3.34.tar.gz",
+      "sourceSha256": "d849d286d808284f1d3ec1bd6875572430d29d1f9574a010232caa4e9cef0e35",
+      "cmakeArgs": [
+        "-DGGML_CUDA=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DLLAMA_BUILD_TESTS=OFF",
+        "-DLLAMA_BUILD_EXAMPLES=OFF",
+        "-DLLAMA_CURL=OFF"
+      ]
+    },
+    {
+      "name": "stable-diffusion-cpp-python",
+      "importName": "stable_diffusion_cpp",
+      "version": "0.4.7",
+      "sourceUrl": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz",
+      "sourceSha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+      "cmakeArgs": [
+        "-DSD_CUDA=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ]
+    }
+  ]
+}

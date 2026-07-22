@@ -197,6 +197,18 @@ async def prewarm_engine(engine: str) -> None:
         await loop.run_in_executor(None, stt.load_parakeet_v3_model)
     elif engine == "parakeet-zh":
         await loop.run_in_executor(None, stt.load_parakeet_zh_model)
+    elif engine == "nemotron":
+        await loop.run_in_executor(None, stt.load_nemotron_model)
+    elif engine == "moonshine":
+        if not stt.is_moonshine_available():
+            logger.warning("Moonshine venv not found. Run backend/setup_moonshine.bat first.")
+        else:
+            logger.info("Moonshine venv is ready.")
+    elif engine == "parakeet-cpp" or engine.startswith("parakeet-cpp:"):
+        if not stt.is_parakeet_cpp_available():
+            logger.warning("Parakeet.cpp is unavailable in this Mirid runtime.")
+        else:
+            logger.info("parakeet-cli binary found.")
 
 
 async def transcribe_file_to_disk(
@@ -387,7 +399,7 @@ async def main() -> int:
     parser.add_argument(
         "--engine",
         "-e",
-        choices=["parakeet", "parakeet-v3", "parakeet-zh", "whisper"],
+        choices=["parakeet", "parakeet-v3", "parakeet-zh", "nemotron", "moonshine", "parakeet-cpp", "whisper"],
         default="parakeet",
         help="STT engine (default: parakeet)",
     )

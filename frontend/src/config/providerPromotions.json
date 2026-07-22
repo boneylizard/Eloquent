@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "campaign": {
+    "id": "mirid-provider-partners",
+    "code": "MIRID",
+    "source": "mirid",
+    "medium": "desktop-app",
+    "website": "https://mirid.ai"
+  },
+  "providers": [
+    {
+      "providerId": "nanogpt",
+      "providerName": "NanoGPT",
+      "status": "proposed",
+      "requestedCode": "MIRID",
+      "promoCode": "",
+      "customerBenefit": "",
+      "referralUrl": "",
+      "referralDisclosure": "This link identifies Mirid as the referrer. It does not promise a discount.",
+      "purchaseUrls": {
+        "subscription": "https://nano-gpt.com/subscription",
+        "credits": "https://nano-gpt.com/balance",
+        "keys": "https://nano-gpt.com/api",
+        "models": "https://nano-gpt.com/help"
+      },
+      "termsUrl": "https://nano-gpt.com/legal/terms-of-service",
+      "startsAt": null,
+      "endsAt": null
+    },
+    {
+      "providerId": "openrouter",
+      "providerName": "OpenRouter",
+      "status": "attribution",
+      "requestedCode": "MIRID",
+      "promoCode": "",
+      "customerBenefit": "",
+      "referralUrl": "",
+      "referralDisclosure": "",
+      "purchaseUrls": {
+        "credits": "https://openrouter.ai/settings/credits",
+        "keys": "https://openrouter.ai/settings/keys",
+        "models": "https://openrouter.ai/models"
+      },
+      "termsUrl": "https://openrouter.ai/terms",
+      "startsAt": null,
+      "endsAt": null
+    }
+  ]
+}

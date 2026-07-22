@@ -9,9 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .chatlog_condenser import (
+from .character_json_repair import (
+    build_json_repair_user_message,
     extract_first_json,
-    json_closing_suffix,
     repair_truncated_json_blob,
 )
 
@@ -20,18 +20,26 @@ logger = logging.getLogger("character_json_parse")
 CHARACTER_SCHEMA_HINT = """{
   "name": "string",
   "description": "string",
+  "personality": "string",
+  "background": "string",
   "model_instructions": "string",
+  "speech_style": "string",
   "scenario": "string",
   "first_message": "string",
+  "alternate_greetings": ["string"],
   "example_dialogue": [{"role": "user"|"character", "content": "string"}],
   "loreEntries": [{"content": "string", "keywords": ["string"]}]
 }"""
 
 REQUIRED_FIELDS = ("name", "description")
 OPTIONAL_DEFAULTS = {
+    "personality": "",
+    "background": "",
     "model_instructions": "",
+    "speech_style": "",
     "scenario": "",
     "first_message": "",
+    "alternate_greetings": [],
     "example_dialogue": [],
     "loreEntries": [],
 }
@@ -74,6 +82,8 @@ def _normalize_character_dict(data: Dict[str, Any]) -> Dict[str, Any]:
             out[key] = default if not isinstance(default, list) else list(default)
     if not isinstance(out.get("example_dialogue"), list):
         out["example_dialogue"] = []
+    if not isinstance(out.get("alternate_greetings"), list):
+        out["alternate_greetings"] = []
     if not isinstance(out.get("loreEntries"), list):
         out["loreEntries"] = []
     name = (out.get("name") or "").strip()
@@ -153,8 +163,6 @@ def parse_character_json(raw: str) -> Tuple[Optional[Dict[str, Any]], Optional[D
 
 
 def build_character_repair_prompt(broken_json: str) -> str:
-    from .chatlog_condenser_prompt import build_json_repair_user_message
-
     return (
         "System:\n"
         "You repair broken character profile JSON. Output ONLY one valid JSON object.\n"

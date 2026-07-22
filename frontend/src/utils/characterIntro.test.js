@@ -92,9 +92,9 @@ describe('characterIntro parse/repair', () => {
   it('formats intro JSON as markdown for chat seed', () => {
     const md = formatCharacterIntroAsMarkdown(validFixture);
     assert.match(md, /^## A quiet threshold/);
-    assert.match(md, /### Who they are/);
+    assert.match(md, /### Who They Are/);
     assert.match(md, /Mira is a sharp-witted archivist/);
-    assert.match(md, /### In their voice/);
+    assert.match(md, /### Their Voice/);
     assert.match(md, /wrong shelf again/);
     assert.match(md, /archives.*trust/);
   });

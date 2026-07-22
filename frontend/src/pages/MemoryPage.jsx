@@ -1,10 +1,10 @@
 import React from 'react';
-import MemoryEditor from '../components/MemoryEditor';
+import MemoryToolsHub from '../components/MemoryToolsHub';
 
 const MemoryPage = () => {
   return (
-    <div className="container mx-auto p-6">
-      <MemoryEditor />
+    <div className="container mx-auto p-4 md:p-6">
+      <MemoryToolsHub />
     </div>
   );
 };

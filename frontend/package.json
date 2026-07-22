@@ -1,12 +1,22 @@
 {
-  "name": "local-llm-frontend",
+  "name": "mirid-frontend",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.7",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "vite build && node scripts/assert-release-artifact.mjs",
+    "release:check": "node scripts/check-release-preflight.mjs",
+    "release:check:hosted-runtime": "node scripts/check-hosted-runtime.mjs",
+    "release:check:inference-wheels": "node scripts/check-hosted-inference-wheels.mjs",
+    "release:build": "npm run release:check && npm run build",
+    "preview": "vite preview",
+    "tauri": "cd .. && tauri",
+    "test": "node --test src/config/modules.test.js src/config/providerPromotions.test.js src/config/retiredCognitiveGlass.test.js src/utils/CharacterCardUtils.test.js src/utils/characterIntro.test.js src/utils/characterDatasetImport.test.js src/utils/chatTitle.test.js src/utils/desktopLifecycle.test.js src/utils/desktopWindows.test.js src/utils/externalLinks.test.js src/utils/firstRunIntent.test.js src/utils/hostedModelProviders.test.js src/utils/installerAudioProfile.test.js src/utils/interfaceZoom.test.js src/utils/openRouterModelsCache.test.js src/utils/requestRouting.test.js src/utils/streamDelta.test.js src/utils/ttsPlaybackPolicy.test.js",
+    "test:ui-smoke": "playwright test --config playwright.config.js"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.0.5",
@@ -24,30 +34,33 @@
     "@radix-ui/react-toast": "^1.1.5",
     "@radix-ui/react-tooltip": "^1.2.4",
     "@tailwindcss/typography": "^0.5.16",
-    "chess.js": "^1.4.0",
-    "chessboardjsx": "^2.4.7",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.303.0",
+    "mermaid": "^11.15.0",
     "path-browserify": "^1.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.1.0",
     "react-router-dom": "^7.3.0",
-    "react-syntax-highlighter": "^15.6.1",
+    "react-syntax-highlighter": "^16.1.1",
     "recharts": "^2.10.3",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^20.10.5",
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.21",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
-    "vite": "^5.4.10"
+    "vite": "^6.4.3"
   }
 }

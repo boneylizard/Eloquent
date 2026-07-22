@@ -1,16 +1,37 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Cpu, RefreshCw, Search, Star } from 'lucide-react';
+import { Cpu, RefreshCw, Search, Star, Monitor } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { useApp } from '../contexts/AppContext';
+import { getContextLength, saveContextLength } from '../utils/apiCall';
 import {
   NANO_GPT_MODELS_CACHE_TTL_MS,
   refreshNanoGptModelsCache,
   readNanoGptModelsCache,
   subscribeNanoGptModelsCache,
 } from '../utils/nanoGptModelsCache';
+import {
+  refreshOpenRouterModelsCache,
+  readOpenRouterModelsCache,
+  subscribeOpenRouterModelsCache,
+} from '../utils/openRouterModelsCache';
+import { FRONTIER_PROVIDERS } from '../config/frontierProviders';
+import {
+  annotateHostedModel,
+  findHostedModelEndpoint,
+  getConnectedHostedProviderIds,
+  getHostedModelProvider,
+  getHostedProviderKey,
+  upsertHostedModelEndpoint,
+} from '../utils/hostedModelProviders';
+import {
+  readFrontierProviderCatalog,
+  refreshFrontierProviderCatalog,
+  subscribeFrontierProviderCatalogs,
+} from '../utils/frontierProviderCatalogCache';
 import {
   groupEndpointsByModel,
   resolveEndpointDisplay,
@@ -28,11 +49,20 @@ function safeJsonParse(str) {
   }
 }
 
+function formatOpenRouterPricing(model) {
+  if (model?.hostProvider !== 'openrouter') return '';
+  if (model.free) return 'Free';
+  const promptPrice = Number(model.pricing?.prompt);
+  const completionPrice = Number(model.pricing?.completion);
+  if (!Number.isFinite(promptPrice) || !Number.isFinite(completionPrice)) return 'Pricing unavailable';
+  return `$${(promptPrice * 1_000_000).toFixed(2)} in · $${(completionPrice * 1_000_000).toFixed(2)} out / 1M`;
+}
+
 function ModelDisplayPill({ display, className, title }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border border-[rgba(120,170,220,0.4)] bg-[#181a1f] px-2.5 py-1 text-xs text-slate-100 max-w-[240px]',
+        'inline-flex items-center gap-1.5 rounded-full border border-[rgba(120,170,220,0.4)] bg-muted px-2.5 py-1 text-xs text-foreground max-w-[240px]',
         className,
       )}
       title={title}
@@ -41,6 +71,11 @@ function ModelDisplayPill({ display, className, title }) {
         {display?.icon || '⬜'}
       </span>
       <span className="truncate">{display?.shortLabel || display?.label || 'Select model'}</span>
+      {display?.providerLabel && (
+        <span className="flex-shrink-0 text-[9px] uppercase tracking-wide text-muted-foreground">
+          {display.providerLabel}
+        </span>
+      )}
     </span>
   );
 }
@@ -68,15 +103,29 @@ export default function NanoGptModelSelectorPopover({
     primaryIsAPI,
     setPrimaryModel,
     setPrimaryIsAPI,
+    availableModels,
+    loadedModels,
+    loadModel,
+    unloadModel,
+    setActiveModel,
+    isModelLoading,
   } = useApp();
 
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
 
-  const [tab, setTab] = useState('endpoints');
+  const [tab, setTab] = useState('all');
+  const [localCtx, setLocalCtx] = useState(() => getContextLength());
   const [query, setQuery] = useState('');
   const [catalog, setCatalog] = useState(() => readNanoGptModelsCache().models);
+  const [openRouterCatalog, setOpenRouterCatalog] = useState(() => readOpenRouterModelsCache().models);
+  const [frontierCatalogues, setFrontierCatalogues] = useState(() => Object.fromEntries(
+    FRONTIER_PROVIDERS.map((provider) => [
+      provider.id,
+      readFrontierProviderCatalog(provider.id, settings[provider.keySetting] || ''),
+    ]),
+  ));
   const [status, setStatus] = useState('idle');
   const [catalogError, setCatalogError] = useState(null);
   const [favorites, setFavorites] = useState(() => {
@@ -114,16 +163,62 @@ export default function NanoGptModelSelectorPopover({
   const loadCatalog = useCallback(async (force = false) => {
     setCatalogError(null);
     setStatus('loading');
-    const result = await refreshNanoGptModelsCache({ forceRefresh: force });
-    setCatalog(result.models);
-    setCatalogError(result.error ? (result.error?.message || String(result.error)) : null);
-    setStatus(result.status === 'ok' ? 'ok' : result.status === 'fallback' ? 'fallback' : result.status);
-  }, []);
+    const errors = [];
+    const nanoPromise = refreshNanoGptModelsCache({ forceRefresh: force })
+      .then((result) => {
+        setCatalog(result.models || []);
+        if (result.error) errors.push(`NanoGPT: ${result.error?.message || String(result.error)}`);
+        return result;
+      });
+    const openRouterPromise = refreshOpenRouterModelsCache({
+      forceRefresh: force,
+      apiKey: settings.openRouterApiKey || '',
+    }).then((result) => {
+      setOpenRouterCatalog(result.models || []);
+      if (result.error) errors.push(`OpenRouter: ${result.error?.message || String(result.error)}`);
+      return result;
+    });
+    const frontierPromises = FRONTIER_PROVIDERS
+      .filter((provider) => String(settings[provider.keySetting] || '').trim())
+      .map(async (provider) => {
+        try {
+          const result = await refreshFrontierProviderCatalog({
+            providerId: provider.id,
+            apiKey: settings[provider.keySetting],
+            primaryApiUrl: primaryApiUrl,
+            forceRefresh: force,
+          });
+          setFrontierCatalogues((current) => ({ ...current, [provider.id]: result }));
+          return result;
+        } catch (error) {
+          errors.push(`${provider.label}: ${error.message}`);
+          return null;
+        }
+      });
+    const [nanoResult] = await Promise.all([nanoPromise, openRouterPromise, ...frontierPromises]);
+    setCatalogError(errors.length > 0 ? errors.join(' ') : null);
+    setStatus(errors.length > 0
+      ? (catalog.length > 0 || nanoResult?.models?.length > 0 ? 'fallback' : 'error')
+      : 'ok');
+  }, [catalog.length, primaryApiUrl, settings]);
 
   useEffect(() => {
     const unsub = subscribeNanoGptModelsCache(({ models }) => setCatalog(models));
-    return unsub;
-  }, []);
+    const unsubscribeOpenRouter = subscribeOpenRouterModelsCache(({ models }) => setOpenRouterCatalog(models));
+    const unsubscribeFrontier = subscribeFrontierProviderCatalogs(() => {
+      setFrontierCatalogues(Object.fromEntries(
+        FRONTIER_PROVIDERS.map((provider) => [
+          provider.id,
+          readFrontierProviderCatalog(provider.id, settings[provider.keySetting] || ''),
+        ]),
+      ));
+    });
+    return () => {
+      unsub();
+      unsubscribeOpenRouter();
+      unsubscribeFrontier();
+    };
+  }, [settings]);
 
   useEffect(() => {
     if (!open) return;
@@ -183,49 +278,75 @@ export default function NanoGptModelSelectorPopover({
     [settings, catalog],
   );
 
+  const hostedCatalogModels = useMemo(() => {
+    const nanoModels = (catalog || [])
+      .filter((model) => model.visible !== false && String(model.api || '').toLowerCase() === 'chat')
+      .map((model) => annotateHostedModel(model, 'nanogpt'))
+      .filter(Boolean);
+    const routerModels = (openRouterCatalog || [])
+      .map((model) => annotateHostedModel(model, 'openrouter'))
+      .filter(Boolean);
+    const directModels = FRONTIER_PROVIDERS.flatMap((provider) => {
+      const providerCatalogue = frontierCatalogues[provider.id];
+      return (providerCatalogue?.models || [])
+        .map((model) => annotateHostedModel(model, provider.id, {
+          baseUrl: providerCatalogue.baseUrl,
+        }))
+        .filter(Boolean);
+    });
+    return [...nanoModels, ...routerModels, ...directModels];
+  }, [catalog, frontierCatalogues, openRouterCatalog]);
+
+  const connectedProviderIds = useMemo(
+    () => new Set(getConnectedHostedProviderIds(settings)),
+    [settings],
+  );
+
   const filteredCatalog = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (catalog || [])
-      .filter((m) => m.visible !== false && String(m.api || '').toLowerCase() === 'chat')
-      .filter(
-        (m) => !q
-          || m.name.toLowerCase().includes(q)
-          || m.id.toLowerCase().includes(q)
-          || m.category.toLowerCase().includes(q)
-          || m.provider.toLowerCase().includes(q),
-      );
-  }, [catalog, query]);
+    const term = query.trim().toLowerCase();
+    return hostedCatalogModels.filter((model) => (
+      !term
+      || `${model.name} ${model.id} ${model.hostProviderLabel} ${model.modelProvider} ${model.category || ''}`
+        .toLowerCase()
+        .includes(term)
+    ));
+  }, [hostedCatalogModels, query]);
 
-  const groupedCatalog = useMemo(() => {
-    const byCat = new Map();
-    for (const m of filteredCatalog) {
-      const cat = m.category || 'Models';
-      if (!byCat.has(cat)) byCat.set(cat, []);
-      byCat.get(cat).push(m);
+  const groupHostedModels = useCallback((models) => {
+    const groups = new Map();
+    for (const model of models) {
+      if (!groups.has(model.hostProvider)) {
+        groups.set(model.hostProvider, {
+          providerId: model.hostProvider,
+          label: model.hostProviderLabel,
+          models: [],
+        });
+      }
+      groups.get(model.hostProvider).models.push(model);
     }
-    const favs = filteredCatalog.filter((m) => favorites.has(m.id));
-    const entries = [];
-    if (favs.length) entries.push(['Favorites', favs]);
-    for (const [cat, list] of byCat.entries()) {
-      if (cat === 'Favorites') continue;
-      entries.push([cat, list]);
-    }
-    return entries;
-  }, [filteredCatalog, favorites]);
+    return Array.from(groups.values()).map((group) => [group.label, group.models, group.providerId]);
+  }, []);
 
-  const currentNano = useMemo(() => {
+  const connectedCatalogGroups = useMemo(
+    () => groupHostedModels(filteredCatalog.filter((model) => connectedProviderIds.has(model.hostProvider))),
+    [connectedProviderIds, filteredCatalog, groupHostedModels],
+  );
+
+  const currentHostedModel = useMemo(() => {
     const ep = (settings?.customApiEndpoints || []).find((e) => e.id === effectiveId);
     if (ep?.model) {
-      return catalog.find((m) => m.id === ep.model) || null;
+      return hostedCatalogModels.find((model) => (
+        model.hostProvider === ep.provider && model.id === ep.model
+      )) || null;
     }
-    return catalog.find((m) => m.id === effectiveId) || null;
-  }, [catalog, effectiveId, settings?.customApiEndpoints]);
+    return hostedCatalogModels.find((model) => model.id === effectiveId) || null;
+  }, [effectiveId, hostedCatalogModels, settings?.customApiEndpoints]);
 
   useEffect(() => {
-    const caps = currentNano?.capabilities
+    const caps = currentHostedModel?.capabilities
       || resolveEndpointDisplay(effectiveId, settings, catalog)?.capabilities;
     if (caps && typeof onCapabilities === 'function') onCapabilities(caps);
-  }, [currentNano, effectiveId, settings, catalog, onCapabilities]);
+  }, [currentHostedModel, effectiveId, settings, catalog, onCapabilities]);
 
   const selectEndpoint = useCallback(
     (endpointId) => {
@@ -262,48 +383,38 @@ export default function NanoGptModelSelectorPopover({
   );
 
   const findEndpointForModel = useCallback(
-    (modelId) => (settings.customApiEndpoints || []).find(
-      (ep) => ep.model === modelId || ep.model === modelId?.replace(/^models\//, ''),
+    (model) => findHostedModelEndpoint(
+      settings.customApiEndpoints || [],
+      model.hostProvider,
+      model.id,
     ),
     [settings.customApiEndpoints],
   );
 
-  const createEndpointForModel = useCallback(
-    (modelMeta) => {
-      const modelId = modelMeta.id;
-      const newEp = {
-        id: `endpoint-${Date.now()}`,
-        name: modelMeta.name || modelId.split('/').pop(),
-        url: 'https://nano-gpt.com/api/v1',
-        apiKey: '',
-        model: modelId,
-        enabled: true,
-        rotate_enabled: true,
-        context_window: null,
-        supports_native_search: null,
-      };
-      const endpoints = [...(settings.customApiEndpoints || []), newEp];
-      updateSettings({ customApiEndpoints: endpoints });
-      return newEp.id;
-    },
-    [settings.customApiEndpoints, updateSettings],
-  );
-
   const selectCatalogModel = useCallback(
-    (modelMeta) => {
-      const existing = findEndpointForModel(modelMeta.id);
+    (model) => {
+      const apiKey = getHostedProviderKey(settings, model.hostProvider);
+      if (!apiKey) {
+        window.alert(`Add your ${model.hostProviderLabel} API key in Model Library before using this model.`);
+        return;
+      }
+      const existing = findEndpointForModel(model);
       if (existing) {
         selectEndpoint(existing.id);
         return;
       }
-      const ok = window.confirm(
-        `No endpoint configured for "${modelMeta.name}". Create a new NanoGPT API endpoint?`,
-      );
-      if (!ok) return;
-      const newId = createEndpointForModel(modelMeta);
-      selectEndpoint(newId);
+      const result = upsertHostedModelEndpoint({
+        endpoints: settings.customApiEndpoints || [],
+        model,
+        providerId: model.hostProvider,
+        apiKey,
+        baseUrl: model.baseUrl || getHostedModelProvider(model.hostProvider).baseUrl,
+        billingMode: model.hostProvider === 'nanogpt' ? settings.nanoGptBillingMode : undefined,
+      });
+      updateSettings({ customApiEndpoints: result.endpoints });
+      selectEndpoint(result.endpointId);
     },
-    [createEndpointForModel, findEndpointForModel, selectEndpoint],
+    [findEndpointForModel, selectEndpoint, settings, updateSettings],
   );
 
   const autoOn = settings.apiEndpointRoundRobinEnabled === true;
@@ -345,12 +456,12 @@ export default function NanoGptModelSelectorPopover({
       data-nanogpt-model-popover-root="true"
       role="dialog"
       aria-label="Model selector"
-      className="fixed z-[70] w-[440px] max-w-[92vw] rounded-2xl border border-[rgba(120,170,220,0.35)] bg-[#101113] shadow-[0_22px_60px_rgba(3,4,10,0.95)]"
+      className="fixed z-[70] w-[440px] max-w-[92vw] rounded-2xl border border-[rgba(120,170,220,0.35)] bg-background shadow-[0_22px_60px_rgba(3,4,10,0.95)]"
       style={{ top: panelStyle.top, left: panelStyle.left }}
     >
           <div className="p-3 border-b border-[rgba(120,170,220,0.18)] space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="inline-flex rounded-full bg-[#181a1f] p-0.5 border border-[rgba(120,170,220,0.28)]">
+              <div className="inline-flex rounded-full bg-muted p-0.5 border border-[rgba(120,170,220,0.28)]">
                 <button
                   type="button"
                   onMouseDown={(e) => {
@@ -359,11 +470,11 @@ export default function NanoGptModelSelectorPopover({
                   }}
                   className={cn(
                     'px-3 py-1 text-[11px] rounded-full',
-                    tab === 'endpoints' ? 'bg-[#78aadc] text-[#050608]' : 'text-slate-300',
+                    tab === 'endpoints' ? 'bg-[#78aadc] text-[#050608]' : 'text-foreground/80',
                   )}
                   onClick={() => setTab('endpoints')}
                 >
-                  My Endpoints
+                  Saved
                 </button>
                 <button
                   type="button"
@@ -373,16 +484,30 @@ export default function NanoGptModelSelectorPopover({
                   }}
                   className={cn(
                     'px-3 py-1 text-[11px] rounded-full',
-                    tab === 'all' ? 'bg-[#78aadc] text-[#050608]' : 'text-slate-300',
+                    tab === 'all' ? 'bg-[#78aadc] text-[#050608]' : 'text-foreground/80',
                   )}
                   onClick={() => setTab('all')}
                 >
-                  All Models
+                  My Models
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    e.nativeEvent?.stopImmediatePropagation?.();
+                  }}
+                  className={cn(
+                    'px-3 py-1 text-[11px] rounded-full',
+                    tab === 'local' ? 'bg-[#78aadc] text-[#050608]' : 'text-foreground/80',
+                  )}
+                  onClick={() => setTab('local')}
+                >
+                  Local
                 </button>
               </div>
               <button
                 type="button"
-                className="p-1.5 rounded-full text-slate-400 hover:text-slate-100"
+                className="p-1.5 rounded-full text-muted-foreground hover:text-foreground"
                 title="Refresh model catalog"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -395,13 +520,15 @@ export default function NanoGptModelSelectorPopover({
             </div>
 
             {showAutoRoutingToggle && (
-              <div className="flex items-center justify-between gap-2 rounded-xl border border-[rgba(120,170,220,0.22)] bg-[#0b0c10] px-3 py-2">
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-[rgba(120,170,220,0.22)] bg-muted/50 px-3 py-2">
                 <div className="min-w-0">
-                  <div className="text-xs font-medium text-slate-100">⟳ Auto-routing</div>
+                  <div className="text-xs font-medium text-foreground">⟳ Auto-routing</div>
                   <div className="text-[10px] text-[rgba(148,163,184,0.8)] truncate">
-                    {autoOn && rotationPool.length >= 2
+                    {autoOn && rotationPool.length > 0
                       ? `Pool: ${rotationPool.length} endpoints`
-                      : 'Rotate enabled endpoints each prompt'}
+                      : autoOn
+                        ? 'Paused · selected model will be used'
+                        : 'Rotate included endpoints each prompt'}
                   </div>
                 </div>
                 <Switch
@@ -419,7 +546,7 @@ export default function NanoGptModelSelectorPopover({
               </div>
             )}
 
-            {autoOn && rotationPool.length >= 2 && (
+            {autoOn && rotationPool.length > 0 && (
               <div className="text-[10px] text-[rgba(148,163,184,0.85)] px-1">
                 {rotationPool.map((ep, i) => {
                   const d = resolveEndpointDisplay(ep.id, settings, catalog);
@@ -438,7 +565,7 @@ export default function NanoGptModelSelectorPopover({
             )}
 
             {tab === 'all' && (
-              <div className="flex items-center gap-2 rounded-full border border-[rgba(120,170,220,0.28)] bg-[#0b0c10] px-3 py-2">
+              <div className="flex items-center gap-2 rounded-full border border-[rgba(120,170,220,0.28)] bg-muted/50 px-3 py-2">
                 <Search size={14} className="text-[rgba(148,163,184,0.85)]" />
                 <input
                   value={query}
@@ -449,12 +576,13 @@ export default function NanoGptModelSelectorPopover({
                     e.nativeEvent?.stopImmediatePropagation?.();
                   }}
                   placeholder="Search models…"
-                  className="w-full bg-transparent text-sm text-slate-100 outline-none placeholder:text-[rgba(148,163,184,0.6)]"
+                  className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-[rgba(148,163,184,0.6)]"
                   autoFocus
                 />
               </div>
             )}
 
+            {tab !== 'local' && (
             <div className="text-[10px] text-[rgba(148,163,184,0.65)]">
               Cache
               {' '}
@@ -466,12 +594,13 @@ export default function NanoGptModelSelectorPopover({
               h
               {status === 'fallback' && ' · offline/cached'}
             </div>
+            )}
 
-            {catalog.length === 0 && status !== 'loading' && (
+            {tab !== 'local' && hostedCatalogModels.length === 0 && status !== 'loading' && (
               <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-100 flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <span>
-                    Couldn&apos;t load the NanoGPT model catalog from the server. You can still use My Endpoints, or retry loading the catalog below.
+                    Provider catalogues could not be loaded. Saved models remain available.
                   </span>
                   {catalogError && (
                     <div className="mt-1 text-[10px] text-amber-200 break-words">
@@ -499,10 +628,100 @@ export default function NanoGptModelSelectorPopover({
           </div>
 
           <div className="max-h-[420px] overflow-y-auto p-2">
-            {tab === 'endpoints' ? (
+            {tab === 'local' ? (
+              <div className="space-y-2">
+                <div className="px-2 py-1 flex items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-[rgba(148,163,184,0.75)]">
+                  <Monitor size={12} />
+                  <span>Local GGUF Models</span>
+                </div>
+                {availableModels.length === 0 ? (
+                  <div className="p-3 text-sm text-muted-foreground">
+                    No local GGUF models found. Add a model directory in Settings → LLM Settings.
+                  </div>
+                ) : (
+                  availableModels.map((name) => {
+                    const loaded = loadedModels.find((m) => m.name === name);
+                    const isActive = name === primaryModel && !primaryIsAPI;
+                    return (
+                      <div
+                        key={name}
+                        className={cn(
+                          'flex items-center justify-between gap-2 rounded-xl border px-3 py-2',
+                          isActive
+                            ? 'border-[rgba(120,170,220,0.75)] bg-[rgba(120,170,220,0.12)]'
+                            : 'border-[rgba(120,170,220,0.18)] bg-muted/50',
+                        )}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm text-foreground truncate">
+                            {name.split('/').pop().replace(/\.(bin|gguf)$/i, '')}
+                          </div>
+                          <div className="text-[10px] text-[rgba(148,163,184,0.75)]">
+                            {loaded ? `Loaded on GPU ${loaded.gpu_id}` : 'Not loaded'}
+                          </div>
+                        </div>
+                        {isActive ? (
+                          <span className="text-[10px] text-[#78aadc] font-medium whitespace-nowrap">Active</span>
+                        ) : loaded ? (
+                          <div className="flex gap-1">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-[11px]"
+                              onClick={() => { setPrimaryIsAPI(false); setPrimaryModel(name); setActiveModel(name); setOpen(false); }}
+                            >
+                              Select
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-[11px] text-red-400 border-red-400/30 hover:bg-red-950/30"
+                              onClick={() => unloadModel(name)}
+                            >
+                              Unload
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-[11px]"
+                            disabled={isModelLoading}
+                            onClick={async () => { setPrimaryIsAPI(false); await loadModel(name, 0, localCtx); setOpen(false); }}
+                          >
+                            {isModelLoading ? 'Loading…' : 'Load'}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+                <div className="border-t border-[rgba(120,170,220,0.18)] pt-3 mt-3 px-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-[11px] text-muted-foreground">Context Length</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={localCtx}
+                      onChange={(e) => {
+                        const parsed = parseInt(e.target.value, 10);
+                        if (!isNaN(parsed) && parsed > 0) {
+                          setLocalCtx(parsed);
+                          saveContextLength(parsed);
+                        }
+                      }}
+                      className="w-28 h-7 text-xs text-right"
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : tab === 'endpoints' ? (
               endpointGroups.length === 0 ? (
                 <div className="p-4 text-sm text-muted-foreground">
-                  No custom API endpoints. Add one in Settings → LLM → API Endpoints, or pick a model under All Models.
+                  No saved API models yet. Choose one under My Models, or add a custom endpoint in Settings.
                 </div>
               ) : (
                 endpointGroups.map((group) => (
@@ -521,7 +740,7 @@ export default function NanoGptModelSelectorPopover({
                               'flex items-center gap-2 rounded-xl border px-2 py-2',
                               active
                                 ? 'border-[rgba(120,170,220,0.75)] bg-[rgba(120,170,220,0.12)]'
-                                : 'border-[rgba(120,170,220,0.18)] bg-[#0b0c10]',
+                                : 'border-[rgba(120,170,220,0.18)] bg-muted/50',
                             )}
                           >
                             <button
@@ -529,10 +748,12 @@ export default function NanoGptModelSelectorPopover({
                               className="min-w-0 flex-1 text-left"
                               onClick={() => selectEndpoint(ep.id)}
                             >
-                              <div className="text-sm text-slate-100 truncate">
+                              <div className="text-sm text-foreground truncate">
                                 {resolved?.endpointName || `Endpoint #${idx + 1}`}
                               </div>
                               <div className="text-[10px] text-[rgba(148,163,184,0.75)]">
+                                {resolved?.providerLabel || 'Custom API'}
+                                {' · '}
                                 #
                                 {idx + 1}
                                 {' '}
@@ -541,7 +762,7 @@ export default function NanoGptModelSelectorPopover({
                                 {ep.enabled === false ? 'disabled' : 'enabled'}
                               </div>
                             </button>
-                            <label className="flex items-center gap-1 text-[10px] text-slate-400" title="Enabled">
+                            <label className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Enabled">
                               <input
                                 type="checkbox"
                                 checked={ep.enabled !== false}
@@ -552,7 +773,7 @@ export default function NanoGptModelSelectorPopover({
                                 }}
                               />
                             </label>
-                            <label className="flex items-center gap-1 text-[10px] text-slate-400" title="Include in rotation">
+                            <label className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Include in rotation">
                               <span className="hidden sm:inline">⟳</span>
                               <input
                                 type="checkbox"
@@ -571,26 +792,30 @@ export default function NanoGptModelSelectorPopover({
                   </div>
                 ))
               )
-            ) : groupedCatalog.length === 0 ? (
+            ) : connectedCatalogGroups.length === 0 ? (
               <div className="p-4 text-sm text-muted-foreground">
                 {query.trim()
                   ? 'No models match your search.'
-                  : 'Optional: refresh NanoGPT catalog. My Endpoints remains available without catalog data.'}
+                  : 'Add a provider key in Model Library to make its models available here.'}
               </div>
             ) : (
-              groupedCatalog.map(([cat, list]) => (
-                <div key={cat} className="mb-2">
-                  <div className="px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-[rgba(148,163,184,0.75)]">
-                    {cat}
+              connectedCatalogGroups.map(([providerLabel, list, providerId]) => (
+                <div key={providerId} className="mb-2">
+                  <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-[rgba(148,163,184,0.75)]">
+                    <span>{providerIcon(providerId)}</span>
+                    <span>{providerLabel}</span>
+                    <span className="normal-case tracking-normal">· available with your key</span>
                   </div>
                   <div className="space-y-1">
                     {list.map((m) => {
-                      const isFav = favorites.has(m.id);
-                      const hasEp = !!findEndpointForModel(m.id);
+                      const favoriteId = `${m.hostProvider}:${m.id}`;
+                      const isFav = favorites.has(favoriteId) || favorites.has(m.id);
+                      const hasEp = !!findEndpointForModel(m);
+                      const pricingLabel = formatOpenRouterPricing(m);
                       return (
                         <div
-                          key={m.id}
-                          className="flex items-center justify-between gap-2 rounded-xl border border-[rgba(120,170,220,0.18)] bg-[#0b0c10] px-3 py-2 hover:border-[rgba(120,170,220,0.45)]"
+                          key={favoriteId}
+                          className="flex items-center justify-between gap-2 rounded-xl border border-[rgba(120,170,220,0.18)] bg-muted/50 px-3 py-2 hover:border-[rgba(120,170,220,0.45)]"
                         >
                           <button
                             type="button"
@@ -598,21 +823,26 @@ export default function NanoGptModelSelectorPopover({
                             onClick={() => selectCatalogModel(m)}
                           >
                             <div className="flex items-center gap-2">
-                              <span>{providerIcon(m.provider)}</span>
-                              <span className="truncate text-sm text-slate-100">{m.name}</span>
+                              <span>{providerIcon(m.hostProvider)}</span>
+                              <span className="truncate text-sm text-foreground">{m.name}</span>
+                              <span className="flex-shrink-0 rounded-full border border-[rgba(120,170,220,0.3)] px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                {m.hostProviderLabel}
+                              </span>
                               {hasEp && (
-                                <span className="text-[9px] uppercase text-[#78aadc]">linked</span>
+                                <span className="text-[9px] uppercase text-[#78aadc]">saved</span>
                               )}
                             </div>
                             <div className="truncate text-[11px] text-[rgba(148,163,184,0.75)] pl-6">
                               {m.id}
+                              {m.modelProvider && m.modelProvider !== m.hostProvider ? ` · model by ${m.modelProvider}` : ''}
+                              {pricingLabel ? ` · ${pricingLabel}` : ''}
                             </div>
                           </button>
                           <button
                             type="button"
                             className={cn(
                               'rounded-full p-2',
-                              isFav ? 'text-yellow-400' : 'text-[rgba(148,163,184,0.75)] hover:text-slate-100',
+                              isFav ? 'text-yellow-400' : 'text-[rgba(148,163,184,0.75)] hover:text-foreground',
                             )}
                             onMouseDown={(e) => {
                               e.stopPropagation();
@@ -621,8 +851,9 @@ export default function NanoGptModelSelectorPopover({
                             onClick={() => {
                               setFavorites((prev) => {
                                 const next = new Set(prev);
-                                if (next.has(m.id)) next.delete(m.id);
-                                else next.add(m.id);
+                                next.delete(m.id);
+                                if (next.has(favoriteId)) next.delete(favoriteId);
+                                else next.add(favoriteId);
                                 localStorage.setItem(FAV_KEY, JSON.stringify(Array.from(next)));
                                 return next;
                               });

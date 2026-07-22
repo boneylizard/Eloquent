@@ -1,5 +1,6 @@
-import { providerIcon, inferProviderFromModelId } from './providerIcon';
-import { findNanoGptModel, readNanoGptModelsCache } from './nanoGptModelsCache';
+import { providerIcon, inferProviderFromModelId } from './providerIcon.js';
+import { findNanoGptModel, readNanoGptModelsCache } from './nanoGptModelsCache.js';
+import { getHostedProviderLabel } from './hostedModelProviders.js';
 
 export const ELOQUENT_SETTINGS_KEY = 'Eloquent-settings';
 
@@ -87,9 +88,12 @@ export function resolveEndpointDisplay(endpointId, settings, catalog) {
   const modelId = ep.model || '';
   const cached = findNanoGptModel(modelId, models);
   const provider =
-    cached?.provider
+    ep.provider
+    || cached?.hostProvider
+    || cached?.provider
     || inferProviderFromModelId(modelId)
     || inferProviderFromModelId(ep.name);
+  const modelProvider = ep.model_provider || cached?.modelProvider || cached?.provider || '';
   const displayName =
     cached?.name
     || (modelId ? modelId.split('/').pop() : '')
@@ -107,6 +111,8 @@ export function resolveEndpointDisplay(endpointId, settings, catalog) {
     endpointId: ep.id,
     displayName,
     provider,
+    providerLabel: ep.provider_label || getHostedProviderLabel(provider),
+    modelProvider,
     icon: providerIcon(provider),
     modelId,
     endpointName: ep.name || '',
@@ -129,7 +135,7 @@ export function resolvePrimaryModelDisplay({
   const autoOn = s.apiEndpointRoundRobinEnabled === true;
   const pool = getRotationPool(s);
 
-  if (primaryIsAPI && autoOn && pool.length >= 2) {
+  if (primaryIsAPI && autoOn && pool.length >= 1) {
     const cursorMap = s.apiEndpointRoundRobinCursor || {};
     const cursorIdx = Number(cursorMap.__manual_rotation__ ?? 0) % pool.length;
     const poolDisplays = pool.map((ep) => resolveEndpointDisplay(ep.id, s, catalog));

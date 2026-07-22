@@ -1,0 +1,68 @@
+.mirid-bridge-panel .inline-drawer-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.mirid-bridge-panel p {
+    margin: 0;
+}
+
+.mirid-bridge-row {
+    display: grid;
+    gap: 0.3rem;
+}
+
+.mirid-bridge-row > span {
+    font-weight: 600;
+}
+
+.mirid-bridge-row small {
+    opacity: 0.75;
+}
+
+.mirid-bridge-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.mirid-bridge-status {
+    border-left: 3px solid var(--SmartThemeBorderColor);
+    padding-left: 0.65rem;
+}
+
+.mirid-bridge-status[data-state='ready'] {
+    border-left-color: #59b889;
+}
+
+.mirid-bridge-status[data-state='error'] {
+    border-left-color: #d66b75;
+}
+
+.mirid-bridge-setup {
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    padding-top: 0.75rem;
+}
+
+.mirid-bridge-setup summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.mirid-bridge-setup p {
+    margin-top: 0.7rem;
+}
+
+#mirid_bridge_mic {
+    min-width: 2.25rem;
+}
+
+#mirid_bridge_mic.mirid-recording {
+    color: #ff6472;
+    animation: mirid-recording-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes mirid-recording-pulse {
+    50% { opacity: 0.45; }
+}

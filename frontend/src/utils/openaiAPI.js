@@ -155,11 +155,28 @@ export async function processOpenAIStream(response, onToken, onComplete, onError
               return accumulatedText;
             }
 
+            // Extract content and pass through raw
             const content = parsed.choices?.[0]?.delta?.content;
+            const raw = parsed.raw; // Backend now sends this
+
+            // DEBUG: Log raw upstream data
+            if (raw && !window._openaiStreamDebugCount) window._openaiStreamDebugCount = 0;
+            if (raw && window._openaiStreamDebugCount < 20) {
+              window._openaiStreamDebugCount++;
+              console.warn(
+                `[OPENAI-STREAM-DEBUG] CHUNK #${window._openaiStreamDebugCount}`,
+                '\n  content:', content ? `"${content.slice(0, 120)}"` : '(empty)',
+                '\n  raw keys:', Object.keys(raw),
+                '\n  raw:', JSON.stringify(raw).slice(0, 800),
+              );
+            }
 
             if (content) {
               accumulatedText += content;
-              onToken(content, accumulatedText);
+              onToken(content, accumulatedText, { raw });
+            } else if (raw) {
+              // Chunk has raw but no content - still notify with raw
+              onToken('', accumulatedText, { raw });
             }
 
             // Check for finish_reason

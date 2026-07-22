@@ -4,12 +4,14 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from .runtime_paths import data_path
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("rag_utils")
 
 # Constants - use relative path based on this file's location
-DOCUMENT_STORE_DIR = Path(__file__).parent / "static" / "documents"
+DOCUMENT_STORE_DIR = data_path("documents")
 DOCUMENT_META_FILE = DOCUMENT_STORE_DIR / "document_meta.json"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # Small but effective model
 
@@ -37,6 +39,13 @@ except ImportError:
     HAVE_SENTENCE_TRANSFORMERS = False
     logger.warning("RAG functionality limited: sentence-transformers not installed")
 
+# Try to import torch for device detection
+try:
+    import torch
+    HAVE_TORCH = True
+except ImportError:
+    HAVE_TORCH = False
+
 # Try to import FAISS for vector search
 try:
     import faiss
@@ -63,15 +72,27 @@ class RAGProcessor:
         self.document_chunks = []
         self.chunk_to_doc_mapping = {}
         self.chunker = None
+        self.device = "cpu"
+        # Cached L2-normalised embeddings, one row per chunk in self.document_chunks.
+        # Kept in sync by _build_index so deletions can rebuild the FAISS index
+        # without re-encoding every remaining chunk from scratch.
+        self._embeddings = None
         
         # Initialize embedding model
         if HAVE_SENTENCE_TRANSFORMERS:
             try:
-                self.embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-                logger.info(f"Loaded embedding model: {EMBEDDING_MODEL_NAME}")
+                # Respect explicit env preference; otherwise auto-detect.
+                # Broken CUDA drivers can throw at encode time, so we fall back to CPU on errors.
+                device_pref = os.environ.get("RAG_EMBEDDING_DEVICE", "auto").lower()
+                if device_pref == "auto":
+                    device_pref = "cuda" if HAVE_TORCH and torch.cuda.is_available() else "cpu"
+                self.device = device_pref
+                self.embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME, device=self.device)
+                logger.info(f"Loaded embedding model: {EMBEDDING_MODEL_NAME} on {self.device}")
             except Exception as e:
                 logger.error(f"Failed to load embedding model: {e}")
                 self.embedding_model = None
+                self.device = "cpu"
         
         # Initialize Chonkie chunker
         if HAVE_CHONKIE and self.embedding_model:
@@ -117,6 +138,25 @@ class RAGProcessor:
         """Check if RAG functionality is available."""
         return HAVE_SENTENCE_TRANSFORMERS and HAVE_FAISS and self.embedding_model is not None
     
+    def _encode_safe(self, texts, **kwargs):
+        """Encode texts, automatically falling back to CPU on CUDA errors."""
+        if not self.embedding_model:
+            raise RuntimeError("Embedding model not available")
+        
+        try:
+            return self.embedding_model.encode(texts, device=self.device, **kwargs)
+        except Exception as e:
+            err_lower = str(e).lower()
+            if self.device != "cpu" and ("cuda" in err_lower or "accelerator" in err_lower):
+                logger.warning(f"Embedding failed on {self.device}: {e}. Falling back to CPU.")
+                try:
+                    self.embedding_model = self.embedding_model.to("cpu")
+                except Exception as move_err:
+                    logger.warning(f"Could not move model to CPU: {move_err}")
+                self.device = "cpu"
+                return self.embedding_model.encode(texts, device="cpu", **kwargs)
+            raise
+    
     def load_documents(self) -> bool:
         """Load document metadata and prepare for RAG."""
         if not self.is_available():
@@ -133,6 +173,8 @@ class RAGProcessor:
                 self.documents = []
                 self.document_chunks = []
                 self.chunk_to_doc_mapping = {}
+                self._embeddings = None
+                self.faiss_index = None
                 DOCUMENT_META_FILE.parent.mkdir(parents=True, exist_ok=True)
                 with open(DOCUMENT_META_FILE, "w", encoding="utf-8") as f:
                     json.dump([], f)
@@ -152,11 +194,14 @@ class RAGProcessor:
                 self.documents = []
                 self.document_chunks = []
                 self.chunk_to_doc_mapping = {}
+                self._embeddings = None
+                self.faiss_index = None
                 return True
 
             # Reset chunks data
             self.document_chunks = []
             self.chunk_to_doc_mapping = {}
+            self._embeddings = None
             
             # Process each document
             successful_docs = 0
@@ -282,41 +327,149 @@ class RAGProcessor:
         return chunks
     
     def _build_index(self) -> None:
-        """Build a FAISS index for the document chunks."""
+        """Build a FAISS index for the document chunks.
+
+        Encodes every chunk fresh and caches the L2-normalised result in
+        self._embeddings so subsequent deletions can rebuild the index without
+        re-encoding (see _rebuild_index_from_cache).
+        """
         if not self.document_chunks:
             print("No chunks to index")
+            self._embeddings = None
+            self.faiss_index = None
             return
-        
+
         try:
             # Check if we have the dependencies
             if not HAVE_FAISS:
                 print("FAISS not available, cannot build index")
                 return
-                
+
             # Get embeddings for all chunks
             print(f"Generating embeddings for {len(self.document_chunks)} chunks...")
-            embeddings = self.embedding_model.encode(
-                self.document_chunks, 
-                convert_to_numpy=True, 
+            embeddings = self._encode_safe(
+                self.document_chunks,
+                convert_to_numpy=True,
                 show_progress_bar=False
             )
-            
+
             # Normalize embeddings for cosine similarity
             print("Normalizing embeddings...")
             faiss.normalize_L2(embeddings)
-            
+
+            # Cache so deletions can rebuild without re-encoding
+            self._embeddings = embeddings
+
             # Create and populate index
             vector_dimension = embeddings.shape[1]
             self.faiss_index = faiss.IndexFlatIP(vector_dimension)  # Inner product for cosine similarity
             self.faiss_index.add(embeddings)
-            
+
             print(f"FAISS index built with {len(self.document_chunks)} chunks")
         except Exception as e:
             print(f"Error building FAISS index: {e}")
             import traceback
             traceback.print_exc()
             self.faiss_index = None
+            self._embeddings = None
+
+    def _rebuild_index_from_cache(self) -> None:
+        """Rebuild the FAISS index from cached embeddings without re-encoding.
+
+        self._embeddings has already been reduced (by remove_document) to only
+        the rows that still correspond to self.document_chunks, so we simply
+        wrap the surviving matrix in a fresh IndexFlatIP.
+        """
+        if not HAVE_FAISS:
+            print("FAISS not available, cannot rebuild index")
+            self.faiss_index = None
+            return
+
+        if not self.document_chunks or self._embeddings is None:
+            self.faiss_index = None
+            return
+
+        # Sanity: embeddings matrix should match chunk count
+        if self._embeddings.shape[0] != len(self.document_chunks):
+            print(
+                f"Embedding cache out of sync ({self._embeddings.shape[0]} rows "
+                f"vs {len(self.document_chunks)} chunks) — falling back to full rebuild"
+            )
+            self._build_index()
+            return
+
+        embeddings = np.ascontiguousarray(self._embeddings)
+        vector_dimension = embeddings.shape[1]
+        self.faiss_index = faiss.IndexFlatIP(vector_dimension)
+        self.faiss_index.add(embeddings)
+        print(f"FAISS index rebuilt from cache with {len(self.document_chunks)} chunks (no re-encoding)")
     
+    def remove_document(self, document_id: str) -> bool:
+        """Remove a document from the in-memory RAG index without re-reading
+        all files from disk and without re-encoding the surviving chunks.
+
+        Surviving chunks, their doc mapping, and cached embeddings are rebuilt
+        as contiguous arrays so the FAISS index stays consistent after the
+        deletion.
+        """
+        doc_index = None
+        for i, doc in enumerate(self.documents):
+            if doc.get("id") == document_id:
+                doc_index = i
+                break
+
+        if doc_index is None:
+            return False
+
+        # Remove the document from the metadata list
+        self.documents.pop(doc_index)
+
+        # Walk the existing parallel structures once, keeping only chunks that
+        # did NOT belong to the removed document, and shifting the recorded
+        # doc index for every chunk belonging to documents that came after it.
+        old_chunks = self.document_chunks
+        old_mapping = self.chunk_to_doc_mapping
+        old_embeddings = self._embeddings
+
+        new_chunks = []
+        new_mapping = {}
+        new_rows = []
+
+        for old_idx, chunk_text in enumerate(old_chunks):
+            old_doc_idx = old_mapping.get(old_idx)
+
+            # Chunk belonged to the deleted document — drop it.
+            if old_doc_idx == doc_index:
+                continue
+
+            # Shift doc index down by one for documents after the removed one.
+            if old_doc_idx is not None and old_doc_idx > doc_index:
+                old_doc_idx -= 1
+
+            new_idx = len(new_chunks)
+            new_chunks.append(chunk_text)
+            new_mapping[new_idx] = old_doc_idx
+
+            if old_embeddings is not None and old_idx < old_embeddings.shape[0]:
+                new_rows.append(old_embeddings[old_idx])
+
+        self.document_chunks = new_chunks
+        self.chunk_to_doc_mapping = new_mapping
+        if new_rows:
+            self._embeddings = np.ascontiguousarray(np.stack(new_rows))
+        else:
+            self._embeddings = None
+
+        # Rebuild FAISS index from cached embeddings (no file I/O, no re-encoding)
+        if self.document_chunks:
+            self._rebuild_index_from_cache()
+        else:
+            self.faiss_index = None
+            self._embeddings = None
+
+        logger.info(f"Removed document {document_id} from RAG index without full refresh or re-encoding")
+        return True
+
     def query(self, question: str, doc_ids: Optional[List[str]] = None, top_k: int = 30, threshold: float = 0.05) -> List[Dict[str, Any]]:
         threshold = float(threshold)  # Ensure threshold is a float
         print(f"[DEBUG] threshold is {threshold} (type: {type(threshold)})")
@@ -355,7 +508,7 @@ class RAGProcessor:
             
             # Get embedding for the query
             print("Generating query embedding...")
-            query_embedding = self.embedding_model.encode([question])[0]
+            query_embedding = self._encode_safe([question])[0]
             query_embedding = query_embedding / np.linalg.norm(query_embedding)  # Normalize
             query_embedding = np.expand_dims(query_embedding, axis=0)  # Add batch dimension
             

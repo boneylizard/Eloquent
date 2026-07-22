@@ -66,7 +66,7 @@ export default function OutreachNotificationStack() {
             </div>
             <div className="min-w-0 flex-1 text-left">
               <div className="truncate text-sm font-semibold leading-tight">{name}</div>
-              <div className="mt-0.5 text-[11px] text-muted-foreground">Eloquent</div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">Mirid</div>
               <div className="mt-1 text-xs text-muted-foreground">sent you a message:</div>
               <p className="mt-0.5 line-clamp-2 text-sm text-foreground/90">
                 {preview || 'Open chat to read the reply.'}

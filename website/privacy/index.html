@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy — Mirid</title>
+    <meta name="description" content="A plain-language account of what Mirid stores locally and when configured services receive data.">
+    <meta name="theme-color" content="#090b0a">
+    <link rel="canonical" href="https://mirid.ai/privacy/">
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <nav class="nav shell" aria-label="Main navigation"><a class="brand" href="/" aria-label="Mirid home"><img src="/assets/mirid-mark.svg" alt="" width="34" height="34"><span>Mirid</span></a><div class="nav-links"><a href="/#why-mirid">Why Mirid</a><a href="/docs/index.html">Docs</a><a href="https://github.com/boneylizard/Eloquent">Source</a><a class="button compact" href="/download/index.html">Download for Windows</a></div></nav>
+    </header>
+
+    <main id="main">
+      <header class="page-hero">
+        <div class="shell"><p class="eyebrow">Privacy</p><h1>Your choice of model decides where the request goes.</h1><p>Mirid can work entirely on your machine or connect to services you configure. This page names that boundary plainly.</p><p class="legal-date">Current for Mirid 1.0 · 19 July 2026</p></div>
+      </header>
+      <div class="content-layout shell">
+        <nav class="side-nav" aria-label="On this page"><a href="#website">Website</a><a href="#local">Local data</a><a href="#providers">Providers</a><a href="#downloads">Downloads</a><a href="#logs">Logs</a><a href="#deletion">Deletion</a></nav>
+        <article class="content">
+          <section id="website">
+            <h2>This website</h2>
+            <p>The Mirid website contains no advertising, analytics scripts or behavioural tracking code. The company hosting the site and its delivery network may keep ordinary server logs, such as an IP address, requested path, browser type and time, for operation and abuse prevention.</p>
+            <p>The site does not ask you to create a Mirid account.</p>
+          </section>
+          <section id="local">
+            <h2>Data kept on your device</h2>
+            <p>Mirid stores application settings, characters, conversations, story state, credentials you enter, generated media and operational logs on your computer. Local model inference does not need to send your prompt or response to Mirid.</p>
+            <div class="notice"><strong>Protect your Windows account.</strong> Mirid 1.0 stores provider keys with its local application data; do not treat a shared Windows profile as a secure place for private credentials.</div>
+          </section>
+          <section id="providers">
+            <h2>When data leaves your device</h2>
+            <p>If you choose a hosted text, image, audio, search or media provider, Mirid sends the information needed for that request to the endpoint you configured. Depending on the feature, that may include prompts, conversation context, character details, images, audio or generated instructions.</p>
+            <p>Those requests are governed by the provider’s terms, retention practices and privacy policy. Mirid cannot control how an external provider handles them. Review a provider before sending sensitive material.</p>
+            <p>An OpenAI-compatible endpoint can be local or remote. Its name describes the protocol, not where the server runs.</p>
+          </section>
+          <section id="downloads">
+            <h2>Runtime and model downloads</h2>
+            <p>On first launch, Mirid retrieves its core runtime from a public Hugging Face repository. If you use the model downloader, Mirid also contacts Hugging Face for the repositories you request. Those services receive the network information ordinarily involved in a download.</p>
+          </section>
+          <section id="logs">
+            <h2>Logs and support material</h2>
+            <p>Mirid writes local logs to diagnose startup and model failures. Logs can reveal file paths, provider names and operational details. Inspect them before posting or sending them to anyone, and remove credentials or personal content if present.</p>
+          </section>
+          <section id="deletion">
+            <h2>Remove local data</h2>
+            <p>Delete conversations and characters inside Mirid when you want selective removal. Uninstalling the application may leave its data behind so an update does not erase your work. To remove the remaining Windows data, close Mirid and delete:</p>
+            <code class="code-block">%LOCALAPPDATA%\ai.mirid.desktop</code>
+            <p>Deleting this folder removes the downloaded runtime and local Mirid data within it. Model files you selected elsewhere remain where you placed them.</p>
+          </section>
+        </article>
+      </div>
+    </main>
+
+    <footer class="site-footer"><div class="shell"><div class="footer-grid"><div class="footer-brand"><a class="brand" href="/"><img src="/assets/mirid-mark.svg" alt="" width="34" height="34"><span>Mirid</span></a><p>Local and hosted AI, made approachable. Built independently in Australia.</p></div><nav class="footer-links" aria-label="Footer navigation"><a href="/download/index.html">Download</a><a href="/docs/index.html">Docs</a><a href="/privacy/index.html">Privacy</a><a href="/licence/index.html">Licence</a><a href="https://github.com/boneylizard/Eloquent">GitHub</a></nav></div><div class="footer-meta"><span>© 2025–2026 Bernard Peter Fitzgerald</span><span>Mirid is independent software. Provider names belong to their respective owners.</span></div></div></footer>
+  </body>
+</html>

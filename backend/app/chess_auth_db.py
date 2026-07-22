@@ -13,9 +13,11 @@ from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
+from .runtime_paths import data_path
+
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "chess_auth.db"
+DB_PATH = data_path("chess_auth.db")
 
 
 def _token_encrypt(plain: str, secret: bytes) -> str:

@@ -40,6 +40,38 @@ class ExtractOpenAiStreamDeltaPartsTests(unittest.TestCase):
         self.assertEqual(content, "")
         self.assertEqual(reasoning, "hidden stream")
 
+    def test_serving_metadata_is_not_reasoning(self):
+        # vLLM deployment identifiers stamped on OpenRouter chunks must never
+        # surface in the thinking block (regression: doubled "vllm-..." leak).
+        chunk = {
+            "id": "gen-123",
+            "provider": "vllm-0.25.0-dp4-ep-d6f08423",
+            "system_fingerprint": "vllm-0.25.0-dp4-ep-d6f08423",
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"delta": {"role": "assistant", "content": ""}}],
+        }
+        content, reasoning = extract_openai_stream_delta_parts(chunk)
+        self.assertEqual(content, "")
+        self.assertEqual(reasoning, "")
+
+    def test_unknown_long_string_field_is_not_reasoning(self):
+        chunk = {
+            "x_custom_upstream_trace": "a-very-long-identifier-without-spaces-12345",
+            "choices": [{"delta": {"content": "real answer"}}],
+        }
+        content, reasoning = extract_openai_stream_delta_parts(chunk)
+        self.assertEqual(content, "real answer")
+        self.assertEqual(reasoning, "")
+
+    def test_token_count_fields_are_not_reasoning(self):
+        chunk = {
+            "reasoning_tokens": "512",
+            "choices": [{"delta": {"thinking_tokens": "128", "content": "answer"}}],
+        }
+        content, reasoning = extract_openai_stream_delta_parts(chunk)
+        self.assertEqual(content, "answer")
+        self.assertEqual(reasoning, "")
+
 
 if __name__ == "__main__":
     unittest.main()

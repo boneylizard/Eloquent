@@ -1,24 +1,21 @@
-import React from 'react';
-import { cn } from '../../lib/utils';
+import * as React from "react";
+import { cn } from "../../lib/utils";
 
 const Switch = React.forwardRef(({ className, checked, defaultChecked, onCheckedChange, ...props }, ref) => {
-  const [isChecked, setIsChecked] = React.useState(defaultChecked || false);
-  
+  const [isChecked, setIsChecked] = React.useState(defaultChecked ?? false);
+
   React.useEffect(() => {
     if (checked !== undefined) {
       setIsChecked(checked);
     }
   }, [checked]);
-  
+
   const handleChange = (e) => {
-    const newChecked = e.target.checked;
-    setIsChecked(newChecked);
-    
-    if (onCheckedChange) {
-      onCheckedChange(newChecked);
-    }
+    const next = e.target.checked;
+    setIsChecked(next);
+    onCheckedChange?.(next);
   };
-  
+
   return (
     <label className={cn("relative inline-flex items-center cursor-pointer", className)}>
       <input
@@ -32,11 +29,11 @@ const Switch = React.forwardRef(({ className, checked, defaultChecked, onChecked
       <div
         className={cn(
           "relative w-11 h-6 bg-muted rounded-full peer transition-colors",
-          "peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring peer-focus:ring-offset-2",
+          "peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-ring peer-focus:ring-offset-2 peer-focus:ring-offset-background",
           "peer-checked:bg-primary",
           "after:content-[''] after:absolute after:top-[2px] after:left-[2px]",
-          "after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5",
-          "after:transition-all peer-checked:after:translate-x-full"
+          "after:bg-background after:border-border after:border after:rounded-full after:h-5 after:w-5",
+          "after:shadow-sm after:transition-all peer-checked:after:translate-x-full"
         )}
       />
     </label>

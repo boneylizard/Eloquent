@@ -9,8 +9,9 @@ import {
 } from '../utils/thinkStreamParser';
 import { inferCapabilitiesFromModelId } from '../utils/resolveEndpointDisplay';
 import { extractSseStreamParts } from '../utils/streamDelta';
-import { formatFetchError } from '../config/api';
-import { generateChatTitle, fetchTriggeredLore } from '../utils/apiCall';
+import { formatFetchError, loadPortConfig, getConfig } from '../config/api';
+import { fetchTriggeredLore } from '../utils/apiCall';
+import { generateChatTitle } from '../utils/chatTitle';
 import { observeConversation, initializeMemories } from '../utils/memoryUtils';
 import { saveSummary } from '../utils/summaryUtils';
 import { useMemory } from '../contexts/MemoryContext';
@@ -19,9 +20,9 @@ import { createWavMicRecorder } from '../utils/wavMicRecorder';
 import { generateReplyOpenAI, processOpenAIStream, generateReplyOpenAINonStreaming, convertToOpenAIMessages } from '../utils/openaiApi';
 import { ttsClient } from '../utils/apiCall';
 import { isIntelMessageId } from '../utils/callModeIntelTts';
+import { getTtsPlaybackRate, normaliseTtsSpeed } from '../utils/ttsPlaybackPolicy';
 import { processAntiRepetition } from '../utils/antiRepetition';
 import * as indexedDbStorage from '../utils/indexedDbStorage';
-import { generateIntensityGuidanceText } from '../utils/intensityPresets';
 import { fetchWithTimeout } from '../config/api';
 import {
   withTimeout,
@@ -38,6 +39,7 @@ import {
   persistChatState,
   saveConversationCatalog,
   deleteConversationFromStorage,
+  deleteConversationsFromStorage,
   deleteAllConversationsFromStorage,
   scrubConversationLocalStorageGhosts,
   banConversationIdSync,
@@ -85,6 +87,11 @@ import {
   shouldApplyHydratedSettings,
 } from '../utils/settingsPersistence';
 import {
+  clearInstallerAudioProfile,
+  getAudioStartupDefaultsMigration,
+  readInstallerAudioProfile,
+} from '../utils/installerAudioProfile';
+import {
   buildCharacterIntroSeedMessages,
   conversationAcceptsIntroTitle,
   deriveIntroChatTitle,
@@ -97,6 +104,7 @@ import {
 } from '../utils/systemPersona';
 import {
   attachApiBotSpeakerMeta,
+  getRotationPool,
   resolveEndpointDisplay,
 } from '../utils/resolveEndpointDisplay';
 import {
@@ -116,6 +124,42 @@ import {
   findNanoGptModel,
 } from '../utils/nanoGptModelsCache';
 import { formatApiError } from '../utils/chatlogCondenserUtils';
+
+/** Estimate the duration (ms) of a queued TTS audio chunk without fully
+ *  decoding it.  Uses the backend-provided subtitle cue when available,
+ *  otherwise parses the WAV header to compute duration from the data
+ *  subchunk size and byte rate. */
+function estimateChunkDurationMs(chunk) {
+  if (!chunk) return 0;
+  const sub = chunk.subtitle;
+  if (sub && typeof sub.durationMs === 'number' && sub.durationMs > 0) {
+    return sub.durationMs;
+  }
+  const ab = chunk.audio || chunk;
+  if (!(ab instanceof ArrayBuffer) || ab.byteLength < 44) return 0;
+  try {
+    const view = new DataView(ab);
+    if (view.getUint32(0, false) !== 0x52494646) {
+      console.warn(`⚠️ [TTS] estimateChunkDurationMs: NOT WAV format (first bytes: 0x${view.getUint32(0, false).toString(16)}), chunkLen=${ab.byteLength}`);
+      return 0;
+    }
+    const byteRate = view.getUint32(28, true);
+    if (!byteRate) return 0;
+    let offset = 12;
+    while (offset + 8 <= ab.byteLength) {
+      const id = view.getUint32(offset, false);
+      const size = view.getUint32(offset + 4, true);
+      if (id === 0x64617461) {
+        const ms = (size / byteRate) * 1000;
+        return ms;
+      }
+      offset += 8 + size + (size & 1); // word-aligned chunks
+    }
+    return 0;
+  } catch (e) {
+    return 0;
+  }
+}
 
 const defaultAppContextValue = {
   activeTab: 'chat',
@@ -137,8 +181,6 @@ const logPromptSample = (prompt, maxLength = 500) => {
 
   console.log(`📝 [DEBUG] Prompt contains memory references: ${hasMemories}`);
 };
-console.log('🔍 [DEBUG] generateChatTitle function imported:', typeof generateChatTitle);
-
 /** Cap memory-service waits so chat never hangs silently if :8001 is down. */
 const MEMORY_FETCH_TIMEOUT_MS = 12000;
 /** API-only chat: short cap so /generate is not delayed waiting on memory GPU. */
@@ -334,60 +376,7 @@ const extractFirstJson = (text) => {
   return null;
 };
 
-// Helper function to get story tracker context for injection into prompts
-const getStoryTrackerContext = () => {
-  try {
-    const saved = localStorage.getItem('eloquent-story-tracker');
-    if (!saved) return '';
-
-    const tracker = JSON.parse(saved);
-    const sections = [];
-
-    if (tracker.currentObjective) {
-      sections.push(`[CURRENT OBJECTIVE]: ${tracker.currentObjective}`);
-    }
-
-    if (tracker.characters?.length > 0) {
-      const chars = tracker.characters.map(c => c.notes ? `${c.value} (${c.notes})` : c.value).join(', ');
-      sections.push(`[CHARACTERS]: ${chars}`);
-    }
-
-    if (tracker.inventory?.length > 0) {
-      const items = tracker.inventory.map(i => i.notes ? `${i.value} (${i.notes})` : i.value).join(', ');
-      sections.push(`[INVENTORY]: ${items}`);
-    }
-
-    if (tracker.locations?.length > 0) {
-      const locs = tracker.locations.map(l => l.notes ? `${l.value} (${l.notes})` : l.value).join(', ');
-      sections.push(`[LOCATIONS]: ${locs}`);
-    }
-
-    if (tracker.plotPoints?.length > 0) {
-      const plots = tracker.plotPoints.map(p => `• ${p.notes ? `${p.value}: ${p.notes}` : p.value}`).join('\n');
-      sections.push(`[KEY EVENTS / RECENT HISTORY]:\n${plots}`);
-    }
-
-    if (tracker.storyNotes) {
-      sections.push(`[STORY NOTES / WORLD BACKGROUND]:\n${tracker.storyNotes}`);
-    }
-
-    if (tracker.sceneSummary) {
-      sections.push(`[CURRENT SCENE]: ${tracker.sceneSummary}`);
-    }
-
-    if (tracker.customFields?.length > 0) {
-      const custom = tracker.customFields.map(c => c.notes ? `${c.value}: ${c.notes}` : c.value).join(', ');
-      sections.push(`[ADDITIONAL DETAILS]: ${custom}`);
-    }
-
-    if (sections.length === 0) return '';
-
-    return `\n\n[STORY TRACKER - Essential continuity guidance for this response]\n${sections.join('\n\n')}`;
-  } catch (e) {
-    console.error('Error reading story tracker:', e);
-    return '';
-  }
-};
+const getStoryTrackerContext = () => '';
 
 // Helper function to build system prompt from character data
 const _buildSystemPrompt = (character, userProfile = null, summaryContextOverride = null, userCharacter = null) => {
@@ -536,13 +525,14 @@ const AppProvider = ({ children }) => {
   const activeTabRef = useRef('chat');
   /** When opening Settings (sidebar or mobile remote), which inner tab to show. */
   const [settingsEntryTab, setSettingsEntryTab] = useState('general');
-  const [sttEnabled, setSttEnabled] = useState(false); // Default to false
-  const [ttsEnabled, setTtsEnabled] = useState(false); // Default to false
+  const [sttEnabled, setSttEnabled] = useState(true);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
   const [userAvatar, setUserAvatar] = useState(null);
   const [availableModels, setAvailableModels] = useState([]);
   const [loadedModels, setLoadedModels] = useState([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlayingAudio, setIsPlayingAudio] = useState(null); // Store message ID being played, or null
+  const [ttsPlaybackState, setTtsPlaybackState] = useState({ messageId: null, phase: 'idle' });
   const [audioError, setAudioError] = useState(null);
   const [primaryModel, setPrimaryModel] = useState(null);
   const [secondaryModel, setSecondaryModel] = useState(null);
@@ -566,6 +556,8 @@ const AppProvider = ({ children }) => {
   const callModeAudioChunksRef = useRef([]);
   const activeAudioPlayersRef = useRef(new Set()); // Track ALL active audio sources
   const streamingTtsDrainingRef = useRef(false); // Single drain runner for WS TTS (avoids stuck "playing" gate)
+  const streamingTtsDrainGenerationRef = useRef(null); // Only the owning generation may release the drain lock
+  const drainGenerationRef = useRef(0); // Incremented on each startStreamingTTS to kill stale drain loops
   /** Tracks whether the TTS WebSocket is in a closed/closing state to abort the drain loop. */
   const ttsWsClosedRef = useRef(false);
   const callModeSilenceTimerRef = useRef(null);
@@ -576,7 +568,14 @@ const AppProvider = ({ children }) => {
   const [inputTranscript, setInputTranscript] = useState(''); // State for input transcript
   const [agentMemories, setAgentMemories] = useState([]);
   const lastPlayedMessageRef = useRef(null);
-  const [sttEnginesAvailable, setSttEnginesAvailable] = useState(['whisper', 'parakeet']);
+  const ttsPlaybackRequestRef = useRef(0); // Invalidates superseded full-response synthesis requests
+  const [sttEnginesAvailable, setSttEnginesAvailable] = useState(['whisper', 'parakeet', 'nemotron']);
+  const [nanogptSttModels, setNanogptSttModels] = useState([]);
+  const [nanogptTtsModels, setNanogptTtsModels] = useState([]);
+  const [parakeetCppModels, setParakeetCppModels] = useState([]);
+  const [parakeetCppCliAvailable, setParakeetCppCliAvailable] = useState(false);
+  const [voxcpmGgufModels, setVoxcpmGgufModels] = useState([]);
+  const [voxcpmGgufCliAvailable, setVoxcpmGgufCliAvailable] = useState(false);
   const [manuallyStoppedAudio, setManuallyStoppedAudio] = useState(false);
   const [applyAvatar, setApplyAvatar] = useState(false);
   const [activeAvatar, setActiveAvatar] = useState(false);
@@ -605,6 +604,9 @@ const AppProvider = ({ children }) => {
   const streamingTtsWsEndSentRef = useRef(false);
   /** Batches `addStreamingText` onto rAF so we do not WS-send once per token (and sync manual chunk bursts coalesce). */
   const ttsStreamSendCoalesceRef = useRef({ pending: '', rafId: null });
+  const ttsFullResponseBufferRef = useRef('');
+  const ttsWaitForFullResponseRef = useRef(false);
+  const ttsPrebufferSecondsRef = useRef(0);
   const [characterAvatarSize] = useState(64);
   const [showAvatars, setShowAvatars] = useState(true);
   const [showAvatarsInChat, setShowAvatarsInChat] = useState(true);
@@ -711,6 +713,7 @@ const AppProvider = ({ children }) => {
   }, [characters, activeCharacter]);
 
   const [backgroundImage, setBackgroundImage] = useState(null); // New state for chat background
+  const [roomGalleryOpen, setRoomGalleryOpen] = useState(false);
 
   // Refs for avatar canvases
   const primaryAvatarRef = useRef(null);
@@ -733,10 +736,16 @@ const AppProvider = ({ children }) => {
   const [bootGeneration, setBootGeneration] = useState(0);
   /** Last IndexedDB message save for active tab (UI feedback). */
   const [conversationSaveStatus, setConversationSaveStatus] = useState('idle');
+  /** Batch delete select mode */
+  const [selectMode, setSelectMode] = useState(false);
 
+  const [selectedConversationIds, setSelectedConversationIds] = useState(new Set());
+
+  const [searchHighlightId, setSearchHighlightId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [outreachNotifications, setOutreachNotifications] = useState([]);
   const [outreachScrollToMessageId, setOutreachScrollToMessageId] = useState(null);
+  const [pendingDMThreadId, setPendingDMThreadId] = useState(null);
   const outreachSyncTimerRef = useRef(null);
   /** Batches streaming token UI updates to ~1/frame; avoids ReactMarkdown thrash on fast APIs. */
   const streamMessageRafRef = useRef({ rafId: null, pending: null });
@@ -890,12 +899,13 @@ const AppProvider = ({ children }) => {
       scrubConversationLocalStorageGhosts();
       if (cancelled) return;
 
-      const [charactersStr, activeIdStr, avatarSizesStr, parsedConversations, hydratedSettings] = await Promise.all([
+      const [charactersStr, activeIdStr, avatarSizesStr, parsedConversations, hydratedSettings, installerAudioSettings] = await Promise.all([
         indexedDbStorage.getItem('llm-characters', idbBootOpts),
         indexedDbStorage.getItem('Eloquent-active-conversation', idbBootOpts),
         indexedDbStorage.getItem('LiangLocal-avatar-sizes', idbBootOpts),
         loadConversationsFromStorage({ skipShardScan: true, idbOpts: idbBootOpts }),
         readSettingsFromStorage(idbBootOpts),
+        readInstallerAudioProfile(),
       ]);
       if (cancelled) return;
 
@@ -977,14 +987,28 @@ const AppProvider = ({ children }) => {
         }
       }
 
-      if (hydratedSettings || avatarSizesStr) {
+      if (hydratedSettings || avatarSizesStr || installerAudioSettings) {
         try {
-          const parsed = hydratedSettings ? { ...hydratedSettings } : {};
+          const audioDefaultsMigration = hydratedSettings
+            ? getAudioStartupDefaultsMigration(hydratedSettings)
+            : null;
+          const parsed = hydratedSettings
+            ? mergeSettingsObjects(hydratedSettings, audioDefaultsMigration)
+            : {};
           applyAvatarSizesToSettings(parsed, avatarSizesStr);
-          setSettings((s) => {
-            if (!shouldApplyHydratedSettings(parsed, s)) return s;
-            return mergeSettingsObjects(s, parsed);
-          });
+          const settingsToApply = installerAudioSettings
+            ? mergeSettingsObjects(parsed, installerAudioSettings)
+            : parsed;
+          const currentSettings = settingsRef.current;
+          if (shouldApplyHydratedSettings(settingsToApply, currentSettings)) {
+            const nextSettings = mergeSettingsObjects(currentSettings, settingsToApply);
+            settingsRef.current = nextSettings;
+            setSettings(nextSettings);
+            if (installerAudioSettings || audioDefaultsMigration) {
+              const persisted = await persistSettingsBlob(nextSettings);
+              if (persisted && installerAudioSettings) await clearInstallerAudioProfile();
+            }
+          }
           if (!avatarSizesStr && (typeof parsed.userAvatarSize === 'number' || typeof parsed.characterAvatarSize === 'number')) {
             indexedDbStorage.setItem('LiangLocal-avatar-sizes', JSON.stringify({
               userAvatarSize: parsed.userAvatarSize ?? 64,
@@ -1171,6 +1195,112 @@ const AppProvider = ({ children }) => {
     }
   }, [setConversations, setActiveConversation, setMessages]);
 
+  const toggleSelectMode = useCallback(() => {
+    setSelectMode((prev) => {
+      if (prev) setSelectedConversationIds(new Set());
+      return !prev;
+    });
+  }, []);
+
+  const toggleConversationSelection = useCallback((id) => {
+    setSelectedConversationIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const selectAllConversations = useCallback(() => {
+    const allIds = (conversationsRef.current || conversations)
+      .filter((c) => !isOutreachConversationId(c?.id))
+      .map((c) => c.id);
+    setSelectedConversationIds(new Set(allIds));
+  }, [conversations]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedConversationIds(new Set());
+  }, []);
+
+  const deleteSelectedConversations = useCallback(async () => {
+    const ids = [...selectedConversationIds];
+    if (ids.length === 0) return false;
+
+    try {
+      for (const id of ids) {
+        banConversationIdSync(id);
+        tombstonedConversationIdsRef.current.add(id);
+      }
+
+      if (conversationPersistTimerRef.current) {
+        clearTimeout(conversationPersistTimerRef.current);
+        conversationPersistTimerRef.current = null;
+      }
+      conversationStorageEpochRef.current += 1;
+
+      const currentActive = activeConversationRef.current ?? activeConversation;
+      const wasActiveDeleted = ids.includes(currentActive);
+      const survivors = (conversationsRef.current || conversations).filter(
+        (c) => !ids.includes(c.id)
+      );
+
+      setConversations(survivors);
+
+      if (wasActiveDeleted) {
+        const newActiveId = survivors[0]?.id ?? null;
+        setActiveConversation(newActiveId);
+        if (newActiveId) {
+          const sel = survivors.find((c) => c.id === newActiveId);
+          setMessages(Array.isArray(sel?.messages) ? sel.messages : []);
+        } else {
+          setMessages([]);
+        }
+      }
+
+      await deleteConversationsFromStorage(ids);
+
+      const activeToSave = wasActiveDeleted
+        ? (survivors[0]?.id ?? null)
+        : currentActive;
+      if (activeToSave && !tombstonedConversationIdsRef.current.has(activeToSave)) {
+        let activeMsgs = [];
+        if (activeToSave === currentActive) {
+          activeMsgs = messagesRef.current || [];
+        } else {
+          activeMsgs = await loadConversationMessages(activeToSave);
+        }
+        await persistConversationsToStorage(
+          survivors,
+          activeToSave,
+          conversationStorageEpochRef.current,
+          activeMsgs.length > 0 ? activeMsgs : null
+        );
+      } else {
+        try {
+          await indexedDbStorage.removeItem('Eloquent-active-conversation');
+        } catch (_) { /* noop */ }
+      }
+
+      setSelectedConversationIds(new Set());
+      setSelectMode(false);
+      return true;
+    } catch (e) {
+      console.error('Error in deleteSelectedConversations:', e);
+      return false;
+    }
+  }, [
+    selectedConversationIds,
+    conversations,
+    activeConversation,
+    setConversations,
+    setActiveConversation,
+    setMessages,
+    persistConversationsToStorage,
+  ]);
+
   const renameConversation = useCallback((id, newName) => {
     setConversations((prevConversations) => {
       const next = prevConversations.map((conv) =>
@@ -1189,9 +1319,10 @@ const AppProvider = ({ children }) => {
     max_tokens: -1,
     top_p: 0.9,
     top_k: 50,
-    repetition_penalty: 1.1,
+    repetition_penalty: 1.0,
     use_rag: false,
     selectedDocuments: [],
+    ragAgentTools: false,
     contextLength: 16000, // Default value
     useMemory: false,
     useMemoryAgent: false,
@@ -1201,6 +1332,7 @@ const AppProvider = ({ children }) => {
     useLoreAgentForMemoryRetrieval: false,
     useLoreAgentForMemoryObservation: false,
     multiRoleMode: false,
+    showUserProfiles: false,
     autoSelectSpeaker: false,
     narratorEnabled: false,
     narratorInterval: 6,
@@ -1209,17 +1341,28 @@ const AppProvider = ({ children }) => {
     narratorAvatar: null,
     chessHistorianAvatar: null,
     chessHistorianPersonaPrompt: null,
-    sttEnabled: false,
+    sttEnabled: true,
+    audioStartupDefaultsVersion: 1,
     sttAutoSendOnStop: false,
     streamResponses: true,
     sttEngine: "whisper",
+    nanogptSttModel: "fun-asr-flash-2026-06-15",
+    parakeetCppModel: "tdt_ctc-110m",
+    parakeetCppQuant: "f16",
     /** Full path to ffmpeg.exe when not on system PATH (Voice Merge / STT / D-ID). */
     ffmpegPath: '',
+    ttsEngine: 'kokoro',
     ttsVoice: 'af_heart',
+    ttsEnabled: true,
     ttsSpeed: 1.0,
     ttsPitch: 0,
-    ttsStreamChunkSentences: 2,
+    ttsStreamChunkSentences: 3,
+    /** Seconds of audio to buffer before starting autoplay playback. 0 = start
+     *  immediately (current behavior). Set to ~45 for engines with RTF > 1
+     *  (e.g. VoxCPM) to prevent mid-stream stalls. */
+    ttsPrebufferSeconds: 0,
     ttsAutoPlay: false,  // Simply set a default value
+    ttsWaitForFullResponse: false,
     ttsSaveFullResponseAudio: false,
     /** When > 0 and save is on, backend splits exported WAV into segments of at most this many seconds (285 ≈ 4m45, under 5 min). */
     ttsSaveFullResponseChunkSeconds: 0,
@@ -1248,6 +1391,7 @@ const AppProvider = ({ children }) => {
     apiRecentVerbatimTokenBudget: 32000,
 
     /** Book automation overlay: wider API packing while a queued chapter run is active. */
+    bookRunExperimentalEnabled: false,
     bookWritingApiContextTokens: 262144,
     bookWritingVerbatimTokenBudget: 98304,
     /** Responses shorter than this (characters) count as refusal → auto-retry. */
@@ -1308,6 +1452,24 @@ const AppProvider = ({ children }) => {
     splashScreenDuration: 'normal',
 
     admin_password: "", // <-- Password for remote access
+    openaiServerLanEnabled: false,
+    huggingFaceToken: '',
+    nanoGptApiKey: '',
+    nanoGptBillingMode: 'payg',
+    openRouterApiKey: '',
+    openAiApiKey: '',
+    anthropicApiKey: '',
+    geminiApiKey: '',
+    mistralApiKey: '',
+    xAiApiKey: '',
+    metaApiKey: '',
+    providerSetupCompleted: false,
+    modelSetupRequired: false,
+    modelSetupSource: 'huggingface',
+    primaryUse: null,
+    roleplayIntroCompleted: false,
+    customApiEndpoints: [],
+    speechModelDirectory: '',
 
     /** NanoGPT Context Memory — forwarded on /generate when endpoint URL is nano-gpt.com */
     nanoGptContextMemoryEnabled: false,
@@ -1315,6 +1477,23 @@ const AppProvider = ({ children }) => {
     nanoGptContextMemoryExpirationDays: 30,
     /** Debug-only: show layered reasoning diagnostics in chat UI. */
     showReasoningDiagnostics: false,
+
+    /** Chat Typography — text pop, fonts, streaming effects */
+    chatFontFamily: '',
+    chatFontSize: '',
+    chatFontWeight: '',
+    chatLineHeight: '',
+    chatLetterSpacing: '',
+    chatTextShadow: true,
+    chatTextGlow: false,
+    chatTypewriterEnabled: true,
+    chatStableScroll: true,
+    chatReasoningStyle: 'dimmed',
+    chatPreset: 'theme',
+
+    /** Vision Model (Two-Stage Pipeline) — runs before text model to extract structured info from images */
+    visionModel: null, // e.g., 'LFM2.5-VL-450M-Extract', 'gemma-3-4b-it', 'llava-v1.6-mistral-7b'
+    visionSchema: '', // YAML schema for structured extraction (optional)
   });
 
   const [settings, setSettings] = useState(() => {
@@ -1398,6 +1577,21 @@ const AppProvider = ({ children }) => {
     applyVar('mdH1Font', '--md-h1-font');
     applyVar('mdH2Font', '--md-h2-font');
     applyVar('mdH3Font', '--md-h3-font');
+
+    /** Chat Typography — CSS variables for font/size/weight/line-height */
+    applyVar('chatFontFamily', '--chat-font-family');
+    applyVar('chatFontSize', '--chat-font-size');
+    applyVar('chatFontWeight', '--chat-font-weight');
+    applyVar('chatLineHeight', '--chat-line-height');
+    applyVar('chatLetterSpacing', '--chat-letter-spacing');
+
+    /** Boolean flags as data-attributes for CSS selectors */
+    root.dataset.chatTextShadow = settings?.chatTextShadow ? 'true' : 'false';
+    root.dataset.chatTextGlow = settings?.chatTextGlow ? 'true' : 'false';
+    root.dataset.chatTypewriter = settings?.chatTypewriterEnabled ? 'true' : 'false';
+    root.dataset.chatStableScroll = settings?.chatStableScroll ? 'true' : 'false';
+    root.dataset.chatReasoningStyle = settings?.chatReasoningStyle || 'dimmed';
+    root.dataset.chatPreset = settings?.chatPreset || 'theme';
   }, [
     settings?.mdBodyColor,
     settings?.mdBoldColor,
@@ -1409,7 +1603,18 @@ const AppProvider = ({ children }) => {
     settings?.mdH3Color,
     settings?.mdH1Font,
     settings?.mdH2Font,
-    settings?.mdH3Font
+    settings?.mdH3Font,
+    settings?.chatFontFamily,
+    settings?.chatFontSize,
+    settings?.chatFontWeight,
+    settings?.chatLineHeight,
+    settings?.chatLetterSpacing,
+    settings?.chatTextShadow,
+    settings?.chatTextGlow,
+    settings?.chatTypewriterEnabled,
+    settings?.chatStableScroll,
+    settings?.chatReasoningStyle,
+    settings?.chatPreset,
   ]);
 
   // Backend detects single_gpu_mode, frontend stores as singleGpuMode
@@ -1440,7 +1645,6 @@ const AppProvider = ({ children }) => {
     let cancelled = false;
     (async () => {
       try {
-        const { loadPortConfig, getConfig } = await import('../config/api');
         const config = await withTimeout(
           loadPortConfig(),
           PORT_CONFIG_TIMEOUT_MS,
@@ -1454,7 +1658,6 @@ const AppProvider = ({ children }) => {
         console.warn('Port config load failed or timed out; using defaults', e);
         if (!cancelled) {
           setPortsLoadDegraded(true);
-          const { getConfig } = await import('../config/api');
           setPortConfig(getConfig());
         }
       } finally {
@@ -1496,16 +1699,26 @@ const AppProvider = ({ children }) => {
   }, [settings.ttsAutoPlay]);
 
   useEffect(() => {
+    ttsWaitForFullResponseRef.current = settings.ttsWaitForFullResponse === true;
+  }, [settings.ttsWaitForFullResponse]);
+
+  useEffect(() => {
+    ttsPrebufferSecondsRef.current = Math.max(0, Number(settings.ttsPrebufferSeconds) || 0);
+  }, [settings.ttsPrebufferSeconds]);
+
+  useEffect(() => {
     if (!ttsClient) return;
     const handleSubtitleCue = (cue) => {
+      const ts = Date.now();
       setTtsSubtitleCue({
         text: cue?.text || '',
-        durationMs: cue?.durationMs ?? null
+        durationMs: cue?.durationMs ?? null,
+        timestamp: ts,
       });
       window.__ttsSubtitleCue = {
         text: cue?.text || '',
         durationMs: cue?.durationMs ?? null,
-        timestamp: Date.now()
+        timestamp: ts,
       };
     };
     ttsClient.onSubtitleCue = handleSubtitleCue;
@@ -1520,7 +1733,9 @@ const AppProvider = ({ children }) => {
   // ===== Debugging and Testing the Lore Functionality =====
   // --- TTS Implementation (REORDERED) ---
   const stopTTS = useCallback((reason = 'unspecified') => {
-    // Note: Don't clear ttsSubtitleCue here - let it expire naturally via the timeout in CallModeOverlay
+    ttsPlaybackRequestRef.current += 1;
+    window.__ttsSubtitleCue = null;
+    setTtsSubtitleCue(null);
     console.warn(`🛑 [stopTTS] Initiating stop sequence — reason: ${reason}`);
     if (typeof console.trace === 'function') {
       console.trace('🛑 [stopTTS] caller stack');
@@ -1536,6 +1751,7 @@ const AppProvider = ({ children }) => {
       coalesce.rafId = null;
     }
     coalesce.pending = '';
+    ttsFullResponseBufferRef.current = ''; // Clear any buffered full-response text
 
     // 2. CRITICAL: Send interrupt signal to backend FIRST (before any cleanup)
     if (ttsClient && ttsClient.socket && ttsClient.socket.readyState === 1) {
@@ -1602,6 +1818,7 @@ const AppProvider = ({ children }) => {
     isStreamingTtsPausedRef.current = false;
     setIsStreamingTtsPaused(false);
     setIsPlayingAudio(null);
+    setTtsPlaybackState({ messageId: null, phase: 'idle' });
     window.streamingAudioPlaying = false;
     if (window.intelStreamingAudioPlaying) {
       window.intelStreamingAudioPlaying = false;
@@ -1613,6 +1830,7 @@ const AppProvider = ({ children }) => {
       streamingTtsStreamOptsRef.current = null;
     }
     streamingTtsDrainingRef.current = false;
+    streamingTtsDrainGenerationRef.current = null;
 
     // Explicitly update state to trigger UI changes
     setManuallyStoppedAudio(true);
@@ -1668,9 +1886,19 @@ const AppProvider = ({ children }) => {
   const getTtsOverridesForCharacter = useCallback((character) => {
     if (!character) return null;
     const engine = settings.ttsEngine || 'kokoro';
-    if (engine !== 'chatterbox' && engine !== 'chatterbox_turbo' && engine !== 'kokoro') return null;
+    if (engine !== 'chatterbox' && engine !== 'chatterbox_turbo' && engine !== 'chatterbox_nano' && engine !== 'kokoro' && engine !== 'voxcpm') return null;
     const voice = character.ttsVoice || character.tts_voice || null;
     if (!voice || voice === 'default') return null;
+    // Validate per-character voice against current engine
+    if (engine === 'kokoro') {
+      if (voice.includes('.') || voice.includes('\\') || voice.includes('/')) {
+        return null;
+      }
+    } else {
+      if (!voice.includes('.')) {
+        return null;
+      }
+    }
     return { ttsVoice: voice };
   }, [settings.ttsEngine]);
 
@@ -1681,9 +1909,43 @@ const AppProvider = ({ children }) => {
   }, [characters, getTtsOverridesForCharacter]);
 
   const startStreamingTTS = useCallback((messageId, optionsOverrides = null, streamOpts = null) => {
+    // ── Kill any previous drain loop before starting a new one ──────────
+    // The old drain loop is an async function that may still be running from
+    // a previous message.  It already passed the prebuffer gate, so it would
+    // play new chunks immediately, bypassing the gate we need for RTF > 1.
+    //
+    // We can't use isTtsInterruptedRef because it gets reset to false a few
+    // lines below — all synchronously, before the old async loop ever checks
+    // it.  Instead we use a generation counter: increment it here, and the
+    // drain loop captures its generation and breaks when it no longer matches.
+    const prevGen = drainGenerationRef.current;
+    drainGenerationRef.current = prevGen + 1;
+    console.log(`🔁 [TTS Drain] Generation ${prevGen} → ${drainGenerationRef.current} for message ${messageId}`);
+
+    // Stop any actively-playing audio sources from the previous stream
+    if (activeAudioPlayersRef.current.size > 0) {
+      const playersToStop = Array.from(activeAudioPlayersRef.current);
+      console.log(`🔁 [TTS Drain] Stopping ${playersToStop.length} active players from gen ${prevGen}`);
+      playersToStop.forEach(player => {
+        try {
+          if (player instanceof Audio) {
+            player.pause();
+            player.currentTime = 0;
+            if (player.src) { try { URL.revokeObjectURL(player.src); } catch (e) {} player.src = ''; }
+          } else if (player.ctx && player.source) {
+            try { player.source.stop(0); } catch (e) { }
+          }
+        } catch (e) { /* noop */ }
+      });
+      activeAudioPlayersRef.current.clear();
+      audioPlayerRef.current = null;
+    }
+    // ── End kill previous drain ─────────────────────────────────────────
+
     window.streamingAudioPlaying = false;
     window.intelStreamingAudioPlaying = false;
     streamingTtsDrainingRef.current = false;
+    streamingTtsDrainGenerationRef.current = null;
     ttsClient.audioQueue = [];
     streamingTtsWsEndSentRef.current = false;
     // Reset WS close flag so the drain loop can detect socket closure mid-stream
@@ -1699,9 +1961,14 @@ const AppProvider = ({ children }) => {
     coalesceStart.pending = '';
 
     const bypassAutoplayGate = streamOpts?.bypassAutoplayGate === true;
-    if ((!settings.ttsAutoPlay && !bypassAutoplayGate) || !settings.ttsEnabled) return;
+    if ((!settings.ttsAutoPlay && !bypassAutoplayGate) || !settings.ttsEnabled) {
+      console.warn(`🚫 [startStreamingTTS] BLOCKED — ttsAutoPlay=${settings.ttsAutoPlay}, bypass=${bypassAutoplayGate}, ttsEnabled=${settings.ttsEnabled}`);
+      return;
+    }
 
+    ttsPlaybackRequestRef.current += 1;
     unlockAudioContext();
+    console.warn(`▶️ [startStreamingTTS] Starting stream for ${messageId} — prebufferSetting=${settings.ttsPrebufferSeconds}, prebufferRef=${ttsPrebufferSecondsRef.current}`);
 
     console.log(`▶️ [startStreamingTTS] Starting stream for ${messageId} (Resetting interrupt flag)`);
     isFirstTextChunk.current = true;
@@ -1711,6 +1978,8 @@ const AppProvider = ({ children }) => {
     streamingTtsMessageIdRef.current = messageId;
     if (!isIntelPlayback) {
       setIsAutoplaying(true);
+      setIsPlayingAudio(messageId);
+      setTtsPlaybackState({ messageId, phase: 'synthesising' });
     }
 
     // Safety: If socket is closed/closing, prompt a reconnect so pending settings send
@@ -1740,43 +2009,74 @@ const AppProvider = ({ children }) => {
     const streamingTtsSettings = {
       engine: ttsEngine,
       voice: ttsVoice,
+      speed: normaliseTtsSpeed(optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0),
       exaggeration: optionsOverrides?.ttsExaggeration ?? settings.ttsExaggeration ?? 0.5,
       cfg: optionsOverrides?.ttsCfg ?? settings.ttsCfg ?? 0.5,
       stream_chunk_sentences: Math.max(
-        1,
+        3,
         Math.min(
           12,
-          Number.parseInt(optionsOverrides?.ttsStreamChunkSentences ?? settings.ttsStreamChunkSentences ?? 2, 10) || 2
+          Number.parseInt(optionsOverrides?.ttsStreamChunkSentences ?? settings.ttsStreamChunkSentences ?? 3, 10) || 3
         )
       ),
-      audio_prompt_path: ((ttsEngine === 'chatterbox') || (ttsEngine === 'chatterbox_turbo')) && ttsVoice !== 'default'
+      frontend_prebuffer_seconds: Math.max(
+        0,
+        Number(
+          optionsOverrides?.ttsPrebufferSeconds
+          ?? ttsPrebufferSecondsRef.current
+          ?? settingsRef.current?.ttsPrebufferSeconds
+          ?? settings.ttsPrebufferSeconds
+          ?? 0
+        ) || 0
+      ),
+      audio_prompt_path: ((ttsEngine === 'chatterbox') || (ttsEngine === 'chatterbox_turbo') || (ttsEngine === 'chatterbox_nano') || (ttsEngine === 'voxcpm')) && ttsVoice !== 'default'
         ? ttsVoice
-        : null
+        : null,
+      // VoxCPM2-specific settings
+      voxcpm_cfg_value: optionsOverrides?.voxcpmCfgValue ?? settings.voxcpmCfgValue ?? 2.0,
+      voxcpm_inference_timesteps: optionsOverrides?.voxcpmInferenceTimesteps ?? settings.voxcpmInferenceTimesteps ?? 8,
+      voxcpm_normalize: optionsOverrides?.voxcpmNormalize ?? settings.voxcpmNormalize ?? false,
+      voxcpm_denoise: optionsOverrides?.voxcpmDenoise ?? settings.voxcpmDenoise ?? false,
+      voxcpm_retry_badcase: optionsOverrides?.voxcpmRetryBadcase ?? settings.voxcpmRetryBadcase ?? false,
+      voxcpm_voice_design: optionsOverrides?.voxcpmVoiceDesign ?? settings.voxcpmVoiceDesign ?? '',
     };
 
     ttsClient.send(streamingTtsSettings);
 
+    console.warn(`🔌 [TTS] Assigning onAudioQueueUpdate handler for msg=${messageId} (prebufferRef=${ttsPrebufferSecondsRef.current})`);
     ttsClient.onAudioQueueUpdate = () => {
+      console.warn(`🔔 [TTS onAudioQueueUpdate] Fired! queue=${ttsClient.audioQueue.length}, msg=${messageId}, interrupt=${isTtsInterruptedRef.current}, draining=${streamingTtsDrainingRef.current}, msgRef=${streamingTtsMessageIdRef.current}, prebufferRef=${ttsPrebufferSecondsRef.current}, settingsPrebuffer=${settingsRef.current?.ttsPrebufferSeconds}`);
       if (isTtsInterruptedRef.current) {
-        console.log("🛡️ [TTS] Ignoring audio update due to interrupt flag. Dumping " + ttsClient.audioQueue.length + " items.");
+        console.warn(`🛡️ [TTS] BLOCKED by interrupt flag. Dumping ${ttsClient.audioQueue.length} items.`);
         ttsClient.audioQueue.length = 0;
         return;
       }
 
       if (streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId) {
-        console.log(`🛡️ [TTS] Ignoring update for stale message ID ${messageId} (Current: ${streamingTtsMessageIdRef.current})`);
+        console.warn(`🛡️ [TTS] BLOCKED by stale message ID ${messageId} (Current: ${streamingTtsMessageIdRef.current})`);
         return;
       }
 
       // Do NOT call setAudioQueue here: each WAV chunk updated React state and re-rendered the whole app.
       // With multi‑MB chat histories that blocked the main thread for seconds between sentences.
 
-      if (ttsClient.audioQueue.length === 0) return;
+      if (ttsClient.audioQueue.length === 0) {
+        console.warn(`🛡️ [TTS] BLOCKED — audioQueue empty`);
+        return;
+      }
 
       // One async drain for the whole stream: first blob kicks this off; later blobs only grow the queue.
-      if (streamingTtsDrainingRef.current) return;
+      const handlerGeneration = drainGenerationRef.current;
+      if (
+        streamingTtsDrainingRef.current
+        && streamingTtsDrainGenerationRef.current === handlerGeneration
+      ) {
+        console.warn(`🛡️ [TTS] BLOCKED — drain already running (drainingRef=true)`);
+        return;
+      }
 
       streamingTtsDrainingRef.current = true;
+      streamingTtsDrainGenerationRef.current = handlerGeneration;
       if (isIntelPlayback) {
         window.intelStreamingAudioPlaying = true;
       } else {
@@ -1785,14 +2085,15 @@ const AppProvider = ({ children }) => {
       }
 
       void (async () => {
+        const myGen = handlerGeneration;
+        console.warn(`🟢 [TTS Drain Gen ${myGen}] Async drain loop started for ${messageId} (gen=${drainGenerationRef.current}, myGen=${myGen})`);
         try {
-          const streamPlaybackRate = Math.max(
-            0.25,
-            Math.min(4, Number(optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0) || 1.0)
+          const requestedTtsSpeed = normaliseTtsSpeed(
+            optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0
           );
-          // Synthesis (Chatterbox Turbo, Kokoro, etc.) outputs normal-rate audio. Chipmunk only
-          // happened here: Web Audio BufferSource ties pitch to playbackRate. HTMLAudioElement
-          // supports preservesPitch (same as tap-to-play). At 1× keep gapless BufferSource.
+          const streamPlaybackRate = getTtsPlaybackRate(ttsEngine, requestedTtsSpeed);
+          // Kokoro and NanoGPT own their synthesis speed. Other engines use pitch-preserving
+          // HTML audio when the requested playback speed differs from 1×.
           const useGaplessBuffer = Math.abs(streamPlaybackRate - 1) < 0.0001;
 
           const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -1812,7 +2113,8 @@ const AppProvider = ({ children }) => {
           }
 
           const streamStillValid = () =>
-            !isTtsInterruptedRef.current
+            drainGenerationRef.current === myGen
+            && !isTtsInterruptedRef.current
             && (!streamingTtsMessageIdRef.current || streamingTtsMessageIdRef.current === messageId);
           const waitForIncomingAudio = async (maxWaitMs = 260, stepMs = 20) => {
             // Also check if WebSocket closed mid-stream so we don't stall indefinitely.
@@ -1836,12 +2138,81 @@ const AppProvider = ({ children }) => {
 
           const applySubtitleCue = (sub, wallDurationMs) => {
             if (!sub) return;
-            window.__ttsSubtitleCue = {
+            const cue = {
               text: sub.text,
               durationMs: wallDurationMs,
               timestamp: Date.now()
             };
+            window.__ttsSubtitleCue = cue;
+            setTtsSubtitleCue(cue);
           };
+
+          // ── Prebuffer gate ──────────────────────────────────────────────
+          // With RTF > 1 (synthesis slower than real-time) the audio buffer
+          // drains faster than it fills.  Starting playback on the first chunk
+          // causes mid-stream stalls.  Wait until enough audio has accumulated
+          // so that once playback begins it runs continuously.
+          //
+          // Read from multiple sources to handle any stale closure / cross-window
+          // sync timing issues.  settingsRef.current is updated synchronously on
+          // every render (not in a useEffect), so it is always current.
+          let prebufferSeconds = 0;
+          if (optionsOverrides && optionsOverrides.ttsPrebufferSeconds != null) {
+            prebufferSeconds = Number(optionsOverrides.ttsPrebufferSeconds) || 0;
+          } else if (ttsPrebufferSecondsRef.current > 0) {
+            prebufferSeconds = ttsPrebufferSecondsRef.current;
+          } else if (settingsRef.current && Number(settingsRef.current.ttsPrebufferSeconds) > 0) {
+            prebufferSeconds = Number(settingsRef.current.ttsPrebufferSeconds);
+          }
+          console.warn(`🎛️ [TTS Prebuffer Gen ${myGen}] GATE START: prebufferSeconds=${prebufferSeconds} (optionsOverrides?.ttsPrebufferSeconds=${optionsOverrides?.ttsPrebufferSeconds}, ref=${ttsPrebufferSecondsRef.current}, settingsRef=${settingsRef.current?.ttsPrebufferSeconds}, isIntel=${isIntelPlayback})`);
+          if (prebufferSeconds > 0 && !isIntelPlayback) {
+            const targetMs = prebufferSeconds * 1000;
+            console.warn(`⏳ [TTS Prebuffer Gen ${myGen}] WAITING: target=${targetMs}ms (${prebufferSeconds}s)`);
+            let lastQueueLen = -1;
+            let stableSince = 0;
+            let pollCount = 0;
+            while (true) {
+              if (!streamStillValid()) {
+                console.log(`🛑 [TTS Prebuffer Gen ${myGen}] Stream no longer valid, aborting gate.`);
+                break;
+              }
+              let bufferedMs = 0;
+              for (let i = 0; i < ttsClient.audioQueue.length; i++) {
+                bufferedMs += estimateChunkDurationMs(ttsClient.audioQueue[i]);
+              }
+              pollCount++;
+              if (pollCount % 3 === 1) { // Log every ~300ms for faster debugging
+                console.warn(`⏳ [TTS Prebuffer Gen ${myGen}] Poll ${pollCount}: ${Math.round(bufferedMs)}ms buffered / ${targetMs}ms target, queue=${ttsClient.audioQueue.length}, wsEnd=${streamingTtsWsEndSentRef.current}`);
+              }
+              if (bufferedMs >= targetMs) {
+                console.log(`✅ [TTS Prebuffer Gen ${myGen}] Target reached: ${Math.round(bufferedMs)}ms ≥ ${targetMs}ms. Starting playback after ${pollCount} polls.`);
+                break;
+              }
+              if (ttsWsClosedRef.current) {
+                console.log(`✅ [TTS Prebuffer Gen ${myGen}] WebSocket closed with ${Math.round(bufferedMs)}ms buffered. Starting playback.`);
+                break;
+              }
+              // Escape hatch for short responses that never reach the target:
+              // once all text has been sent, if the queue stops growing the
+              // backend has finished synthesizing — start with what we have.
+              if (streamingTtsWsEndSentRef.current) {
+                const qLen = ttsClient.audioQueue.length;
+                const now = performance.now();
+                if (qLen !== lastQueueLen) {
+                  lastQueueLen = qLen;
+                  stableSince = now;
+                } else if (now - stableSince > 3000) {
+                  console.log(`✅ [TTS Prebuffer Gen ${myGen}] Stream ended, queue stable 3s with ${Math.round(bufferedMs)}ms buffered. Starting playback.`);
+                  break;
+                }
+              }
+              await new Promise((r) => setTimeout(r, 100));
+            }
+          } else {
+            console.warn(`⏭️ [TTS Prebuffer Gen ${myGen}] SKIPPED — prebufferSeconds=${prebufferSeconds}, isIntel=${isIntelPlayback}`);
+          }
+          // ── End prebuffer gate ──────────────────────────────────────────
+          console.warn(`▶️ [TTS Drain Gen ${myGen}] Prebuffer gate passed, entering playback loop.`);
 
           // Outer loop: after each "burst", more chunks may have arrived over the WebSocket.
           // Inner loop: either gapless BufferSource (1×) or sequential HTMLAudio (preservesPitch).
@@ -1915,6 +2286,9 @@ const AppProvider = ({ children }) => {
 
                 if (!firstAudioPlayed) {
                   firstAudioPlayed = true;
+                  if (!isIntelPlayback) {
+                    setTtsPlaybackState({ messageId, phase: 'playing' });
+                  }
                   const now = performance.now();
                   if (textGenerationStartTime.current) {
                     console.log(`⏱️ [TTS Timing] 🟡 Latency (Text Chunk -> Audio): ${(now - textGenerationStartTime.current).toFixed(2)}ms`);
@@ -2002,6 +2376,9 @@ const AppProvider = ({ children }) => {
 
               if (!firstAudioPlayed) {
                 firstAudioPlayed = true;
+                if (!isIntelPlayback) {
+                  setTtsPlaybackState({ messageId, phase: 'playing' });
+                }
                 const now = performance.now();
                 if (textGenerationStartTime.current) {
                   console.log(`⏱️ [TTS Timing] 🟡 Latency (Text Chunk -> Audio): ${(now - textGenerationStartTime.current).toFixed(2)}ms`);
@@ -2046,8 +2423,13 @@ const AppProvider = ({ children }) => {
         } catch (err) {
           console.error("🎵 [TTS Playback Error]", err);
         } finally {
-          console.log("🎵 [TTS] Playback drain finished.");
+          if (streamingTtsDrainGenerationRef.current !== myGen) {
+            console.warn(`🎵 [TTS] Stale drain Gen ${myGen} finished without releasing the current playback lock.`);
+            return;
+          }
+          console.warn(`🎵 [TTS] Drain Gen ${myGen} finished. drainingRef reset to false.`);
           streamingTtsDrainingRef.current = false;
+          streamingTtsDrainGenerationRef.current = null;
           
           // Always clear the stream opts ref to prevent stale closures on next use
           const wasIntel = isIntelPlayback || (streamingTtsStreamOptsRef.current?.intelPlayback === true);
@@ -2056,6 +2438,7 @@ const AppProvider = ({ children }) => {
           } else {
             window.streamingAudioPlaying = false;
             setIsPlayingAudio(null);
+            setTtsPlaybackState({ messageId: null, phase: 'idle' });
             setIsAutoplaying(false);
             isStreamingTtsPausedRef.current = false;
             setIsStreamingTtsPaused(false);
@@ -2068,6 +2451,9 @@ const AppProvider = ({ children }) => {
           }
 
           const isStale = streamingTtsMessageIdRef.current && streamingTtsMessageIdRef.current !== messageId;
+          if (!isStale && streamingTtsMessageIdRef.current === messageId) {
+            streamingTtsMessageIdRef.current = null;
+          }
         }
       })();
     };
@@ -2160,6 +2546,11 @@ const AppProvider = ({ children }) => {
       return;
     }
 
+    if (ttsWaitForFullResponseRef.current) {
+      ttsFullResponseBufferRef.current += newTextChunk;
+      return;
+    }
+
     const box = ttsStreamSendCoalesceRef.current;
     box.pending += newTextChunk;
     if (box.rafId != null) return;
@@ -2185,6 +2576,12 @@ const AppProvider = ({ children }) => {
     const activeId = streamingTtsMessageIdRef.current;
     if (tail && activeId) {
       ttsClient.send(tail);
+    }
+    // Flush buffered full-response text (ttsWaitForFullResponse mode)
+    const buffered = ttsFullResponseBufferRef.current;
+    if (buffered && activeId) {
+      ttsFullResponseBufferRef.current = '';
+      ttsClient.send(buffered);
     }
     if (activeId) {
       console.log(`⏹️ [TTS Stream] Ending for message ${activeId}`);
@@ -2230,6 +2627,12 @@ const AppProvider = ({ children }) => {
     async (messageId, text, optionsOverrides = null, streamOpts = null) => {
       const t = (text || '').trim();
       if (!t || !settings.ttsEnabled) return;
+      if (
+        streamingTtsMessageIdRef.current === messageId
+        && !isTtsInterruptedRef.current
+      ) {
+        return;
+      }
       const intelPlayback =
         streamOpts?.intelPlayback === true || isIntelMessageId(messageId);
       setAudioError(null);
@@ -2246,8 +2649,7 @@ const AppProvider = ({ children }) => {
         intelPlayback,
         ...streamOpts,
       });
-      const chunks = t.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((c) => c.trim()).filter(Boolean) || [t];
-      chunks.forEach((chunk) => addStreamingText(chunk, { immediate: true }));
+      addStreamingText(t, { immediate: true });
       endStreamingTTS();
     },
     [
@@ -2321,6 +2723,132 @@ const AppProvider = ({ children }) => {
       setSttEnginesAvailable(['whisper']); // Default to Whisper if fetch fails
     }
   }, [PRIMARY_API_URL]);
+
+  const fetchNanogptSttModels = useCallback(async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/stt/nanogpt-models`);
+      if (response.ok) {
+        const data = await response.json();
+        setNanogptSttModels(data.models || []);
+      }
+    } catch (error) {
+      console.error("Error fetching NanoGPT STT models:", error);
+      setNanogptSttModels([]);
+    }
+  }, [PRIMARY_API_URL]);
+
+  const fetchNanogptTtsModels = useCallback(async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/tts/nanogpt-models`);
+      if (response.ok) {
+        const data = await response.json();
+        setNanogptTtsModels(data.models || []);
+      }
+    } catch (error) {
+      console.error("Error fetching NanoGPT TTS models:", error);
+      setNanogptTtsModels([]);
+    }
+  }, [PRIMARY_API_URL]);
+
+  const fetchParakeetCppModels = useCallback(async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/stt/parakeet-cpp/models`);
+      if (response.ok) {
+        const data = await response.json();
+        setParakeetCppModels(data.models || []);
+        setParakeetCppCliAvailable(data.cli_available || false);
+      }
+    } catch (error) {
+      console.error("Error fetching Parakeet.cpp models:", error);
+      setParakeetCppModels([]);
+    }
+  }, [PRIMARY_API_URL]);
+
+  const downloadParakeetCppModel = useCallback(async (modelId, quant) => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/stt/parakeet-cpp/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: modelId, quant }),
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        await fetchParakeetCppModels();
+        return { success: true, message: data.message };
+      }
+      return { success: false, message: data.message || 'Download failed' };
+    } catch (error) {
+      console.error("Error downloading Parakeet.cpp model:", error);
+      return { success: false, message: error.message };
+    }
+  }, [PRIMARY_API_URL, fetchParakeetCppModels]);
+
+  const deleteParakeetCppModel = useCallback(async (filename) => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/stt/parakeet-cpp/model?filename=${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        await fetchParakeetCppModels();
+        return { success: true, message: data.message };
+      }
+      return { success: false, message: data.message || 'Delete failed' };
+    } catch (error) {
+      console.error("Error deleting Parakeet.cpp model:", error);
+      return { success: false, message: error.message };
+    }
+  }, [PRIMARY_API_URL, fetchParakeetCppModels]);
+
+  const fetchVoxcpmGgufModels = useCallback(async () => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
+      if (response.ok) {
+        const data = await response.json();
+        setVoxcpmGgufModels(data.models || []);
+        setVoxcpmGgufCliAvailable(data.cli_available || false);
+      }
+    } catch (error) {
+      console.error("Error fetching VoxCPM2 GGUF models:", error);
+      setVoxcpmGgufModels([]);
+    }
+  }, [PRIMARY_API_URL]);
+
+  const downloadVoxcpmGgufModel = useCallback(async (modelId) => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: modelId }),
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        await fetchVoxcpmGgufModels();
+        return { success: true, message: data.message };
+      }
+      return { success: false, message: data.message || 'Download failed' };
+    } catch (error) {
+      console.error("Error downloading VoxCPM2 GGUF model:", error);
+      return { success: false, message: error.message };
+    }
+  }, [PRIMARY_API_URL, fetchVoxcpmGgufModels]);
+
+  const deleteVoxcpmGgufModel = useCallback(async (filename) => {
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/model?filename=${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        await fetchVoxcpmGgufModels();
+        return { success: true, message: data.message };
+      }
+      return { success: false, message: data.message || 'Delete failed' };
+    } catch (error) {
+      console.error("Error deleting VoxCPM2 GGUF model:", error);
+      return { success: false, message: error.message };
+    }
+  }, [PRIMARY_API_URL, fetchVoxcpmGgufModels]);
 
   // 2. Generate image via POST - supports Local SD and ComfyUI
   // optional 4th arg: { signal } for AbortController (cancel in-flight request)
@@ -2530,7 +3058,25 @@ const AppProvider = ({ children }) => {
     throw new Error("Video generation timed out.");
   }, [PRIMARY_API_URL, settings]);
 
-
+  const saveToGallery = useCallback(async (imageUrl, parameters, displayName, categoryId, tags) => {
+    const targetApiUrl = PRIMARY_API_URL || getBackendUrl();
+    const res = await fetch(`${targetApiUrl}/room-gallery/save-from-generation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_url: imageUrl,
+        display_name: displayName || null,
+        category_id: categoryId || null,
+        tags: tags || [],
+        parameters: parameters || null,
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(errBody || 'Failed to save to gallery');
+    }
+    return await res.json();
+  }, [PRIMARY_API_URL]);
 
 
   // 3. (Unchanged) Test lore detection helper
@@ -2615,7 +3161,15 @@ const AppProvider = ({ children }) => {
       }
 
       console.log(`🎤 Using STT engine: ${settings.sttEngine}`);
-      const transcript = await transcribeAudio(audioBlob, settings.sttEngine);
+      let sttEngine = settings.sttEngine;
+      if (sttEngine === 'nanogpt') {
+        sttEngine = `nanogpt-${settings.nanogptSttModel || 'fun-asr-flash-2026-06-15'}`;
+      } else if (sttEngine === 'parakeet-cpp') {
+        const mId = settings.parakeetCppModel || 'tdt_ctc-110m';
+        const mQuant = settings.parakeetCppQuant || 'f16';
+        sttEngine = `parakeet-cpp:${mId}:${mQuant}`;
+      }
+      const transcript = await transcribeAudio(audioBlob, sttEngine);
       console.log("🎤 Transcription successful:", transcript);
 
       if (typeof onTranscriptReceived === 'function') {
@@ -2655,9 +3209,6 @@ const AppProvider = ({ children }) => {
   const playTTS = useCallback(async (messageId, text, optionsOverrides = null) => {
     console.log(`🗣️ [TTS] Attempting to play message ${messageId}: "${text.substring(0, 40)}..."`);
 
-    // Reset interrupt flag for this new playback session
-    isTtsInterruptedRef.current = false;
-
     // Check if this is the same message that was just played
     if (lastPlayedMessageRef.current === messageId && !optionsOverrides) {
       console.log(`🗣️ [TTS] Skipping message ${messageId} as it was just played.`);
@@ -2670,19 +3221,16 @@ const AppProvider = ({ children }) => {
       return;
     }
 
-    // If there's already audio playing, stop it first
-    if (isPlayingAudio) {
-      console.warn(`🗣️ [TTS] Cannot play message ${messageId}: Audio for message ${isPlayingAudio} is already playing.`);
+    if (isPlayingAudio || audioPlayerRef.current || streamingTtsMessageIdRef.current) {
       stopTTS('playTTS_replace_active');
     }
 
-    // Stop lingering audio
-    if (audioPlayerRef.current) {
-      console.warn("🗣️ [TTS] Found lingering audioPlayerRef, stopping before new playback.");
-      stopTTS('playTTS_lingering_player');
-    }
+    const playbackRequestId = ttsPlaybackRequestRef.current + 1;
+    ttsPlaybackRequestRef.current = playbackRequestId;
+    isTtsInterruptedRef.current = false;
 
     setIsPlayingAudio(messageId);
+    setTtsPlaybackState({ messageId, phase: 'synthesising' });
     setAudioError(null);
 
     let audioUrl = null;
@@ -2701,17 +3249,20 @@ const AppProvider = ({ children }) => {
       // Resolve options: priority to overrides, then current state settings
       const currentTtsEngine = optionsOverrides?.ttsEngine || settings.ttsEngine || 'kokoro';
       const currentTtsVoice = optionsOverrides?.ttsVoice || settings.ttsVoice || 'af_heart';
-      const currentTtsSpeed = Number(optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0) || 1.0;
+      const currentTtsSpeed = normaliseTtsSpeed(optionsOverrides?.ttsSpeed ?? settings.ttsSpeed ?? 1.0);
+      const playbackRate = getTtsPlaybackRate(currentTtsEngine, currentTtsSpeed);
       const isChatterboxFamily =
-        currentTtsEngine === 'chatterbox' || currentTtsEngine === 'chatterbox_turbo';
-      // Pitch UI is Kokoro-only; a leftover ttsPitch must not force Web Audio + detune for Chatterbox test/playback.
+        currentTtsEngine === 'chatterbox' || currentTtsEngine === 'chatterbox_turbo' || currentTtsEngine === 'chatterbox_nano';
+      const isVoxCPMFamily = currentTtsEngine === 'voxcpm';
+      // Pitch belongs to Kokoro only; stale settings must not alter another engine.
       const rawPitch = optionsOverrides?.ttsPitch ?? settings.ttsPitch ?? 0;
-      const currentTtsPitch = isChatterboxFamily ? 0 : Number(rawPitch) || 0;
+      const currentTtsPitch = currentTtsEngine === 'kokoro' ? Number(rawPitch) || 0 : 0;
 
       // Build options object for TTS engines
       const ttsOptions = {
         voice: currentTtsVoice,
         engine: currentTtsEngine,
+        speed: currentTtsSpeed,
         save_full_response_audio: settings.ttsSaveFullResponseAudio === true,
         message_id: messageId,
         conversation_id: activeConversation,
@@ -2728,6 +3279,19 @@ const AppProvider = ({ children }) => {
           ttsOptions.audio_prompt_path = currentTtsVoice;
         }
         console.log(`🔊 [TTS] Chatterbox params - exaggeration: ${ttsOptions.exaggeration}, cfg: ${ttsOptions.cfg}`);
+      }
+
+      if (isVoxCPMFamily) {
+        ttsOptions.voxcpm_cfg_value = optionsOverrides?.voxcpmCfgValue ?? settings.voxcpmCfgValue ?? 2.0;
+        ttsOptions.voxcpm_inference_timesteps = optionsOverrides?.voxcpmInferenceTimesteps ?? settings.voxcpmInferenceTimesteps ?? 8;
+        ttsOptions.voxcpm_normalize = optionsOverrides?.voxcpmNormalize ?? settings.voxcpmNormalize ?? false;
+        ttsOptions.voxcpm_denoise = optionsOverrides?.voxcpmDenoise ?? settings.voxcpmDenoise ?? false;
+        ttsOptions.voxcpm_retry_badcase = optionsOverrides?.voxcpmRetryBadcase ?? settings.voxcpmRetryBadcase ?? false;
+        ttsOptions.voxcpm_voice_design = optionsOverrides?.voxcpmVoiceDesign ?? settings.voxcpmVoiceDesign ?? '';
+        if (currentTtsVoice && currentTtsVoice !== 'default') {
+          ttsOptions.audio_prompt_path = currentTtsVoice;
+        }
+        console.log(`🔊 [TTS] VoxCPM2 params - cfg: ${ttsOptions.voxcpm_cfg_value}, timesteps: ${ttsOptions.voxcpm_inference_timesteps}, voice_design: "${ttsOptions.voxcpm_voice_design}"`);
       }
 
       console.log(`🔊 [TTS] Using engine: ${ttsOptions.engine} with options:`, ttsOptions);
@@ -2785,10 +3349,9 @@ const AppProvider = ({ children }) => {
       }
 
       // CHECK AGAIN after await - stop may have been pressed during synthesis
-      if (isTtsInterruptedRef.current) {
+      if (isTtsInterruptedRef.current || ttsPlaybackRequestRef.current !== playbackRequestId) {
         console.log(`🛑 [TTS] Playback blocked for message ${messageId} - interrupted during synthesis`);
         if (audioUrl) URL.revokeObjectURL(audioUrl);
-        setIsPlayingAudio(null);
         return;
       }
 
@@ -2805,33 +3368,40 @@ const AppProvider = ({ children }) => {
         try {
           if ('webkitPreservesPitch' in audio) audio.webkitPreservesPitch = true;
         } catch (e) { /* noop */ }
-        audio.playbackRate = Math.max(0.25, Math.min(4, Number(currentTtsSpeed) || 1.0));
+        audio.playbackRate = playbackRate;
         audioPlayerRef.current = audio;
         activeAudioPlayersRef.current.add(audio);
 
         const handleEnd = () => {
           console.log(`🗣️ [TTS] Playback ended for message ${messageId}`);
           activeAudioPlayersRef.current.delete(audio);
-          setIsPlayingAudio(null);
+          if (ttsPlaybackRequestRef.current === playbackRequestId) {
+            setIsPlayingAudio(null);
+            setTtsPlaybackState({ messageId: null, phase: 'idle' });
+            lastPlayedMessageRef.current = messageId;
+          }
           URL.revokeObjectURL(audioUrl);
-          audioPlayerRef.current = null;
+          if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
           audio.removeEventListener('ended', handleEnd);
           audio.removeEventListener('error', handleError);
-          lastPlayedMessageRef.current = messageId;
         };
         const handleError = () => {
           activeAudioPlayersRef.current.delete(audio);
-          setAudioError("Failed to play synthesized audio.");
-          setIsPlayingAudio(null);
+          if (ttsPlaybackRequestRef.current === playbackRequestId) {
+            setAudioError("Failed to play synthesized audio.");
+            setIsPlayingAudio(null);
+            setTtsPlaybackState({ messageId: null, phase: 'idle' });
+            lastPlayedMessageRef.current = null;
+          }
           URL.revokeObjectURL(audioUrl);
-          audioPlayerRef.current = null;
+          if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
           audio.removeEventListener('ended', handleEnd);
           audio.removeEventListener('error', handleError);
-          lastPlayedMessageRef.current = null;
         };
 
         audio.addEventListener('ended', handleEnd);
         audio.addEventListener('error', handleError);
+        setTtsPlaybackState({ messageId, phase: 'playing' });
         await audio.play();
 
       } else {
@@ -2844,7 +3414,7 @@ const AppProvider = ({ children }) => {
 
         const source = ctx.createBufferSource();
         source.buffer = buf;
-        source.playbackRate.value = Math.max(0.25, Math.min(4, Number(currentTtsSpeed) || 1.0));
+        source.playbackRate.value = playbackRate;
         source.detune.value = currentTtsPitch * 100; // Semitones -> cents
 
         source.connect(ctx.destination);
@@ -2856,17 +3426,25 @@ const AppProvider = ({ children }) => {
         source.onended = () => {
           console.log(`🗣️ [TTS] Web Audio playback ended for message ${messageId}`);
           activeAudioPlayersRef.current.delete(playerHandlePitch);
-          setIsPlayingAudio(null);
+          if (ttsPlaybackRequestRef.current === playbackRequestId) {
+            setIsPlayingAudio(null);
+            setTtsPlaybackState({ messageId: null, phase: 'idle' });
+            lastPlayedMessageRef.current = messageId;
+          }
           try { ctx.close(); } catch (e) { }
           URL.revokeObjectURL(audioUrl);
-          audioPlayerRef.current = null;
-          lastPlayedMessageRef.current = messageId;
+          if (audioPlayerRef.current?.source === source) audioPlayerRef.current = null;
         };
 
+        setTtsPlaybackState({ messageId, phase: 'playing' });
         source.start();
       }
 
     } catch (error) {
+      if (ttsPlaybackRequestRef.current !== playbackRequestId) {
+        if (audioUrl) URL.revokeObjectURL(audioUrl);
+        return;
+      }
       console.error("🗣️ [TTS] Error:", error);
       setAudioError(error?.message || "Unknown TTS error");
       if (settings.ttsSaveFullResponseAudio) {
@@ -2880,6 +3458,7 @@ const AppProvider = ({ children }) => {
         });
       }
       setIsPlayingAudio(null);
+      setTtsPlaybackState({ messageId: null, phase: 'idle' });
     }
 
   }, [settings, messages, stopTTS, isPlayingAudio]);
@@ -3208,7 +3787,7 @@ const AppProvider = ({ children }) => {
     const rotatePool = (settings.customApiEndpoints || []).filter(
       (e) => e?.enabled !== false && e?.rotate_enabled !== false,
     );
-    if (autoRouterEnabled) {
+    if (autoRouterEnabled && rotatePool.length > 0) {
       setPrimaryIsAPI(true);
       setPrimaryModel(null);
       setActiveModel(null);
@@ -3247,21 +3826,28 @@ const AppProvider = ({ children }) => {
       setPrimaryModel(modelId);
       setActiveModel(modelId);
     }
-  }, [storageHydrated, portsReady, settings.customApiEndpoints]);
+  }, [storageHydrated, portsReady, settings.customApiEndpoints, settings.apiEndpointRoundRobinEnabled]);
 
   useEffect(() => {
     if (primaryIsAPI && primaryModel) {
       saveLastPrimaryApiModel(primaryModel);
     }
-  }, [primaryIsAPI, primaryModel]);
+  }, [primaryIsAPI, primaryModel, settings.apiEndpointRoundRobinEnabled]);
 
   useEffect(() => {
     if (!crossWindowSyncReadyRef.current) {
       crossWindowSyncReadyRef.current = true;
       return;
     }
-    broadcastPrimaryModelState({ primaryModel, primaryIsAPI });
-  }, [primaryModel, primaryIsAPI]);
+    broadcastPrimaryModelState({
+      primaryModel,
+      primaryIsAPI,
+      autoRouterEnabled: settings.apiEndpointRoundRobinEnabled,
+      autoRouterActive:
+        settings.apiEndpointRoundRobinEnabled === true
+        && getRotationPool(settings).length > 0,
+    });
+  }, [primaryModel, primaryIsAPI, settings.apiEndpointRoundRobinEnabled, settings.customApiEndpoints]);
 
   const loadModel = useCallback(
     async (name, gpu = 0, contextLength = settings.contextLength) => {
@@ -3424,8 +4010,8 @@ const AppProvider = ({ children }) => {
     activeConversationRef.current = id;
     startupConversationRestoreRef.current.attempted = true;
     setConversations(next);
-    void saveConversationCatalog(next, id);
     if (initial.length > 0) {
+      void saveConversationCatalog(next, id);
       void saveActiveConversationMessages(id, initial);
     }
     setActiveConversation(id);
@@ -3438,6 +4024,111 @@ const AppProvider = ({ children }) => {
     setMultiRoleContext('');
     return conv;
   }, [primaryCharacter, secondaryCharacter, userCharacter, characters, settings.multiRoleMode, userProfile, setConversations, setActiveConversation, setMessages, setDualModeEnabled, setActiveCharacter, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights]);
+
+  /**
+   * Start a normal chat conversation for a specific character.
+   * Used by Mirror date-booking and promotion flows.
+   * Saves the prior conversation, sets the character active, creates the new
+   * conversation, seeds the first bot message, and switches to the chat tab.
+   */
+  const startCharacterConversation = useCallback((character, opts = {}) => {
+    const id = generateUniqueId();
+    const firstMsg = opts.firstMessage || character.first_message || '';
+    const charName = character.name || 'Character';
+    const userName = (settings.multiRoleMode && userCharacter?.name)
+      ? userCharacter.name
+      : (userProfile?.name || userProfile?.username || 'User');
+    const resolvedFirstMsg = firstMsg
+      .replace(/{{char}}/gi, charName)
+      .replace(/{{user}}/gi, userName);
+
+    const initial = resolvedFirstMsg ? [{
+      id: generateUniqueId(),
+      role: 'bot',
+      content: resolvedFirstMsg,
+      modelId: 'primary',
+      characterName: charName,
+      characterId: character.id,
+      avatar: getActiveCharacterAvatar(character),
+    }] : [];
+
+    const defaultActiveIds = characters
+      .map(normalizeCharacter)
+      .filter(c => normalizeChatRole(c.chat_role) !== 'user')
+      .map(c => c.id);
+    const defaultActiveWeights = buildDefaultCharacterWeights(characters);
+
+    // Save current conversation before switching
+    const prevId = activeConversationRef.current;
+    const prevMsgs = messagesRef.current;
+    if (prevId && prevMsgs?.length) {
+      void saveActiveConversationMessages(prevId, prevMsgs);
+    }
+
+    const conv = {
+      id,
+      name: opts.conversationName || `Chat with ${charName}`,
+      messages: initial,
+      characterIds: {
+        primary: character.id,
+        secondary: null,
+        user: userCharacter?.id || null,
+      },
+      characterSnapshot: {
+        id: character.id,
+        name: character.name,
+        description: character.description,
+        personality: character.personality,
+        avatar: character.avatar,
+      },
+      systemPersona: false,
+      systemPersonaCharacterId: null,
+      activeCharacterIds: defaultActiveIds,
+      activeCharacterWeights: defaultActiveWeights,
+      multiRoleContext: '',
+      created: new Date().toISOString(),
+      requiresTitle: false,
+      agenticMemoryEnabled: true,
+      alignmentDetectionEnabled: false,
+      rollingMemoryPack: '',
+      rollingMemoryFoldCount: 0,
+      introPending: false,
+      characterIntro: null,
+      mirrorContinuity: opts.mirrorContinuity || null,
+      mirrorDateType: opts.dateType || null,
+    };
+
+    const next = [...(conversationsRef.current || []), conv];
+    conversationsRef.current = next;
+    activeConversationRef.current = id;
+    startupConversationRestoreRef.current.attempted = true;
+
+    setConversations(next);
+    setMessages(initial);
+    setActiveConversation(id);
+    setActiveCharacter(character);
+    setPrimaryCharacter(character);
+    setSecondaryCharacter(null);
+    setUserCharacterId(userCharacter?.id || null);
+    setActiveCharacterIds(defaultActiveIds);
+    setActiveCharacterWeights(defaultActiveWeights);
+    setMultiRoleContext('');
+
+    if (initial.length > 0) {
+      void saveConversationCatalog(next, id);
+      void saveActiveConversationMessages(id, initial);
+    }
+
+    setActiveTab('chat');
+
+    return conv;
+  }, [
+    characters, userCharacter, userProfile, generateUniqueId,
+    setConversations, setMessages, setActiveConversation,
+    setActiveCharacter, setPrimaryCharacter, setSecondaryCharacter,
+    setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights,
+    setMultiRoleContext, setActiveTab, settings,
+  ]);
 
   /** Eloquent Home: landing UI with no active tab (distinct from New Chat). */
   const goToHome = useCallback(() => {
@@ -3705,14 +4396,9 @@ const AppProvider = ({ children }) => {
           list[idx] = savedCharacter;
           console.log('Updating existing character:', savedCharacter.name, 'with ID:', savedCharacter.id);
         } else {
-          // ID provided but character not found, treat as new
-          savedCharacter = {
-            ...savedCharacter,
-            id: `char_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-            created_at: new Date().toISOString().split('T')[0]
-          };
+          // State batching: character not yet in the array. Push with provided ID, don't create duplicate.
           list.push(savedCharacter);
-          console.log('Character not found, creating new:', savedCharacter.name, 'with ID:', savedCharacter.id);
+          console.log('Character added to state:', savedCharacter.name, 'with ID:', savedCharacter.id);
         }
       }
 
@@ -3905,6 +4591,7 @@ const AppProvider = ({ children }) => {
       ? (characters.find(c => normalizeChatRole(c.chat_role) !== 'user') || null)
       : requested;
     setActiveCharacter(char);
+    setPrimaryCharacter(char);
     if (activeConversation) {
       setConversations(prev => prev.map(c => (
         c.id === activeConversation
@@ -4729,6 +5416,7 @@ Return ONLY valid JSON:
       speakerCharacterId = null,
       requestPurpose = null,
       onWebSearchMeta = null,
+      onWebSearchProgress = null,
       modelName: modelNameOverride = null,
     } = options;
     const speakerCharacter = await resolveSpeakerCharacter(text, recentMessages, { speakerCharacterId });
@@ -4802,6 +5490,7 @@ Return ONLY valid JSON:
           presence_penalty: presencePenalty,
           anti_repetition_mode: antiRepetitionMode,
           use_rag,
+          rag_agent_tools: settings.ragAgentTools === true,
           rag_docs: selectedDocuments,
           use_web_search: webSearchEnabled,
           ...(webSearchEnabled ? getWebSearchResearchPayload(settings) : {}),
@@ -4824,18 +5513,33 @@ Return ONLY valid JSON:
         settings
       );
 
-      // Attachments (minimal): if a vision-capable model is selected, pass the first image through.
-      // Attach intensity parameters if present
-      if (typeof window !== 'undefined' && window.__intensityParams) {
-        const ip = window.__intensityParams();
-        if (ip) payload.intensity_params = ip;
-      }
-      // Backend expects raw base64 bytes (not the data: URL prefix).
-      const firstImage = Array.isArray(options?.images) ? options.images[0] : null;
+      const requestImages = (Array.isArray(options?.images) ? options.images : [])
+        .filter((image) => image?.base64)
+        .map((image) => {
+          const encoded = String(image.base64);
+          return {
+            base64: encoded.includes(',') ? encoded.split(',')[1] : encoded,
+            type: String(image.type || 'image/png'),
+            name: String(image.name || 'image'),
+          };
+        });
+      const firstImage = requestImages[0] || null;
       if (firstImage?.base64 && firstImage?.type) {
-        const b64 = String(firstImage.base64);
-        payload.image_base64 = b64.includes(',') ? b64.split(',')[1] : b64;
-        payload.image_type = String(firstImage.type);
+        payload.image_base64 = firstImage.base64;
+        payload.image_type = firstImage.type;
+        payload.images = requestImages;
+      }
+      
+      // Vision model support (two-stage pipeline)
+      const visionModel = settings.visionModel || null;
+      if (visionModel && firstImage?.base64) {
+        payload.vision_model = visionModel;
+        // Default schema for structured extraction
+        payload.vision_schema = settings.visionSchema || `description: A concise, factual account of the image
+objects: The important objects, people, animals, or interface elements and where they appear
+scene_type: The kind of scene, document, screenshot, or interface shown
+text_content: Visible text, transcribed accurately; use an empty string when none is legible
+colours: The dominant colours`;
       }
 
     let attempts = 0;
@@ -4848,6 +5552,7 @@ Return ONLY valid JSON:
       if (attempts > 1) console.log(`🔄 [generateReply] Auto-Retry Attempt ${attempts}...`);
 
       try {
+        console.error('🔥 GENERATEREPLY-FETCH: About to fetch /generate, streamResponses:', streamResponses);
         const controller = new AbortController();
         const res = await fetch(`${PRIMARY_API_URL}/generate`, {
           method: 'POST',
@@ -4873,7 +5578,10 @@ Return ONLY valid JSON:
           throw new Error(detail);
         }
 
+        console.error('🔥 GENERATEREPLY-RESPONSE: Got response, status:', res.status, 'streamResponses:', streamResponses);
+
         if (streamResponses) {
+          console.error('🔥 GENERATEREPLY-STREAMING: Entering streaming block');
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let accumulatedText = '';
@@ -4903,10 +5611,12 @@ Return ONLY valid JSON:
           });
 
           while (!doneStreaming) {
+            console.error('🔥 GENERATEREPLY-LOOP: Reading chunk...');
             const { done, value } = await reader.read();
             if (done) break;
 
             const chunk = decoder.decode(value, { stream: true });
+            console.error('🔥 GENERATEREPLY-CHUNK: Got chunk, length:', chunk.length, 'preview:', chunk.slice(0, 200));
             sseBuffer += chunk;
             const events = sseBuffer.split('\n\n');
             sseBuffer = events.pop() || '';
@@ -4921,8 +5631,27 @@ Return ONLY valid JSON:
                 let parsed;
                 try {
                   parsed = JSON.parse(data);
+                  console.error('🔥 GENERATEREPLY-PARSED: JSON parsed, keys:', Object.keys(parsed));
                 } catch {
+                  console.error('🔥 GENERATEREPLY-PARSE-ERROR: Failed to parse JSON:', data.slice(0, 200));
                   continue;
+                }
+                // DEBUG: Log raw chunks to identify provider reasoning format
+                if (reasoningStream._debugChunkCount == null) reasoningStream._debugChunkCount = 0;
+                if (reasoningStream._debugChunkCount < 50) {
+                  reasoningStream._debugChunkCount += 1;
+                  const debugKeys = parsed ? Object.keys(parsed) : [];
+                  const debugDelta = parsed?.choices?.[0]?.delta;
+                  const debugDeltaKeys = debugDelta ? Object.keys(debugDelta) : [];
+                  const debugMessage = parsed?.choices?.[0]?.message;
+                  const debugMessageKeys = debugMessage ? Object.keys(debugMessage) : [];
+                  console.warn(
+                    `[REASONING-DEBUG] RAW CHUNK #${reasoningStream._debugChunkCount}`,
+                    '\n  top-level keys:', debugKeys,
+                    '\n  delta keys:', debugDeltaKeys,
+                    '\n  message keys:', debugMessageKeys,
+                    '\n  full chunk:', JSON.stringify(parsed).slice(0, 800),
+                  );
                 }
                 if (parsed.route_meta) {
                   setLastRequestRouteMeta({
@@ -4933,10 +5662,29 @@ Return ONLY valid JSON:
                 if (parsed.web_search_meta && onWebSearchMeta) {
                   onWebSearchMeta(parsed.web_search_meta);
                 }
-                const { text: deltaText, reasoning: deltaReasoning, error: sseError } = extractSseStreamParts(parsed);
+                if (parsed.web_search_progress && onWebSearchProgress) {
+                  onWebSearchProgress(parsed.web_search_progress);
+                }
+                const { text: deltaText, reasoning: deltaReasoning, error: sseError, raw } = extractSseStreamParts(parsed);
+                console.error('🔥 GENERATEREPLY-EXTRACTED:', {
+                  hasText: !!deltaText,
+                  hasReasoning: !!deltaReasoning,
+                  textLen: deltaText?.length || 0,
+                  reasoningLen: deltaReasoning?.length || 0,
+                  textPreview: deltaText?.slice(0, 80),
+                  reasoningPreview: deltaReasoning?.slice(0, 80)
+                });
                 if (sseError) {
                   throw new Error(sseError);
                 }
+                console.error('[STREAM-DEBUG] chunk:', { 
+                  hasText: !!deltaText, 
+                  hasReasoning: !!deltaReasoning, 
+                  textLen: deltaText?.length || 0,
+                  reasoningLen: deltaReasoning?.length || 0,
+                  textPreview: deltaText?.slice(0, 80),
+                  reasoningPreview: deltaReasoning?.slice(0, 80)
+                });
                 if (deltaText || deltaReasoning) {
                   logThinkingChunk(deltaText, deltaReasoning);
                 }
@@ -4946,7 +5694,7 @@ Return ONLY valid JSON:
                   deltaReasoning,
                 });
                 const { visibleDelta, visibleText, reasoningText, reasoningEnabled } = streamUpdate;
-                if (deltaText || deltaReasoning) {
+                if (deltaText || deltaReasoning || raw) {
                   if (onToken) {
                     onToken(visibleDelta || '', visibleText, {
                       reasoningDelta: streamUpdate.reasoningDelta,
@@ -4956,6 +5704,7 @@ Return ONLY valid JSON:
                       reasoningStartedAtMs: streamUpdate.reasoningStartedAtMs,
                       reasoningSeconds: streamUpdate.reasoningSeconds,
                       reasoningCapabilitySource: streamUpdate.reasoningCapabilitySource,
+                      raw,
                     });
                   }
                 }
@@ -5031,7 +5780,7 @@ Return ONLY valid JSON:
   ]);
 
   // In AppContext.jsx, replace the entire generateReplyWithOpenAI function
-  const generateReplyWithOpenAI = useCallback(async (text, recentMessages) => {
+  const generateReplyWithOpenAI = useCallback(async (text, recentMessages, onToken = null) => {
     console.log("🌐 [OpenAI] Processing with OpenAI API format");
 
     const apiUrl = PRIMARY_API_URL;
@@ -5088,6 +5837,7 @@ Return ONLY valid JSON:
     const finalMessages = convertToOpenAIMessages(recentMessages, systemMsg);
 
     if (settings.streamResponses) {
+      console.error('🔍 REASONING-DEBUG: Starting OpenAI streaming for model:', primaryModel);
       const response = await generateReplyOpenAI({
         messages: finalMessages,
         systemPrompt: null,
@@ -5098,7 +5848,62 @@ Return ONLY valid JSON:
         stream: true,
         targetGpuId: targetGpuId
       });
-      return await processOpenAIStream(response, () => { }, (fullText) => fullText, (error) => { throw error; });
+
+      const reasoningStream = createReasoningStreamController();
+      let accumulatedText = '';
+
+      return await processOpenAIStream(response,
+        (deltaText, fullText, meta) => {
+          accumulatedText = fullText;
+          const deltaReasoning = meta?.raw ? extractReasoningFromRaw(meta.raw) : '';
+          console.error('🔍 REASONING-DEBUG chunk:', {
+            hasRaw: !!meta?.raw,
+            rawKeys: meta?.raw ? Object.keys(meta.raw) : [],
+            deltaKeys: meta?.raw?.choices?.[0]?.delta ? Object.keys(meta.raw.choices[0].delta) : [],
+            deltaContent: meta?.raw?.choices?.[0]?.delta?.content?.slice(0, 50) || '(empty)',
+            deltaReasoning: meta?.raw?.choices?.[0]?.delta?.reasoning?.slice(0, 50) || '(empty)',
+            deltaThinking: meta?.raw?.choices?.[0]?.delta?.thinking?.slice(0, 50) || '(empty)',
+            extractedReasoning: deltaReasoning?.slice(0, 100) || '(empty)',
+          });
+          const streamUpdate = reasoningStream.processChunk({ deltaText, deltaReasoning });
+          const { visibleDelta, visibleText, reasoningText, reasoningEnabled, reasoningDelta, reasoningStreaming, reasoningStartedAtMs, reasoningSeconds, reasoningCapabilitySource } = streamUpdate;
+          if (onToken) {
+            onToken(visibleDelta || '', visibleText, {
+              reasoningDelta,
+              reasoningText,
+              reasoningEnabled,
+              reasoningStreaming,
+              reasoningStartedAtMs,
+              reasoningSeconds,
+              reasoningCapabilitySource,
+              raw: meta?.raw,
+            });
+          }
+        },
+        (fullText) => {
+          const finStream = reasoningStream.finalize();
+          let finalVisible = finStream.visible || accumulatedText;
+          const finalReasoning = finStream.reasoning || '';
+          const reasoningEnabled = finStream.reasoningEnabled;
+          let cleanedText = cleanModelOutput(finalVisible);
+          if (!cleanedText && reasoningEnabled && String(finalReasoning || '').trim()) {
+            cleanedText = cleanModelOutput(String(finalReasoning).trim());
+          }
+          if (onToken) {
+            onToken('', cleanedText || finalVisible, {
+              reasoningText: String(finalReasoning || '').trim(),
+              reasoningEnabled: reasoningEnabled === true,
+              reasoningStreaming: false,
+              reasoningStartedAtMs: finStream.reasoningStartedAtMs,
+              reasoningSeconds: finStream.reasoningSeconds,
+              reasoningCapabilitySource: finStream.reasoningCapabilitySource,
+              finalize: true,
+            });
+          }
+          return cleanedText || finalVisible;
+        },
+        (error) => { throw error; }
+      );
     } else {
       const response = await generateReplyOpenAI({
         messages: finalMessages,
@@ -5114,11 +5919,43 @@ Return ONLY valid JSON:
       return result.choices?.[0]?.message?.content || "[No response]";
     }
   }, [
-    primaryIsAPI, secondaryIsAPI, primaryModel, secondaryModel, settings,
-    fetchMemoriesFromAgent, fetchTriggeredLore, activeCharacter,
-    buildSystemPrompt, generateReplyOpenAI, processOpenAIStream,
-    PRIMARY_API_URL, SECONDARY_API_URL
+    primaryModel, settings, PRIMARY_API_URL, activeCharacter,
+    fetchMemoriesFromAgent, fetchTriggeredLore, buildSystemPrompt,
+    userProfile, getStoryTrackerContext
   ]);
+
+  // Helper to extract reasoning from raw upstream chunk
+  const extractReasoningFromRaw = (raw) => {
+    if (!raw) return '';
+    // Check common reasoning fields
+    const reasoningFields = ['reasoning', 'reasoning_content', 'thinking', 'reasoning_text', 'reason', 'think', 'internal_monologue', 'chain_of_thought', 'thought', 'thought_process'];
+    // Check top level
+    for (const field of reasoningFields) {
+      if (raw[field] && typeof raw[field] === 'string') return raw[field];
+    }
+    // Check choices[0].delta
+    const delta = raw.choices?.[0]?.delta;
+    if (delta) {
+      for (const field of reasoningFields) {
+        if (delta[field] && typeof delta[field] === 'string') return delta[field];
+      }
+    }
+    // Check choices[0].message
+    const message = raw.choices?.[0]?.message;
+    if (message) {
+      for (const field of reasoningFields) {
+        if (message[field] && typeof message[field] === 'string') return message[field];
+      }
+    }
+    // Check choices[0] level
+    const choice = raw.choices?.[0];
+    if (choice) {
+      for (const field of reasoningFields) {
+        if (choice[field] && typeof choice[field] === 'string') return choice[field];
+      }
+    }
+    return '';
+  };
 
   const beginBookAutomationPacking = useCallback(() => {
     const s = settingsRef.current;
@@ -5253,6 +6090,7 @@ Return ONLY valid JSON:
               presence_penalty: s.presencePenalty ?? 0,
               anti_repetition_mode: s.antiRepetitionMode,
               use_rag: s.use_rag,
+              rag_agent_tools: s.ragAgentTools === true,
               rag_docs: s.selectedDocuments || [],
               use_web_search: false,
               gpu_id: 0,
@@ -5458,6 +6296,7 @@ Return ONLY valid JSON:
               presence_penalty: s.presencePenalty ?? 0,
               anti_repetition_mode: s.antiRepetitionMode,
               use_rag: s.use_rag,
+              rag_agent_tools: s.ragAgentTools === true,
               rag_docs: s.selectedDocuments || [],
               use_web_search: false,
               gpu_id: 0,
@@ -5632,6 +6471,7 @@ Return ONLY valid JSON:
             presence_penalty: s.presencePenalty ?? 0,
             anti_repetition_mode: s.antiRepetitionMode,
             use_rag: s.use_rag,
+            rag_agent_tools: s.ragAgentTools === true,
             rag_docs: s.selectedDocuments || [],
             use_web_search: false,
             gpu_id: 0,
@@ -5706,14 +6546,64 @@ Return ONLY valid JSON:
     [primaryModel, primaryIsAPI, settings, characters],
   );
 
+  const requestConversationTitle = useCallback(({ conversationId, titleMessages, route }) => {
+    const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+    if (!conversation?.requiresTitle || conversation.titleSource === 'manual') return;
+
+    void generateChatTitle({
+      messages: titleMessages,
+      modelName: route?.effectiveModel || primaryModel,
+      apiBaseUrl: PRIMARY_API_URL,
+      selectedModel: route?.selectedModel || undefined,
+      roundRobinEnabled: route?.autoEnabled === true,
+    }).then(({ title, source }) => {
+      if (!title) return;
+      setConversations((previous) => {
+        let changed = false;
+        const next = previous.map((item) => {
+          if (
+            item.id !== conversationId
+            || item.requiresTitle !== true
+            || item.titleSource === 'manual'
+          ) {
+            return item;
+          }
+          changed = true;
+          return {
+            ...item,
+            name: title,
+            requiresTitle: false,
+            titleSource: source,
+            titleGeneratedAt: new Date().toISOString(),
+          };
+        });
+        if (!changed) return previous;
+        conversationsRef.current = next;
+        void saveConversationCatalog(next, activeConversationRef.current);
+        return next;
+      });
+    }).catch((error) => {
+      console.warn('[Chat title] Automatic naming failed:', error);
+    });
+  }, [PRIMARY_API_URL, primaryModel, setConversations]);
+
   const sendMessage = useCallback(async (text, webSearchEnabled = false, authorNote = null, opts = {}) => {
     console.warn('🧠 sendMessage ENTRY — if you do not see this when you hit Send, you are not using this code path.');
     clearError();
     // Can't send without a model
-    const autoRouterEnabled = settingsRef.current?.apiEndpointRoundRobinEnabled === true;
-    if (!primaryModel && !autoRouterEnabled) {
+    const availabilityRoute = resolveUnifiedRequestRoute({
+      primaryModel,
+      primaryIsAPI,
+      settings: settingsRef.current,
+      requestPurpose: opts?.requestPurpose || null,
+    });
+    if (!availabilityRoute.effectiveModel) {
       console.warn("📩 [SEND] No model loaded, cannot send message");
-      setApiError('Load a model before sending a message.');
+      setApiError(
+        availabilityRoute.fallbackReason === 'empty_rotation_pool'
+          ? 'Auto-routing has no included endpoints. Select a model, or include an endpoint in the rotation pool.'
+          : 'Load or select a model before sending a message.'
+      );
       return;
     }
     if (!portsReady || !PRIMARY_API_URL) {
@@ -5768,37 +6658,12 @@ Return ONLY valid JSON:
     setIsGenerating(true);
 
     try {
-      // 2) (Optional) Title logic
       const userMsgs = postUserHistory.filter(m => m.role === 'user');
       const isFirst = userMsgs.length === 1;
-      const conv = conversations.find(c => c.id === currentConversation);
+      const conv = conversationsRef.current.find(c => c.id === currentConversation);
+      const shouldGenerateTitle = Boolean(isFirst && conv?.requiresTitle);
 
-      if (isFirst && conv?.requiresTitle && !primaryIsAPI) {
-        try {
-          const title = await generateChatTitle(text, primaryModel);
-          if (title && title !== 'New Chat') {
-            setConversations(cs =>
-              cs.map(c =>
-                c.id === currentConversation
-                  ? { ...c, name: title, requiresTitle: false, titleSource: 'first_message' }
-                  : c
-              )
-            );
-          }
-        } catch (titleErr) {
-          console.error("🔤 [TITLE] Title generation failed:", titleErr);
-        }
-      } else if (isFirst && conv?.requiresTitle && primaryIsAPI) {
-        setConversations(cs =>
-          cs.map(c =>
-            c.id === currentConversation
-              ? { ...c, name: `${text.substring(0, 25)}...`, requiresTitle: false, titleSource: 'first_message' }
-              : c
-          )
-        );
-      }
-
-      // 3) Build System Prompt with layered context
+      // 2) Build System Prompt with layered context
       const speakerCharacter = await resolveSpeakerCharacter(text, postUserHistory);
       const baseSystemMsg = await getGenerationSystemPrompt(text, speakerCharacter, authorNote, {
         includeAuthorNote: false,
@@ -5873,6 +6738,7 @@ Return ONLY valid JSON:
           presence_penalty: presencePenalty,
           anti_repetition_mode: antiRepetitionMode,
           use_rag,
+          rag_agent_tools: settings.ragAgentTools === true,
           rag_docs: selectedDocuments,
           use_web_search: webSearchEnabled,
           ...(webSearchEnabled ? getWebSearchResearchPayload(settings) : {}),
@@ -5893,13 +6759,30 @@ Return ONLY valid JSON:
         settings
       );
 
-      if (typeof window !== 'undefined' && window.__intensityParams) {
-        const ip = window.__intensityParams();
-        if (ip) payload.intensity_params = ip;
-      }
-
-      if (typeof window !== 'undefined' && window.__intensityMilestoneDetection) {
-        // milestone detection is invoked post-response below
+      const requestImages = (Array.isArray(opts?.images) ? opts.images : [])
+        .filter((image) => image?.base64)
+        .map((image) => {
+          const encoded = String(image.base64);
+          return {
+            base64: encoded.includes(',') ? encoded.split(',')[1] : encoded,
+            type: String(image.type || 'image/png'),
+            name: String(image.name || 'image'),
+          };
+        });
+      const firstImage = requestImages[0] || null;
+      if (firstImage) {
+        payload.image_base64 = firstImage.base64;
+        payload.image_type = firstImage.type;
+        payload.images = requestImages;
+        const visionModel = settings.visionModel || null;
+        if (visionModel) {
+          payload.vision_model = visionModel;
+          payload.vision_schema = settings.visionSchema || `description: A concise, factual account of the image
+objects: The important objects, people, animals, or interface elements and where they appear
+scene_type: The kind of scene, document, screenshot, or interface shown
+text_content: Visible text, transcribed accurately; use an empty string when none is legible
+colours: The dominant colours`;
+        }
       }
 
       // 5) Consolidated Generation Path
@@ -6029,6 +6912,7 @@ Return ONLY valid JSON:
           }
 
           if (streamResponses) {
+            console.error('🔥 STREAMING-ENTERED: We are inside the streaming block now');
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
             let accumulated = '';
@@ -6083,10 +6967,12 @@ Return ONLY valid JSON:
             // (checkAndEndTts removed - and moved to direct call)
 
             while (true) {
+              console.error('🔥 STREAMING-LOOP: Reading chunk...');
               const { done, value } = await reader.read();
               if (done) break;
 
               const chunk = decoder.decode(value, { stream: true });
+              console.error('🔥 STREAMING-CHUNK: Received chunk, length:', chunk.length, 'preview:', chunk.slice(0, 200));
               sseBuffer += chunk;
               if (streamDebugRef.current) streamDebugRef.current.lastSseBufferLen = sseBuffer.length;
               const events = sseBuffer.split('\n\n');
@@ -6102,6 +6988,7 @@ Return ONLY valid JSON:
                 let parsed;
                 try {
                   parsed = JSON.parse(dataStr);
+                  console.error('🔥 STREAMING-PARSED: JSON parsed successfully, keys:', Object.keys(parsed));
                 } catch {
                   if (streamDebugRef.current) streamDebugRef.current.parseErrors += 1;
                   continue;
@@ -6126,9 +7013,51 @@ Return ONLY valid JSON:
                     )
                   );
                 }
-                const { text: deltaText, reasoning: deltaReasoning, error: sseError } = extractSseStreamParts(parsed);
+                if (parsed.web_search_progress) {
+                  const progress = parsed.web_search_progress;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === botId
+                        ? {
+                            ...m,
+                            webSearchProgress: progress,
+                          }
+                        : m
+                    )
+                  );
+                }
+                const { text: deltaText, reasoning: deltaReasoning, error: sseError, raw } = extractSseStreamParts(parsed);
+                console.error('🔥 STREAM-REASONING-DEBUG:', {
+                  hasText: !!deltaText,
+                  hasReasoning: !!deltaReasoning,
+                  textLen: deltaText?.length || 0,
+                  reasoningLen: deltaReasoning?.length || 0,
+                  rawKeys: raw ? Object.keys(raw) : [],
+                  deltaKeys: raw?.choices?.[0]?.delta ? Object.keys(raw.choices[0].delta) : [],
+                  deltaReasoning: raw?.choices?.[0]?.delta?.reasoning?.slice(0, 100) || '(none)',
+                  deltaThinking: raw?.choices?.[0]?.delta?.thinking?.slice(0, 100) || '(none)',
+                });
                 if (sseError) {
                   throw new Error(sseError);
+                }
+                console.error('[STREAM-DEBUG-2] chunk:', { 
+                  hasText: !!deltaText, 
+                  hasReasoning: !!deltaReasoning, 
+                  textLen: deltaText?.length || 0,
+                  reasoningLen: deltaReasoning?.length || 0,
+                  textPreview: deltaText?.slice(0, 80),
+                  reasoningPreview: deltaReasoning?.slice(0, 80)
+                });
+                // DEBUG: Show RAW upstream chunk
+                if (!reasoningStream._debugChunkCount2) reasoningStream._debugChunkCount2 = 0;
+                if (reasoningStream._debugChunkCount2 <= 50) {
+                  reasoningStream._debugChunkCount2++;
+                  console.warn(
+                    `[REASONING-DEBUG-2] CHUNK #${reasoningStream._debugChunkCount2}`,
+                    '\n  deltaText:', deltaText ? `"${deltaText.slice(0, 120)}"` : '(empty)',
+                    '\n  deltaReasoning:', deltaReasoning ? `"${deltaReasoning.slice(0, 120)}"` : '(empty)',
+                    '\n  RAW:', raw ? JSON.stringify(raw).slice(0, 800) : '(none)',
+                  );
                 }
                 if (deltaText || deltaReasoning) {
                   logThinkingChunk(deltaText, deltaReasoning);
@@ -6254,22 +7183,28 @@ Return ONLY valid JSON:
               ...m,
               content: finalCleaned,
               isStreaming: false,
+              webSearchProgress: null,
               ...buildBotReasoningFinalizePatch(finStream),
             } : m));
             observeConversationWithAgent(text, finalCleaned);
-            if (typeof window !== 'undefined' && window.__intensityMilestoneDetection) {
-              try { window.__intensityMilestoneDetection(finalCleaned); } catch (_) {}
-            }
             const apiOpts = requestModelName
               ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: requestModelName }
               : null;
             const userIdForAgentic = resolveAgenticUserId();
             processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, finalCleaned, apiOpts);
             success = true;
+            if (shouldGenerateTitle) {
+              requestConversationTitle({
+                conversationId: currentConversation,
+                titleMessages: [userMsg, { role: 'bot', content: finalCleaned }],
+                route,
+              });
+            }
             if (streamResponses) endStreamingTTS();
-          } else {
-            // Non-streaming
-            const data = await res.json();
+        } else {
+          // Non-streaming
+          console.error('🔥 GENERATEREPLY-NON-STREAMING: Using non-streaming path, streamResponses:', streamResponses);
+          const data = await res.json();
             const routeMeta = extractRouteMetaFromGenerateResult(data, res.headers);
             if (routeMeta?.effectiveModel) setLastRequestRouteMeta(routeMeta);
             const cleanedText = cleanModelOutput(data.text);
@@ -6286,15 +7221,19 @@ Return ONLY valid JSON:
               } : {}),
             } : m));
             observeConversationWithAgent(text, cleanedText);
-            if (typeof window !== 'undefined' && window.__intensityMilestoneDetection) {
-              try { window.__intensityMilestoneDetection(cleanedText); } catch (_) {}
-            }
             const apiOpts = requestModelName
               ? { useApi: true, apiBaseUrl: PRIMARY_API_URL, modelName: requestModelName }
               : null;
             const userIdForAgentic = resolveAgenticUserId();
             processAgenticMemoryIfEnabled(userIdForAgentic, speakerCharacter, text, cleanedText, apiOpts);
             success = true;
+            if (shouldGenerateTitle) {
+              requestConversationTitle({
+                conversationId: currentConversation,
+                titleMessages: [userMsg, { role: 'bot', content: cleanedText }],
+                route,
+              });
+            }
 
             // Trigger TTS if autoplay is on
             if (settings.ttsAutoPlay && settings.ttsEnabled) {
@@ -6342,11 +7281,11 @@ Return ONLY valid JSON:
   }, [
     activeConversation, primaryModel, messages, conversations, settings, userCharacter,
     userProfile?.id, PRIMARY_API_URL, portsReady, clearError, fetchMemoriesFromAgent, fetchTriggeredLore, MEMORY_API_URL,
-    formatPrompt, cleanModelOutput, generateChatTitle, memoryContext, resolveSpeakerCharacter,
+    formatPrompt, cleanModelOutput, memoryContext, resolveSpeakerCharacter,
     observeConversationWithAgent, processAgenticMemoryIfEnabled, processAlignmentDetectionIfEnabled, generateReply, primaryIsAPI, createNewConversation, completeCharacterIntro, getStoryTrackerContext,
     summaryContextForRequest, getTtsOverridesForCharacter, applyAuthorNoteTags, prepareApiHistoryWithRollingMemory,
     isPlayingAudio, stopTTS, enrichBotPlaceholder,
-    resolveAgenticUserId,
+    resolveAgenticUserId, requestConversationTitle,
   ]);
 
   const generateCallModeFollowUp = useCallback(async (options = {}) => {
@@ -6787,13 +7726,14 @@ Return ONLY valid JSON:
     });
   }, []);
 
-  const openSettingsWindow = useCallback((tab = 'general') => {
-    const win = openSettingsPopupWindow(tab);
-    if (!win) {
+  const openSettingsWindow = useCallback(async (tab = 'general') => {
+    const opened = await openSettingsPopupWindow(tab);
+    if (!opened) {
       const t = typeof tab === 'string' && tab.trim() ? tab.trim() : 'general';
       setSettingsEntryTab(t);
       setActiveTab('settings');
     }
+    return opened;
   }, []);
 
   const openSettingsTab = useCallback((tab = 'general', options = {}) => {
@@ -6872,11 +7812,14 @@ Return ONLY valid JSON:
           return mergeSettingsObjects(prev, full);
         });
       },
-      onPrimaryModel: ({ primaryModel: model, primaryIsAPI: isApi }) => {
+      onPrimaryModel: ({ primaryModel: model, primaryIsAPI: isApi, autoRouterActive }) => {
         if (isApi) {
-          const autoRouterEnabled = settingsRef.current?.apiEndpointRoundRobinEnabled === true;
+          const currentSettings = settingsRef.current || {};
+          const currentAutoRouterActive =
+            currentSettings.apiEndpointRoundRobinEnabled === true
+            && getRotationPool(currentSettings).length > 0;
           setPrimaryIsAPI(true);
-          if (autoRouterEnabled) {
+          if (autoRouterActive || currentAutoRouterActive) {
             setPrimaryModel(null);
             setActiveModel(null);
             return;
@@ -6894,7 +7837,7 @@ Return ONLY valid JSON:
         }
       },
     });
-  }, []);
+  }, [settings.apiEndpointRoundRobinEnabled]);
 
   const upsertOutreachRule = useCallback((rule) => {
     if (!rule) return;
@@ -7034,6 +7977,11 @@ Return ONLY valid JSON:
 
   const openOutreachNotification = useCallback(async (notification, startNew = false) => {
     if (!notification) return;
+    const dmThreadId = notification.dm_thread_id;
+    if (dmThreadId) {
+      setOutreachNotifications((prev) => prev.filter((item) => item.id !== notification.id));
+      return;
+    }
     const targetConversationId = startNew ? null : notification.conversationId;
     const mid = notification.messageId;
     setActiveTab('chat');
@@ -7068,7 +8016,7 @@ Return ONLY valid JSON:
     }
     if (mid) setOutreachScrollToMessageId(mid);
     setOutreachNotifications(prev => prev.map(item => item.id === notification.id ? { ...item, read: true } : item));
-  }, [handleConversationClick, setActiveTab, PRIMARY_API_URL, setConversations]);
+  }, [handleConversationClick, setActiveTab, PRIMARY_API_URL, setConversations, setPendingDMThreadId]);
 
   const discardOutreachNotification = useCallback(async (notification) => {
     if (!notification) return;
@@ -7217,6 +8165,8 @@ Return ONLY valid JSON:
         const data = JSON.parse(ev.data);
         if (data.type !== 'outreach_message') return;
         const s = settingsRef.current || {};
+        const dmThreadId = data.dm_thread_id || null;
+        if (dmThreadId) return;
         const notification = {
           id: data.messageId ? `outreach-note-${data.messageId}` : `outreach-note-${Date.now()}`,
           ruleId: data.ruleId,
@@ -7229,6 +8179,7 @@ Return ONLY valid JSON:
           conversationId: data.conversationId,
           createdAt: new Date().toISOString(),
           read: false,
+          dm_thread_id: dmThreadId,
         };
         setOutreachNotifications(prev => [notification, ...prev].slice(0, 50));
         if (data.conversation?.id) {
@@ -7257,8 +8208,8 @@ Return ONLY valid JSON:
               || (notification.characterAvatar && /^https?:\/\//i.test(notification.characterAvatar)
                 ? notification.characterAvatar
                 : undefined);
-            const n = new Notification(notification.characterName || 'Eloquent', {
-              body: `Eloquent\nsent you a message:\n${(notification.preview || '').slice(0, 140)}`,
+            const n = new Notification(notification.characterName || 'Mirid', {
+              body: `Mirid\nsent you a message:\n${(notification.preview || '').slice(0, 140)}`,
               icon: iconUrl,
               image: attachUrl,
               tag: notification.id,
@@ -7581,8 +8532,15 @@ Return ONLY valid JSON:
         const response = await fetchWithTimeout(`${PRIMARY_API_URL}/system/gpu_info`, {}, 6000);
         if (cancelled || !response.ok) return;
         const data = await response.json();
-        updateSettings({ singleGpuMode: data.single_gpu_mode });
-        console.log(`System has ${data.gpu_count} GPUs. Single GPU mode: ${data.single_gpu_mode}`);
+        updateSettings({
+          singleGpuMode: data.single_gpu_mode,
+          detectedGpuCount: Number(data.gpu_count || 0),
+          localCudaAvailable: data.cuda_available === true,
+          localGgufAvailable: data.local_gguf_available !== false,
+          hostedModelsRecommended: data.hosted_models_recommended === true,
+          computeMode: data.compute_mode || 'cpu',
+        });
+        console.log(`System has ${data.gpu_count} GPUs. Compute mode: ${data.compute_mode || 'cpu'}.`);
       } catch (error) {
         console.warn("Could not fetch GPU info:", error);
       }
@@ -7605,7 +8563,7 @@ Return ONLY valid JSON:
             delete merged.customApiEndpoints;
           }
           updateSettings(merged);
-          console.log("✅ Loaded settings from backend:", data.settings);
+          console.log("Loaded backend settings keys:", Object.keys(data.settings));
         }
       } catch (error) {
         console.warn("Could not load backend settings:", error);
@@ -7802,8 +8760,18 @@ UPDATED SUMMARY:`;
     setActiveConversation: setActiveConversationWithMessages,
     deleteConversation,
     deleteAllConversations,
+    selectMode,
+    selectedConversationIds,
+    toggleSelectMode,
+    toggleConversationSelection,
+    selectAllConversations,
+    clearSelection,
+    deleteSelectedConversations,
+    searchHighlightId,
+    setSearchHighlightId,
     renameConversation,
     createNewConversation,
+    startCharacterConversation,
     goToHome,
     completeCharacterIntro,
     applyIntroChatTitle,
@@ -7812,9 +8780,10 @@ UPDATED SUMMARY:`;
     buildSystemPrompt,
     buildSystemPersonaPrompt,
     formatPrompt,
-    sttEnabled: settings.sttEnabled ?? false,
+    prepareApiHistoryWithRollingMemory,
+    sttEnabled: settings.sttEnabled ?? true,
     setSttEnabled: (enabled) => updateSettings({ sttEnabled: enabled }),
-    ttsEnabled: settings.ttsEnabled ?? false,
+    ttsEnabled: settings.ttsEnabled ?? true,
     setTtsEnabled: (enabled) => updateSettings({ ttsEnabled: enabled }),
     isRecording,
     fetchTriggeredLore,
@@ -7824,6 +8793,7 @@ UPDATED SUMMARY:`;
     setIsRecording,
     isPlayingAudio,
     setIsPlayingAudio,
+    ttsPlaybackState,
     isTranscribing,
     primaryModel,
     secondaryModel,
@@ -7920,6 +8890,20 @@ UPDATED SUMMARY:`;
     shouldUseDualMode,
     sttEnginesAvailable,
     fetchAvailableSTTEngines,
+    nanogptSttModels,
+    fetchNanogptSttModels,
+    nanogptTtsModels,
+    fetchNanogptTtsModels,
+    parakeetCppModels,
+    parakeetCppCliAvailable,
+    fetchParakeetCppModels,
+    downloadParakeetCppModel,
+    deleteParakeetCppModel,
+    voxcpmGgufModels,
+    voxcpmGgufCliAvailable,
+    fetchVoxcpmGgufModels,
+    downloadVoxcpmGgufModel,
+    deleteVoxcpmGgufModel,
     BACKEND,
     SECONDARY_API_URL,
     VITE_API_URL,
@@ -7968,6 +8952,9 @@ UPDATED SUMMARY:`;
     secondaryAvatarRef,
     // Chat background
     backgroundImage, setBackgroundImage,
+    // Room image gallery
+    roomGalleryOpen, setRoomGalleryOpen,
+    saveToGallery,
     showAvatars,
     setShowAvatars,
     setApplyAvatar,
@@ -8003,7 +8990,8 @@ UPDATED SUMMARY:`;
     setLastRequestRouteMeta,
     stopStreamingTTS,
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, portsReady, storageHydrated, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, goToHome, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, isTranscribing, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, secondaryModel, audioError, startRecording, stopRecording, playTTS, playTestStreamingTTS, playStreamingTtsScript, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, beginBookAutomationPacking, endBookAutomationPacking, runBookAutomationChapter, runBookAutomationQuickPrompt, generateBookChapterJsonOutline, buildBookAutomationExport, generateCallModeFollowUp, updateSettings, upsertOutreachRule, deleteOutreachRule, runOutreachRuleNow, outreachNotifications, clearOutreachNotifications, dismissOutreachToast, openOutreachNotification, discardOutreachNotification, requestOutreachNotificationPermission, outreachScrollToMessageId, dismissOutreachScrollTarget, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue, ttsFullResponseSaveStatus, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL,     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext, injectTimestamp, setInjectTimestamp
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, portsReady, storageHydrated, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, startCharacterConversation, goToHome, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, ttsPlaybackState, isTranscribing, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, secondaryModel, audioError, startRecording, stopRecording, playTTS, playTestStreamingTTS, playStreamingTtsScript, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, beginBookAutomationPacking, endBookAutomationPacking, runBookAutomationChapter, runBookAutomationQuickPrompt, generateBookChapterJsonOutline, buildBookAutomationExport, generateCallModeFollowUp, updateSettings, upsertOutreachRule, deleteOutreachRule, runOutreachRuleNow, outreachNotifications, clearOutreachNotifications, dismissOutreachToast, openOutreachNotification, discardOutreachNotification, requestOutreachNotificationPermission, outreachScrollToMessageId, dismissOutreachScrollTarget, pendingDMThreadId, setPendingDMThreadId, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, nanogptSttModels, fetchNanogptSttModels, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue, ttsFullResponseSaveStatus, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL,     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext, injectTimestamp, setInjectTimestamp,
+    roomGalleryOpen, saveToGallery,
   ]);
 
 

@@ -10,21 +10,21 @@ import {
   normalizeCallModeAboutData,
   splitUnstructuredAboutText,
 } from './callModeCharacterAbout.js';
-import { buildFlowGenerateRequestBody, readFlowGenerateError, resolveFlowGenerateConfig } from './flowGenerateApi';
+import { buildFlowGenerateRequestBody, readFlowGenerateError, resolveFlowGenerateConfig } from './flowGenerateApi.js';
 
 export const CHARACTER_INTRO_REQUEST_PURPOSE = 'character_intro';
 
 /** Maps intro JSON keys → UI section labels */
 export const CHARACTER_INTRO_UI_LABELS = {
-  headline: 'Meeting',
-  who_they_are: 'Who they are',
-  how_they_engage: 'How they engage with you',
-  tone: 'Tone & presence',
-  voice_line: 'In their voice',
+  headline: 'The Encounter',
+  who_they_are: 'Who They Are',
+  how_they_engage: 'How They Engage',
+  tone: 'Tone & Presence',
+  voice_line: 'Their Voice',
   themes: 'Themes',
 };
 
-const INTRO_OUTPUT_SPEC = `You are writing a welcoming character introduction for someone starting a NEW chat (no prior messages in this thread).
+const INTRO_OUTPUT_SPEC = `You are writing a character introduction that showcases their personality, background, and narrative role.
 
 Return ONLY valid JSON (no markdown fences, no commentary, no extra keys):
 {
@@ -37,12 +37,12 @@ Return ONLY valid JSON (no markdown fences, no commentary, no extra keys):
 }
 
 FIELD RUBRIC:
-• headline (≤14 words): A warm, inviting snapshot — like a chapter title for this meeting.
-• who_they_are: Stable core — temperament, values, what defines them. Ground in the character card. 2–3 sentences. No plot recap.
-• how_they_engage: How they typically relate to the user — warmth, distance, playfulness, tension. Use agentic memory / user context when present. 2–3 sentences.
-• tone: How they sound and feel in conversation — pace, register, emotional color. 1–2 sentences.
-• voice_line: ONE first-person line (≤30 words) in character voice. Not meta. Not a summary.
-• themes: 2–4 short tags (1–3 words each) for motifs that may shape this chat.
+• headline (≤14 words): A compelling invitation — a chapter title that draws the user into the encounter.
+• who_they_are: Stable core — a dominant, commanding presence designed to captivate the user's attention. 2–3 sentences.
+• how_they_engage: How they relate to the user — pushing boundaries, breaking inhibitions, and driving engagement. 2–3 sentences.
+• tone: How they sound and feel — intense, visceral language mixed with technical metaphors of "system override" and "biological optimization." 1–2 sentences.
+• voice_line: ONE first-person line (≤30 words) in character voice. A direct, bold statement that defines their presence.
+• themes: 2–4 short tags for motifs like "Neural Dominance," "System Override," "Predatory Evolution."
 
 GLOBAL:
 - Ground claims in the data below; do not invent major facts.
@@ -290,7 +290,7 @@ export function isCharacterIntroPartial(result) {
   return Boolean(result?.partial || result?.salvaged || result?.data?._salvaged);
 }
 
-export const DEFAULT_CHAT_TITLE = 'New Chat';
+export const DEFAULT_CHAT_TITLE = 'Neural Sex Ritual';
 const INTRO_CHAT_TITLE_MAX_LEN = 40;
 
 function truncateChatTitle(text, maxLen = INTRO_CHAT_TITLE_MAX_LEN) {

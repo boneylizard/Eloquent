@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Verified local inference packages for Mirid." />
+    <title>Mirid Runtime Registry</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Mirid · Reason. Trust. Fidelity.</p>
+        <h1>Local inference, without the archaeology.</h1>
+        <p class="lede">
+          Mirid chooses the right engine for the computer in front of it. These are the exact,
+          verified packages behind that promise.
+        </p>
+      </header>
+      <section class="notice">
+        <strong>CPU support is the foundation.</strong>
+        Acceleration is optional, independently installed, and allowed to fail safely.
+      </section>
+      <section class="filters" aria-label="Package filters">
+        <label>
+          Platform
+          <select id="platform-filter"><option value="">Every platform</option></select>
+        </label>
+        <label>
+          Workload
+          <select id="family-filter">
+            <option value="">Text and image</option>
+            <option value="text">Text</option>
+            <option value="image">Image</option>
+            <option value="binding">Python bindings</option>
+          </select>
+        </label>
+        <label>
+          Acceleration
+          <select id="accelerator-filter"><option value="">Every backend</option></select>
+        </label>
+      </section>
+      <p id="status" role="status">Reading the verified catalogue…</p>
+      <section id="package-list" class="package-list" aria-live="polite"></section>
+      <footer>
+        <a href="https://huggingface.co/datasets/boneylizardwizard/mirid-runtime-packs">Browse the repository</a>
+        <span>Packages remain subject to their upstream licences.</span>
+      </footer>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

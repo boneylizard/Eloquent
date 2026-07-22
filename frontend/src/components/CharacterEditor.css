@@ -2,30 +2,30 @@
   max-width: 100%;
   margin: 0 auto;
   padding: 20px;
-  background-color: #1e1e2e;
-  color: #cdd6f4;
+  background-color: var(--card);
+  color: var(--card-foreground);
   border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow);
 }
 
 .character-editor h2 {
   text-align: center;
   margin-bottom: 24px;
-  color: #89b4fa;
+  color: var(--primary);
 }
 
 .form-section {
   margin-bottom: 30px;
   padding: 15px;
-  background-color: #181825;
+  background-color: var(--muted);
   border-radius: 6px;
 }
 
 .form-section h3 {
-  border-bottom: 1px solid #45475a;
+  border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
   margin-bottom: 16px;
-  color: #f5c2e7;
+  color: var(--foreground);
 }
 
 .form-group {
@@ -36,7 +36,7 @@
   display: block;
   margin-bottom: 6px;
   font-weight: 500;
-  color: #a6e3a1;
+  color: var(--foreground);
 }
 
 .form-group input[type="text"],
@@ -45,9 +45,9 @@
   width: 100%;
   padding: 8px 12px;
   border-radius: 4px;
-  border: 1px solid #313244;
-  background-color: #1e1e2e;
-  color: #cdd6f4;
+  border: 1px solid var(--input);
+  background-color: var(--background);
+  color: var(--foreground);
   font-size: 14px;
 }
 
@@ -59,13 +59,13 @@
 .form-group textarea:focus,
 .tags-input input:focus {
   outline: none;
-  border-color: #89b4fa;
-  box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 28%, transparent);
 }
 
 .help-text {
   font-size: 13px;
-  color: #bac2de;
+  color: var(--muted-foreground);
   margin-bottom: 12px;
 }
 
@@ -85,9 +85,9 @@
   width: 100%;
   padding: 8px;
   border-radius: 4px;
-  border: 1px solid #313244;
-  background-color: #1e1e2e;
-  color: #cdd6f4;
+  border: 1px solid var(--input);
+  background-color: var(--background);
+  color: var(--foreground);
 }
 
 .dialogue-content {
@@ -97,15 +97,15 @@
 .dialogue-content textarea {
   width: 100%;
   border-radius: 4px;
-  border: 1px solid #313244;
-  background-color: #1e1e2e;
-  color: #cdd6f4;
+  border: 1px solid var(--input);
+  background-color: var(--background);
+  color: var(--foreground);
   padding: 8px;
 }
 
 .remove-btn {
-  background-color: #f38ba8;
-  color: #11111b;
+  background-color: var(--destructive);
+  color: var(--destructive-foreground);
   border: none;
   border-radius: 4px;
   width: 24px;
@@ -118,8 +118,8 @@
 }
 
 .add-dialogue-btn {
-  background-color: #a6e3a1;
-  color: #11111b;
+  background-color: var(--primary);
+  color: var(--primary-foreground);
   border: none;
   border-radius: 4px;
   padding: 8px 12px;
@@ -139,8 +139,8 @@
 }
 
 .tags-input button {
-  background-color: #a6e3a1;
-  color: #11111b;
+  background-color: var(--primary);
+  color: var(--primary-foreground);
   border: none;
   border-radius: 4px;
   padding: 0 12px;
@@ -154,8 +154,8 @@
 }
 
 .tag {
-  background-color: #74c7ec;
-  color: #11111b;
+  background-color: var(--accent);
+  color: var(--accent-foreground);
   padding: 4px 8px;
   border-radius: 4px;
   display: flex;
@@ -167,7 +167,7 @@
 .tag button {
   background: none;
   border: none;
-  color: #11111b;
+  color: var(--accent-foreground);
   cursor: pointer;
   font-size: 12px;
   display: flex;
@@ -176,8 +176,8 @@
 }
 
 .system-prompt-preview {
-  background-color: #1e1e2e;
-  border: 1px solid #313244;
+  background-color: var(--background);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px;
   max-height: 300px;
@@ -187,9 +187,9 @@
 .system-prompt-preview pre {
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 13px;
-  color: #cdd6f4;
+  color: var(--foreground);
   margin: 0;
 }
 
@@ -199,7 +199,7 @@
   height: 80px;
   border-radius: 50%;
   overflow: hidden;
-  border: 2px solid #313244;
+  border: 2px solid var(--border);
 }
 
 .avatar-preview img {
@@ -215,8 +215,8 @@
 }
 
 .save-btn {
-  background-color: #89b4fa;
-  color: #11111b;
+  background-color: var(--primary);
+  color: var(--primary-foreground);
   border: none;
   border-radius: 4px;
   padding: 10px 24px;
@@ -227,7 +227,7 @@
 }
 
 .save-btn:hover {
-  background-color: #74c7ec;
+  filter: brightness(1.1);
 }
 
 @media (max-width: 640px) {

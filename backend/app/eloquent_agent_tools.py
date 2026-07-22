@@ -19,9 +19,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import httpx
 
 from .openai_compat import get_configured_endpoint, is_api_endpoint
+from .document_agent_tools import get_document_search_tool_definition, search_enabled_documents
 from .web_search_service import (
     get_web_search_tool_definition,
+    get_web_fetch_tool_definition,
     handle_fetch_urls_tool_call,
+    handle_web_fetch_tool_call,
     handle_web_search_tool_call,
     web_search_service,
 )
@@ -105,13 +108,19 @@ def get_eloquent_chat_tools(
     simple: bool = True,
     include_news: bool = True,
     include_fetch_urls: bool = True,
+    include_web_fetch: bool = True,
+    include_document_search: bool = False,
 ) -> List[Dict[str, Any]]:
     """Tool definitions exposed to chat / generate agent loops."""
     tools: List[Dict[str, Any]] = [get_web_search_tool_definition(simple=simple, unified=True)]
+    if include_web_fetch:
+        tools.append(get_web_fetch_tool_definition())
     if include_news:
         tools.append(_web_search_news_tool_definition(simple=simple))
     if include_fetch_urls:
         tools.append(_fetch_urls_tool_definition())
+    if include_document_search:
+        tools.append(get_document_search_tool_definition())
     return tools
 
 
@@ -177,12 +186,12 @@ def detect_article_research_intent(query: str) -> bool:
 
 
 WEB_SEARCH_MODEL_INSTRUCTIONS = """[WEB SEARCH RULES — READ BEFORE REPLYING]
-The blocks above are the ONLY live web data Eloquent retrieved for this turn.
-- If you see "No live results" or empty results, say clearly that web search did not return usable data.
-- Do NOT claim you searched the web, browsed sites, or read articles unless that data appears above.
+You had web search available and your search results are above (if present).
+- If you see "WEB SEARCH RESULTS (you requested)" with results: use them to answer.
+- If you see "NO USABLE DATA" or "No live results": tell the user search failed or returned nothing.
 - Do NOT invent URLs, headlines, quotes, or article text that are not in the blocks above.
 - Search snippets are summaries; full article text only appears in FETCHED sections.
-- If URLs failed with 403/bot block, tell the user to paste article text or save .txt files in Transcript search — do not pretend you read those pages."""
+- If URLs failed with 403/bot block, tell the user to paste the article text or upload it under Documents — do not pretend you read those pages."""
 
 
 def research_block_is_meaningful(block: str) -> bool:
@@ -198,7 +207,6 @@ def research_block_is_meaningful(block: str) -> bool:
         "web search results",
         "search completed",
         "fetched ",
-        "transcript corpus",
         "url:",
         "content:",
         "snippet:",
@@ -212,12 +220,12 @@ def build_web_search_receipt(
     steps: List[Dict[str, Any]],
     model_name: str,
     mode: str,
-    path: str = "eloquent_prefetch",
+    path: str = "model_requested",
     source_count: int = 0,
 ) -> str:
     tools_used = [s.get("tool") or "search" for s in (steps or [])]
-    tools_line = ", ".join(tools_used[:12]) if tools_used else "snippet_search"
-    status = "SUCCESS — data injected below" if ok else "NO USABLE DATA — tell the user search failed"
+    tools_line = ", ".join(tools_used[:12]) if tools_used else "requested_search"
+    status = "SUCCESS — model-requested data below" if ok else "NO USABLE DATA — tell the user search failed"
     return (
         f"[ELOQUENT WEB SEARCH RECEIPT]\n"
         f"Status: {status}\n"
@@ -468,44 +476,14 @@ async def execute_eloquent_tool(
             max_urls=8 if not deep_research else 20,
             max_chars_per_url=10000,
         )
-    if name in ("search_transcript_corpus", "search_corpus", "corpus_search"):
-        return await _search_corpus_tool(arguments)
-    return f"Unknown tool '{tool_name}'. Available: web_search, web_search_news, fetch_urls, search_transcript_corpus."
-
-
-async def _search_corpus_tool(arguments: Any) -> str:
-    try:
-        from .transcript_corpus import search_corpus, get_corpus_meta
-
-        if isinstance(arguments, str):
-            arguments = json.loads(arguments) if arguments.strip().startswith("{") else {"query": arguments}
-        corpus_id = arguments.get("corpus_id") or arguments.get("corpus")
-        query = arguments.get("query") or arguments.get("q") or ""
-        if not corpus_id:
-            return "Error: corpus_id required (index your .txt folder in Transcript search first)."
-        if not query:
-            return "Error: query required."
-        top_k = int(arguments.get("top_k") or 30)
-        data = search_corpus(
-            corpus_id,
-            query,
-            top_k=top_k,
-            min_score=float(arguments.get("min_score") or 0.12),
+    if name in ("web_fetch", "fetch", "read_url"):
+        return await handle_web_fetch_tool_call(
+            arguments,
+            max_chars=25000,
         )
-        meta = get_corpus_meta(corpus_id) or {}
-        lines = [
-            f"Transcript corpus '{meta.get('name', corpus_id)}': {data.get('total_matches', 0)} matches",
-            f"Query: {query}",
-            "",
-        ]
-        for i, r in enumerate(data.get("results") or [], 1):
-            lines.append(f"--- [{i}] {r.get('source_file')} (score {r.get('score')}) ---")
-            lines.append(r.get("text", ""))
-            lines.append("")
-        return "\n".join(lines)[:120000]
-    except Exception as e:
-        logger.exception("corpus search tool failed")
-        return f"search_transcript_corpus failed: {e}"
+    if name in ("search_documents", "document_search", "search_document_context"):
+        return search_enabled_documents(arguments)
+    return f"Unknown tool '{tool_name}'. Available: web_search, web_search_news, fetch_urls, search_documents."
 
 
 async def _call_chat_api(
@@ -651,21 +629,11 @@ async def gather_comprehensive_research(
     deep_research: bool = False,
     article_mode: bool = False,
     research_urls: Optional[List[str]] = None,
-    transcript_corpus_id: Optional[str] = None,
     site_hint: Optional[str] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    """Best-effort research: corpus + programmatic fetches + optional API agent loop."""
+    """Best-effort programmatic web research."""
     blocks: List[str] = []
     all_steps: List[Dict[str, Any]] = []
-
-    if transcript_corpus_id:
-        corp = await _search_corpus_tool({
-            "corpus_id": transcript_corpus_id,
-            "query": user_query,
-            "top_k": 40,
-        })
-        blocks.append("TRANSCRIPT CORPUS (indexed .txt files):\n" + corp)
-        all_steps.append({"tool": "search_transcript_corpus", "query": user_query})
 
     prog, prog_steps = await gather_programmatic_article_research(
         user_query,
@@ -682,6 +650,20 @@ async def gather_comprehensive_research(
     return "\n\n".join(blocks).strip(), all_steps
 
 
+SEARCH_TOOL_INJECT = """[WEB SEARCH CAPABILITY — available in this chat]
+You have the ability to search the web for current information when needed.
+When you requested a search, results appear above labeled "WEB SEARCH RESULTS (you requested)".
+Use those results to answer. Do not invent URLs or content not shown above."""
+
+SEARCH_REQUEST_PROMPT = """You can search the web for current information if needed.
+
+Based on the user's message above, do you need to search the web to answer?
+If YES: respond with EXACTLY this format (no other text):
+SEARCH: your search query here
+
+If NO: just say NO"""
+
+
 async def gather_reliable_web_research(
     user_query: str,
     model_name: str,
@@ -690,90 +672,109 @@ async def gather_reliable_web_research(
     deep_research: bool = False,
     article_mode: bool = False,
     research_urls: Optional[List[str]] = None,
-    transcript_corpus_id: Optional[str] = None,
     site_hint: Optional[str] = None,
     mode: str = "normal",
 ) -> Tuple[str, List[Dict[str, Any]], bool, List[Any]]:
     """
-    Eloquent prefetch path for /generate — DuckDuckGo/RSS + optional article fetches.
+    Web search that the model knows about and controls.
+    Injects a search tool description + does a pre-generation call so the model
+    decides whether and what to search. Results are labeled as model-requested.
     Returns (block, steps, ok, results_for_citations).
     """
-    from .web_search_routing import decompose_search_queries, format_structured_search_block
-    from .web_search_service import perform_smart_web_search, web_search_service
+    from .web_search_routing import format_structured_search_block
+    from .web_search_service import web_search_service
 
     all_steps: List[Dict[str, Any]] = []
     blocks: List[str] = []
     ok = False
     all_results: List[Any] = []
 
+    # Always inject the tool description so the model knows it can search
+    blocks.append(SEARCH_TOOL_INJECT)
+
+    # Ask the model if it wants to search (pre-generation call)
+    # NOTE: The LLM function (web_search_llm in main.py) already prepends
+    # character_context. Do NOT add it here or it doubles.
+    search_query = None
     try:
-        max_results = 10 if deep_research else 8
-        max_queries = 6 if deep_research else 4
-        scrape_snippets_only = article_mode and not deep_research
+        if web_search_service._llm_function:
+            decision_prompt = "USER: " + user_query + "\n\n" + SEARCH_REQUEST_PROMPT
+            fn = web_search_service._llm_function
+            if asyncio.iscoroutinefunction(fn):
+                response = await fn(decision_prompt)
+            else:
+                response = fn(decision_prompt)
 
-        rule_queries, rule_intent = decompose_search_queries(user_query, max_queries=max_queries)
-        smart = await perform_smart_web_search(
-            user_query,
-            max_results=max_results,
-            use_optimization=True,
-            max_queries=max_queries,
-            scrape_full=not scrape_snippets_only,
-        )
-        optimized = smart.optimized_queries or rule_queries
-        intent = smart.search_intent or rule_intent
-
-        if not smart.results and rule_queries:
-            seen_urls: set[str] = set()
-            for q in rule_queries[:max_queries]:
-                for r in await web_search_service.search(q, max_results):
-                    if r.url not in seen_urls:
-                        seen_urls.add(r.url)
-                        smart.results.append(r)
-
-        if smart.results:
-            if scrape_snippets_only:
-                pass
-            elif not all(getattr(r, "scraped_successfully", False) for r in smart.results[:4]):
-                to_scrape = smart.results[: max(4, min(max_results, len(smart.results)))]
-                smart.results = await web_search_service.scrape_content(
-                    to_scrape, max_to_scrape=min(4, max_results)
-                )
-
-            structured = format_structured_search_block(
-                smart.results,
-                original_prompt=user_query,
-                optimized_queries=optimized,
-                search_intent=intent,
-                include_synthesis=True,
-            )
-            blocks.append(structured)
-            all_results = list(smart.results)
-            all_steps.append({
-                "tool": "snippet_search",
-                "query": optimized,
-                "result_preview": structured[:300],
-            })
-            ok = True
+            if response and isinstance(response, str):
+                response = response.strip()
+                # Look for SEARCH: in the response
+                m = re.search(r'SEARCH:\s*(.+?)(?:\n|$)', response, re.IGNORECASE)
+                if m:
+                    sq = m.group(1).strip().rstrip('.!?')
+                    if sq and len(sq) > 3:
+                        search_query = sq
+                        logger.info("Model requested search: '%s'", search_query[:100])
+                    else:
+                        logger.info("Model said SEARCH: but gave empty/short query")
+                elif response.upper().startswith("SEARCH:"):
+                    sq = response[7:].strip().rstrip('.!?')
+                    if sq and len(sq) > 3:
+                        search_query = sq
+                        logger.info("Model requested search: '%s'", search_query[:100])
+                else:
+                    logger.info("Model decided no search needed")
+            else:
+                logger.info("Model returned empty search decision")
+        else:
+            logger.warning("No LLM function available for search decision")
     except Exception as e:
-        logger.error("Snippet web search failed: %s", e)
-        blocks.append(f"WEB SEARCH (snippets): failed — {e}")
+        logger.warning("Search decision call failed: %s", e)
 
-    need_deep = bool(
-        article_mode
-        or deep_research
-        or research_urls
-        or transcript_corpus_id
-        or detect_article_research_intent(user_query)
-    )
+    # If model wants to search, do it
+    if search_query:
+        try:
+            max_results = 10 if deep_research else 8
+            results = await web_search_service.search(search_query, max_results)
+            if results:
+                scraped = await web_search_service.scrape_content(
+                    results[:max_results], max_to_scrape=min(6, max_results)
+                )
+                structured = format_structured_search_block(
+                    scraped[:max_results],
+                    original_prompt=user_query,
+                    optimized_queries=[search_query],
+                    search_intent="model-requested web search",
+                    include_synthesis=True,
+                )
+                # Label results as model-requested so it knows these are its own
+                blocks.append(
+                    "[WEB SEARCH RESULTS (you requested)]\n"
+                    f"You searched for: {search_query}\n"
+                    + structured
+                )
+                all_results = list(scraped)
+                all_steps.append({
+                    "tool": "requested_search",
+                    "query": search_query,
+                    "result_preview": structured[:300],
+                })
+                ok = True
+            else:
+                blocks.append(f"\n[WEB SEARCH for '{search_query}' returned no results.]")
+                logger.info("Search for '%s' returned no results", search_query)
+        except Exception as e:
+            logger.error("Web search failed: %s", e)
+            blocks.append(f"\n[WEB SEARCH failed: {e}]")
+
+    # Article/deep research mode (for when URLs are provided)
+    need_deep = bool(article_mode or deep_research or research_urls)
     if need_deep:
         deep_block, deep_steps = await gather_comprehensive_research(
-            user_query,
-            model_name,
+            user_query, model_name,
             character_context=character_context,
             deep_research=deep_research,
             article_mode=article_mode,
             research_urls=research_urls,
-            transcript_corpus_id=transcript_corpus_id,
             site_hint=site_hint,
         )
         all_steps.extend(deep_steps)

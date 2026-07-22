@@ -78,7 +78,6 @@ const DocumentSettings = () => {
               <DocumentSelector
                 selectedDocs={settings.selectedDocuments || []}
                 onChange={handleDocumentSelection}
-                maxSelections={5}
               />
             </div>
           </>

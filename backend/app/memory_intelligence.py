@@ -72,6 +72,8 @@ def _get_default_similarity_device() -> str:
     env_device = os.environ.get("MEMORY_SIMILARITY_DEVICE")
     if env_device:
         return env_device
+    if os.environ.get("MIRID_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return "cpu"
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
@@ -549,7 +551,8 @@ def save_memory_store(memories, user_id: str) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"❌ Error saving memory store to {memory_store_path}: {e}", exc_info=True)
+        path_debug = memory_store_path if 'memory_store_path' in locals() else "<unknown>"
+        logger.error(f"❌ Error saving memory store to {path_debug}: {e}", exc_info=True)
         return False
 
 # --- ADD THIS NEW FUNCTION ---
@@ -592,11 +595,6 @@ async def delete_memory_for_user(user_id: str, content_to_delete: str) -> bool:
         if not memory_found:
             logger.warning(f"Memory content not found for deletion for user '{user_id}'.")
             return False
-            if not memory_found:
-                logger.warn("🧠 [Delete] No matching memory found; nothing to delete")
-                return False
-            logger.info("🧠 [Delete] Successfully deleted memory")
-            return True
 
         # 4. Save the updated memory store (which excludes the deleted memory)
         save_success = save_memory_store(updated_memories, user_id=user_id)
@@ -1202,7 +1200,7 @@ async def model_based_memory_creation_from_snippet(
     try:
         # If no specific model name provided, find a suitable one on the target GPU
         if not model_name:
-            model_name = model_manager.find_suitable_model(gpu_id=gpu_id)
+            model_name = await model_manager.find_suitable_model(gpu_id=gpu_id)
             if not model_name:
                 logger.error(f"❌ No suitable model found on GPU {gpu_id} for memory extraction.")
                 return []
@@ -1591,48 +1589,6 @@ def curate_memory_store(user_id: Optional[str] = None, similarity_threshold=0.7)
         return {"status": "error", "reason": str(e)}
     
 
-# Corrected function in src/memory_intelligence.py
-def purge_memory_store(user_id: Optional[str] = None): # <-- Changed parameter to user_id
-    """
-    Completely purge all memories from a specific user's memory store.
-    Requires user_id.
-    """
-    logger = logging.getLogger(__name__) # Use logger
-    if not user_id:
-        logger.error("❌ purge_memory_store called without a user_id.")
-        return {"status": "error", "reason": "user_id_missing"}
-
-    try:
-        memory_file_path = get_user_memory_path(user_id=user_id) # <-- Get path using user_id
-        logger.warning(f"🧹 Attempting to PURGE memory store for user '{user_id}' at: {memory_file_path}")
-
-        # Check if the file exists before trying to remove/overwrite
-        if os.path.exists(memory_file_path):
-            # Overwrite with an empty list [] using atomic write principles
-            # (Reusing the save_memory_store logic but with an empty list)
-            save_success = save_memory_store([], user_id=user_id) # Use save_memory_store for atomic write
-
-            if save_success:
-                logger.info(f"✅ Memory store purged successfully for user '{user_id}' at {memory_file_path}")
-                return {"status": "success", "message": "Memory store completely purged for this user."}
-            else:
-                logger.error(f"❌ Failed to save empty store during purge for user '{user_id}' at {memory_file_path}.")
-                return {"status": "error", "reason": "failed_to_save_empty_store"}
-        else:
-            logger.info(f"⚠️ Memory file did not exist for user '{user_id}' at {memory_file_path}. No purge needed, ensuring directory exists.")
-            # Ensure the directory exists even if the file didn't
-            os.makedirs(os.path.dirname(memory_file_path), exist_ok=True)
-            # Optionally, create an empty file now if desired, using save_memory_store
-            save_memory_store([], user_id=user_id)
-            return {"status": "success", "message": "Memory store file did not exist. Created empty store."}
-
-    except ValueError as ve: # Catch error from get_user_memory_path if user_id is invalid
-        logger.error(f"❌ Value Error determining path for purge (user_id: '{user_id}'): {ve}")
-        return {"status": "error", "reason": f"Invalid user_id for purge: {str(ve)}"}
-    except Exception as e:
-        logger.error(f"❌ Unexpected error purging memory store for user '{user_id}': {e}", exc_info=True)
-        return {"status": "error", "reason": str(e)}
-
 async def process_incoming_message_with_userprofile(model_manager, message, userProfile=None, history=None, user_id: Optional[str] = None, gpu_id=None, single_gpu_mode=False):
     if gpu_id is None:
         gpu_id = 1 if single_gpu_mode else 0
@@ -1813,7 +1769,7 @@ async def process_incoming_message(model_manager, message, history=None, gpu_id=
     """
     try:
         # Step 1: Analyze for relevant memories
-        relevant_memories = await analyze_for_relevant_memories(model_manager, message, gpu_id=gpu_id)
+        relevant_memories = await analyze_for_relevant_memories(model_manager, message, gpu_id=gpu_id, user_id=user_id)
         
         # Step 2: Format memories for context injection
         formatted_memories = format_memories_for_context(relevant_memories)
@@ -1859,7 +1815,7 @@ async def process_completed_exchange(model_manager, user_message, ai_response, g
         
         # Step 2: Store memories
         if new_memories and len(new_memories) > 0:
-            added = await store_memories(new_memories)
+            added = await store_memories(new_memories, user_id=user_id)
             storage_success = added > 0
         else:
             storage_success = False
@@ -1954,14 +1910,14 @@ def purge_memory_store(user_id: str) -> bool:
         return False
 
 
-def refine_memories_with_llm(**kwargs) -> str:
+async def refine_memories_with_llm(**kwargs) -> str:
     """
     Compatibility wrapper for restored memory_routes.py
     Maps to get_llm_refined_context function
     Returns LLM-refined memory context
     """
     try:
-        return get_llm_refined_context(**kwargs)
+        return await get_llm_refined_context(**kwargs)
     except Exception as e:
         logger.error(f"Error in refine_memories_with_llm: {e}")
         return ""
@@ -2022,14 +1978,14 @@ def add_memories_batch(user_id: str, memories: List[Dict[str, Any]]) -> bool:
         return False
 
 
-def model_based_memory_extraction(**kwargs) -> Optional[Dict[str, Any]]:
+async def model_based_memory_extraction(**kwargs) -> Optional[Dict[str, Any]]:
     """
     Compatibility wrapper for restored memory_routes.py
     Maps to model_based_memory_creation function
     Returns extracted memory data or None
     """
     try:
-        return model_based_memory_creation(**kwargs)
+        return await model_based_memory_creation(**kwargs)
     except Exception as e:
         logger.error(f"Error in model_based_memory_extraction: {e}")
         return None

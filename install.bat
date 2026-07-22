@@ -17,10 +17,8 @@ REM --- 3. Install precompiled LLaMA wheel from HuggingFace ---
 set LLAMA_WHEEL=
 if "%PYVER%"=="3.11" (
     set LLAMA_WHEEL=https://huggingface.co/boneylizardwizard/llama_cpp_python-0.3.16-cp311cp312-win_amd64-sm75/resolve/main/llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
-    set FALLBACK_WHEEL=wheels\llama_cpp_python-0.3.16-cp311-cp311-win_amd64.whl
 ) else if "%PYVER%"=="3.12" (
     set LLAMA_WHEEL=https://huggingface.co/boneylizardwizard/llama_cpp_python-0.3.16-cp311cp312-win_amd64-sm75/resolve/main/llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
-    set FALLBACK_WHEEL=wheels\llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl
 ) else (
     echo ERROR: Unsupported Python version: %PYVER%
     exit /b 1
@@ -29,18 +27,8 @@ if "%PYVER%"=="3.11" (
 echo Installing LLaMA wheel: !LLAMA_WHEEL!
 pip install !LLAMA_WHEEL!
 if errorlevel 1 (
-    echo WARNING: Failed to install from HuggingFace. Falling back to local wheel.
-    if exist "!FALLBACK_WHEEL!" (
-        echo Installing fallback LLaMA wheel: !FALLBACK_WHEEL!
-        pip install "!FALLBACK_WHEEL!"
-        if errorlevel 1 (
-            echo ERROR: Fallback wheel install failed.
-            exit /b 1
-        )
-    ) else (
-        echo ERROR: Fallback wheel not found: !FALLBACK_WHEEL!
-        exit /b 1
-    )
+    echo ERROR: Could not download the LLaMA runtime wheel from Hugging Face.
+    exit /b 1
 )
 
 REM --- 4b. Install Stable Diffusion wheel from HuggingFace (too large for GitHub) ---

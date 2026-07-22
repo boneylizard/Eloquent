@@ -4,13 +4,13 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo, ArrowUpCircle, Image as ImageIcon } from 'lucide-react';
+import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo, ArrowUpCircle, Image as ImageIcon, FolderPlus } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { useApp } from '../contexts/AppContext';
 import { createRouteTraceId, logRouteTrace, resolveUnifiedRequestRoute } from '../utils/requestRouting';
 
 const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCancelRegenerations, isRegenerationRunning }) => {
-  const { primaryModel, primaryIsAPI, settings, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile, setBackgroundImage } = useApp();
+  const { primaryModel, primaryIsAPI, settings, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile, setBackgroundImage, saveToGallery } = useApp();
 
   // Existing state
   const [isImageLoaded, setIsImageLoaded] = useState(false);
@@ -345,6 +345,35 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
       setBackgroundImage(imageUrl);
     }
   };
+
+  const handleSaveToGallery = useCallback(async () => {
+    if (!imageUrl) return;
+    try {
+      const params = {
+        prompt: message.original_prompt || message.prompt,
+        negative_prompt: message.original_negative_prompt || message.negative_prompt,
+        width: message.original_width || message.width,
+        height: message.original_height || message.height,
+        steps: message.original_steps || message.steps,
+        guidance_scale: message.original_guidance_scale || message.guidance_scale,
+        sampler: message.original_sampler || message.sampler,
+        seed: message.original_seed ?? message.seed,
+        model: message.model,
+        gpu_id: message.gpuId,
+        enhancement_history: message.enhancement_history,
+      };
+      await saveToGallery(
+        imageUrl,
+        params,
+        (message.prompt || '').slice(0, 80) || 'Generated Image',
+        null,
+        ['generated']
+      );
+      alert('Image saved to gallery');
+    } catch (e) {
+      alert('Failed to save to gallery: ' + (e.message || 'unknown error'));
+    }
+  }, [imageUrl, message, saveToGallery]);
 
   // Reset to last enhancement level
   const handleResetToLast = useCallback(() => {
@@ -704,6 +733,18 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
                 >
                   <ImageIcon className='h-3 w-3 mr-1' />
                   Set BG
+                </Button>
+
+                {/* Save to Gallery Button */}
+                <Button
+                  size='sm'
+                  variant='outline'
+                  onClick={handleSaveToGallery}
+                  className='h-8 px-2 text-xs border'
+                  title='Save this image to the Room Gallery'
+                >
+                  <FolderPlus className='h-3 w-3 mr-1' />
+                  Gallery
                 </Button>
 
                 {/* Reset to last button (shown when enhanced) */}

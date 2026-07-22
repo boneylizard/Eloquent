@@ -11,12 +11,11 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-_PREVIEW_SUBDIR = ("data", "preview_prompts")
+from .runtime_paths import data_path
 
 
 def preview_prompts_dir() -> str:
-    base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.normpath(os.path.join(base, "..", *_PREVIEW_SUBDIR))
+    return str(data_path("preview_prompts"))
 
 
 def _safe_kind(kind: str) -> str:

@@ -15,6 +15,9 @@ function mergeFloat32Arrays(arrays) {
 }
 
 async function resampleTo16k(samples, fromRate) {
+  if (samples.length === 0) {
+    return new Float32Array(0);
+  }
   if (fromRate === 16000) return samples;
   const duration = samples.length / fromRate;
   const length = Math.max(1, Math.ceil(duration * 16000));
@@ -107,6 +110,9 @@ export function createWavMicRecorder() {
       teardownTracks();
       const merged = mergeFloat32Arrays(chunks);
       chunks.length = 0;
+      if (merged.length === 0) {
+        throw new Error('No audio data captured — recording was too short.');
+      }
       const samples16k = await resampleTo16k(merged, inputRate);
       if (audioContext) {
         await audioContext.close();

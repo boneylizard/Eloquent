@@ -39,20 +39,39 @@ def test_resolve_auto_eloquent_for_local():
     ) == "eloquent"
 
 
-def test_resolve_native_fallback_article_mode():
+def test_retired_strategy_override_is_ignored():
     cfg = {"url": "https://openrouter.ai/api/v1", "model": "gpt-4o", "supports_native_search": True}
     assert resolve_web_search_path(
         use_web_search=True,
-        strategy="native",
+        strategy="eloquent",
+        model_name="endpoint-1",
+        endpoint_cfg=cfg,
+    ) == "native"
+
+
+def test_auto_uses_prefetch_for_article_research():
+    cfg = {"url": "https://openrouter.ai/api/v1", "model": "gpt-4o"}
+    assert resolve_web_search_path(
+        use_web_search=True,
+        strategy="auto",
         model_name="endpoint-1",
         endpoint_cfg=cfg,
         article_mode=True,
     ) == "eloquent"
 
 
-def test_endpoint_supports_native_explicit_false():
+def test_retired_endpoint_override_is_ignored():
     cfg = {"url": "https://openrouter.ai/api/v1", "supports_native_search": False}
-    assert endpoint_supports_native_search(cfg) is False
+    assert endpoint_supports_native_search(cfg) is True
+
+
+def test_web_search_toggle_off_still_disables_search():
+    assert resolve_web_search_path(
+        use_web_search=False,
+        strategy="native",
+        model_name="endpoint-1",
+        endpoint_cfg={"url": "https://openrouter.ai/api/v1"},
+    ) == "off"
 
 
 def test_decompose_comparison():

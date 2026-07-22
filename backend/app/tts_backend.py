@@ -2,9 +2,15 @@
 # This runs independently from the main backend to avoid resource conflicts
 
 import os
+from backend.app.compute_capabilities import disable_incompatible_torchao
+
+disable_incompatible_torchao()
+
 # Disable problematic Torch optimizations for Python 3.12+ (MUST BE AT TOP)
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
+if os.environ.get("MIRID_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 # MONKEYPATCH: Disable torch.compile to avoid Dynamo error on Python 3.12+
 try:
@@ -34,13 +40,14 @@ if str(backend_dir) not in sys.path:
 
 # FastAPI imports
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
+from backend.app.cors_policy import configure_cors
 
 # Import TTS service functions
 from tts_service import (
     load_chatterbox_model, 
+    load_chatterbox_nano_model, 
     synthesize_speech, 
     ChatterboxTTS,
     TTSStreamer  # Add the TTSStreamer class import
@@ -62,7 +69,7 @@ logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
 def get_log_dir():
     """Resolve the log directory (project-root logs/ by default)."""
-    env_dir = os.environ.get("ELOQUENT_LOG_DIR")
+    env_dir = os.environ.get("MIRID_LOG_DIR") or os.environ.get("ELOQUENT_LOG_DIR")
     if env_dir:
         log_dir = Path(env_dir)
     else:
@@ -103,16 +110,11 @@ except Exception as e:
 app = FastAPI(title="LiangLocal TTS Service", version="1.0.0")
 
 # CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app)
 
 # Global variables for loaded models
 chatterbox_model = None
+chatterbox_nano_model = None
 tts_initialized = False
 
 @app.on_event("startup")
@@ -153,7 +155,8 @@ async def health_check():
         "service": "tts_backend",
         "initialized": tts_initialized,
         "models": {
-            "chatterbox": chatterbox_model is not None
+            "chatterbox": chatterbox_model is not None,
+            "chatterbox_nano": chatterbox_nano_model is not None
         }
     }
 
@@ -172,12 +175,20 @@ async def synthesize_endpoint(request: Request):
         audio_prompt_path = body.get("audio_prompt_path")
         exaggeration = body.get("exaggeration", 0.5)
         cfg = body.get("cfg", 0.5)
-        
+
+        # VoxCPM2-specific parameters
+        voxcpm_cfg_value = body.get("voxcpm_cfg_value", 2.0)
+        voxcpm_inference_timesteps = body.get("voxcpm_inference_timesteps", 8)
+        voxcpm_normalize = body.get("voxcpm_normalize", False)
+        voxcpm_denoise = body.get("voxcpm_denoise", False)
+        voxcpm_retry_badcase = body.get("voxcpm_retry_badcase", False)
+        voxcpm_voice_design = body.get("voxcpm_voice_design")
+
         if not text:
             raise HTTPException(status_code=400, detail="Text is required")
-        
-        logger.info(f"🎤 TTS request: engine={engine}, text='{text[:50]}...'")
-        
+
+        logger.debug(f"🎤 TTS request: engine={engine}, text='{text[:50]}...'")
+
         # Synthesize speech
         start_time = time.perf_counter()
         audio_bytes = await synthesize_speech(
@@ -186,12 +197,18 @@ async def synthesize_endpoint(request: Request):
             engine=engine,
             audio_prompt_path=audio_prompt_path,
             exaggeration=exaggeration,
-            cfg=cfg
+            cfg=cfg,
+            voxcpm_cfg_value=voxcpm_cfg_value,
+            voxcpm_inference_timesteps=voxcpm_inference_timesteps,
+            voxcpm_normalize=voxcpm_normalize,
+            voxcpm_denoise=voxcpm_denoise,
+            voxcpm_retry_badcase=voxcpm_retry_badcase,
+            voxcpm_voice_design=voxcpm_voice_design,
         )
         end_time = time.perf_counter()
         
         duration_ms = (end_time - start_time) * 1000
-        logger.info(f"✅ TTS completed in {duration_ms:.2f}ms, {len(audio_bytes)} bytes")
+        logger.debug(f"✅ TTS completed in {duration_ms:.2f}ms, {len(audio_bytes)} bytes")
         
         # Return audio as streaming response
         return StreamingResponse(
@@ -226,7 +243,7 @@ async def tts_stream_endpoint(request: Request):
         if not text:
             raise HTTPException(status_code=400, detail="Text is required")
         
-        logger.info(f"🌊 TTS Stream request: engine={engine}, text='{text[:50]}...'")
+        logger.debug(f"🌊 TTS Stream request: engine={engine}, text='{text[:50]}...'")
         
         # For now, return the full audio (can be enhanced for true streaming later)
         start_time = time.perf_counter()
@@ -241,7 +258,7 @@ async def tts_stream_endpoint(request: Request):
         end_time = time.perf_counter()
         
         duration_ms = (end_time - start_time) * 1000
-        logger.info(f"✅ TTS Stream completed in {duration_ms:.2f}ms, {len(audio_bytes)} bytes")
+        logger.debug(f"✅ TTS Stream completed in {duration_ms:.2f}ms, {len(audio_bytes)} bytes")
         
         return StreamingResponse(
             iter([audio_bytes]),
@@ -265,6 +282,11 @@ async def list_models():
                 "available": chatterbox_model is not None,
                 "name": "Chatterbox TTS",
                 "description": "High-quality voice cloning TTS"
+            },
+            "chatterbox_nano": {
+                "available": chatterbox_nano_model is not None,
+                "name": "Chatterbox Nano TTS",
+                "description": "Fast 110M voice cloning TTS"
             }
         }
     }
@@ -519,6 +541,110 @@ async def reload_chatterbox():
         logger.error(f"❌ [Chatterbox] Error reloading model: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.post("/tts/unload-chatterbox-nano")
+async def unload_chatterbox_nano():
+    """Unload Chatterbox Nano model from VRAM to free up memory"""
+    global chatterbox_nano_model
+    
+    try:
+        if chatterbox_nano_model is None:
+            logger.info("🔓 [Chatterbox Nano] Model is already unloaded")
+            return {
+                "status": "success",
+                "message": "Chatterbox Nano model was already unloaded",
+                "vram_freed": 0
+            }
+        
+        logger.info("🔓 [Chatterbox Nano] Unloading model to free VRAM...")
+        
+        import torch
+        
+        vram_freed = 0.0
+        current_device = torch.cuda.current_device() if torch.cuda.is_available() else 0
+        vram_before = torch.cuda.memory_allocated(current_device) / 1024**3 if torch.cuda.is_available() else 0.0
+        
+        try:
+            if hasattr(chatterbox_nano_model, 'to'):
+                chatterbox_nano_model = chatterbox_nano_model.to('cpu')
+            if hasattr(chatterbox_nano_model, 'model') and hasattr(chatterbox_nano_model.model, 'to'):
+                chatterbox_nano_model.model = chatterbox_nano_model.model.to('cpu')
+            if hasattr(chatterbox_nano_model, 'tts') and hasattr(chatterbox_nano_model.tts, 'to'):
+                chatterbox_nano_model.tts = chatterbox_nano_model.tts.to('cpu')
+        except Exception as e:
+            logger.warning(f"⚠️ Could not move Nano model to CPU: {e}")
+        
+        del chatterbox_nano_model
+        chatterbox_nano_model = None
+        
+        for i in range(3):
+            gc.collect()
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            vram_after = torch.cuda.memory_allocated(current_device) / 1024**3
+            vram_freed = vram_before - vram_after
+        
+        logger.info("✅ [Chatterbox Nano] Model unloaded successfully")
+        return {
+            "status": "success",
+            "message": "Chatterbox Nano model unloaded successfully",
+            "vram_freed": f"{vram_freed:.2f}GB" if torch.cuda.is_available() else "Unknown"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Chatterbox Nano] Error unloading model: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/tts/reload-chatterbox-nano")
+async def reload_chatterbox_nano():
+    """Reload Chatterbox Nano model for use"""
+    global chatterbox_nano_model
+    
+    try:
+        if chatterbox_nano_model is not None:
+            logger.info("🔄 [Chatterbox Nano] Model is already loaded")
+            return {
+                "status": "success",
+                "message": "Chatterbox Nano model is already loaded",
+                "already_loaded": True
+            }
+        
+        logger.info("🔄 [Chatterbox Nano] Reloading model...")
+        
+        chatterbox_nano_model = load_chatterbox_nano_model()
+        
+        if chatterbox_nano_model is None:
+            raise RuntimeError("Failed to load Chatterbox Nano model")
+        
+        logger.info("🔥 Forcing warmup after Nano reload...")
+        try:
+            import torch
+            with torch.inference_mode():
+                test_text = "This is a warmup test after reload for optimal performance."
+                if hasattr(chatterbox_nano_model, 'generate'):
+                    dummy_audio = chatterbox_nano_model.generate(test_text, temperature=0.8)
+                    del dummy_audio
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        except Exception as e:
+            logger.warning(f"⚠️ Nano reload warmup failed: {e}")
+        
+        logger.info("✅ [Chatterbox Nano] Model reloaded successfully")
+        return {
+            "status": "success",
+            "message": "Chatterbox Nano model loaded and ready for use",
+            "already_loaded": False
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [Chatterbox Nano] Error reloading model: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.websocket("/tts-stream")
 async def websocket_streaming_tts(websocket: WebSocket):
     """
@@ -592,12 +718,16 @@ async def websocket_streaming_tts(websocket: WebSocket):
                 # Check if this is settings or a text chunk
                 if isinstance(data, dict) and not data.get('text'):
                     tts_settings = data
-                    logger.info(f"🔧 [WebSocket] Received settings for new stream: {tts_settings}")
+                    logger.info(
+                        "🔧 [WebSocket] Received stream settings: engine=%s, voice=%s",
+                        tts_settings.get("engine"),
+                        tts_settings.get("voice_id") or tts_settings.get("voice"),
+                    )
                 else:
                     logger.warning(f"⚠️ [WebSocket] Expected settings but got text. Skipping.")
                     continue
             except json.JSONDecodeError:
-                logger.error(f"❌ [WebSocket] Invalid JSON: {settings_data[:100]}")
+                logger.error("❌ [WebSocket] Received invalid settings JSON")
                 continue
             
             # 2. Clean up any previous streamer ref (redundant safety)
@@ -802,7 +932,7 @@ async def upload_voice_reference(file: UploadFile = File(...)):
 if __name__ == "__main__":
     # Run the TTS service
     port = int(os.environ.get("TTS_PORT", 8002))
-    host = os.environ.get("TTS_HOST", "0.0.0.0")
+    host = os.environ.get("TTS_HOST", "127.0.0.1")
     
     logger.info(f"🚀 Starting TTS Backend on {host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info")

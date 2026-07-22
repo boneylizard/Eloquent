@@ -485,7 +485,7 @@ const MemoryEditor = ({ onClose, hideCuratorPanels = false, memoryListRefreshKey
             </button>
             
             <button onClick={fetchMemories} disabled={isLoadingMemories}>
-              {isLoadingMemories ? 'Loading...' : 'Refresh'}
+              {isLoadingMemories ? 'Refreshing…' : 'Refresh'}
             </button>
             <button onClick={previewDuplicateMemories} disabled={isDuplicateBusy || isLoadingMemories || !activeProfileId}>
               {isDuplicateBusy ? 'Scanning...' : 'Find Duplicates'}

@@ -1,8 +1,8 @@
 // Description: Main application component that sets up the layout and theme context for the app.
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { useNavbarAutoHide } from './hooks/useNavbarAutoHide';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import './App.css';
 // Correct named import for ThemeProvider and import useTheme
 import { ThemeProvider, useTheme } from './components/ThemeProvider';
@@ -13,41 +13,102 @@ import Documents from './components/Documents';
 import Settings from './components/Settings';
 import { MemoryProvider } from './contexts/MemoryContext';
 import MemoryPage from './pages/MemoryPage';
-import TranscriptCorpusPage from './pages/TranscriptCorpusPage';
+import DocsPage from './pages/DocsPage';
+import UserProfilesPage from './pages/UserProfilesPage';
 import { useApp, AppProvider } from './contexts/AppContext';
-import { IntensityProvider } from './contexts/IntensityContext';
 
 // Import components
 import SimpleModelSelector from './components/SimpleModelSelector';
 import CharacterManager from './components/CharacterManager';
 import ModelTester from './components/ModelTester';
-import ForensicLinguistics from './components/ForensicLinguistics';
-import CodeEditorOverlay from './components/CodeEditorOverlay';
-import ElectionTracker from './components/ElectionTracker';
-import ChessTab from './components/ChessTab';
-import MarketSimTab from './components/MarketSimTab';
-import WatchTab from './components/WatchTab';
-import { VideoWatchProvider } from './contexts/VideoWatchContext';
+import { MobileRemoteProvider } from './contexts/MobileRemoteContext';
+import { isModuleEnabled } from './config/modules';
 
 import LoginOverlay from './components/LoginOverlay';
 import OutreachNotificationStack from './components/OutreachNotificationStack';
 import SettingsStandaloneLayout from './components/SettingsStandaloneLayout';
-import CallModeStandaloneLayout from './components/CallModeStandaloneLayout';
+import RoomImageGalleryModal from './components/RoomImageGalleryModal';
+import ProviderSetupDialog from './components/ProviderSetupDialog';
+import RoleplayWelcomeDialog from './components/RoleplayWelcomeDialog';
 import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
+
+const ElectionTracker = __MIRID_INCLUDE_ELECTIONS__
+  ? lazy(() => import('./components/ElectionTracker'))
+  : null;
+const PoolTab = null;
 
 // Inner component to access theme context easily
 function AppContent() {
   const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const standalone = searchParams.get('standalone');
   const { theme, setTheme } = useTheme(); // Use the theme hook here
-  const { activeTab, setActiveTab, settingsEntryTab } = useApp();
+  const {
+    activeTab,
+    setActiveTab,
+    settingsEntryTab,
+    roomGalleryOpen,
+    setRoomGalleryOpen,
+    setBackgroundImage,
+    openSettingsTab,
+    primaryModel,
+    settings,
+    storageHydrated,
+  } = useApp();
   // Default to closed on mobile (< 768px), open on desktop
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768);
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [scrollContainer, setScrollContainer] = useState(null);
+  const openChatHistory = useCallback(() => {
+    setSidebarOpen(true);
+    setChatHistoryOpen(true);
+  }, []);
   const assignScrollContainer = useCallback((node) => {
     setScrollContainer(node);
   }, []);
+
+  useEffect(() => {
+    if (location.pathname === '/docs') setActiveTab('docs');
+  }, [location.pathname, setActiveTab]);
+
+  const modelSetupRedirectHandledRef = useRef(false);
+  useEffect(() => {
+    if (!storageHydrated || modelSetupRedirectHandledRef.current) return;
+    modelSetupRedirectHandledRef.current = true;
+    if (settings?.modelSetupRequired === true && !primaryModel) {
+      openSettingsTab('models', { forceWindow: false });
+    }
+  }, [openSettingsTab, primaryModel, settings?.modelSetupRequired, storageHydrated]);
+
+  const previewRoleplayWelcome = import.meta.env.DEV
+    && new URLSearchParams(location.search).get('preview') === 'roleplay-welcome';
+  const roleplayWelcomeOpen = previewRoleplayWelcome || Boolean(
+    storageHydrated
+    && settings?.providerSetupCompleted === true
+    && settings?.primaryUse === 'roleplay'
+    && settings?.roleplayIntroCompleted !== true
+    && primaryModel,
+  );
+
+  useEffect(() => {
+    if (roleplayWelcomeOpen) setTheme('faraday');
+  }, [roleplayWelcomeOpen, setTheme]);
+
+  const selectTab = useCallback((tab) => {
+    setActiveTab(tab);
+    if (tab === 'docs') {
+      if (location.pathname !== '/docs') navigate('/docs');
+    } else if (location.pathname === '/docs') {
+      navigate('/');
+    }
+  }, [location.pathname, navigate, setActiveTab]);
+
+  const openModelLibrary = useCallback(() => {
+    if (location.pathname === '/docs') navigate('/');
+    openSettingsTab('models');
+  }, [location.pathname, navigate, openSettingsTab]);
   const {
     navbarCollapsed,
     navbarPinned,
@@ -120,24 +181,28 @@ function AppContent() {
           <Chat
             layoutMode={layoutMode}
             scrollContainerRef={assignScrollContainer}
+            onOpenChatHistory={openChatHistory}
           />
         );
       case 'documents':
         return <Documents />;
-      case 'forensics':
-        return <ForensicLinguistics onClose={() => setActiveTab('chat')} />;
       case 'models':
         return <SimpleModelSelector />;
       case 'characters':
         return <CharacterManager />;
+      case 'user-profiles':
+        return <UserProfilesPage />;
+      case 'audio':
+        return <Settings
+          darkMode={theme === 'dark'}
+          toggleDarkMode={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          initialTab="audio"
+          audioPage
+        />;
       case 'election':
-        return <ElectionTracker />;
-      case 'chess':
-        return <ChessTab />;
-      case 'market-sim':
-        return <MarketSimTab />;
-      case 'watch':
-        return <WatchTab />;
+        return ElectionTracker && isModuleEnabled('elections') ? (
+          <Suspense fallback={null}><ElectionTracker /></Suspense>
+        ) : <Chat layoutMode={layoutMode} scrollContainerRef={assignScrollContainer} onOpenChatHistory={openChatHistory} />;
       case 'settings':
         // Pass theme state and toggle function to Settings
         return <Settings
@@ -147,17 +212,20 @@ function AppContent() {
         />;
       case 'memory':
         return <MemoryPage />;
-      case 'transcript-corpus':
-        return <TranscriptCorpusPage />;
+      case 'docs':
+        return <DocsPage onLeave={() => selectTab('chat')} onOpenModelLibrary={openModelLibrary} />;
       case 'modeltester':
         return <ModelTester />;
-      case 'codeeditor':
-        return <CodeEditorOverlay isOpen={true} onClose={() => setActiveTab('chat')} />;
+      case 'pool':
+        return PoolTab && isModuleEnabled('pool') ? (
+          <Suspense fallback={null}><PoolTab /></Suspense>
+        ) : <Chat layoutMode={layoutMode} scrollContainerRef={assignScrollContainer} onOpenChatHistory={openChatHistory} />;
       default:
         return (
           <Chat
             layoutMode={layoutMode}
             scrollContainerRef={assignScrollContainer}
+            onOpenChatHistory={openChatHistory}
           />
         );
     }
@@ -187,10 +255,6 @@ function AppContent() {
     );
   }
 
-  if (standalone === 'call') {
-    return <CallModeStandaloneLayout />;
-  }
-
   const isChatTab = activeTab === 'chat' || activeTab == null;
   // Keep offset constant when auto-hiding: navbar slides over content via transform only.
   const navbarOffset = '3rem';
@@ -218,8 +282,10 @@ function AppContent() {
           isOpen={sidebarOpen}
           setIsOpen={setSidebarOpen}
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={selectTab}
           layoutMode={layoutMode}
+          historyPanelOpen={chatHistoryOpen}
+          setHistoryPanelOpen={setChatHistoryOpen}
         />
         <main
           ref={isChatTab ? undefined : assignScrollContainer}
@@ -234,7 +300,22 @@ function AppContent() {
 
       <OutreachNotificationStack />
 
+      {!previewRoleplayWelcome && <ProviderSetupDialog />}
+
+      <RoleplayWelcomeDialog
+        open={roleplayWelcomeOpen}
+        onOpenCharacters={() => selectTab('characters')}
+      />
+
       <LoginOverlay isOpen={showLogin} onLogin={handleLogin} />
+
+      <RoomImageGalleryModal
+        open={roomGalleryOpen}
+        onOpenChange={setRoomGalleryOpen}
+        onSelect={(url) => {
+          setBackgroundImage(url);
+        }}
+      />
     </div>
   );
 }
@@ -243,17 +324,13 @@ function AppContent() {
 // Main App wrapper including Providers
 function App() {
   return (
-    // MemoryProvider should likely wrap AppProvider if AppContext depends on MemoryContext
     <MemoryProvider>
       <AppProvider>
-        <IntensityProvider>
-          <VideoWatchProvider>
-            {/* ThemeProvider wraps everything that needs theme context */}
-            <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
-              <AppContent /> {/* Render the inner component that uses the theme */}
-            </ThemeProvider>
-          </VideoWatchProvider>
-        </IntensityProvider>
+        <MobileRemoteProvider>
+          <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
+            <AppContent />
+          </ThemeProvider>
+        </MobileRemoteProvider>
       </AppProvider>
     </MemoryProvider>
   );

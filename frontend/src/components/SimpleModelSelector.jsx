@@ -356,7 +356,7 @@ const ModelSelector = () => {
             onClick={handleLoadModel} 
             disabled={!selectedModel || isModelLoading}
           >
-            {isModelLoading ? 'Loading...' : isAPIModel(selectedModel) ? 'Select API' : 'Load Model'}
+            {isModelLoading ? 'Loading model…' : isAPIModel(selectedModel) ? 'Select API' : 'Load Model'}
           </Button>
           <Button 
             className="flex-1" 

@@ -9,21 +9,17 @@ import {
   RotateCw,
   MoreVertical,
   Zap,
-  Code,
-  Fingerprint,
   Vote,
   Menu,
   Pin,
   PinOff,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
-import { subscribeNanoGptModelsCache, readNanoGptModelsCache } from '../utils/nanoGptModelsCache';
+import { isModuleEnabled } from '../config/modules';
+import { restartMirid, shutdownMirid } from '../utils/desktopLifecycle';
 const EXTRA_TOOLS = [
   { id: 'modeltester', label: 'Model Tester', icon: Zap },
-  { id: 'codeeditor', label: 'Code Editor', icon: Code },
-  { id: 'forensics', label: 'Forensics', icon: Fingerprint },
-  { id: 'election', label: 'Elections', icon: Vote },
+  ...(isModuleEnabled('elections') ? [{ id: 'election', label: 'Elections', icon: Vote }] : []),
 ];
 
 const NAVBAR_HEIGHT_CLASS = 'h-12';
@@ -36,20 +32,14 @@ const Navbar = ({
   reduceMotion = false,
 }) => {
   const [overflowOpen, setOverflowOpen] = useState(false);
-  const [catalog, setCatalog] = useState(() => readNanoGptModelsCache().models);
+  const [lifecycleAction, setLifecycleAction] = useState(null);
 
   const {
-    primaryModel,
     setActiveTab,
     openSettingsTab,
-    PRIMARY_API_URL,
   } = useApp();
 
   const { theme, setTheme } = useTheme();
-
-  useEffect(() => {
-    return subscribeNanoGptModelsCache(({ models }) => setCatalog(models));
-  }, []);
 
   useEffect(() => {
     if (!overflowOpen) return;
@@ -61,23 +51,24 @@ const Navbar = ({
   }, [overflowOpen]);
 
   const handleRestart = async () => {
-    if (confirm('Are you sure you want to restart Eloquent?')) {
-      try {
-        await fetch(`${PRIMARY_API_URL}/system/restart`, { method: 'POST' });
-      } catch (e) {
-        console.error('Restart failed', e);
-      }
+    if (!confirm('Restart Mirid? Any reply still being generated will stop.')) return;
+    setLifecycleAction('restart');
+    try {
+      await restartMirid();
+    } catch (error) {
+      setLifecycleAction(null);
+      alert(`Mirid could not restart. ${String(error)}`);
     }
   };
 
   const handleShutdown = async () => {
-    if (confirm('Are you sure you want to shutdown Eloquent?')) {
-      try {
-        await fetch(`${PRIMARY_API_URL}/system/shutdown`, { method: 'POST' });
-        alert('System shutting down. You can close this window.');
-      } catch (e) {
-        console.error('Shutdown failed', e);
-      }
+    if (!confirm('Shut down Mirid? Local services will stop and the window will close.')) return;
+    setLifecycleAction('shutdown');
+    try {
+      await shutdownMirid();
+    } catch (error) {
+      setLifecycleAction(null);
+      alert(`Mirid could not shut down. ${String(error)}`);
     }
   };
 
@@ -110,41 +101,16 @@ const Navbar = ({
 
         {/* Brand */}
         <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
-          <img src="/eloquent-logo.png" alt="Eloquent" className="h-8 w-8" />
+          <img src="/eloquent_logo.png" alt="Mirid" className="h-8 w-8 dark:brightness-0 dark:invert" />
           <span
             className="font-bold text-lg hidden sm:inline truncate"
-            style={{ fontFamily: 'Poppins, sans-serif' }}
+            style={{ fontFamily: 'IBM Plex Mono, monospace; font-weight: 500; letter-spacing: 0.22em; font-size: 0.72rem; text-transform: uppercase' }}
           >
-            Eloquent
+            Mirid
           </span>
         </div>
 
-        {/* Model pill */}
-        <div className="flex-1 flex items-center min-w-0 pl-1 sm:pl-3">
-          <NanoGptModelSelectorPopover
-            className="min-w-0"
-            compact
-            currentModelId={primaryModel}
-            primaryApiUrl={PRIMARY_API_URL}
-            trigger={({ setOpen, display }) => (
-              <button
-                type="button"
-                onClick={() => setOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(120,170,220,0.45)] bg-muted/40 hover:bg-muted/70 px-2.5 py-1 text-xs max-w-full min-w-0 transition-colors"
-                title={
-                  display?.isAutoRouting && display.pool?.length
-                    ? `Auto-routing: ${display.pool.map((p) => p.displayName).join(', ')}`
-                    : 'Change model'
-                }
-              >
-                <span className="flex-shrink-0">{display?.icon || '⬜'}</span>
-                <span className="truncate font-medium">
-                  {display?.shortLabel || 'Select model'}
-                </span>
-              </button>
-            )}
-          />
-        </div>
+        <div className="flex-1 min-w-0" />
 
         {onTogglePin && (
           <Button
@@ -209,12 +175,14 @@ const Navbar = ({
                     <option value="nanogpt">NanoGPT</option>
                   </optgroup>
                   <optgroup label="Chat">
+                    <option value="faraday">Character Room</option>
                     <option value="whatsapp">WhatsApp</option>
                     <option value="messenger">Messenger</option>
                     <option value="claude">Claude</option>
                   </optgroup>
                   <optgroup label="Vibrant">
                     <option value="cyberpunk">Cyberpunk</option>
+                    <option value="fallout">Fallout Terminal</option>
                   </optgroup>
                 </select>
               </div>
@@ -248,20 +216,22 @@ const Navbar = ({
                     handleRestart();
                     setOverflowOpen(false);
                   }}
+                  disabled={Boolean(lifecycleAction)}
                 >
-                  <RotateCw className="h-4 w-4" />
-                  Restart
+                  <RotateCw className={cn('h-4 w-4', lifecycleAction === 'restart' && 'animate-spin')} />
+                  {lifecycleAction === 'restart' ? 'Restarting…' : 'Restart'}
                 </button>
                 <button
                   type="button"
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex items-center gap-2 text-red-600 dark:text-red-400"
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-muted flex items-center gap-2 text-destructive"
                   onClick={() => {
                     handleShutdown();
                     setOverflowOpen(false);
                   }}
+                  disabled={Boolean(lifecycleAction)}
                 >
                   <Power className="h-4 w-4" />
-                  Shutdown
+                  {lifecycleAction === 'shutdown' ? 'Shutting down…' : 'Shut down'}
                 </button>
               </div>
             </div>

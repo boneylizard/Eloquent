@@ -17,6 +17,22 @@
   margin: 0;
 }
 
+.character-library-intro,
+.character-import-note {
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.character-library-intro {
+  margin: 6px 0 0;
+  max-width: 620px;
+}
+
+.character-import-note {
+  margin: -12px 0 20px;
+}
+
 .create-btn {
   background-color: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
@@ -25,6 +41,19 @@
   padding: 10px 16px;
   font-weight: 500;
   cursor: pointer;
+}
+
+.import-btn {
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  padding: 9px 13px;
+}
+
+.mirid-builder-btn {
+  color: hsl(var(--muted-foreground));
 }
 
 .character-filters {
@@ -110,6 +139,22 @@
   text-transform: uppercase;
   margin: 0;
   color: #f8f8f8;
+}
+
+.assistant-card {
+  border: 1px dashed hsl(var(--primary) / 0.55);
+}
+
+.assistant-avatar {
+  background: linear-gradient(145deg, hsl(var(--muted)), hsl(var(--background)));
+}
+
+.assistant-card-copy {
+  display: block;
+  margin: 8px 0 0;
+  color: #c7c7c7;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .character-actions {

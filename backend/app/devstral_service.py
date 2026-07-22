@@ -1915,37 +1915,7 @@ class DevstralService:
                 return True, result
             
             elif tool_name == "run_command":
-                command = arguments.get('command', '')
-                working_dir = arguments.get('working_dir', base_dir)
-                
-                dangerous = ['rm -rf /', 'format', 'mkfs', 'dd if=', ':(){', 'del /f /s /q c:']
-                if any(d in command.lower() for d in dangerous):
-                    return False, "Command blocked for safety"
-                
-                safe_dir = get_safe_path(base_dir, working_dir)
-                if not safe_dir:
-                    safe_dir = base_dir
-                
-                try:
-                    result = subprocess.run(
-                        command,
-                        shell=True,
-                        cwd=safe_dir,
-                        capture_output=True,
-                        text=True,
-                        timeout=30
-                    )
-                    
-                    output = f"Exit code: {result.returncode}\n"
-                    if result.stdout:
-                        output += f"Output:\n{result.stdout}\n"
-                    if result.stderr:
-                        output += f"Errors:\n{result.stderr}\n"
-                        
-                    return result.returncode == 0, output
-                    
-                except subprocess.TimeoutExpired:
-                    return False, "Command timed out after 30 seconds"
+                return False, "The code editor has been retired"
             
             elif tool_name == "create_directory":
                 path = arguments.get('path', '')

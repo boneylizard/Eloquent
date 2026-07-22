@@ -1,12 +1,10 @@
 # memory_routes.py - Backend routes for memory operations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Body, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, Body, Query
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import json
-import os
 import logging
-import traceback
 import re
 from . import memory_intelligence
 from . import agentic_memory
@@ -16,15 +14,6 @@ from . import preview_prompt_save
 from . import ethics_review_bundle
 from . import inference
 from .model_manager import ModelManager
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-from . import memory_intelligence
-import logging
-import datetime
-from .memory_intelligence import process_completed_exchange
-from sentence_transformers import util
-import torch
-from .memory_intelligence import similarity_model
 
 
 # Configure logging
@@ -407,9 +396,6 @@ async def create_memory(memory_data: dict = Body(...)):
     if not content:
         raise HTTPException(status_code=400, detail="Memory content is required in payload for /memory/create.")
     
-    if not content:
-        raise HTTPException(status_code=400, detail="Memory content cannot be empty for /memory/create.")
-    
     try:
         result = memory_intelligence.add_memory_to_store(user_id, memory_data)
         if result:
@@ -429,7 +415,6 @@ async def create_memory(memory_data: dict = Body(...)):
 @memory_router.post("/observe")
 async def observe_conversation(
     request: Request,
-    background_tasks: BackgroundTasks,
     model_manager: ModelManager = Depends(get_model_manager_from_state),
 ):
     """
@@ -749,16 +734,12 @@ async def model_based_extraction(
     """
     logger = logging.getLogger("memory_routes")
     
-    user_name = request.userProfile.get("id") if request.userProfile else None
-    user_id = user_name
+    user_id = request.userProfile.get("id") if request.userProfile else None
     
     logger.info(f"POST /model-based-extraction: Triggered for user '{user_id}'")
     
-    if not user_name and not user_id:
-        raise HTTPException(status_code=400, detail="Cannot perform model-based extraction without user_name/user_id.")
-    
-    if not user_name:
-        raise HTTPException(status_code=400, detail="user_name (acting as user_id) is required for model-based extraction.")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required for model-based extraction.")
     
     try:
         single_gpu_mode = getattr(request_obj.app.state, "single_gpu_mode", False)
@@ -849,6 +830,16 @@ async def list_agentic_profiles(user_id: str = Query(...)):
     except Exception as e:
         logger.error(f"agentic_memory list error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@memory_router.get("/agentic/search")
+async def agentic_search_endpoint(
+    q: str = "",
+    limit: int = 200,
+    source: str = "",
+):
+    """Search agentic memories. Stub — returns empty results to silence 404."""
+    return {"entries": []}
 
 
 @memory_router.get("/agentic")
@@ -948,7 +939,6 @@ async def agentic_copy_to_character(body: AgenticCopyToCharacterRequest):
 async def process_agentic_memory(
     request: Request,
     body: AgenticProcessRequest,
-    background_tasks: BackgroundTasks,
     model_manager: ModelManager = Depends(get_model_manager_from_state),
 ):
     """
@@ -967,7 +957,7 @@ async def process_agentic_memory(
     if not body.user_id or not body.character_id:
         raise HTTPException(status_code=400, detail="user_id and character_id are required")
     single_gpu_mode = getattr(request.app.state, "single_gpu_mode", False)
-    gpu_id = 0 if single_gpu_mode else 0
+    gpu_id = 0 if single_gpu_mode else getattr(request.app.state, "default_gpu", 0)
     try:
         profile = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
         use_api = body.use_api and body.api_base_url and body.model_name
@@ -1045,7 +1035,7 @@ async def cleanup_agentic_memory(
     if not body.user_id or not body.character_id:
         raise HTTPException(status_code=400, detail="user_id and character_id are required")
     single_gpu_mode = getattr(request.app.state, "single_gpu_mode", False)
-    gpu_id = getattr(request.app.state, "default_gpu", 0)
+    gpu_id = 0 if single_gpu_mode else getattr(request.app.state, "default_gpu", 0)
     try:
         profile = agentic_memory.get_agentic_profile(body.user_id, body.character_id)
         insights = profile.get("insights") or []
@@ -1179,9 +1169,9 @@ async def persona_realignment_prompt_pack(body: PersonaRealignmentPromptPackRequ
         # Append ethics review bundle if requested
         if body.attach_ethics_review_bundle:
             try:
-                ethics_parts = ethics_review_bundle.get_bundle_parts()
-                if ethics_parts:
-                    pack["ethics_review_bundle_parts"] = "\n\n---\n\n## APPENDIX: Ethics / framing source excerpts (local repo)\n\n" + ethics_parts
+                body_md, _parts_meta = ethics_review_bundle.build_bundle_markdown()
+                if body_md:
+                    pack["ethics_review_bundle_parts"] = "\n\n---\n\n## APPENDIX: Ethics / framing source excerpts (local repo)\n\n" + body_md
             except Exception as e:
                 logger.warning(f"ethics_review_bundle append failed: {e}")
         
@@ -1189,7 +1179,7 @@ async def persona_realignment_prompt_pack(body: PersonaRealignmentPromptPackRequ
         preview_saved = None
         if body.save_preview_to_disk:
             try:
-                preview_saved = preview_prompt_save.save_preview("persona_realignment", pack)
+                preview_saved = preview_prompt_save.save_preview_prompt("persona_realignment", json.dumps(pack, ensure_ascii=False, indent=2))
             except Exception as e:
                 logger.warning(f"preview_prompt_save persona_realignment failed: {e}")
         
@@ -1225,7 +1215,7 @@ async def get_ethics_review_manifest():
     """Which repo paths are embedded when attach_ethics_review_bundle is used (no file payload).
     Code excerpts are added only when "Include code excerpts" is enabled in Ethics review. Otherwise the model does not see these files."""
     try:
-        manifest = ethics_review_bundle.get_manifest()
+        manifest = ethics_review_bundle.manifest_parts()
         return {"status": "success", "manifest": manifest}
     except Exception as e:
         logger.error(f"ethics_review_manifest GET failed: {e}", exc_info=True)
@@ -1236,8 +1226,8 @@ async def get_ethics_review_manifest():
 async def get_ethics_review_bundle():
     """Whitelisted local excerpts for reviewer models (copy into chat or use via attach_ethics_review_bundle)."""
     try:
-        bundle = ethics_review_bundle.get_bundle_parts()
-        return {"status": "success", "bundle": bundle}
+        body_md, parts_meta = ethics_review_bundle.build_bundle_markdown()
+        return {"status": "success", "bundle": body_md, "parts": parts_meta}
     except Exception as e:
         logger.error(f"ethics_review_bundle GET failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1246,6 +1236,7 @@ async def get_ethics_review_bundle():
 # === Memory Curator ===
 
 class MemoryCuratorPromptRequest(BaseModel):
+    user_id: Optional[str] = None
     user_display_name: Optional[str] = None
     user_profile_summary: Optional[str] = None
     curator_character_name: Optional[str] = None
@@ -1273,21 +1264,29 @@ class CuratorApplyAgenticRequest(BaseModel):
 
 
 @memory_router.post("/curator/prompt_pack")
-async def curator_prompt_pack(body: MemoryCuratorPromptRequest):
+async def curator_prompt_pack(request: Request, body: MemoryCuratorPromptRequest):
     """Build a memory curator prompt pack."""
     if not body.user_display_name and not body.user_profile_summary:
-        raise HTTPException(status_code=400, detail="user_id is required")
-    if body.target_character_id is None and body.curator_character_card is None:
-        pass  # profile mode doesn't need character_id
+        raise HTTPException(status_code=400, detail="user_display_name or user_profile_summary is required")
     
     try:
         mode = "agentic" if body.target_character_id else "profile"
-        if mode == "agentic" and not body.target_character_id:
-            raise HTTPException(status_code=400, detail="target_character_id is required for agentic mode")
         if mode not in ("profile", "agentic"):
             raise HTTPException(status_code=400, detail="mode must be profile or agentic")
         
+        # Resolve user_id: body.user_id first, then server-side active profile fallback
+        user_id = body.user_id
+        if not user_id:
+            user_id = getattr(request.app.state, "active_profile_id", None)
+        if not user_id:
+            try:
+                from . import user_utils
+                user_id = user_utils.get_active_profile_id()
+            except Exception:
+                pass
+
         pack = memory_curator_prompt.build_curator_prompt(
+            user_id=user_id,
             user_display_name=body.user_display_name,
             user_profile_summary=body.user_profile_summary,
             curator_character_name=body.curator_character_name,
@@ -1301,7 +1300,7 @@ async def curator_prompt_pack(body: MemoryCuratorPromptRequest):
         preview_saved = None
         if body.save_preview_to_disk:
             try:
-                preview_saved = preview_prompt_save.save_preview("curator", pack)
+                preview_saved = preview_prompt_save.save_preview_prompt("curator", json.dumps(pack, ensure_ascii=False, indent=2))
             except Exception as e:
                 logger.warning(f"preview_prompt_save curator failed: {e}")
         
@@ -1339,13 +1338,11 @@ async def curator_parse_response(body: CuratorParseRequest):
         if body.mode == "profile":
             if "memories" not in data:
                 raise ValueError('Parsed JSON must include a "memories" array for profile mode')
-            return {"status": "success", "parsed": data}
         elif body.mode == "agentic":
             if "insights" not in data:
                 raise ValueError('Parsed JSON must include an "insights" array for agentic mode')
-            return {"status": "success", "parsed": data}
-        else:
-            return {"status": "success", "parsed": data}
+        data["status"] = "success"
+        return data
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON in response: {str(e)}")
     except ValueError as e:
@@ -1400,7 +1397,7 @@ async def curator_apply_agentic(body: CuratorApplyAgenticRequest):
 async def list_memory_preview_prompts(limit: int = Query(default=20)):
     """List saved preview prompts."""
     try:
-        previews = preview_prompt_save.list_previews(limit=limit)
+        previews = preview_prompt_save.list_preview_prompts(limit=limit)
         return {"status": "success", "previews": previews}
     except Exception as e:
         logger.error(f"preview list error: {e}", exc_info=True)

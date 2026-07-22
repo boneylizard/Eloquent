@@ -1,6 +1,6 @@
 import React, { memo, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Loader2, X, PlayCircle as PlayIcon, FastForward, Pause, RotateCcw, Cpu } from 'lucide-react';
+import { Loader2, X, PlayCircle as PlayIcon, FastForward, Pause, RotateCcw, Cpu, Pencil, ChevronRight, Trash2, Globe } from 'lucide-react';
 import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -12,10 +12,12 @@ import CodeBlock from './CodeBlock';
 import MessageEditField from './MessageEditField';
 import CharacterAvatarMedia from './CharacterAvatarMedia';
 import ThinkingBlock from './ThinkingBlock';
+import WebSearchProgress from './WebSearchProgress';
 import { resolveMessageThinkDisplay } from '../utils/thinkStreamParser';
 import { getBackendUrl } from '../config/api';
 import { getActiveCharacterAvatar, resolveAvatarDisplayUrl } from '../utils/characterAvatars';
 import { resolveBotMessageSpeaker, resolveEndpointDisplay } from '../utils/resolveEndpointDisplay';
+import { splitStreamingContent, nextStreamingTokenKey } from '../utils/streamingText';
 
 /** ~66–70 characters per line — comfortable eye-scan width without full-screen lines. */
 const CHAT_READING_MEASURE = '70ch';
@@ -34,7 +36,7 @@ function AvatarRing({ sizePx, url, alt, fallbackLabel, fallbackIcon, videoKey, c
     return (
         <div
             className={cn(
-                'shrink-0 overflow-hidden rounded-full border border-gray-300 dark:border-gray-600 bg-muted',
+                'shrink-0 overflow-hidden rounded-full border border-[var(--chat-avatar-border)] bg-muted',
                 className
             )}
             style={ringStyle}
@@ -63,6 +65,7 @@ const ChatMessage = memo(({
     isGenerating,
     isTranscribing,
     isPlayingAudio,
+    ttsPlaybackState,
     isStreamingTtsPaused,
     editingMessageId,
     editingBotMessageId,
@@ -175,13 +178,13 @@ const ChatMessage = memo(({
     const userBubbleWidth = chatBubbleWidth(userAvatarSize);
     const textColClass = 'min-w-0 flex-1 basis-0';
     const textColStyle = { maxWidth: CHAT_READING_MEASURE, width: '100%' };
-    const rowLayoutClass = 'flex items-start gap-2 md:gap-3 max-w-full';
+    const rowLayoutClass = 'flex items-start gap-1.5 md:gap-3 max-w-full';
 
     if (msg.type === 'image' || msg.type === 'video') {
         return (
             <div
                 className={cn(
-                    'my-3 rounded-lg p-2 shadow-sm md:p-3 max-w-full',
+                    'my-1.5 rounded-lg p-1.5 shadow-sm md:p-3 max-w-full',
                     rowLayoutClass,
                     msg.role === 'user' ? 'ml-auto bg-primary/10' : 'bg-secondary'
                 )}
@@ -270,15 +273,15 @@ const ChatMessage = memo(({
           <div className="group relative w-full">
             <div className="mb-1 flex items-center justify-between">
               <span className="text-xs font-medium text-muted-foreground">You</span>
-              <div className="relative z-10 flex gap-1 opacity-100 transition-opacity md:opacity-0 group-hover:opacity-100">
+              <div className="relative z-10 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-150">
                 <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onEditUserMessage(msg.id)} title="Edit message">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                  <Pencil size={12} />
                 </Button>
                 <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onRegenerateFromEditedPrompt(msg.id)} disabled={isGenerating} title="Regenerate from this message">
                   <RotateCcw size={12} />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30" onClick={() => onDeleteMessage(msg.id)} disabled={isGenerating} title="Delete message">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:bg-[var(--chat-action-hover-danger)] hover:text-destructive" onClick={() => onDeleteMessage(msg.id)} disabled={isGenerating} title="Delete message">
+                  <Trash2 size={12} />
                 </Button>
               </div>
             </div>
@@ -300,15 +303,38 @@ const ChatMessage = memo(({
                 onOpenChange={setThinkingOpen}
               />
               {renderReasoningDiagnostics(msg)}
+              {(msg.webSearchProgress || (msg.webSearchSources?.length > 0 && !msg.isStreaming)) && (
+                <WebSearchProgress
+                  progress={msg.webSearchProgress}
+                  sources={msg.webSearchSources || []}
+                  isComplete={!msg.webSearchProgress}
+                />
+              )}
             </>
           )}
           {msg.role === 'bot' && (
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
               <span>{resolveBotSpeaker(msg).displayName}</span>
-              <div className="relative z-10 flex items-center gap-1 opacity-100 transition-opacity md:opacity-0 group-hover:opacity-100">
+              <div className={cn(
+                'relative z-10 flex items-center gap-1 opacity-100 transition-opacity duration-150',
+                ttsPlaybackState?.messageId === msg.id ? 'md:opacity-100' : 'md:opacity-0 md:group-hover:opacity-100',
+              )}>
                 {ttsEnabled && (
                   <>
-                    <Button variant={isPlayingAudio === msg.id ? 'destructive' : 'ghost'} size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onSpeakerClick(msg.id, displayContent)} disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== msg.id)} title="Play full message TTS">
+                    {ttsPlaybackState?.messageId === msg.id && (
+                      <span className="mr-1 text-[11px] font-normal text-muted-foreground" role="status" aria-live="polite">
+                        {ttsPlaybackState.phase === 'synthesising' ? 'Preparing voice…' : 'Playing voice'}
+                      </span>
+                    )}
+                    <Button
+                      variant={isPlayingAudio === msg.id ? 'destructive' : 'ghost'}
+                      size="icon"
+                      className="h-9 w-9 transition-transform active:scale-90 md:h-6 md:w-6"
+                      onClick={() => onSpeakerClick(msg.id, displayContent)}
+                      disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== msg.id)}
+                      title={ttsPlaybackState?.messageId === msg.id ? 'Stop voice playback' : 'Read message aloud'}
+                      aria-label={ttsPlaybackState?.messageId === msg.id ? 'Stop voice playback' : 'Read message aloud'}
+                    >
                       {isPlayingAudio === msg.id ? <Loader2 className="animate-spin" size={12} /> : <PlayIcon size={12} />}
                     </Button>
                     <Button variant={isPlayingAudio === msg.id ? (isStreamingTtsPaused ? 'secondary' : 'destructive') : 'ghost'} size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onChunkedSpeakerClick(msg.id, displayContent)} disabled={isGenerating || isTranscribing || (isPlayingAudio && isPlayingAudio !== msg.id)} title="Play chunked TTS">
@@ -317,7 +343,7 @@ const ChatMessage = memo(({
                   </>
                 )}
                 <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onEditBotMessage(msg.id)} disabled={isGenerating || editingBotMessageId === msg.id} title="Edit AI response">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="m18.5 2.5 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                  <Pencil size={12} />
                 </Button>
                 <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onGenerateVariant(msg.id)} disabled={isGenerating || isTranscribing} title="Regenerate">
                   <RotateCcw size={16} />
@@ -348,10 +374,10 @@ const ChatMessage = memo(({
                   />
                 )}
                 <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6" onClick={() => onContinueGeneration(msg.id)} disabled={isGenerating || isTranscribing} title="Continue response">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9,18 15,12 9,6" /></svg>
+                  <ChevronRight size={12} />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30" onClick={() => onDeleteMessage(msg.id)} disabled={isGenerating} title="Delete message">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                <Button variant="ghost" size="icon" className="h-9 w-9 md:h-6 md:w-6 text-muted-foreground hover:bg-[var(--chat-action-hover-danger)] hover:text-destructive" onClick={() => onDeleteMessage(msg.id)} disabled={isGenerating} title="Delete message">
+                  <Trash2 size={12} />
                 </Button>
               </div>
             </div>
@@ -362,14 +388,14 @@ const ChatMessage = memo(({
             ) : (
               <>
                 {msg.role === 'bot' && variantCount > 1 && (
-                  <div className="mb-2 flex items-center justify-between rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
-                    <button type="button" onClick={() => onNavigateVariant(msg.id, 'prev')} className="hover:text-foreground">← Previous</button>
-                    <span>{variantIndex + 1} of {variantCount}</span>
-                    <button type="button" onClick={() => onNavigateVariant(msg.id, 'next')} className="hover:text-foreground">Next →</button>
+                  <div className="mb-2 flex items-center justify-between rounded-full bg-muted/60 px-3 py-1.5 text-xs text-muted-foreground border border-border/50">
+                    <button type="button" onClick={() => onNavigateVariant(msg.id, 'prev')} className="hover:text-foreground transition-colors flex items-center gap-1"><ChevronRight size={12} className="rotate-180" /> Previous</button>
+                    <span className="tabular-nums font-medium">{variantIndex + 1} of {variantCount}</span>
+                    <button type="button" onClick={() => onNavigateVariant(msg.id, 'next')} className="hover:text-foreground transition-colors flex items-center gap-1">Next <ChevronRight size={12} /></button>
                   </div>
                 )}
                 {msg.role === 'bot' && Array.isArray(msg.webSearchSources) && msg.webSearchSources.length > 0 && (
-                  <div className="mb-2 flex flex-wrap gap-1" role="list" aria-label="Web search sources">
+                  <div className="mb-2 flex flex-wrap gap-1.5" role="list" aria-label="Web search sources">
                     {msg.webSearchSources.map((s, i) => (
                       <a
                         key={s.url || `src-${i}`}
@@ -377,10 +403,11 @@ const ChatMessage = memo(({
                         target="_blank"
                         rel="noopener noreferrer"
                         role="listitem"
-                        className="inline-flex max-w-[14rem] truncate rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[10px] text-blue-600 dark:text-blue-400 hover:underline"
+                        className="inline-flex items-center gap-1 max-w-[16rem] truncate rounded-full border border-border/60 bg-background/80 px-2.5 py-0.5 text-[11px] text-blue-600 dark:text-blue-400 hover:bg-accent hover:underline transition-colors"
                         title={s.url}
                       >
-                        [{i + 1}] {s.title || 'Source'}
+                        <Globe size={10} className="shrink-0 opacity-60" />
+                        <span className="truncate">[{i + 1}] {s.title || 'Source'}</span>
                       </a>
                     ))}
                   </div>
@@ -392,6 +419,22 @@ const ChatMessage = memo(({
                       <X size={14} />
                     </button>
                   </div>
+                ) : msg.isStreaming && displayContent ? (
+                  (() => {
+                    const { completed, streaming } = splitStreamingContent(displayContent, true);
+                    const tokenKey = nextStreamingTokenKey();
+                    return (
+                      <div className="prose prose-sm dark:prose-invert chat-prose max-w-none w-full break-words">
+                        {completed && (
+                          <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]} className="max-w-none">
+                            {completed}
+                          </ReactMarkdown>
+                        )}
+                        <span key={tokenKey} className="streaming-token">{streaming}</span>
+                        <span className="blinking-cursor" aria-hidden="true" />
+                      </div>
+                    );
+                  })()
                 ) : (
                   <ReactMarkdown components={{ code: CodeBlock }} remarkPlugins={[remarkGfm, remarkDialogueQuotes, remarkSoftBreaks]} className="prose prose-sm dark:prose-invert chat-prose max-w-none w-full break-words">
                     {displayContent}
@@ -407,7 +450,7 @@ const ChatMessage = memo(({
 
     if (isSystem) {
         return (
-            <div className="message-bubble mx-auto my-2 max-w-[95%] rounded-lg p-2 text-center shadow-sm md:my-3 md:max-w-[80%] md:p-3">
+            <div className="message-bubble mx-auto my-1.5 max-w-[98%] rounded-lg p-1.5 text-center shadow-sm md:my-3 md:max-w-[80%] md:p-3">
                 {messageBody}
             </div>
         );
@@ -416,11 +459,11 @@ const ChatMessage = memo(({
     return (
         <div
             className={cn(
-                'message-bubble group my-2 p-2 shadow-sm transition-all duration-200 md:my-3 md:p-3',
+                'message-bubble group my-1.5 p-1.5 shadow-sm transition-all duration-200 md:my-3 md:p-3',
                 rowLayoutClass,
                 msg.role === 'user'
-                    ? 'ml-auto border border-transparent bg-secondary text-secondary-foreground'
-                    : 'border border-border bg-muted text-muted-foreground'
+                    ? 'ml-auto border border-[var(--chat-user-border)] bg-[var(--chat-user-bg)] text-secondary-foreground'
+                    : 'border border-[var(--chat-bot-border)] bg-[var(--chat-bot-bg)] text-muted-foreground'
             )}
             style={{ borderRadius: 'var(--radius)', width: msg.role === 'user' ? userBubbleWidth : botBubbleWidth }}
         >

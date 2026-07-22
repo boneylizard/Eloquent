@@ -1,0 +1,11 @@
+{
+  "display_name": "Mirid Bridge",
+  "loading_order": 20,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Mirid",
+  "version": "0.1.0",
+  "homePage": "https://mirid.ai"
+}

@@ -13,15 +13,20 @@ if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
 
 try:
     from llama_cpp import Llama
-    from llama_cpp.llama_chat_format import Llava15ChatHandler
+    from llama_cpp.llama_chat_format import Llava15ChatHandler, MTMDChatHandler
     LLAMA_CPP_AVAILABLE = True
-except ImportError as e:
-    # If this fails, the app cannot function with GGUF models.
-    print(f"FATAL: Could not import llama_cpp. GGUF models will not be available. Error: {e}")
+except (ImportError, OSError, RuntimeError) as e:
+    print(f"llama.cpp is unavailable; hosted APIs and other CPU-capable features remain available. Error: {e}")
     LLAMA_CPP_AVAILABLE = False
+    Llama = None  # type: ignore[assignment]
 
     class Llava15ChatHandler:  # type: ignore[no-redef]
         """Stub base when llama_cpp is not installed (import-time only)."""
+
+        pass
+
+    class MTMDChatHandler:  # type: ignore[no-redef]
+        """Stub base when llama.cpp vision support is unavailable."""
 
         pass
 # --- END: FORCE LLAMA_CPP IMPORT FIRST ---
@@ -42,6 +47,14 @@ import socket
 import struct
 import pickle
 from fastapi import HTTPException
+from .compute_capabilities import force_cpu_mode
+from .gguf_memory import estimate_gguf_memory
+from .local_runtime import (
+    APPLE_INTELLIGENCE_MODEL_ID,
+    LocalRuntimeBroker,
+    LocalRuntimeUnavailable,
+    format_for_model,
+)
 # --- GPU/SYSTEM UTILITY IMPORTS ---
 # This block defines PYNVML_AVAILABLE for GPU detection without initializing torch.
 try:
@@ -167,6 +180,61 @@ class GemmaVisionChatHandler(Llava15ChatHandler):
         prompt += "<start_of_turn>model\n"
         logging.info(f"Final Rendered Prompt for Model:\n{prompt}")
         return prompt
+
+
+class LFM2VisionChatHandler(Llava15ChatHandler):
+    """
+    Custom chat handler for Liquid AI LFM2.5-VL models.
+    Uses the LFM2 chat template with YAML schema in system prompt for structured extraction.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._schema_yaml = None
+    
+    def set_schema(self, schema_yaml: str):
+        """Set the YAML schema for extraction tasks."""
+        self._schema_yaml = schema_yaml
+    
+    def render(self, messages: List[Dict[str, Any]]) -> str:
+        prompt = ""
+        system_message = ""
+        
+        # Build system prompt with schema if provided
+        if self._schema_yaml:
+            system_message = f"""Extract the following from the image:
+
+{self._schema_yaml}
+
+Respond with only a JSON object. Do not include any text outside the JSON."""
+        elif messages and messages[0].get("role") == "system":
+            system_message = messages.pop(0).get("content", "")
+        
+        if system_message:
+            system_message = system_message + "\n\n"
+
+        for msg in messages:
+            if msg.get("role") == "user":
+                prompt += "<|im_start|>user\n"
+                content = msg.get("content", "")
+                text_content = ""
+                if isinstance(content, list):
+                    for part in content:
+                        if part.get("type") == "text":
+                            text_content += part.get("text", "")
+                        elif part.get("type") == "image_url":
+                            # Inject image placeholder for vision tokens
+                            prompt += "<image>\n"
+                
+                prompt += (system_message + text_content).strip()
+                prompt += "<|im_end|>\n"
+                system_message = "" # Only use system prompt once
+            
+            elif msg.get("role") == "assistant":
+                prompt += f"<|im_start|>assistant\n{msg.get('content', '')}<|im_end|>\n"
+
+        prompt += "<|im_start|>assistant\n"
+        logging.info(f"Final Rendered Prompt for LFM2 Model:\n{prompt}")
+        return prompt
 class RemoteModelWrapper:
     """Optimized wrapper that forwards calls to the model service with connection pooling"""
 
@@ -265,7 +333,11 @@ class RemoteModelWrapper:
                 logging.info(f"⏱️ [RemoteModelWrapper] Set 5-minute timeout for {action}")
             
             request = {'action': action, 'params': params}
-            logging.info(f"🔄 [RemoteModelWrapper] Request prepared: {request}")
+            logging.info(
+                "[RemoteModelWrapper] Request prepared: action=%s parameter_keys=%s",
+                action,
+                sorted(params.keys()),
+            )
             logging.info(f"🔄 [RemoteModelWrapper] About to send request...")
             self._send_msg(conn, request)
             logging.info(f"✅ [RemoteModelWrapper] Request sent, waiting for response...")
@@ -319,7 +391,7 @@ class RemoteModelWrapper:
     def __call__(self, prompt=None, **kwargs):
         """Main entry point for model generation, dispatches to streaming or non-streaming call."""
         logging.info(f"🔄 [RemoteModelWrapper] __call__ invoked with prompt length: {len(prompt) if prompt else 0}")
-        logging.info(f"🔄 [RemoteModelWrapper] Additional kwargs: {kwargs}")
+        logging.info("[RemoteModelWrapper] Generation parameter keys: %s", sorted(kwargs.keys()))
 
         if prompt is not None:
             kwargs['prompt'] = prompt
@@ -337,6 +409,11 @@ class RemoteModelWrapper:
     def create_completion(self, prompt=None, **kwargs):
         """llama-cpp compatibility alias. Forwards to __call__."""
         return self.__call__(prompt=prompt, **kwargs)
+
+    def create_chat_completion(self, messages=None, **kwargs):
+        """Forward llama-cpp chat completion calls to the model subprocess."""
+        kwargs["messages"] = messages or []
+        return self.__call__(**kwargs)
     
     def unload(self):
         """Tell the service to unload this model"""
@@ -372,6 +449,7 @@ class ModelManager:
             'automation_interpreter': None # {'name': 'model_name', 'gpu_id': 1}
         }
         self.models_dir = Path(MODEL_DIR)
+        self.runtime_broker = LocalRuntimeBroker()
         self.has_gpu = self._detect_gpu()
         self.gpu_info = self._get_gpu_info()
         self.gpu_usage_mode = gpu_usage_mode  # Store the GPU usage mode
@@ -393,6 +471,9 @@ class ModelManager:
         logging.info(f"Default GPU ID set to: {self.default_gpu_id}")
         
     def _detect_gpu(self) -> bool:
+        if force_cpu_mode():
+            logging.info("MIRID_FORCE_CPU is enabled. CUDA detection skipped.")
+            return False
         if PYNVML_AVAILABLE:
             try:
                 gpu_count = pynvml.nvmlDeviceGetCount()
@@ -413,6 +494,8 @@ class ModelManager:
             
     def _get_gpu_info(self) -> Dict[str, Any]:
         """Gather information about available GPUs using pynvml."""
+        if force_cpu_mode():
+            return {"count": 0, "names": [], "cuda_version": None, "memory": []}
         if not PYNVML_AVAILABLE:
             logging.warning("pynvml not available, cannot get detailed GPU info.")
             return {"count": 0, "names": [], "cuda_version": None, "memory": []}
@@ -477,6 +560,28 @@ class ModelManager:
         Return optimal parameters for GPU utilization, including tensor splitting.
         """
         logging.info(f"🔍 _get_gpu_params called with gpu_id={gpu_id}, context_length={context_length}")
+
+        if not self.has_gpu or self.gpu_info.get("count", 0) <= 0:
+            cpu_threads = max(1, (os.cpu_count() or 4) - 1)
+            logging.info("No CUDA GPU detected. Loading GGUF on CPU with %s threads.", cpu_threads)
+            return {
+                "n_ctx": context_length,
+                "n_batch": 512,
+                "n_threads": cpu_threads,
+                "verbose": True,
+                "seed": 42,
+                "n_gpu_layers": 0,
+                "offload_kqv": False,
+                "f16_kv": True,
+                "use_mmap": True,
+                "use_mlock": False,
+                "low_vram": True,
+                "use_cache": True,
+                "logits_all": False,
+                "embedding": False,
+                "vocab_only": False,
+                "flash_attn": False,
+            }
 
         params = {
             "n_ctx": context_length,
@@ -633,11 +738,19 @@ class ModelManager:
                 # If DevstralHandler isn't imported/available, default to False
                 is_devstral = False
 
+            # LFM2 (Liquid AI) detection for vision models
+            model_name_lower = os.path.basename(model_path).lower()
+            is_lfm2_vision = any(x in model_name_lower for x in ["lfm2", "liquid", "lfm-2"]) and ("vision" in model_name_lower or "vl" in model_name_lower or "extract" in model_name_lower)
+
             if is_devstral:
                 logging.info(f"🔧 Detected Devstral model: {os.path.basename(model_path)}")
                 logging.info("🔧 Enabling llama.cpp template auto-detection (verbose=True)")
                 # Let llama.cpp auto-detect the chat template from GGUF metadata
                 model_params["verbose"] = True
+            
+            if is_lfm2_vision:
+                logging.info(f"🔧 Detected LFM2 Vision model: {os.path.basename(model_path)}")
+                logging.info("🔧 Using LFM2VisionChatHandler for structured extraction")
 
             # Allow caller-supplied overrides via **kwargs (last write wins)
             if kwargs:
@@ -647,6 +760,23 @@ class ModelManager:
                 model_params.update(kwargs)
                 if 'embedding' in model_params:
                     logging.info(f"🔍 After update: embedding parameter = {model_params['embedding']}")
+
+            if self.runtime_broker.has_candidates("gguf"):
+                try:
+                    return self.runtime_broker.start_model(
+                        model_name=os.path.basename(model_path),
+                        model_path=str(model_path),
+                        context_length=int(n_ctx or 4096),
+                        model_format="gguf",
+                        params=model_params,
+                    )
+                except LocalRuntimeUnavailable as runtime_error:
+                    if not LLAMA_CPP_AVAILABLE and not CTRANSFORMERS_AVAILABLE:
+                        raise
+                    logging.warning(
+                        "Native model runners were unavailable; using the embedded loader: %s",
+                        runtime_error,
+                    )
 
             # ---- Split services: load locally -----------------------------------
             if self.gpu_usage_mode == "split_services":
@@ -658,14 +788,31 @@ class ModelManager:
                 else:
                     logging.info(f"🔍 Loading as TEXT GENERATION model (embedding=False/not set)")
 
+                # Use appropriate chat handler for vision models
+                chat_handler = None
+                if is_lfm2_vision:
+                    clip_path = model_params.get("clip_model_path")
+                    if not clip_path:
+                        raise ValueError("No matching mmproj file was found for the LFM2 vision model")
+                    chat_handler = MTMDChatHandler(clip_model_path=str(clip_path))
+                    model_params.pop("clip_model_path", None)
+                    logging.info("LFM2.5-VL loaded with MTMD and its embedded chat template")
+                elif "gemma" in model_name_lower and model_params.get("clip_model_path"):
+                    # Use existing GemmaVisionChatHandler for Gemma models
+                    chat_handler = GemmaVisionChatHandler(clip_model_path=model_params.get("clip_model_path"))
+                    model_params.pop("clip_model_path", None)
+                    logging.info("🔧 GemmaVisionChatHandler attached to model")
+
                 model = Llama(
                     model_path=model_path,
+                    chat_handler=chat_handler,
                     **model_params
                 )
 
                 # Tag instance for downstream logic
                 try:
                     setattr(model, "_is_devstral", bool(is_devstral))
+                    setattr(model, "_is_lfm2_vision", bool(is_lfm2_vision))
                     if purpose is not None:
                         setattr(model, "_purpose", purpose)
                 except Exception:
@@ -675,6 +822,8 @@ class ModelManager:
                 logging.info(f"✅ Model {os.path.basename(model_path)} loaded directly.")
                 if is_devstral:
                     logging.info("🔧 Devstral tool-calling path is enabled (template auto-detect).")
+                if is_lfm2_vision:
+                    logging.info("🔧 LFM2 Vision extraction path enabled.")
                 return model  # actual Llama instance
 
             # ---- Unified model: delegate to remote service -----------------------
@@ -721,7 +870,7 @@ class ModelManager:
 
                         logging.info("🔄 [ModelManager] Calling ModelService with 10-minute timeout...")
 
-                        # Include devstral/purpose signals so the service can configure tool-calling paths.
+                        # Include devstral/purpose/LFM2 signals so the service can configure tool-calling paths.
                         result = wrapper._remote_call(
                             'load',
                             model_name=os.path.basename(model_path),
@@ -731,6 +880,7 @@ class ModelManager:
                             params=model_params,
                             gpu_usage_mode=self.gpu_usage_mode,
                             is_devstral=bool(is_devstral),
+                            is_lfm2_vision=bool(is_lfm2_vision),
                             purpose=purpose,
                         )
 
@@ -763,6 +913,7 @@ class ModelManager:
                 # Tag the wrapper so callers can branch behaviour without another lookup
                 try:
                     setattr(wrapper, "_is_devstral", bool(is_devstral))
+                    setattr(wrapper, "_is_lfm2_vision", bool(is_lfm2_vision))
                     if purpose is not None:
                         setattr(wrapper, "_purpose", purpose)
                 except Exception:
@@ -776,20 +927,31 @@ class ModelManager:
     def _find_matching_mmproj(self, model_path: str) -> Optional[Path]:
         """
         Finds a matching mmproj file for a given model by parsing the model size
-        (e.g., 4b, 12b, 27b) from the filenames, enforcing a clear naming convention.
+        (e.g., 4b, 12b, 27b, 450m) from the filenames, enforcing a clear naming convention.
+        Supports Gemma and LFM2 (Liquid AI) models.
         """
         model_dir = Path(model_path).parent
         model_name = Path(model_path).stem.lower()
         logging.info(f"🔍 Searching for mmproj to match model: {model_name}")
 
-        # 1. Extract size (e.g., '4b', '27b') from the main model's filename.
-        # This regex looks for a pattern like "-4b-" or "-27b-".
-        model_size_match = re.search(r'-(\d+b)-', model_name)
+        # Detect model family
+        is_gemma = "gemma" in model_name
+        is_lfm2 = any(x in model_name for x in ["lfm2", "liquid", "lfm-2"])
+
+        if not (is_gemma or is_lfm2):
+            logging.warning(f"Model '{model_name}' is not a recognized vision model family (gemma, lfm2). Vision support may not work correctly.")
+
+        # 1. Extract size from the main model's filename.
+        # Patterns: "-4b-", "-27b-", "-450m-", "-0.45b-"
+        model_size_match = re.search(r'-(\d+(?:\.\d+)?[bm])-', model_name)
+        if not model_size_match:
+            # Try alternative pattern for LFM2 (e.g., "450m" without dashes)
+            model_size_match = re.search(r'(\d+(?:\.\d+)?[bm])', model_name)
         if not model_size_match:
             logging.warning(f"Could not determine model size from filename: {model_name}. Vision support will be disabled.")
             return None
         
-        model_size = model_size_match.group(1)  # This will be a string like "4b" or "27b"
+        model_size = model_size_match.group(1).lower()  # e.g., "4b", "450m", "0.45b"
         logging.info(f"🔍 Determined model size to be: '{model_size}'")
 
         # 2. Find all potential mmproj files in the directory.
@@ -800,24 +962,63 @@ class ModelManager:
 
         logging.info(f"🔍 Found potential mmproj files: {[f.name for f in mmproj_files]}")
 
-        # 3. Iterate through the found mmproj files and find the one with the matching size.
+        model_is_extract = "extract" in model_name
+        matching_projectors = []
         for mmproj_file in mmproj_files:
             mmproj_name = mmproj_file.name.lower()
             
             # Extract the size from the mmproj filename using the same pattern.
-            mmproj_size_match = re.search(r'-(\d+b)-', mmproj_name)
+            mmproj_size_match = re.search(r'-(\d+(?:\.\d+)?[bm])-', mmproj_name)
+            if not mmproj_size_match:
+                mmproj_size_match = re.search(r'(\d+(?:\.\d+)?[bm])', mmproj_name)
             
             if mmproj_size_match:
-                mmproj_size = mmproj_size_match.group(1)
+                mmproj_size = mmproj_size_match.group(1).lower()
                 logging.info(f"🔍 Checking '{mmproj_name}' (size: {mmproj_size}) against model size '{model_size}'")
                 
-                # We have a match if the model name contains "gemma" and the sizes are identical.
-                if "gemma" in model_name and "gemma" in mmproj_name and mmproj_size == model_size:
-                    logging.info(f"🎯🎯🎯 Found exact size match for '{model_size}': {mmproj_file.name}")
-                    return mmproj_file
-        
-        logging.error(f"❌ CRITICAL: Could not find a matching mmproj file for model size '{model_size}'. Make sure the correctly named file is in the model directory.")
+                # Normalize sizes for comparison (e.g., "0.45b" == "450m")
+                norm_model = self._normalize_size(model_size)
+                norm_mmproj = self._normalize_size(mmproj_size)
+                
+                if norm_model == norm_mmproj:
+                    # Check family match
+                    family_match = (
+                        (is_gemma and "gemma" in mmproj_name) or
+                        (is_lfm2 and any(x in mmproj_name for x in ["lfm2", "liquid", "lfm-2"]))
+                    )
+                    
+                    if family_match or (not is_gemma and not is_lfm2):
+                        variant_matches = ("extract" in mmproj_name) == model_is_extract
+                        precision_score = 2 if "q8_0" in mmproj_name else (1 if "f16" in mmproj_name else 0)
+                        matching_projectors.append((variant_matches, precision_score, mmproj_file))
+
+        if matching_projectors:
+            matching_projectors.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            variant_matches, _, selected = matching_projectors[0]
+            if not variant_matches:
+                logging.warning(
+                    f"No projector explicitly matching {'Extract' if model_is_extract else 'base'} "
+                    f"was found; using {selected.name}"
+                )
+            logging.info(f"Found matching vision projector: {selected.name}")
+            return selected
+
+        logging.error(f"Could not find a matching mmproj file for model size '{model_size}'.")
         return None
+
+    def _normalize_size(self, size_str: str) -> str:
+        """Normalize size strings for comparison (e.g., '450m' == '0.45b')."""
+        size_str = size_str.lower().replace('_', '').replace('-', '')
+        if size_str.endswith('m'):
+            # Convert millions to billions
+            try:
+                val = float(size_str[:-1]) / 1000
+                return f"{val}b"
+            except:
+                return size_str
+        elif size_str.endswith('b'):
+            return size_str
+        return size_str
     
     def _load_with_ctransformers(self, model_path: str, gpu_id: Optional[int] = None, n_ctx: Optional[int] = 4096, **kwargs):
         """Load a model using the ctransformers library"""
@@ -825,7 +1026,7 @@ class ModelManager:
             logging.info(f"Loading with ctransformers: {model_path} on GPU {gpu_id}")
             
             # For ctransformers, handle GPU selection
-            if gpu_id is not None and gpu_id >= 0:
+            if self.has_gpu and gpu_id is not None and gpu_id >= 0:
                 kwargs["device"] = f"cuda:{gpu_id}"
                 
             # Ensure context length is passed correctly
@@ -920,6 +1121,27 @@ class ModelManager:
                     logging.info(f"Model {model_name} already loaded on GPU {target_gpu_id} with context length {current_ctx}, unloading first.")
                     await self.unload_model(model_name, target_gpu_id)
 
+            model_format = format_for_model(model_name, model_path)
+            if model_format in {"mlx", "system"}:
+                resolved_model_path = model_path
+                if model_format == "mlx" and not resolved_model_path:
+                    resolved_model_path = model_name.removeprefix("mlx:")
+                model = self.runtime_broker.start_model(
+                    model_name=model_name,
+                    model_path=resolved_model_path,
+                    context_length=int(context_length or 4096),
+                    model_format=model_format,
+                    params=kwargs,
+                )
+                self.loaded_models[model_key] = {
+                    "model": model,
+                    "path": str(resolved_model_path or APPLE_INTELLIGENCE_MODEL_ID),
+                    "n_ctx": context_length,
+                    "runtime_id": model.runtime_id,
+                }
+                logging.info("Model %s is ready through %s", model_name, model.runtime_id)
+                return
+
             # If model_path not provided, search for it
             if not model_path:
                 print(f"DEBUG: Searching for model file containing '{model_name}' within '{self.models_dir}'", flush=True)
@@ -970,10 +1192,14 @@ class ModelManager:
                     logging.warning(f"🔍 [load_model] NO EMBEDDING PARAMETER in kwargs!")
 
                 # Always force n_gpu_layers to a high value to ensure all layers go to GPU
-                kwargs["n_gpu_layers"] = 999
-                logging.info(f"⭐ Forcing ALL layers to GPU {target_gpu_id} with n_gpu_layers=999")
+                if self.has_gpu:
+                    kwargs["n_gpu_layers"] = 999
+                    logging.info(f"⭐ Forcing ALL layers to GPU {target_gpu_id} with n_gpu_layers=999")
+                else:
+                    kwargs["n_gpu_layers"] = 0
+                    logging.info("No CUDA GPU detected. Keeping all model layers on CPU.")
 
-                if LLAMA_CPP_AVAILABLE:
+                if LLAMA_CPP_AVAILABLE or self.runtime_broker.has_candidates("gguf"):
                     # Create a copy of kwargs WITHOUT n_ctx to avoid duplicate parameter error
                     safe_kwargs = {k: v for k, v in kwargs.items() if k != 'n_ctx'}
                     model = await self._load_with_llama_cpp(model_path=str(model_path), gpu_id=target_gpu_id, n_ctx=context_length, **safe_kwargs)
@@ -987,8 +1213,12 @@ class ModelManager:
                 self.loaded_models[model_key] = {
                     "model": model,
                     "path": str(model_path),
-                    "n_ctx": context_length  # Store n_ctx
-                    # No need to store gpu_id here as it's part of the key
+                    "n_ctx": context_length,
+                    "runtime_id": getattr(
+                        model,
+                        "runtime_id",
+                        "embedded-llama-cpp" if LLAMA_CPP_AVAILABLE else "embedded-ctransformers",
+                    ),
                 }
 
                 logging.info(f"✅ Model {model_name} loaded successfully on GPU {target_gpu_id}.")
@@ -997,7 +1227,7 @@ class ModelManager:
                 # Skip text generation test for embedding models
                 is_embedding_model = kwargs.get('embedding', False)
                 try:
-                    if LLAMA_CPP_AVAILABLE and not is_embedding_model:
+                    if hasattr(model, "create_completion") and not is_embedding_model:
                         import time
                         test_prompt = "Hello, this is a quick test."
                         logging.info(f"Running test inference with prompt: '{test_prompt}'")
@@ -1185,10 +1415,23 @@ class ModelManager:
         """List all available GGUF models in the models directory"""
         try:
             model_files = [filename for filename in os.listdir(MODEL_DIR) if filename.endswith(".gguf")]
+            system_support = self.runtime_broker.capabilities().get("formats", {}).get("system", {})
+            if system_support.get("available"):
+                model_files.append(APPLE_INTELLIGENCE_MODEL_ID)
             return {"available_models": model_files}
         except Exception as e:
             logging.error(f"Error listing available models: {e}")
             return {"available_models": [], "error": str(e)}
+
+    def get_model_memory_estimate(self, model_name: str, context_lengths=None):
+        """Estimate a GGUF model's working memory without loading it."""
+        requested_path = (self.models_dir / model_name).resolve()
+        models_root = self.models_dir.resolve()
+        if requested_path.parent != models_root or requested_path.suffix.lower() != ".gguf":
+            raise ValueError("Invalid GGUF model name.")
+        if not requested_path.is_file():
+            raise FileNotFoundError(f"Model not found: {model_name}")
+        return estimate_gguf_memory(requested_path, context_lengths)
 
     def get_loaded_models(self):
         """Return information about loaded models including which GPU they're on"""
@@ -1205,7 +1448,8 @@ class ModelManager:
                     "name": model_name,
                     "gpu_id": gpu_id,
                     "gpu_name": gpu_name,
-                    "context_length": context_length
+                    "context_length": context_length,
+                    "runtime_id": model_data.get("runtime_id", "embedded"),
                 })
                 
             return {"loaded_models": models_info}
@@ -1244,6 +1488,7 @@ class ModelManager:
             "gpu_count": self.gpu_info["count"],
             "gpu_names": self.gpu_info["names"],
             "cuda_version": self.gpu_info["cuda_version"],
+            "local_runtime": self.get_runtime_capabilities(),
             "loaded_models": self.get_loaded_models()["loaded_models"]
         }
         
@@ -1266,6 +1511,53 @@ class ModelManager:
             pass
         
         return info
+
+    def get_runtime_capabilities(self, refresh: bool = False, diagnose_all: bool = False):
+        """Return native runner capabilities with the embedded loader as a fallback."""
+        capabilities = self.runtime_broker.capabilities(
+            refresh=refresh,
+            diagnose_all=diagnose_all,
+        )
+        gguf = capabilities["formats"]["gguf"]
+        if not gguf["available"] and (LLAMA_CPP_AVAILABLE or CTRANSFORMERS_AVAILABLE):
+            accelerator = "cpu" if force_cpu_mode() or not self.has_gpu else "nvidia"
+            engine = "llama.cpp" if LLAMA_CPP_AVAILABLE else "CTransformers"
+            selected = {
+                "id": f"embedded-{engine.lower().replace('.', '').replace(' ', '-')}",
+                "available": True,
+                "accelerator": accelerator,
+                "engine": engine,
+                "detail": "ready",
+            }
+            gguf.update({"available": True, "selected": selected})
+            capabilities["runners"].append(selected)
+        return capabilities
+
+    def test_local_runtime(self):
+        """Probe installed local runners and return concise onboarding copy."""
+        capabilities = self.get_runtime_capabilities(refresh=True, diagnose_all=True)
+        selected = [
+            details.get("selected")
+            for details in capabilities.get("formats", {}).values()
+            if details.get("selected")
+        ]
+        if not selected:
+            return {
+                "status": "unavailable",
+                "message": "Hosted models are ready. Local model support still needs to be installed.",
+                "capabilities": capabilities,
+            }
+        accelerated = any(item.get("accelerator") != "cpu" for item in selected)
+        message = (
+            "Local models are ready."
+            if accelerated
+            else "Local models are ready. Larger models may run more slowly on this computer."
+        )
+        return {
+            "status": "ready",
+            "message": message,
+            "capabilities": capabilities,
+        }
 
         
     async def find_suitable_model(self, gpu_id=None, quiet=False):  # Still async def
@@ -1316,6 +1608,42 @@ class ModelManager:
 
         return suitable_model_name
     
+    def _generate_native_runtime(self, model, model_name, gpu_id, prompt, request):
+        max_tokens = getattr(request, "max_tokens", None)
+        temperature = getattr(request, "temperature", None)
+        if isinstance(request, dict):
+            max_tokens = request.get("max_tokens", max_tokens)
+            temperature = request.get("temperature", temperature)
+        max_tokens = int(max_tokens or 2048)
+        temperature = float(temperature if temperature is not None else 0.7)
+        generation_start = time.time()
+        output = model(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=["User:", "Human:", "<|im_end|>"],
+        )
+        generation_time = time.time() - generation_start
+        choices = output.get("choices") if isinstance(output, dict) else None
+        if not choices:
+            raise RuntimeError("The local model returned an invalid response.")
+        generated_text = choices[0].get("text")
+        if generated_text is None:
+            generated_text = (choices[0].get("message") or {}).get("content", "")
+        estimated_tokens = len(generated_text) // 4
+        return {
+            "text": generated_text,
+            "model": model_name,
+            "finish_reason": choices[0].get("finish_reason", "stop"),
+            "gpu_id_used": gpu_id,
+            "performance_metrics": {
+                "generation_time": generation_time,
+                "estimated_tokens": estimated_tokens,
+                "tokens_per_second": estimated_tokens / generation_time if generation_time > 0 else 0,
+                "mode": "native_sidecar",
+            },
+        }
+
     def generate(self, request):
         """
         Generate a response using the loaded model with performance monitoring.
@@ -1425,6 +1753,9 @@ class ModelManager:
         
         # Get the model object using the updated get_model method
         model = self.get_model(model_name, gpu_id)
+
+        if getattr(model, "gpu_usage_mode", None) == "native_sidecar":
+            return self._generate_native_runtime(model, model_name, gpu_id, prompt, request)
         
         # Performance monitoring: Check if this is a unified mode model
         is_unified_mode = False

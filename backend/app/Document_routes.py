@@ -9,6 +9,8 @@ from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Request, Query
 from fastapi.responses import JSONResponse
 
+from .runtime_paths import data_path
+
 # Import third-party document processing libraries
 try:
     import fitz  # PyMuPDF for PDF processing
@@ -32,7 +34,7 @@ logger = logging.getLogger("document_routes")
 document_router = APIRouter(tags=["document"])
 
 # Constants - use relative path based on this file's location
-DOCUMENT_STORE_DIR = Path(__file__).parent / "static" / "documents"
+DOCUMENT_STORE_DIR = data_path("documents")
 DOCUMENT_META_FILE = DOCUMENT_STORE_DIR / "document_meta.json"
 
 # Make sure the directory exists
@@ -276,6 +278,76 @@ async def upload_document(file: UploadFile = File(...)):
     finally:
         await file.close()
 
+@document_router.post("/document/upload-multiple")
+async def upload_multiple_documents(files: List[UploadFile] = File(...)):
+    """Upload and process multiple documents at once."""
+    supported_extensions = [
+        '.pdf', '.doc', '.docx', '.txt', '.md',
+        '.csv', '.json', '.py', '.js', '.html', '.css'
+    ]
+
+    uploaded = []
+    errors = []
+
+    for file in files:
+        try:
+            file_id = str(uuid.uuid4())
+            original_filename = file.filename
+            file_extension = get_file_extension(original_filename)
+
+            if not original_filename or not file_extension:
+                errors.append({"filename": original_filename or "unknown", "error": "Invalid filename"})
+                continue
+
+            if file_extension not in supported_extensions:
+                errors.append({"filename": original_filename, "error": f"Unsupported file type: {file_extension}"})
+                continue
+
+            storage_filename = f"{file_id}{file_extension}"
+            file_path = DOCUMENT_STORE_DIR / storage_filename
+
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+
+            document_text = extract_document_text(file_path, file_extension)
+
+            text_file_path = DOCUMENT_STORE_DIR / f"{file_id}.txt"
+            with open(text_file_path, "w", encoding="utf-8") as text_file:
+                text_file.write(document_text)
+
+            document_info = {
+                "id": file_id,
+                "filename": original_filename,
+                "storage_filename": storage_filename,
+                "text_filename": f"{file_id}.txt",
+                "file_type": file_extension[1:],
+                "size_bytes": os.path.getsize(file_path),
+                "upload_date": datetime.datetime.now().isoformat(),
+                "content_length": len(document_text)
+            }
+
+            uploaded.append(document_info)
+
+        except Exception as e:
+            logger.error(f"Error processing file '{file.filename}': {e}")
+            errors.append({"filename": file.filename or "unknown", "error": str(e)})
+        finally:
+            await file.close()
+
+    # Persist metadata for all successfully uploaded files
+    if uploaded:
+        documents = load_document_metadata()
+        documents.extend(uploaded)
+        save_document_metadata(documents)
+        refresh_rag_index()
+
+    return {
+        "status": "success" if not errors else ("partial" if uploaded else "error"),
+        "message": f"Uploaded {len(uploaded)} document(s) successfully" + (f", {len(errors)} failed" if errors else ""),
+        "uploaded": uploaded,
+        "errors": errors
+    }
+
 @document_router.delete("/document/delete/{document_id}")
 async def delete_document(document_id: str):
     """Delete a document by ID."""
@@ -301,8 +373,9 @@ async def delete_document(document_id: str):
         documents = [doc for doc in documents if doc["id"] != document_id]
         save_document_metadata(documents)
         
-        # Refresh the RAG index after deleting a document
-        refresh_rag_index()
+        # Remove from in-memory RAG index without full rebuild
+        if HAVE_RAG and rag_utils.rag_processor.is_available():
+            rag_utils.rag_processor.remove_document(document_id)
         
         return {
             "status": "success",
@@ -312,6 +385,57 @@ async def delete_document(document_id: str):
     except Exception as e:
         logger.error(f"Error deleting document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
+
+@document_router.delete("/document/delete-batch")
+async def delete_documents_batch(request: Request):
+    """Delete multiple documents by their IDs."""
+    try:
+        body = await request.json()
+        document_ids = body.get("document_ids", [])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body; expected {'document_ids': [...]}")
+
+    if not document_ids:
+        raise HTTPException(status_code=400, detail="No document IDs provided")
+
+    documents = load_document_metadata()
+    deleted = []
+    not_found = []
+
+    for doc_id in document_ids:
+        document = next((doc for doc in documents if doc["id"] == doc_id), None)
+        if not document:
+            not_found.append(doc_id)
+            continue
+
+        try:
+            storage_file = DOCUMENT_STORE_DIR / document["storage_filename"]
+            text_file = DOCUMENT_STORE_DIR / document["text_filename"]
+
+            if storage_file.exists():
+                storage_file.unlink()
+            if text_file.exists():
+                text_file.unlink()
+
+            deleted.append(document["filename"])
+        except Exception as e:
+            logger.error(f"Error deleting document {doc_id}: {e}")
+            not_found.append(doc_id)
+
+        # Remove from in-memory RAG index (one by one, no full rebuild)
+        if HAVE_RAG and rag_utils.rag_processor.is_available():
+            rag_utils.rag_processor.remove_document(doc_id)
+
+    # Persist updated metadata once
+    documents = [doc for doc in documents if doc["id"] not in document_ids]
+    save_document_metadata(documents)
+
+    return {
+        "status": "success",
+        "message": f"Deleted {len(deleted)} document(s)" + (f", {len(not_found)} not found" if not_found else ""),
+        "deleted": deleted,
+        "not_found": not_found,
+    }
 
 @document_router.get("/document/content/{document_id}")
 async def get_document_content(document_id: str):

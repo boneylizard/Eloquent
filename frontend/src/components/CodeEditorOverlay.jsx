@@ -137,18 +137,18 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-zinc-900 border-zinc-700 max-w-2xl h-[80vh] flex flex-col">
+      <DialogContent className="bg-background border-border max-w-2xl h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle className="text-zinc-100 flex items-center gap-2">
+          <DialogTitle className="text-foreground flex items-center gap-2">
             <FolderTree className="h-5 w-5 text-emerald-500" />
             Select Project Directory
           </DialogTitle>
         </DialogHeader>
 
         {/* Navigation Bar */}
-        <div className="flex items-center gap-2 p-2 bg-zinc-800/50 rounded-lg">
+        <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-lg">
           <select
-            className="bg-zinc-800 border-zinc-600 text-zinc-100 text-xs rounded p-1"
+            className="bg-muted border-input text-foreground text-xs rounded p-1"
             onChange={(e) => {
               setHistory([]);
               browsePath(e.target.value);
@@ -166,21 +166,21 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
             value={currentPath}
             onChange={(e) => setCurrentPath(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && browsePath(currentPath)}
-            className="flex-1 h-8 bg-zinc-800 border-zinc-600 text-xs font-mono"
+            className="flex-1 h-8 bg-muted border-input text-xs font-mono"
           />
 
           <Button size="sm" onClick={() => browsePath(currentPath)}>Go</Button>
         </div>
 
         {/* File List */}
-        <ScrollArea className="flex-1 border border-zinc-700 rounded-md bg-zinc-950/30 p-2">
+        <ScrollArea className="flex-1 border border-border rounded-md bg-background/30 p-2">
           {isLoading ? (
-            <div className="flex justify-center p-10"><Loader2 className="animate-spin text-zinc-500" /></div>
+            <div className="flex justify-center p-10"><Loader2 className="animate-spin text-muted-foreground" /></div>
           ) : (
             <div className="grid grid-cols-1 gap-1">
               {/* Parent Folder Link */}
               <div
-                className="flex items-center gap-2 p-2 hover:bg-zinc-800/50 rounded cursor-pointer text-zinc-400"
+                className="flex items-center gap-2 p-2 hover:bg-muted/50 rounded cursor-pointer text-muted-foreground"
                 onClick={() => {
                   const parent = getParentPath(currentPath);
                   if (parent) browsePath(parent);
@@ -195,7 +195,7 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
                   key={idx}
                   className={cn(
                     "flex items-center gap-2 p-2 rounded cursor-pointer transition-colors",
-                    item.type === 'folder' ? "hover:bg-zinc-800 text-zinc-200" : "text-zinc-500 hover:bg-zinc-900/50"
+                    item.type === 'folder' ? "hover:bg-muted text-foreground/90" : "text-muted-foreground hover:bg-background/50"
                   )}
                   onClick={() => item.type === 'folder' && handleNavigate(item.path)}
                 >
@@ -203,7 +203,7 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
                   <span className="text-sm truncate">{item.name}</span>
                 </div>
               ))}
-              {items.length === 0 && <div className="text-center text-zinc-600 py-10">Empty directory</div>}
+              {items.length === 0 && <div className="text-center text-muted-foreground/60 py-10">Empty directory</div>}
             </div>
           )}
         </ScrollArea>
@@ -211,7 +211,7 @@ const DirectoryPicker = ({ isOpen, onClose, onSelectDirectory, currentDir }) => 
         {error && <div className="text-xs text-red-500 px-2">{error}</div>}
 
         <DialogFooter className="mt-2">
-          <Button variant="outline" onClick={onClose} className="border-zinc-600">Cancel</Button>
+          <Button variant="outline" onClick={onClose} className="border-input">Cancel</Button>
           <Button onClick={handleSubmit} className="bg-emerald-600 hover:bg-emerald-700">
             Select Current Folder
           </Button>
@@ -246,8 +246,8 @@ const FileTreeItem = ({ item, level = 0, onFileSelect, onToggleFolder }) => {
     <div>
       <div
         className={cn(
-          "flex items-center gap-1 py-1 px-2 hover:bg-zinc-700/50 cursor-pointer text-sm",
-          "transition-colors duration-150 text-zinc-300"
+          "flex items-center gap-1 py-1 px-2 hover:bg-accent/50 cursor-pointer text-sm",
+          "transition-colors duration-150 text-foreground/80"
         )}
         style={{ paddingLeft: `${8 + level * 16}px` }}
         onClick={handleClick}
@@ -257,9 +257,9 @@ const FileTreeItem = ({ item, level = 0, onFileSelect, onToggleFolder }) => {
         {item.type === 'folder' ? (
           <>
             {item.expanded ? (
-              <ChevronDown className="h-3 w-3 text-zinc-500" />
+              <ChevronDown className="h-3 w-3 text-muted-foreground" />
             ) : (
-              <ChevronRight className="h-3 w-3 text-zinc-500" />
+              <ChevronRight className="h-3 w-3 text-muted-foreground" />
             )}
             {item.expanded ? (
               <FolderOpen className="h-4 w-4 text-amber-500" />
@@ -270,7 +270,7 @@ const FileTreeItem = ({ item, level = 0, onFileSelect, onToggleFolder }) => {
         ) : (
           <>
             <div className="w-3" />
-            <File className="h-4 w-4 text-zinc-400" />
+            <File className="h-4 w-4 text-muted-foreground" />
           </>
         )}
         <span className="truncate flex-1 min-w-0">{item.name}</span>
@@ -834,18 +834,18 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
   // RENDER
   // ============================================================================
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-end md:items-center justify-center z-50">
-      <div className="bg-zinc-900 border border-zinc-700 md:rounded-lg shadow-2xl w-full h-[100dvh] md:w-[95vw] md:h-[90vh] flex flex-col max-w-7xl">
+    <div className="fixed inset-0 bg-background/80 flex items-end md:items-center justify-center z-50">
+      <div className="bg-background border border-border md:rounded-lg shadow-2xl w-full h-[100dvh] md:w-[95vw] md:h-[90vh] flex flex-col max-w-7xl">
 
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-zinc-700 bg-zinc-800/50 md:rounded-t-lg shrink-0">
+        <div className="flex items-center justify-between p-4 border-b border-border bg-muted/50 md:rounded-t-lg shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-gradient-to-br from-emerald-500 to-cyan-500 rounded-lg">
               <Terminal className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-zinc-100">Eloquent Vibe</h2>
-              <p className="text-xs text-zinc-400 hidden sm:block">
+              <h2 className="text-lg font-semibold text-foreground">Mirid Vibe</h2>
+              <p className="text-xs text-muted-foreground hidden sm:block">
                 Powered by {(primaryIsAPI && primaryModel) ? primaryModel : (activeModel?.name || "Devstral Small 2 24B")}
               </p>
             </div>
@@ -861,7 +861,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
               </div>
             )}
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} className="text-zinc-400 hover:text-zinc-100">
+          <Button variant="ghost" size="sm" onClick={onClose} className="text-muted-foreground hover:text-foreground">
             <X className="h-5 w-5" />
           </Button>
         </div>
@@ -871,36 +871,36 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
           {/* File Explorer */}
           <div className={cn(
-            "border-r border-zinc-700 bg-zinc-800/30 flex-col",
+            "border-r border-border bg-muted/30 flex-col",
             // Mobile: Full width if active, hidden otherwise
             // Desktop: Always flex, fixed width
             mobileView === 'explorer' ? 'flex w-full h-full' : 'hidden md:flex md:w-72'
           )}>
-            <div className="p-3 border-b border-zinc-700 shrink-0">
+            <div className="p-3 border-b border-border shrink-0">
               <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-medium text-zinc-300">Explorer</h3>
+                <h3 className="text-sm font-medium text-foreground/80">Explorer</h3>
                 <div className="flex gap-1">
-                  <Button variant="outline" size="sm" onClick={() => setShowDirectoryPicker(true)} className="h-6 px-2 text-xs border-zinc-600 bg-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-700">
+                  <Button variant="outline" size="sm" onClick={() => setShowDirectoryPicker(true)} className="h-6 px-2 text-xs border-input bg-muted text-foreground/80 hover:text-foreground hover:bg-accent">
                     <Settings className="h-3.5 w-3.5 mr-1" />
                     Change Dir
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={loadFileTree} disabled={isLoadingTree} className="h-6 w-6 p-0 text-zinc-400">
+                  <Button variant="ghost" size="sm" onClick={loadFileTree} disabled={isLoadingTree} className="h-6 w-6 p-0 text-muted-foreground">
                     <RefreshCw className={cn("h-3.5 w-3.5", isLoadingTree && "animate-spin")} />
                   </Button>
                 </div>
               </div>
 
               <div className="relative">
-                <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-3 w-3 text-zinc-500" />
+                <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-3 w-3 text-muted-foreground" />
                 <Input
                   placeholder="Search files..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-7 h-7 text-xs bg-zinc-800 border-zinc-600 text-zinc-300"
+                  className="pl-7 h-7 text-xs bg-muted border-input text-foreground/80"
                 />
               </div>
 
-              <div className="mt-2 text-xs text-zinc-500 truncate bg-zinc-800/50 p-2 rounded" title={currentPath}>
+              <div className="mt-2 text-xs text-muted-foreground truncate bg-muted/50 p-2 rounded" title={currentPath}>
                 📁 {currentPath || 'No directory selected'}
               </div>
             </div>
@@ -909,7 +909,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
               <div className="p-1 pb-16 md:pb-1">
                 {isLoadingTree ? (
                   <div className="flex items-center justify-center py-8">
-                    <Loader2 className="h-6 w-6 animate-spin text-zinc-500" />
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                   </div>
                 ) : fileTree ? (
                   <FileTreeItem
@@ -918,13 +918,13 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     onToggleFolder={handleToggleFolder}
                   />
                 ) : (
-                  <div className="text-center py-8 text-zinc-500">
+                  <div className="text-center py-8 text-muted-foreground">
                     <FolderTree className="h-8 w-8 mx-auto mb-2 opacity-50" />
                     <p className="text-sm">No directory selected</p>
                     <Button
                       variant="outline"
                       size="sm"
-                      className="mt-2 border-zinc-600"
+                      className="mt-2 border-input"
                       onClick={() => setShowDirectoryPicker(true)}
                     >
                       Select Directory
@@ -937,14 +937,14 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
           {/* Sessions Sidebar */}
           <div className={cn(
-            "border-r border-zinc-700 bg-zinc-800/20 flex-col",
+            "border-r border-border bg-muted/20 flex-col",
             // Mobile: Full width if active, hidden otherwise
             // Desktop: Always flex, fixed width
             mobileView === 'sessions' ? 'flex w-full h-full' : 'hidden md:flex md:w-56'
           )}>
-            <div className="p-3 border-b border-zinc-700 shrink-0">
+            <div className="p-3 border-b border-border shrink-0">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium text-zinc-300">Sessions</h3>
+                <h3 className="text-sm font-medium text-foreground/80">Sessions</h3>
                 <Button
                   variant="outline"
                   size="sm"
@@ -952,7 +952,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     createNewSession('');
                     setMobileView('chat');
                   }}
-                  className="h-7 text-xs gap-1 border-zinc-600 bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                  className="h-7 text-xs gap-1 border-input bg-muted hover:bg-accent text-foreground/80"
                 >
                   <Plus className="h-3 w-3" />
                   New Chat
@@ -968,7 +968,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                       "group flex items-center justify-between p-2 rounded cursor-pointer text-sm transition-colors",
                       activeSessionId === session.id
                         ? "bg-emerald-600/30 text-emerald-300"
-                        : "hover:bg-zinc-700/50 text-zinc-400"
+                        : "hover:bg-accent/50 text-muted-foreground"
                     )}
                   >
                     <div onClick={() => loadSession(session.id)} className="flex-1 min-w-0">
@@ -981,14 +981,14 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                       variant="ghost"
                       size="sm"
                       onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
-                      className="h-5 w-5 p-0 text-zinc-500 hover:text-white hover:bg-zinc-700 rounded-full"
+                      className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full"
                     >
                       <X className="h-3 w-3" />
                     </Button>
                   </div>
                 ))}
                 {sessions.length === 0 && (
-                  <div className="text-center py-4 text-zinc-500 text-xs">
+                  <div className="text-center py-4 text-muted-foreground text-xs">
                     No sessions yet
                   </div>
                 )}
@@ -998,7 +998,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
           {/* Chat Area */}
           <div className={cn(
-            "flex-col min-w-0 bg-zinc-900",
+            "flex-col min-w-0 bg-background",
             // Mobile: Full width if active, hidden otherwise
             // Desktop: Always flex, take remaining space
             mobileView === 'chat' ? 'flex flex-1 w-full' : 'hidden md:flex md:flex-1'
@@ -1008,21 +1008,20 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             <ScrollArea className="flex-1 p-2 md:p-4" ref={scrollAreaRef}>
               <div className="space-y-4 max-w-4xl mx-auto pb-4">
                 {codeMessages.length === 0 ? (
-                  <div className="text-center py-8 md:py-16 text-zinc-500">
+                  <div className="text-center py-8 md:py-16 text-muted-foreground">
                     <div className="p-4 bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 rounded-2xl w-16 h-16 md:w-20 md:h-20 mx-auto mb-6 flex items-center justify-center">
                       <Terminal className="h-8 w-8 md:h-10 md:w-10 text-emerald-400" />
                     </div>
-                    <h3 className="text-lg md:text-xl font-semibold mb-2 text-zinc-300">Welcome to Eloquent Vibe</h3>
-                    <p className="text-xs md:text-sm max-w-md mx-auto text-zinc-500 px-4">
-                      Your local AI coding assistant.
-                      Ask me to read files, write code, search your codebase, or run commands.
+                    <h3 className="text-lg md:text-xl font-semibold mb-2 text-foreground/80">Ready when you are.</h3>
+                    <p className="text-xs md:text-sm max-w-md mx-auto text-muted-foreground px-4">
+                      Read, search, edit, or run — type what you need. The model works inside your project folder.
                     </p>
                     <div className="mt-6 flex flex-wrap gap-2 justify-center px-4">
                       {['List files in this directory', 'Search for TODO comments', 'Help me refactor this code'].map((suggestion) => (
                         <button
                           key={suggestion}
                           onClick={() => setInput(suggestion)}
-                          className="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-full transition-colors"
+                          className="px-3 py-1.5 text-xs bg-muted hover:bg-accent text-muted-foreground rounded-full transition-colors"
                         >
                           {suggestion}
                         </button>
@@ -1038,8 +1037,8 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                       <div className={cn(
                         "max-w-[95%] md:max-w-[85%] rounded-xl p-3 md:p-4",
                         message.role === 'user'
-                          ? 'bg-emerald-600/30 text-zinc-100 ml-8'
-                          : 'bg-zinc-800 text-zinc-200 mr-8'
+                          ? 'bg-emerald-600/30 text-foreground ml-8'
+                          : 'bg-muted text-foreground/90 mr-8'
                       )}>
                         <div className="prose prose-sm max-w-none prose-invert text-xs md:text-sm chat-prose">
                           <ReactMarkdown
@@ -1052,7 +1051,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                                     {String(children).replace(/\n$/, '')}
                                   </CodeBlock>
                                 ) : (
-                                  <code className="bg-zinc-700/50 px-1.5 py-0.5 rounded text-xs text-emerald-300" {...props}>
+                                  <code className="bg-accent/50 px-1.5 py-0.5 rounded text-xs text-emerald-300" {...props}>
                                     {children}
                                   </code>
                                 );
@@ -1063,7 +1062,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                           </ReactMarkdown>
                         </div>
                         {message.tools_used && message.tools_used.length > 0 && (
-                          <div className="mt-2 pt-2 border-t border-zinc-700/50 text-[10px] md:text-xs text-zinc-500 flex items-center gap-1">
+                          <div className="mt-2 pt-2 border-t border-border/50 text-[10px] md:text-xs text-muted-foreground flex items-center gap-1">
                             <Terminal className="h-3 w-3" />
                             {message.tools_used.join(', ')}
                           </div>
@@ -1075,7 +1074,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
 
                 {isCodeGenerating && (
                   <div className="flex gap-3 justify-start">
-                    <div className="bg-zinc-800 rounded-xl p-4 flex items-center gap-2 text-zinc-400">
+                    <div className="bg-muted rounded-xl p-4 flex items-center gap-2 text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       <span className="text-sm">Devstral is thinking...</span>
                     </div>
@@ -1085,7 +1084,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             </ScrollArea>
 
             {/* Input Area */}
-            <div className="border-t border-zinc-700 p-2 md:p-4 bg-zinc-800/30 shrink-0 mb-14 md:mb-0">
+            <div className="border-t border-border p-2 md:p-4 bg-muted/30 shrink-0 mb-14 md:mb-0">
 
               {/* Attached Files/Image Preview */}
               {(draggedFiles.length > 0 || imagePreview) && (
@@ -1107,7 +1106,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                       <img
                         src={`data:image/png;base64,${imagePreview}`}
                         alt="Preview"
-                        className="h-12 w-12 md:h-16 md:w-16 object-cover rounded border border-zinc-600"
+                        className="h-12 w-12 md:h-16 md:w-16 object-cover rounded border border-input"
                       />
                       <button
                         onClick={removeImage}
@@ -1131,7 +1130,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask Devstral..."
-                    className="resize-none min-h-[50px] md:min-h-[80px] max-h-32 bg-zinc-800 border-zinc-600 text-zinc-100 placeholder:text-zinc-500 text-sm"
+                    className="resize-none min-h-[50px] md:min-h-[80px] max-h-32 bg-muted border-input text-foreground placeholder:text-muted-foreground text-sm"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
@@ -1154,7 +1153,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     variant="outline"
                     size="sm"
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex-1 border-zinc-600 text-zinc-400 hover:text-zinc-100 px-2 md:px-4"
+                    className="flex-1 border-input text-muted-foreground hover:text-foreground px-2 md:px-4"
                     title="Upload image for vision"
                   >
                     <Image className="h-4 w-4" />
@@ -1180,10 +1179,10 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
                     size="sm"
                     onClick={() => setIsAgentMode(!isAgentMode)}
                     className={cn(
-                      "h-full border-zinc-600 text-xs transition-colors",
+                      "h-full border-input text-xs transition-colors",
                       isAgentMode
                         ? "bg-purple-600 hover:bg-purple-700 text-white border-purple-500"
-                        : "text-zinc-400 hover:text-zinc-100"
+                        : "text-muted-foreground hover:text-foreground"
                     )}
                     title={isAgentMode ? "Agent Mode Active (Max 10 Steps)" : "Enable Agent Mode"}
                   >
@@ -1197,12 +1196,12 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
         </div>
 
         {/* Mobile Navigation Bar (Visible only on mobile) */}
-        <div className="md:hidden border-t border-zinc-800 bg-zinc-900 absolute bottom-0 left-0 right-0 h-14 flex items-center justify-around z-10 pb-safe">
+        <div className="md:hidden border-t border-border bg-background absolute bottom-0 left-0 right-0 h-14 flex items-center justify-around z-10 pb-safe">
           <button
             onClick={() => setMobileView('explorer')}
             className={cn(
               "flex flex-col items-center justify-center w-full h-full text-[10px] gap-1",
-              mobileView === 'explorer' ? "text-emerald-400" : "text-zinc-500"
+              mobileView === 'explorer' ? "text-emerald-400" : "text-muted-foreground"
             )}
           >
             <FolderTree className="h-5 w-5" />
@@ -1213,7 +1212,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             onClick={() => setMobileView('chat')}
             className={cn(
               "flex flex-col items-center justify-center w-full h-full text-[10px] gap-1",
-              mobileView === 'chat' ? "text-emerald-400" : "text-zinc-500"
+              mobileView === 'chat' ? "text-emerald-400" : "text-muted-foreground"
             )}
           >
             <Terminal className="h-5 w-5" />
@@ -1224,7 +1223,7 @@ const CodeEditorOverlay = ({ isOpen = true, onClose }) => {
             onClick={() => setMobileView('sessions')}
             className={cn(
               "flex flex-col items-center justify-center w-full h-full text-[10px] gap-1",
-              mobileView === 'sessions' ? "text-emerald-400" : "text-zinc-500"
+              mobileView === 'sessions' ? "text-emerald-400" : "text-muted-foreground"
             )}
           >
             <FileText className="h-5 w-5" />

@@ -91,7 +91,7 @@ const ThemeProvider = ({
     root.classList.remove('light', 'dark', 'messenger', 'whatsapp');
 
     // Add 'dark' class if the theme is dark so Tailwind dark: modifiers work
-    if (theme === 'dark' || theme === 'whatsapp' || theme === 'messenger' || theme === 'cyberpunk' || theme === 'nanogpt') {
+    if (theme === 'dark' || theme === 'whatsapp' || theme === 'messenger' || theme === 'cyberpunk' || theme === 'nanogpt' || theme === 'fallout' || theme === 'faraday') {
       root.classList.add('dark');
     }
   }, [theme]);

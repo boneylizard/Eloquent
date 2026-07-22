@@ -1,5 +1,7 @@
 /** Cross-window sync for settings + primary API model selection. */
 
+import { isTauri } from '@tauri-apps/api/core';
+
 export function isSettingsStandaloneWindow() {
   if (typeof window === 'undefined') return false;
   try {
@@ -56,12 +58,19 @@ export function broadcastSettingsReload(fullSettings) {
   }
 }
 
-export function broadcastPrimaryModelState({ primaryModel, primaryIsAPI }) {
+export function broadcastPrimaryModelState({
+  primaryModel,
+  primaryIsAPI,
+  autoRouterEnabled = false,
+  autoRouterActive = false,
+}) {
   try {
     getChannel()?.postMessage({
       type: 'primary_model',
       primaryModel: primaryModel ?? null,
       primaryIsAPI: Boolean(primaryIsAPI),
+      autoRouterEnabled: Boolean(autoRouterEnabled),
+      autoRouterActive: Boolean(autoRouterActive),
       ts: Date.now(),
     });
   } catch {
@@ -78,7 +87,7 @@ export function requestMainWindowReload() {
 }
 
 /**
- * @param {{ onSettingsPatch?: (patch: object) => void, onSettingsReload?: (settings: object|null) => void, onPrimaryModel?: (payload: { primaryModel: string|null, primaryIsAPI: boolean }) => void, onReloadMain?: () => void }} handlers
+ * @param {{ onSettingsPatch?: (patch: object) => void, onSettingsReload?: (settings: object|null) => void, onPrimaryModel?: (payload: { primaryModel: string|null, primaryIsAPI: boolean, autoRouterEnabled: boolean, autoRouterActive: boolean }) => void, onReloadMain?: () => void }} handlers
  */
 export function subscribeAppCrossWindowSync(handlers) {
   const ch = getChannel();
@@ -103,6 +112,8 @@ export function subscribeAppCrossWindowSync(handlers) {
       handlers.onPrimaryModel?.({
         primaryModel: data.primaryModel ?? null,
         primaryIsAPI: Boolean(data.primaryIsAPI),
+        autoRouterEnabled: Boolean(data.autoRouterEnabled),
+        autoRouterActive: Boolean(data.autoRouterActive),
       });
     } else if (data.type === 'reload_main') handlers.onReloadMain?.();
   };
@@ -122,8 +133,34 @@ export function buildSettingsWindowUrl(tab = 'general') {
   return `${base}?standalone=settings&tab=${encodeURIComponent(t)}`;
 }
 
-export function openSettingsPopupWindow(tab = 'general') {
+export async function openSettingsPopupWindow(tab = 'general') {
+  if (!isTauri()) return false;
   const url = buildSettingsWindowUrl(tab);
-  const features = 'width=1120,height=900,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
-  return window.open(url, 'EloquentSettings', features);
+  try {
+    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+    const existing = await WebviewWindow.getByLabel('settings');
+    if (existing) await existing.close();
+    return await new Promise((resolve) => {
+      let settled = false;
+      const finish = (opened) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve(opened);
+      };
+      const settingsWindow = new WebviewWindow('settings', {
+        url,
+        title: 'Mirid Settings',
+        width: 1120,
+        height: 900,
+        resizable: true,
+        focus: true,
+      });
+      const timeoutId = setTimeout(() => finish(false), 1500);
+      settingsWindow.once('tauri://created', () => finish(true));
+      settingsWindow.once('tauri://error', () => finish(false));
+    });
+  } catch {
+    return false;
+  }
 }

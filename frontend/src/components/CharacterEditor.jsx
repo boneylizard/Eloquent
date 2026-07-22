@@ -1,6 +1,6 @@
 // CharacterEditor.jsx - A React component for creating and editing characters with lore and dialogue management.
 // This component allows users to define character attributes, upload avatars, and manage example dialogues and lore entries. It integrates with a context for state management and provides a user-friendly interface for character creation and editing.
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -9,8 +9,9 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch'; // <-- Ensure this line is present
 import { useApp } from '../contexts/AppContext';
 import { getBackendUrl } from '../config/api';
-import { Trash2, PlusCircle, Upload, Download, FileJson, Image, Loader2, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import { Trash2, PlusCircle, Upload, Download, FileJson, Image, Loader2, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Sparkles, X } from 'lucide-react';
 import { CharacterCardIntegration } from '../utils/CharacterCardUtils';
+import { resolveUnifiedRequestRoute } from '../utils/requestRouting';
 import {
   MAX_CHARACTER_AVATARS,
   MAX_AVATAR_FOLDER_ITEMS,
@@ -36,11 +37,7 @@ import {
   isAvatarVideoUrl,
 } from '../utils/characterAvatars';
 import CharacterAvatarMedia from './CharacterAvatarMedia';
-import IntensityPresetSelector from './intensity/IntensityPresetSelector';
-import PresetSequencer from './intensity/PresetSequencer';
-import CompanionPresenceOverlay from './intensity/CompanionPresenceOverlay';
-import CommitmentLock from './intensity/CommitmentLock';
-import { useIntensity } from '../contexts/IntensityContext';
+
 
 // Helper to ensure array type
 const ensureArray = (possibleArray) => (Array.isArray(possibleArray) ? possibleArray : []);
@@ -53,6 +50,7 @@ const DEFAULT_CHARACTER = {
   model_instructions: '', // NEW field
   scenario: '',
   first_message: '', // Keep first message / greeting
+  alternate_greetings: [],
   example_dialogue: [{ role: 'user', content: '' }, { role: 'character', content: '' }], // Keep example dialogue
   loreEntries: [], // NEW field for lore [{ content: string, keywords: string[] }]
   avatar: null,
@@ -62,6 +60,11 @@ const DEFAULT_CHARACTER = {
   speech_style: '', // NEW field
   personality: '', // Restored field
   background: '', // Restored field
+  creator_notes: '',
+  post_history_instructions: '',
+  tags: [],
+  creator: '',
+  character_version: '',
   chat_role: 'npc', // NEW field
   /** Optional; injected into the system prompt when set. */
   ethics_justification: '',
@@ -79,6 +82,9 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
     duplicateCharacter,
     PRIMARY_API_URL,
     storageHydrated,
+    primaryModel,
+    primaryIsAPI,
+    settings,
   } = useApp();
 
   // Prefer activeCharacter (e.g. from Edit button in Saved Characters list) so that clicking Edit on a card loads that character; otherwise use initialCharacter from parent (CharacterManager)
@@ -99,9 +105,19 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
   const [newLoreEntries, setNewLoreEntries] = useState('');
   const [batchDeleteMode, setBatchDeleteMode] = useState(false);
   const [selectedCharacterIds, setSelectedCharacterIds] = useState(() => new Set());
-  const [intensityEnabled, setIntensityEnabled] = useState(false);
   const [sequencingMode, setSequencingMode] = useState(false);
-  const { activePresetId, activatePreset, deactivatePreset, commitmentLock } = useIntensity();
+  const [writingHelpEnabled, setWritingHelpEnabled] = useState(false);
+  const [assistingField, setAssistingField] = useState(null);
+  const [fieldSuggestions, setFieldSuggestions] = useState({});
+  const [writingHelpError, setWritingHelpError] = useState('');
+  const [tagsInput, setTagsInput] = useState('');
+
+  const writingHelpRoute = useMemo(() => resolveUnifiedRequestRoute({
+    primaryModel,
+    primaryIsAPI,
+    settings,
+    requestPurpose: 'refine_character',
+  }), [primaryIsAPI, primaryModel, settings]);
 
   /** Editor form visible when editing/creating (uses effectiveCharacter, not only activeCharacter). */
   const showEditorForm = Boolean(effectiveCharacter) || isCreatingNew;
@@ -125,7 +141,7 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
     if (avatarFolderUploading) return;
     const source = effectiveCharacter;
     if (source) {
-      setIsCreatingNew(false);
+      setIsCreatingNew(!source.id);
       setCharacter({
         ...DEFAULT_CHARACTER,
         ...source,
@@ -135,10 +151,14 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
         loreEntries: ensureArray(source.loreEntries),
         ...normalizeCharacterAvatars(source),
       });
+      setTagsInput(ensureArray(source.tags).join(', '));
     } else {
       setIsCreatingNew(true);
       setCharacter({ ...DEFAULT_CHARACTER });
+      setTagsInput('');
     }
+    setFieldSuggestions({});
+    setWritingHelpError('');
   }, [effectiveCharacter, avatarFolderUploading]);
 
   // Effect to sync with characters list changes (for updates from duplicates, etc.)
@@ -254,6 +274,105 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
     setCharacter(prev => ({ ...prev, [name]: value }));
   };
 
+  const requestFieldSuggestion = useCallback(async (field, fieldLabel) => {
+    if (assistingField) return;
+    if (!writingHelpRoute.effectiveModel) {
+      setWritingHelpError('Select or load a text model before asking Mirid for writing help.');
+      return;
+    }
+
+    setAssistingField(field);
+    setWritingHelpError('');
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/character/refine-generated`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          character_json: {
+            ...character,
+            example_dialogue: ensureArray(character.example_dialogue),
+            loreEntries: ensureArray(character.loreEntries),
+          },
+          feedback: `Suggest a stronger ${fieldLabel} for this character. Change only the ${field} field. Preserve the creator's intent, avoid generic filler, and return the complete character JSON.`,
+          original_messages: [],
+          model_name: writingHelpRoute.effectiveModel,
+          selected_model: writingHelpRoute.selectedModel,
+          frontend_round_robin_enabled: writingHelpRoute.autoEnabled,
+          request_purpose: 'refine_character',
+          gpu_id: 0,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.status !== 'success' || !result.character_json) {
+        throw new Error(result.detail || result.error || 'The selected model could not produce a suggestion.');
+      }
+
+      const suggestion = result.character_json[field];
+      if (typeof suggestion !== 'string' || !suggestion.trim()) {
+        throw new Error(`The model did not return a usable ${fieldLabel} suggestion.`);
+      }
+      if (suggestion.trim() === String(character[field] || '').trim()) {
+        throw new Error(`The model returned the existing ${fieldLabel} unchanged.`);
+      }
+      setFieldSuggestions((current) => ({ ...current, [field]: suggestion.trim() }));
+    } catch (error) {
+      setWritingHelpError(error.message || 'Mirid could not suggest text for this field.');
+    } finally {
+      setAssistingField(null);
+    }
+  }, [PRIMARY_API_URL, assistingField, character, writingHelpRoute]);
+
+  const acceptFieldSuggestion = useCallback((field) => {
+    const suggestion = fieldSuggestions[field];
+    if (!suggestion) return;
+    setCharacter((draft) => ({ ...draft, [field]: suggestion }));
+    setFieldSuggestions((current) => {
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }, [fieldSuggestions]);
+
+  const dismissFieldSuggestion = useCallback((field) => {
+    setFieldSuggestions((current) => {
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }, []);
+
+  const renderWritingHelp = (field, fieldLabel) => {
+    if (!writingHelpEnabled) return null;
+    const suggestion = fieldSuggestions[field];
+    return (
+      <div className="mt-2 rounded-md border border-primary/20 bg-primary/5 p-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">Mirid can suggest an alternative without replacing your text.</p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7"
+            disabled={Boolean(assistingField)}
+            onClick={() => requestFieldSuggestion(field, fieldLabel)}
+          >
+            {assistingField === field ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+            Suggest
+          </Button>
+        </div>
+        {suggestion ? (
+          <div className="mt-2 rounded border bg-background p-3">
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">{suggestion}</p>
+            <div className="mt-3 flex gap-2">
+              <Button type="button" size="sm" onClick={() => acceptFieldSuggestion(field)}>Use suggestion</Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => dismissFieldSuggestion(field)}>Dismiss</Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   // --- LORE MANAGEMENT ---
 
   // Add a new empty lore entry
@@ -316,7 +435,7 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
   };
 
 
-  // --- EXAMPLE DIALOGUE MANAGEMENT --- (Basic for now)
+  // --- EXAMPLE DIALOGUE MANAGEMENT ---
 
   const handleDialogueChange = (index, field, value) => {
     setCharacter(prev => ({
@@ -324,6 +443,47 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
       example_dialogue: ensureArray(prev.example_dialogue).map((entry, i) =>
         i === index ? { ...entry, [field]: value } : entry
       )
+    }));
+  };
+
+  const addDialogueExchange = () => {
+    setCharacter((current) => ({
+      ...current,
+      example_dialogue: [
+        ...ensureArray(current.example_dialogue),
+        { role: 'user', content: '' },
+        { role: 'character', content: '' },
+      ],
+    }));
+  };
+
+  const removeDialogueTurn = (index) => {
+    setCharacter((current) => ({
+      ...current,
+      example_dialogue: ensureArray(current.example_dialogue).filter((_, turnIndex) => turnIndex !== index),
+    }));
+  };
+
+  const addAlternateGreeting = () => {
+    setCharacter((current) => ({
+      ...current,
+      alternate_greetings: [...ensureArray(current.alternate_greetings), ''],
+    }));
+  };
+
+  const updateAlternateGreeting = (index, value) => {
+    setCharacter((current) => ({
+      ...current,
+      alternate_greetings: ensureArray(current.alternate_greetings).map((greeting, greetingIndex) => (
+        greetingIndex === index ? value : greeting
+      )),
+    }));
+  };
+
+  const removeAlternateGreeting = (index) => {
+    setCharacter((current) => ({
+      ...current,
+      alternate_greetings: ensureArray(current.alternate_greetings).filter((_, greetingIndex) => greetingIndex !== index),
     }));
   };
 
@@ -623,6 +783,7 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
     const normalizedChatRole = character.chat_role === 'user' ? 'user' : 'npc';
     const characterToSave = normalizeCharacterAvatars({
       ...character,
+      tags: tagsInput.split(',').map((tag) => tag.trim()).filter(Boolean),
       chat_role: normalizedChatRole,
       loreEntries: ensureArray(character.loreEntries),
       example_dialogue: ensureArray(character.example_dialogue).length > 0
@@ -740,7 +901,7 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
           <input
             ref={importFileRef}
             type="file"
-            accept=".json,.png,.webp,.jpg,.jpeg"
+            accept=".json,.png"
             onChange={handleImportCard}
             style={{ display: 'none' }}
           />
@@ -804,10 +965,52 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
             <CardTitle>
               {isCreatingNew ? 'Create New Character' : `Edit Character: ${character.name || ''}`}
             </CardTitle>
-            <CardDescription>Define the core attributes and instructions for your character.</CardDescription>
+            <CardDescription>Write the card directly. Only the name is required; every other field should earn its place.</CardDescription>
           </CardHeader>
           <CardContent className="pt-6">
             <div className="space-y-6">
+
+              <div className="rounded-lg border bg-muted/20 p-4">
+                <p className="text-sm font-medium">TavernAI and SillyTavern compatible</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Description, personality, scenario, greetings and example messages map to the standard character-card fields. Mirid-specific fields are stored in a namespaced extension and preserved on export.
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-primary/25 bg-primary/5 p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <Label htmlFor="character-writing-help" className="text-sm font-medium">Writing help</Label>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      Optional. When enabled, suggestion buttons appear beside key fields. Your current draft is sent to the selected local model or API only when you press one.
+                    </p>
+                  </div>
+                  <Switch
+                    id="character-writing-help"
+                    checked={writingHelpEnabled}
+                    onCheckedChange={(checked) => {
+                      setWritingHelpEnabled(checked === true);
+                      if (!checked) {
+                        setFieldSuggestions({});
+                        setWritingHelpError('');
+                      }
+                    }}
+                  />
+                </div>
+                {writingHelpError ? (
+                  <div className="mt-3 flex items-start justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                    <span>{writingHelpError}</span>
+                    <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => setWritingHelpError('')} aria-label="Dismiss writing help error">
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="border-b pb-2">
+                <h3 className="font-semibold">Identity</h3>
+                <p className="mt-1 text-xs text-muted-foreground">Establish who this character is before deciding how the model should perform them.</p>
+              </div>
 
               {/* Character Name */}
               <div>
@@ -831,18 +1034,19 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                 <p className="text-xs text-muted-foreground mt-1">Used by Multi-Role Mode to prevent AI from speaking for the user character.</p>
               </div>
 
-              {/* Persona (Description) - Large Textarea */}
+              {/* Standard card Description field */}
               <div>
-                <Label htmlFor="description" className="block text-sm font-medium mb-1">Character Persona</Label>
+                <Label htmlFor="description" className="block text-sm font-medium mb-1">Description</Label>
                 <Textarea
                   id="description"
                   name="description"
                   value={character.description || ''}
                   onChange={handleChange}
-                  placeholder="Describe the character's personality, background, core traits, visual appearance, quirks..."
+                  placeholder="Who are they? Include enduring facts such as appearance, role, relationships, abilities and relevant history."
                   className="h-32" // Make text area larger
                 />
-                <p className="text-xs text-muted-foreground mt-1">Combine personality, backstory, visual description, etc., here.</p>
+                <p className="text-xs text-muted-foreground mt-1">The broad character definition. This is the standard card field sometimes called persona or character description.</p>
+                {renderWritingHelp('description', 'description')}
               </div>
 
               {/* Personality - Large Textarea */}
@@ -853,9 +1057,11 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                   name="personality"
                   value={character.personality || ''}
                   onChange={handleChange}
-                  placeholder="Detailed personality traits, quirks, fears, motivations..."
+                  placeholder="Temperament, desires, fears, contradictions, boundaries and relationship habits."
                   className="h-24"
                 />
+                <p className="text-xs text-muted-foreground mt-1">A focused behavioural summary. Keep biography and appearance in Description.</p>
+                {renderWritingHelp('personality', 'personality summary')}
               </div>
 
               {/* Background - Large Textarea */}
@@ -869,6 +1075,13 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                   placeholder="Character's history, origin story, and past experiences..."
                   className="h-24"
                 />
+                <p className="text-xs text-muted-foreground mt-1">Optional Mirid detail. Use it for formative events that are too specific for the main Description.</p>
+                {renderWritingHelp('background', 'background')}
+              </div>
+
+              <div className="border-b pb-2 pt-2">
+                <h3 className="font-semibold">Voice and behaviour</h3>
+                <p className="mt-1 text-xs text-muted-foreground">Use these fields to direct performance, not to repeat the character biography.</p>
               </div>
 
               {/* Model Instructions - Large Textarea */}
@@ -882,7 +1095,8 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                   placeholder="Base instructions for the LLM's behavior. E.g., 'Respond in character as [Name]. Use markdown for non-verbal actions like *smiles*. Avoid discussing forbidden topics. Keep responses under 150 words.'"
                   className="h-32" // Make text area larger
                 />
-                <p className="text-xs text-muted-foreground mt-1">Tell the AI *how* to act (style, format, constraints).</p>
+                <p className="text-xs text-muted-foreground mt-1">Maps to the V2 system prompt. Leave it blank to use Mirid's normal roleplay prompt.</p>
+                {renderWritingHelp('model_instructions', 'roleplay instructions')}
               </div>
 
               {/* Ethics justification — optional system-prompt block */}
@@ -914,7 +1128,13 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                   placeholder="Describe the character's speaking style. E.g., 'Formal, uses archaic words', 'Stutters when nervous', 'Uses lots of slang'."
                   className="h-24"
                 />
-                <p className="text-xs text-muted-foreground mt-1">How does the character speak? (Tone, dialect, quirks)</p>
+                <p className="text-xs text-muted-foreground mt-1">Concrete vocabulary, rhythm, tone, verbal habits and action prose.</p>
+                {renderWritingHelp('speech_style', 'speaking style')}
+              </div>
+
+              <div className="border-b pb-2 pt-2">
+                <h3 className="font-semibold">Opening the chat</h3>
+                <p className="mt-1 text-xs text-muted-foreground">The scenario sets the situation. The greeting demonstrates the prose, pacing and voice you want the model to continue.</p>
               </div>
 
               {/* Scenario - Large Textarea */}
@@ -929,6 +1149,7 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                   className="h-24" // Make text area larger
                 />
                 <p className="text-xs text-muted-foreground mt-1">Where and when is this interaction taking place?</p>
+                {renderWritingHelp('scenario', 'scenario')}
               </div>
 
               {/* First Message (Greeting) - Textarea */}
@@ -942,16 +1163,74 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                   className="h-20"
                   placeholder="The first message the character says when a chat starts. E.g., *You enter the dimly lit library. Professor Eldrin looks up from a large tome.* 'Ah, welcome seeker. What knowledge do you pursue today?'"
                 />
+                <p className="text-xs text-muted-foreground mt-1">This strongly influences the length and style of later replies. Markdown and <code>{'{{user}}'}</code>/<code>{'{{char}}'}</code> placeholders are supported.</p>
+                {renderWritingHelp('first_message', 'opening message')}
+              </div>
+
+              <div>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <Label className="block text-sm font-medium">Alternate greetings</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">Optional V2 opening-message variants that compatible apps can present as swipes.</p>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={addAlternateGreeting}>
+                    <PlusCircle className="mr-2 h-4 w-4" /> Add greeting
+                  </Button>
+                </div>
+                <div className="space-y-3">
+                  {ensureArray(character.alternate_greetings).map((greeting, index) => (
+                    <div key={`alternate-greeting-${index}`} className="relative rounded-md border bg-muted/20 p-3 pr-11">
+                      <Label htmlFor={`alternate-greeting-${index}`} className="text-xs font-medium">Greeting {index + 2}</Label>
+                      <Textarea
+                        id={`alternate-greeting-${index}`}
+                        value={greeting || ''}
+                        onChange={(event) => updateAlternateGreeting(index, event.target.value)}
+                        className="mt-1 min-h-[88px]"
+                        placeholder="Another way this chat could begin…"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="absolute right-2 top-2 h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => removeAlternateGreeting(index)}
+                        aria-label={`Remove alternate greeting ${index + 2}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-b pb-2 pt-2">
+                <h3 className="font-semibold">Example messages</h3>
+                <p className="mt-1 text-xs text-muted-foreground">Teach by demonstration. Add as many short exchanges as needed to establish voice, formatting and conversational boundaries.</p>
               </div>
 
               {/* Example Dialogue Section */}
               <div>
-                <Label className="block text-sm font-medium mb-1">Example Dialogue</Label>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <Label className="block text-sm font-medium">Example dialogue</Label>
+                  <Button type="button" variant="outline" size="sm" onClick={addDialogueExchange}>
+                    <PlusCircle className="mr-2 h-4 w-4" /> Add exchange
+                  </Button>
+                </div>
                 <Card className="p-4 bg-muted/30">
                   <div className="space-y-3">
                     {ensureArray(character.example_dialogue).map((turn, index) => (
-                      <div key={index} className="space-y-1">
-                        <Label htmlFor={`dialogue-${index}-role`} className="text-xs font-semibold">{turn.role === 'user' ? 'User says:' : 'Character says:'}</Label>
+                      <div key={index} className="relative space-y-2 rounded-md border bg-background/70 p-3 pr-11">
+                        <Label htmlFor={`dialogue-${index}-role`} className="text-xs font-semibold">Speaker</Label>
+                        <select
+                          id={`dialogue-${index}-role`}
+                          value={turn.role === 'user' ? 'user' : 'character'}
+                          onChange={(event) => handleDialogueChange(index, 'role', event.target.value)}
+                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        >
+                          <option value="user">User</option>
+                          <option value="character">Character</option>
+                        </select>
+                        <Label htmlFor={`dialogue-${index}-content`} className="text-xs font-semibold">Message</Label>
                         <Textarea
                           id={`dialogue-${index}-content`}
                           value={turn.content || ''}
@@ -959,11 +1238,82 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                           placeholder={turn.role === 'user' ? 'Example user input...' : 'Example character response...'}
                           className="h-16 text-sm" // Smaller text area for examples
                         />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="absolute right-2 top-2 h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => removeDialogueTurn(index)}
+                          aria-label={`Remove example message ${index + 1}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
                     ))}
+                    {ensureArray(character.example_dialogue).length === 0 ? (
+                      <p className="py-4 text-center text-sm text-muted-foreground">No example messages yet.</p>
+                    ) : null}
                   </div>
                 </Card>
-                <p className="text-xs text-muted-foreground mt-1">Provide a short snippet to demonstrate the character's voice and interaction style.</p>
+                <p className="text-xs text-muted-foreground mt-1">Exports to the standard <code>mes_example</code> field using <code>{'{{user}}'}</code> and <code>{'{{char}}'}</code>.</p>
+              </div>
+
+              <details className="rounded-lg border bg-muted/10 p-4">
+                <summary className="cursor-pointer text-sm font-medium">Advanced character-card fields</summary>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">These V2 fields are preserved on import and export. Most characters do not need to set them.</p>
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <Label htmlFor="post_history_instructions">Post-history instructions</Label>
+                    <Textarea
+                      id="post_history_instructions"
+                      name="post_history_instructions"
+                      value={character.post_history_instructions || ''}
+                      onChange={handleChange}
+                      className="mt-1 min-h-[88px]"
+                      placeholder="Instructions applied after chat history by compatible clients."
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="creator_notes">Creator notes</Label>
+                    <Textarea
+                      id="creator_notes"
+                      name="creator_notes"
+                      value={character.creator_notes || ''}
+                      onChange={handleChange}
+                      className="mt-1 min-h-[88px]"
+                      placeholder="Notes for people using the card. This is metadata, not a model prompt."
+                    />
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <Label htmlFor="creator">Creator</Label>
+                      <Input id="creator" name="creator" value={character.creator || ''} onChange={handleChange} className="mt-1" />
+                    </div>
+                    <div>
+                      <Label htmlFor="character_version">Character version</Label>
+                      <Input id="character_version" name="character_version" value={character.character_version || ''} onChange={handleChange} className="mt-1" placeholder="e.g. 1.0" />
+                    </div>
+                  </div>
+                  <div>
+                    <Label htmlFor="character_tags">Tags</Label>
+                    <Input
+                      id="character_tags"
+                      value={tagsInput}
+                      onChange={(event) => setTagsInput(event.target.value)}
+                      onBlur={() => setCharacter((current) => ({
+                        ...current,
+                        tags: tagsInput.split(',').map((tag) => tag.trim()).filter(Boolean),
+                      }))}
+                      className="mt-1"
+                      placeholder="fantasy, detective, slow burn"
+                    />
+                  </div>
+                </div>
+              </details>
+
+              <div className="border-b pb-2 pt-2">
+                <h3 className="font-semibold">Presentation</h3>
+                <p className="mt-1 text-xs text-muted-foreground">Avatars affect display and call mode, not the written character definition.</p>
               </div>
 
               {/* Avatars (up to 10 manual + optional folder) */}
@@ -1251,56 +1601,6 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
             <Button onClick={addLoreEntry} variant="outline" size="sm">
               <PlusCircle className="mr-2 h-4 w-4" /> Add Lore Entry
             </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Intensity Preset Section */}
-      {showEditorForm && (
-        <Card className="mb-8 w-full">
-          <CardHeader>
-            <CardTitle>Intensity Preset</CardTitle>
-            <CardDescription>Configure automatic interaction behaviors for this character.</CardDescription>
-          </CardHeader>
-          <CardContent className="pt-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm font-medium">Enable Intensity Preset</Label>
-              <Switch
-                checked={intensityEnabled}
-                onCheckedChange={setIntensityEnabled}
-              />
-            </div>
-
-            {intensityEnabled && (
-              <>
-                <IntensityPresetSelector
-                  selectedPresetId={activePresetId}
-                  onSelectPreset={(id) => activatePreset(id)}
-                  disabled={commitmentLock && Date.now() < commitmentLock.expiry}
-                />
-
-                <CommitmentLock />
-
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs font-medium">Sequencing Mode</Label>
-                  <Switch
-                    checked={sequencingMode}
-                    onCheckedChange={setSequencingMode}
-                    disabled={commitmentLock && Date.now() < commitmentLock.expiry}
-                  />
-                </div>
-
-                {sequencingMode && (
-                  <PresetSequencer
-                    disabled={commitmentLock && Date.now() < commitmentLock.expiry}
-                  />
-                )}
-
-                <CompanionPresenceOverlay
-                  disabled={commitmentLock && Date.now() < commitmentLock.expiry}
-                />
-              </>
-            )}
           </CardContent>
         </Card>
       )}

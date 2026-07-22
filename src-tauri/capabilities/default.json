@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-set-webview-zoom",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "mirid-sidecar",
+          "cmd": "",
+          "args": true,
+          "sidecar": false
+        }
+      ]
+    }
+  ]
+}

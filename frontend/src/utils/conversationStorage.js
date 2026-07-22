@@ -747,6 +747,36 @@ export async function deleteConversationFromStorage(conversationId) {
   });
 }
 
+export async function deleteConversationsFromStorage(conversationIds) {
+  if (!Array.isArray(conversationIds) || conversationIds.length === 0) return false;
+
+  for (const id of conversationIds) {
+    banConversationIdSync(id);
+  }
+
+  return enqueueWrite(async () => {
+    const deletedIds = await getDeletedIdSet();
+    for (const id of conversationIds) {
+      if (!deletedIds.has(id)) await addTombstone(id);
+    }
+    const updatedDeletedIds = await getDeletedIdSet();
+    const { catalog } = await readCatalogFromDisk();
+    const idSet = new Set(conversationIds);
+    const filtered = catalog.filter((c) => !idSet.has(c.id));
+    try {
+      await writeCatalogIndex(filtered, { allowEmpty: true });
+    } catch (e) {
+      console.warn('[conversationStorage] Batch catalog update failed:', e);
+    }
+    for (const id of conversationIds) {
+      await purgeAllKeysForConversation(id);
+    }
+    await destroyLegacyMonolithicBlobs(filtered.map((c) => c.id));
+    await purgeBannedShardsOnly(updatedDeletedIds);
+    return true;
+  });
+}
+
 export async function loadTombstonedConversationIds() {
   return [...(await getDeletedIdSet())];
 }

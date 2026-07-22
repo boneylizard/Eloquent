@@ -1,93 +1,33 @@
 @echo off
-cls
+setlocal
+cd /d "%~dp0"
+
 echo ==========================================================
-echo ==         Starting Eloquent AI Application             ==
+echo ==              Starting Mirid Desktop                  ==
 echo ==========================================================
 echo.
 
-set "PROJECT_DIR=%~dp0"
-cd /d "%PROJECT_DIR%"
-
-REM --- 1. Port configuration ---
-REM Ports can be customized in ~/.LiangLocal/settings.json:
-REM   "backend_port": 8000, "secondary_port": 8001, "tts_port": 8002
-echo Ports are configurable via settings.json (default: 8000, 8001, 8002)
-echo.
-
-REM --- 2. Activate Python Virtual Environment ---
-echo Activating backend Python environment...
-if not exist "venv\Scripts\activate.bat" (
-    echo ERROR: Backend venv not found at ".\venv". Please run setup.
-    pause
-    exit /b 1
+REM Use the already-built release exe directly (no reinstall needed).
+REM The runtime is cached in %LOCALAPPDATA%\com.eloquent.app\runtime (legacy id kept on purpose).
+REM Tauri names the release exe after productName ("Mirid"); older builds produced eloquent.exe.
+if exist "src-tauri\target\release\mirid.exe" (
+    copy /Y "src-tauri\target\release\mirid.exe" "Mirid.exe" >nul
+    start "" "%~dp0Mirid.exe"
+    goto :done
 )
-call ".\venv\Scripts\activate.bat"
-echo.
-
-REM --- 3. Detect GPU mode for the Frontend ---
-echo Detecting GPU configuration for frontend...
-set "GPU_COUNT="
-for /f %%A in ('powershell -NoProfile -Command "if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { (nvidia-smi --query-gpu=index --format=csv,noheader 2>$null | Measure-Object).Count } else { 0 }"') do set "GPU_COUNT=%%A"
-
-if not defined GPU_COUNT (
-    set "GPU_COUNT=0"
+if exist "src-tauri\target\release\eloquent.exe" (
+    copy /Y "src-tauri\target\release\eloquent.exe" "Mirid.exe" >nul
+    start "" "%~dp0Mirid.exe"
+    goto :done
 )
 
-if %GPU_COUNT% LEQ 1 (
-    set VITE_SINGLE_GPU_MODE=true
-    if %GPU_COUNT%==0 (
-        echo GPU detection failed. Defaulting to single GPU mode.
-    ) else (
-        echo Single GPU mode detected.
-    )
-) else (
-    set VITE_SINGLE_GPU_MODE=false
-    echo Dual GPU mode detected.
-)
-echo.
-
-REM --- 4. Start All Services ---
-echo Launching Backend Servers via launch.py (new window)...
-START "Eloquent Backend" cmd /c "cd /d "%PROJECT_DIR%" && python launch.py"
-
-echo Launching Frontend Development Server (new window)...
-set "FRONTEND_DIR=%PROJECT_DIR%frontend"
-if not exist "%FRONTEND_DIR%\package.json" (
-    echo ERROR: Frontend folder or package.json missing at "%FRONTEND_DIR%".
-    echo The frontend will not start.
-    pause
-    exit /b 1
-)
-if not exist "%FRONTEND_DIR%\node_modules" (
-    echo Frontend dependencies missing. Running npm install...
-    pushd "%FRONTEND_DIR%"
+echo Release build not found. Falling back to dev mode...
+if not exist "frontend\node_modules\.bin\tauri.cmd" (
+    echo Installing frontend dependencies...
+    pushd "frontend"
     call npm install
-    if errorlevel 1 (
-        echo ERROR: npm install failed. Frontend will not start.
-        popd
-        pause
-        exit /b 1
-    )
-    popd
-) else if not exist "%FRONTEND_DIR%\node_modules\.bin\vite.cmd" (
-    echo Frontend dependencies incomplete. Running npm install...
-    pushd "%FRONTEND_DIR%"
-    call npm install
-    if errorlevel 1 (
-        echo ERROR: npm install failed. Frontend will not start.
-        popd
-        pause
-        exit /b 1
-    )
     popd
 )
-START "Eloquent Frontend" cmd /c "cd /d "%FRONTEND_DIR%" && npm run dev"
+call "frontend\node_modules\.bin\tauri.cmd" dev
 
-echo.
-echo ==========================================================
-echo ==      Eloquent is starting up in new windows.       ==
-echo == This window can now be closed.                   ==
-echo ==========================================================
-echo.
-timeout /t 5 > nul
-exit
+:done

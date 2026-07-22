@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mirid Remote</title>
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; margin: 0; background: #0b1220; color: #e5e7eb; }
+    .wrap { max-width: 520px; margin: 0 auto; padding: 16px; display: grid; gap: 10px; }
+    .card { background: #111827; border: 1px solid #374151; border-radius: 12px; padding: 12px; transition: border-color 0.2s, box-shadow 0.2s; }
+    .card.flash-ok { border-color: #34d399; box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.35); }
+    .card.flash-err { border-color: #f87171; box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.35); }
+    input { width: 100%; box-sizing: border-box; border-radius: 8px; border: 1px solid #4b5563; background: #0f172a; color: #e5e7eb; padding: 10px; }
+    button { border: 0; border-radius: 10px; padding: 12px; font-weight: 600; background: #2563eb; color: white; transition: transform 0.08s, opacity 0.15s, filter 0.15s; }
+    button:active { transform: scale(0.96); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.pressed { filter: brightness(1.25); outline: 2px solid #fbbf24; outline-offset: 2px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .muted { color: #9ca3af; font-size: 12px; }
+    .ok { color: #34d399; font-size: 12px; min-height: 16px; }
+    .danger { background: #dc2626; }
+    .secondary { background: #374151; }
+    .banner {
+      border-radius: 12px; padding: 14px 16px; font-size: 1.05rem; font-weight: 700;
+      text-align: center; letter-spacing: 0.02em; border: 2px solid transparent;
+    }
+    .banner.idle { background: #1f2937; color: #9ca3af; border-color: #374151; }
+    .banner.ok { background: #064e3b; color: #d1fae5; border-color: #34d399; }
+    .banner.err { background: #7f1d1d; color: #fecaca; border-color: #f87171; }
+    .banner.sending { background: #1e3a8a; color: #dbeafe; border-color: #60a5fa; }
+    .subline { font-size: 0.75rem; font-weight: 500; margin-top: 6px; opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>Mirid Remote</h2>
+
+    <div id="feedback" class="banner idle">
+      <div id="feedback-title">Tap a button — you’ll see OK / error here</div>
+      <div id="feedback-sub" class="subline">Waiting…</div>
+    </div>
+
+    <div class="card" id="session-card">
+      <label class="muted">Session ID (must match Mirid Settings)</label>
+      <input id="session" placeholder="lounge-tv" />
+      <div class="muted" style="margin-top:8px;">Backend API URL</div>
+      <input id="api" placeholder="http://100.x.x.x:8000" />
+      <div id="status" class="ok" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" id="ai-card">
+      <div class="muted" style="margin-bottom:8px;">GEMMA AI — hands free (no hold)</div>
+      <div class="muted" style="margin-bottom:10px;line-height:1.4;">
+        Mic: <strong>one tap</strong> starts recording, <strong>one tap</strong> stops and sends (when auto-send on stop is on). You never hold the button while talking.
+      </div>
+      <button class="secondary" data-cmd="chat_tab" style="width:100%;">Open Chat</button>
+      <div class="row" style="margin-top:8px;">
+        <button data-cmd="ai_mic_start">Mic — Start</button>
+        <button class="danger" data-cmd="ai_mic_stop">Mic — Stop &amp; send</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="secondary" data-cmd="ai_mic_toggle">Mic toggle</button>
+        <button class="danger" data-cmd="ai_stop">Stop TTS / gen</button>
+      </div>
+      <button class="secondary" data-cmd="ai_fast_queue" style="width:100%;margin-top:8px;">Replay last reply (chunk TTS)</button>
+      <div class="muted" style="margin-top:8px;">
+        Pedals can still use Ctrl+Alt+C (toggle), Ctrl+Alt+X (stop), Ctrl+Alt+V (chunk replay).
+      </div>
+    </div>
+
+    <div class="card" id="chat-card">
+      <div class="muted" style="margin-bottom:8px;">Chat controls</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
+        <input id="chat-text" placeholder="Type a message…" style="flex:1;" />
+        <button id="chat-send-btn">Send</button>
+      </div>
+      <div class="row">
+        <button class="danger" data-cmd="chat_delete_last">Delete last</button>
+        <button class="secondary" data-cmd="chat_clear_input">Clear input</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="secondary" data-cmd="chat_new">New chat</button>
+        <button class="secondary" data-cmd="chat_regenerate">Regen last</button>
+      </div>
+      <div class="muted" style="margin-top:8px;margin-bottom:6px;">Web search</div>
+      <div class="row">
+        <button type="button" class="secondary" onclick="send('chat_web_search_on', this)">Web on</button>
+        <button type="button" class="secondary" onclick="send('chat_web_search_off', this)">Web off</button>
+      </div>
+    </div>
+
+    <div class="card" id="desktop-card">
+      <div class="muted" style="margin-bottom:8px;">Desktop — jump tabs &amp; settings (same session as above)</div>
+      <div class="muted" style="margin-bottom:10px;line-height:1.45;">
+        Brings the <strong>projector / PC browser</strong> to the right screen. For deep edits, the full Settings UI opens on desktop — use these to get there without walking to the keyboard.
+      </div>
+      <div class="row">
+        <button type="button" class="secondary" onclick="send('theme_toggle', this)">Toggle light/dark</button>
+        <button type="button" class="secondary" onclick="send('desktop_tab', this, { payload: { tab: 'models' } })">Models</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button type="button" class="secondary" onclick="send('desktop_tab', this, { payload: { tab: 'characters' } })">Characters</button>
+        <button type="button" class="secondary" onclick="send('desktop_tab', this, { payload: { tab: 'documents' } })">Documents</button>
+      </div>
+      <div class="muted" style="margin-top:12px;margin-bottom:6px;">Settings (inner tab)</div>
+      <div class="row">
+        <button type="button" onclick="send('settings_open', this, { payload: { tab: 'general' } })">General</button>
+        <button type="button" class="secondary" onclick="send('settings_open', this, { payload: { tab: 'generation' } })">LLM</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button type="button" class="secondary" onclick="send('settings_open', this, { payload: { tab: 'audio' } })">Audio</button>
+        <button type="button" class="secondary" onclick="send('settings_open', this, { payload: { tab: 'characters' } })">Chars (set.)</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button type="button" class="secondary" onclick="send('settings_open', this, { payload: { tab: 'rag' } })">Docs ctx</button>
+        <button type="button" class="secondary" onclick="send('settings_open', this, { payload: { tab: 'memory' } })">Memory</button>
+      </div>
+      <div class="muted" style="margin-top:12px;margin-bottom:6px;">Quick toggles (saved settings)</div>
+      <div class="row">
+        <button type="button" class="secondary" onclick="send('settings_patch', this, { payload: { patch: { sttEnabled: true } } })">STT on</button>
+        <button type="button" class="secondary" onclick="send('settings_patch', this, { payload: { patch: { sttEnabled: false } } })">STT off</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button type="button" class="secondary" onclick="send('settings_patch', this, { payload: { patch: { ttsEnabled: true } } })">TTS on</button>
+        <button type="button" class="secondary" onclick="send('settings_patch', this, { payload: { patch: { ttsEnabled: false } } })">TTS off</button>
+      </div>
+      <p class="muted" style="margin-top:10px;line-height:1.4;">
+        Advanced: POST <code style="font-size:11px;">settings_patch</code> with JSON body <code style="font-size:11px;">payload.patch</code> = any flat keys from Mirid settings (same as desktop).
+      </p>
+    </div>
+
+    <div class="card" id="voice-card">
+      <label class="muted" for="voiceSelect">Voice</label>
+      <select id="voiceSelect" style="width:100%;box-sizing:border-box;margin-top:6px;padding:10px;border-radius:8px;border:1px solid #4b5563;background:#0f172a;color:#e5e7eb;font-size:14px;"></select>
+      <label class="muted" for="charId" style="display:block;margin-top:10px;">Character ID (optional)</label>
+      <input id="charId" placeholder="Leave empty = active character on desktop" style="margin-top:6px;" />
+      <div class="row" style="margin-top:10px;">
+        <button type="button" class="secondary" id="voiceRefresh">Load voices</button>
+        <button type="button" id="voiceApply">Apply to desktop</button>
+      </div>
+      <div id="voiceStatus" class="muted" style="margin-top:8px;line-height:1.35;"></div>
+    </div>
+  </div>
+
+  <script>
+    const qs = new URLSearchParams(location.search);
+    const sessionInput = document.getElementById('session');
+    const apiInput = document.getElementById('api');
+    const statusEl = document.getElementById('status');
+    const feedbackEl = document.getElementById('feedback');
+    const feedbackTitleEl = document.getElementById('feedback-title');
+    const feedbackSubEl = document.getElementById('feedback-sub');
+    const sessionCard = document.getElementById('session-card');
+    const voiceCard = document.getElementById('voice-card');
+    const voiceSelect = document.getElementById('voiceSelect');
+    const charIdInput = document.getElementById('charId');
+    const voiceStatusEl = document.getElementById('voiceStatus');
+
+    const KOKORO_FALLBACK = [
+      { id: 'default', name: 'Default (global setting)' },
+      { id: 'af_heart', name: 'Kokoro — Heart (Female)' },
+      { id: 'af_alloy', name: 'Kokoro — Alloy (Female)' },
+      { id: 'af_bella', name: 'Kokoro — Bella (Female)' },
+      { id: 'af_sarah', name: 'Kokoro — Sarah (Female)' },
+      { id: 'af_nicole', name: 'Kokoro — Nicole (Female)' },
+      { id: 'am_adam', name: 'Kokoro — Adam (Male)' },
+      { id: 'am_echo', name: 'Kokoro — Echo (Male)' },
+    ];
+
+    sessionInput.value = qs.get('session') || '';
+    apiInput.value = qs.get('api') || (location.origin.includes('localhost') ? 'http://localhost:8000' : `${location.protocol}//${location.hostname}:8000`);
+
+    function setFeedback(mode, title, sub) {
+      feedbackEl.className = 'banner ' + mode;
+      feedbackTitleEl.textContent = title;
+      feedbackSubEl.textContent = sub || '';
+    }
+
+    function bump() {
+      try {
+        if (navigator.vibrate) navigator.vibrate(25);
+      } catch (_) {}
+    }
+
+    function flashCard(cardEl, ok) {
+      if (!cardEl) return;
+      cardEl.classList.remove('flash-ok', 'flash-err');
+      void cardEl.offsetWidth;
+      cardEl.classList.add(ok ? 'flash-ok' : 'flash-err');
+      setTimeout(() => cardEl.classList.remove('flash-ok', 'flash-err'), 450);
+    }
+
+    function fillVoiceSelectFromData(data) {
+      voiceSelect.innerHTML = '';
+      const kokoro = (data && data.kokoro_voices && data.kokoro_voices.length)
+        ? data.kokoro_voices
+        : KOKORO_FALLBACK.filter((x) => x.id !== 'default');
+      const chatter = (data && data.chatterbox_voices) ? data.chatterbox_voices : [];
+
+      const defOpt = document.createElement('option');
+      defOpt.value = 'default';
+      defOpt.textContent = 'Default (global setting)';
+      voiceSelect.appendChild(defOpt);
+
+      if (kokoro.length) {
+        const og = document.createElement('optgroup');
+        og.label = 'Kokoro';
+        kokoro.forEach((v) => {
+          const o = document.createElement('option');
+          o.value = v.id;
+          o.textContent = v.name || v.id;
+          og.appendChild(o);
+        });
+        voiceSelect.appendChild(og);
+      }
+      if (chatter.length) {
+        const og = document.createElement('optgroup');
+        og.label = 'Chatterbox / clones';
+        chatter.forEach((v) => {
+          const o = document.createElement('option');
+          o.value = v.id;
+          o.textContent = v.name || v.id;
+          og.appendChild(o);
+        });
+        voiceSelect.appendChild(og);
+      }
+    }
+
+    async function loadVoicesIntoSelect() {
+      const api = apiInput.value.trim().replace(/\/+$/, '');
+      voiceStatusEl.textContent = 'Loading voices…';
+      try {
+        const res = await fetch(`${api}/tts/voices`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        fillVoiceSelectFromData(data);
+        voiceStatusEl.textContent = 'Voices loaded. Pick one and tap Apply.';
+        flashCard(voiceCard, true);
+      } catch (e) {
+        fillVoiceSelectFromData(null);
+        voiceStatusEl.textContent = 'Could not reach /tts/voices — showing built-in Kokoro list. ' + (e.message || e);
+        flashCard(voiceCard, false);
+      }
+    }
+
+    async function send(cmd, btn, opts) {
+      opts = opts || {};
+      const extraPayload = opts.payload || null;
+      const session = sessionInput.value.trim();
+      const api = apiInput.value.trim().replace(/\/+$/, '');
+      const card = btn && btn.closest ? btn.closest('.card') : null;
+
+      if (!session) {
+        setFeedback('err', 'Set session ID first', 'Type the same session as Mirid Settings, then try again.');
+        flashCard(sessionCard, false);
+        statusEl.textContent = 'Missing session id';
+        return;
+      }
+
+      if (btn) {
+        btn.disabled = true;
+        btn.classList.add('pressed');
+      }
+      setFeedback('sending', 'Sending…', cmd);
+      statusEl.textContent = 'Sending ' + cmd + '…';
+
+      try {
+        const body = { session_id: session, command: cmd, source: 'mobile-remote' };
+        if (extraPayload && typeof extraPayload === 'object' && Object.keys(extraPayload).length) {
+          body.payload = extraPayload;
+        }
+        const res = await fetch(`${api}/remote/v1/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const t = new Date().toLocaleTimeString();
+        bump();
+        setFeedback('ok', 'Sent: ' + cmd, t + ' — check projector / desktop Eloquent.');
+        statusEl.textContent = 'OK ' + t + ': ' + cmd;
+        flashCard(card, true);
+      } catch (e) {
+        bump();
+        setFeedback('err', 'Failed: ' + cmd, String(e.message || e));
+        statusEl.textContent = 'Error: ' + (e.message || e);
+        flashCard(card || sessionCard, false);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.classList.remove('pressed');
+        }
+      }
+    }
+
+    document.querySelectorAll('button[data-cmd]').forEach((b) => {
+      b.addEventListener('click', () => send(b.getAttribute('data-cmd'), b));
+    });
+
+    const chatInput = document.getElementById('chat-text');
+    document.getElementById('chat-send-btn').addEventListener('click', () => {
+      const text = (chatInput.value || '').trim();
+      if (!text) return;
+      send('chat_send_text', null, { payload: { text } });
+      chatInput.value = '';
+    });
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        document.getElementById('chat-send-btn').click();
+      }
+    });
+
+    document.getElementById('voiceRefresh').addEventListener('click', (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      loadVoicesIntoSelect().finally(() => { btn.disabled = false; });
+    });
+
+    document.getElementById('voiceApply').addEventListener('click', (ev) => {
+      const btn = ev.currentTarget;
+      const voiceId = (voiceSelect.value || '').trim();
+      if (!voiceId) {
+        setFeedback('err', 'Pick a voice first', 'Load voices or choose from the list.');
+        flashCard(voiceCard, false);
+        return;
+      }
+      const cid = (charIdInput.value || '').trim();
+      const payload = { voice_id: voiceId };
+      if (cid) payload.character_id = cid;
+      send('character_voice', btn, { payload });
+    });
+
+    fillVoiceSelectFromData(null);
+    voiceStatusEl.textContent = 'Tap “Load voices” for Kokoro + Chatterbox from your PC, or use the built-in list.';
+  </script>
+</body>
+</html>

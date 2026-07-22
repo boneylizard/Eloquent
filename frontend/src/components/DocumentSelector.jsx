@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../contexts/AppContext';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog.tsx';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { Button } from './ui/button';
 import { FileText, X, Check, Search } from 'lucide-react';
 import { Input } from './ui/input';
 import { ScrollArea } from './ui/scroll-area';
 import { getFileIcon } from '../utils/DocumentUtils';
 
-const DocumentSelector = ({ selectedDocs = [], onChange, maxSelections = 5 }) => {
+const DocumentSelector = ({ selectedDocs = [], onChange }) => {
   const { documents, fetchDocuments } = useApp();
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -36,18 +36,21 @@ const DocumentSelector = ({ selectedDocs = [], onChange, maxSelections = 5 }) =>
 
   const toggleDocument = (docId) => {
     if (selectedDocs.includes(docId)) {
-      // Remove if already selected
       onChange(selectedDocs.filter(id => id !== docId));
     } else {
-      // Add if not at max yet
-      if (selectedDocs.length < maxSelections) {
-        onChange([...selectedDocs, docId]);
-      }
+      onChange([...selectedDocs, docId]);
     }
   };
 
   const clearSelections = () => {
     onChange([]);
+  };
+
+  const selectAllDocuments = () => {
+    const available = filteredDocuments.map(d => d.id);
+    const current = selectedDocs.filter(id => available.includes(id));
+    const newOnes = available.filter(id => !current.includes(id));
+    onChange([...current, ...newOnes]);
   };
 
   // Filter documents by search query
@@ -126,8 +129,31 @@ const DocumentSelector = ({ selectedDocs = [], onChange, maxSelections = 5 }) =>
               </div>
             ) : (
               <>
-                <div className="text-sm text-muted-foreground mb-2">
-                  {selectedDocs.length}/{maxSelections} documents selected
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm text-muted-foreground">
+                    {selectedDocs.length} document{selectedDocs.length !== 1 ? 's' : ''} selected
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={selectAllDocuments}
+                      disabled={filteredDocuments.length === 0}
+                    >
+                      Select All
+                    </Button>
+                    {selectedDocs.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={clearSelections}
+                      >
+                        Clear
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 
                 {filteredDocuments.length === 0 ? (
@@ -143,16 +169,14 @@ const DocumentSelector = ({ selectedDocs = [], onChange, maxSelections = 5 }) =>
                     <div className="p-2 space-y-1">
                       {filteredDocuments.map((doc) => {
                         const isSelected = selectedDocs.includes(doc.id);
-                        const isDisabled = !isSelected && selectedDocs.length >= maxSelections;
                         
                         return (
                           <div 
                             key={doc.id}
                             className={`flex items-center p-2 rounded-md cursor-pointer ${
-                              isSelected ? 'bg-primary/10 hover:bg-primary/20' : 
-                              isDisabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-accent/20'
+                              isSelected ? 'bg-primary/10 hover:bg-primary/20' : 'hover:bg-accent/20'
                             }`}
-                            onClick={() => !isDisabled && toggleDocument(doc.id)}
+                            onClick={() => toggleDocument(doc.id)}
                           >
                             <div className="mr-2">
                               {isSelected ? (

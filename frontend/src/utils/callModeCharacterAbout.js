@@ -1,6 +1,6 @@
 /** Experimental call-mode "about this character" — customizable prompt + structured JSON response. */
 
-import { buildFlowGenerateRequestBody, readFlowGenerateError, resolveFlowGenerateConfig } from './flowGenerateApi';
+import { buildFlowGenerateRequestBody, readFlowGenerateError, resolveFlowGenerateConfig } from './flowGenerateApi.js';
 
 export const CALL_MODE_ABOUT_REQUEST_PURPOSE = 'call_mode_character_about';
 
@@ -81,7 +81,6 @@ export const DEFAULT_CALL_MODE_ABOUT_PROMPT = `${CALL_MODE_ABOUT_OUTPUT_SPEC}
 {{STORY_BLOCK}}
 {{CHAT_HISTORY}}`;
 
-const STORY_TRACKER_KEY = 'eloquent-story-tracker';
 
 function formatCharacterBlock(character) {
   if (!character) return 'CHARACTER:\n(No character selected)\n';
@@ -135,24 +134,6 @@ function formatUserBlock(userProfile) {
   return `${lines.join('\n')}\n`;
 }
 
-function getStoryTrackerBlock() {
-  try {
-    const raw = localStorage.getItem(STORY_TRACKER_KEY);
-    if (!raw) return '';
-    const data = JSON.parse(raw);
-    const parts = [];
-    if (data.currentObjective) parts.push(`Objective: ${data.currentObjective}`);
-    if (data.storyNotes) parts.push(`Notes: ${data.storyNotes}`);
-    if (data.plotPoints?.length) {
-      parts.push(`Recent events: ${data.plotPoints.slice(-4).map((p) => p.value).join('; ')}`);
-    }
-    if (!parts.length) return '';
-    return `STORY TRACKER:\n${parts.join('\n')}\n`;
-  } catch {
-    return '';
-  }
-}
-
 function formatChatHistory(messages, limit = 40) {
   if (!Array.isArray(messages) || !messages.length) {
     return 'CHAT HISTORY:\n(No messages yet)\n';
@@ -173,12 +154,11 @@ function formatChatHistory(messages, limit = 40) {
 }
 
 function applyContextPlaceholders(template, { character, userProfile, messages, historyLimit, characterSystemPrompt }) {
-  const storyBlock = getStoryTrackerBlock();
   return template
     .replace(/\{\{CHARACTER_SYSTEM_PROMPT\}\}/g, characterSystemPrompt?.trim() || '')
     .replace('{{CHARACTER_BLOCK}}', formatCharacterBlock(character))
     .replace('{{USER_BLOCK}}', formatUserBlock(userProfile))
-    .replace('{{STORY_BLOCK}}', storyBlock || 'STORY TRACKER:\n(none)\n')
+    .replace('{{STORY_BLOCK}}', '')
     .replace('{{CHAT_HISTORY}}', formatChatHistory(messages, historyLimit));
 }
 

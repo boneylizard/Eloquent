@@ -1,13 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { cn } from '../../lib/utils';
+import * as React from "react";
+import { cn } from "../../lib/utils";
 
 const Slider = React.forwardRef(
   ({ className, min = 0, max = 100, step = 1, defaultValue, value, onValueChange, ...props }, ref) => {
-    const [localValue, setLocalValue] = useState(defaultValue || [min]);
-    const rangeRef = useRef(null);
+    const [localValue, setLocalValue] = React.useState(defaultValue ?? [min]);
 
-    // Update local value when controlled value changes
-    useEffect(() => {
+    React.useEffect(() => {
       if (value !== undefined) {
         setLocalValue(value);
       }
@@ -16,45 +14,45 @@ const Slider = React.forwardRef(
     const handleChange = (e) => {
       const newValue = [Number(e.target.value)];
       setLocalValue(newValue);
-
-      if (onValueChange) {
-        onValueChange(newValue);
-      }
+      onValueChange?.(newValue);
     };
 
-    // Calculate the percentage for styling the track
-    const percent = ((localValue[0] - min) / (max - min)) * 100;
+    const clamped = typeof localValue?.[0] === "number" ? localValue[0] : min;
+    const span = max - min || 1;
+    const percent = Math.max(0, Math.min(100, ((clamped - min) / span) * 100));
 
     return (
       <div className={cn("relative flex w-full touch-none select-none items-center", className)}>
+        <div
+          className="absolute h-2 w-full rounded-full bg-muted pointer-events-none"
+          aria-hidden="true"
+        />
+        <div
+          className="absolute h-2 rounded-full bg-primary pointer-events-none"
+          style={{ width: `${percent}%` }}
+          aria-hidden="true"
+        />
         <input
           ref={ref}
           type="range"
           min={min}
           max={max}
           step={step}
-          value={typeof localValue?.[0] === 'number' ? localValue[0] : min}
+          value={clamped}
           onChange={handleChange}
           className={cn(
-            "w-full h-2 appearance-none rounded-full bg-muted outline-none",
-             // Add Tailwind classes for the "track" (the background)
-            "focus:ring-2 focus:ring-offset-2 focus:ring-ring", // Add focus styles
-            "disabled:opacity-50 disabled:cursor-not-allowed", // Add disabled styles
-            `before:absolute before:inset-0 before:bg-gradient-to-r before:from-primary before:to-primary before:h-full before:rounded-full`,
-            `before:w-[${percent}%]`, //Dynamically apply width to the "track" before the thumb
+            "relative w-full h-2 appearance-none bg-transparent outline-none cursor-pointer",
+            "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            "disabled:opacity-50 disabled:cursor-not-allowed",
+            className
           )}
-
-          style={{
-              '--percent': percent + '%', // Use a CSS variable for the gradient
-          }}
           {...props}
         />
-        {/*  Remove the <style> tag entirely */}
-        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-primary border-2 border-background cursor-pointer transition-all"
-             style={{
-                 left: `calc(${percent}% - 8px)`
-             }}>
-        </div>
+        <div
+          className="absolute top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-primary border-2 border-background pointer-events-none shadow-sm transition-transform"
+          style={{ left: `calc(${percent}% - 8px)` }}
+          aria-hidden="true"
+        />
       </div>
     );
   }

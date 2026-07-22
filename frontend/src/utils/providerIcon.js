@@ -1,18 +1,22 @@
-/** Provider badge emoji for NanoGPT / API model display. */
+/** Provider badge emoji for hosted API model display. */
 export function providerIcon(provider) {
-  const p = String(provider || '').toLowerCase();
-  if (!p) return '⬜';
-  if (p.includes('anthropic') || p.includes('claude')) return '🟠';
-  if (p.includes('openai') || p === 'gpt') return '🟢';
-  if (p.includes('gemini') || p.includes('google')) return '🔵';
-  if (p.includes('deepseek')) return '🔷';
-  if (p.includes('zhipu') || p.includes('glm')) return '🟣';
-  if (p.includes('mistral')) return '🟡';
-  if (p.includes('moonshot') || p.includes('kimi')) return '🌙';
-  if (p.includes('nanogpt') || p === 'nano') return '⚡';
-  if (p.includes('qwen')) return '🟠';
-  if (p.includes('minimax')) return '⬛';
-  if (p.includes('nvidia')) return '🟩';
+  const normalised = String(provider || '').toLowerCase();
+  if (!normalised) return '⬜';
+  if (normalised.includes('anthropic') || normalised.includes('claude')) return '🟠';
+  if (normalised.includes('openai') || normalised === 'gpt') return '🟢';
+  if (normalised.includes('gemini') || normalised.includes('google')) return '🔵';
+  if (normalised.includes('deepseek')) return '🔷';
+  if (normalised.includes('zhipu') || normalised.includes('glm')) return '🟣';
+  if (normalised.includes('mistral')) return '🟡';
+  if (normalised.includes('moonshot') || normalised.includes('kimi')) return '🌙';
+  if (normalised.includes('nanogpt') || normalised === 'nano') return '⚡';
+  if (normalised.includes('openrouter')) return '🌐';
+  if (normalised.includes('huggingface')) return '🤗';
+  if (normalised.includes('xai') || normalised.includes('grok')) return '×';
+  if (normalised.includes('meta') || normalised.includes('llama')) return '🌊';
+  if (normalised.includes('qwen')) return '🟠';
+  if (normalised.includes('minimax')) return '⬛';
+  if (normalised.includes('nvidia')) return '🟩';
   return '⬜';
 }
 

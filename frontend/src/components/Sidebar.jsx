@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 
 import { cn } from '../lib/utils';
 
@@ -24,20 +24,24 @@ import {
 
   BookOpen,
 
-  FolderSearch,
 
   Cpu,
 
-  Swords,
-
-  TrendingUp,
-
-  Clapperboard,
 
   History,
 
   X,
 
+  CheckSquare,
+
+  Square,
+
+  Search,
+  Image as ImageIcon,
+  Heart,
+  HelpCircle,
+  AudioLines,
+  Contact,
 } from 'lucide-react';
 
 import { useApp } from '../contexts/AppContext';
@@ -47,6 +51,7 @@ import { isOutreachConversationId } from '../utils/conversationStorage';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from './ui/select';
 
 import DeleteConfirmDialog from './ui/DeleteConfirmDialog';
+import { isModuleEnabled } from '../config/modules';
 
 
 
@@ -92,11 +97,87 @@ function ConversationHistoryPanel({
 
   className,
 
+  selectMode = false,
+
+  selectedConversationIds = new Set(),
+
+  onToggleSelectMode,
+
+  onSelectAll,
+
+  onClearSelection,
+
+  onDeleteSelected,
+
+  toggleConversationSelection,
+
 }) {
 
   const sorted = [...sidebarConversations].sort((a, b) => new Date(b.created) - new Date(a.created));
 
   const visible = showAllConversations ? sorted : sorted.slice(0, 5);
+
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const [searchResults, setSearchResults] = useState([]);
+
+  const [isSearching, setIsSearching] = useState(false);
+
+  const searchTimerRef = useRef(null);
+
+  const handleSearch = useCallback(async (query) => {
+
+    setSearchQuery(query);
+
+    if (!query || query.trim().length < 2) {
+
+      setSearchResults([]);
+
+      setIsSearching(false);
+
+      return;
+
+    }
+
+    setIsSearching(true);
+
+    try {
+
+      const { searchAllConversations } = await import('../utils/conversationSearch');
+
+      const results = await searchAllConversations(query, sidebarConversations);
+
+      setSearchResults(results);
+
+    } catch (e) {
+
+      console.error('[Sidebar] Search error:', e);
+
+      setSearchResults([]);
+
+    } finally {
+
+      setIsSearching(false);
+
+    }
+
+  }, [sidebarConversations]);
+
+  const handleSearchChange = useCallback((e) => {
+
+    const value = e.target.value;
+
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+
+    searchTimerRef.current = setTimeout(() => handleSearch(value), 300);
+
+    // Update input immediately for responsiveness
+
+    setSearchQuery(value);
+
+  }, [handleSearch]);
+
+  const isSearchActive = searchQuery.trim().length >= 2;
 
 
 
@@ -108,25 +189,87 @@ function ConversationHistoryPanel({
 
         <h2 className="text-sm font-semibold text-foreground tracking-wide">Chat history</h2>
 
-        {showCloseButton && onClose && (
+        <div className="flex items-center gap-1">
 
-          <button
+          {sidebarConversations.length > 0 && onToggleSelectMode && (
 
-            type="button"
+            <button
 
-            onClick={onClose}
+              type="button"
 
-            title="Close chat history"
+              onClick={onToggleSelectMode}
 
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-[var(--nano-bg-hover)] hover:text-foreground border border-transparent hover:border-border transition-colors"
+              className={cn(
 
-          >
+                'flex h-7 w-7 items-center justify-center rounded-lg border transition-colors',
 
-            <X className="h-4 w-4" />
+                selectMode
 
-          </button>
+                  ? 'bg-primary text-primary-foreground border-primary'
 
-        )}
+                  : 'text-muted-foreground hover:bg-[var(--accent)] hover:text-foreground border-transparent hover:border-border'
+
+              )}
+
+              title={selectMode ? 'Exit select mode' : 'Select chats'}
+
+            >
+
+              {selectMode ? <CheckSquare size={14} /> : <Square size={14} />}
+
+            </button>
+
+          )}
+
+          {showCloseButton && onClose && (
+
+            <button
+
+              type="button"
+
+              onClick={onClose}
+
+              title="Close chat history"
+
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-[var(--accent)] hover:text-foreground border border-transparent hover:border-border transition-colors"
+
+            >
+
+              <X className="h-4 w-4" />
+
+            </button>
+
+          )}
+
+        </div>
+
+      </div>
+
+
+
+      {/* Search bar */}
+
+      <div className="px-3 py-2 border-b border-border shrink-0">
+
+        <div className="relative">
+
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+
+          <input
+
+            type="text"
+
+            placeholder="Search chats..."
+
+            value={searchQuery}
+
+            onChange={handleSearchChange}
+
+            className="w-full rounded-md border border-border bg-background pl-8 pr-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+
+          />
+
+        </div>
 
       </div>
 
@@ -184,9 +327,9 @@ function ConversationHistoryPanel({
 
           </Button>
 
-        )}
+          )}
 
-      </div>
+        </div>
 
 
 
@@ -194,115 +337,161 @@ function ConversationHistoryPanel({
 
         <div className="p-2 space-y-1">
 
-          {visible.map((conv) => (
-
-            <div key={conv.id} className="flex items-center w-full mb-1 group">
-
-              <Button
-
-                variant={conv.id === activeConversation ? 'secondary' : 'ghost'}
-
-                className={cn(
-
-                  'flex-grow justify-start text-left items-start w-full py-2 rounded-xl',
-
-                  conv.id === activeConversation
-
-                    ? 'bg-secondary text-foreground font-medium border border-border'
-
-                    : 'font-normal text-secondary-foreground hover:bg-[var(--nano-bg-hover)] hover:text-foreground'
-
-                )}
-
-                onClick={() => onConversationClick(conv.id)}
-
-                title={conv.name}
-
-              >
-
-                <MessageSquare className="mr-2 h-4 w-4 flex-shrink-0 mt-1 opacity-70" />
-
-                <span className="flex-grow break-words line-clamp-2">{conv.name}</span>
-
-              </Button>
-
-              <Button
-
-                variant="ghost"
-
-                size="icon"
-
-                className="h-8 w-8 p-0 ml-1 text-red-400/90 hover:bg-red-500/15 hover:text-red-300 shrink-0"
-
-                onClick={(e) => onDeleteConversationClick(e, conv)}
-
-              >
-
-                <TrashIcon />
-
-              </Button>
-
-            </div>
-
-          ))}
-
-
-
-          {sidebarConversations.length > 5 && (
-
-            <div className="px-2 py-1">
-
-              <Button
-
-                variant="outline"
-
-                size="sm"
-
-                className="w-full text-xs border-border text-muted-foreground hover:bg-[var(--nano-bg-hover)] hover:text-foreground bg-transparent"
-
-                onClick={() => setShowAllConversations(!showAllConversations)}
-
-              >
-
-                {showAllConversations ? (
-
-                  <>
-
-                    <ChevronLeft className="w-3 h-3 mr-1" />
-
-                    Show Recent Only
-
-                  </>
-
-                ) : (
-
-                  <>
-
-                    <ChevronRight className="w-3 h-3 mr-1" />
-
-                    Load More Chats ({sidebarConversations.length - 5})
-
-                  </>
-
-                )}
-
-              </Button>
-
-            </div>
-
+          {isSearchActive && isSearching && (
+            <div className="px-3 py-6 text-center text-sm text-muted-foreground">Searching...</div>
           )}
 
+          {isSearchActive && !isSearching && searchResults.length === 0 && (
+            <div className="px-3 py-6 text-center text-sm text-muted-foreground">No results found</div>
+          )}
 
+          {isSearchActive && !isSearching && searchResults.length > 0 && searchResults.map((result) => {
+            return (
+              <button
+                key={result.conversationId}
+                type="button"
+                className="w-full text-left px-3 py-2 rounded-lg hover:bg-[var(--accent)] transition-colors"
+                onClick={() => {
+                  onConversationClick(result.conversationId);
+                  if (result.excerpts[0]?.messageId) {
+                    setSearchHighlightId(result.excerpts[0].messageId);
+                  }
+                }}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-foreground truncate">{result.conversationName}</span>
+                  <span className="text-xs text-muted-foreground shrink-0 ml-2">{result.matchCount} match{result.matchCount !== 1 ? 'es' : ''}</span>
+                </div>
+                {result.excerpts.length > 0 && (
+                  <p className="text-xs text-muted-foreground line-clamp-2">
+                    {result.excerpts[0].snippet}
+                  </p>
+                )}
+              </button>
+            );
+          })}
 
-          {sidebarConversations.length === 0 && (
+          {!isSearchActive && visible.map((conv) => (
+            <div key={conv.id} className="flex items-center w-full mb-1 group">
+              {selectMode && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); toggleConversationSelection?.(conv.id); }}
+                  className="flex h-8 w-8 items-center justify-center shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={selectedConversationIds.has(conv.id) ? `Deselect ${conv.name}` : `Select ${conv.name}`}
+                >
+                  {selectedConversationIds.has(conv.id)
+                    ? <CheckSquare size={16} className="text-primary" />
+                    : <Square size={16} />}
+                </button>
+              )}
+              <Button
+                variant={conv.id === activeConversation ? 'secondary' : 'ghost'}
+                className={cn(
+                  'flex-grow justify-start text-left items-start w-full py-2 rounded-xl',
+                  conv.id === activeConversation
+                    ? 'bg-secondary text-foreground font-medium border border-border'
+                    : 'font-normal text-secondary-foreground hover:bg-[var(--accent)] hover:text-foreground'
+                )}
+                onClick={() => onConversationClick(conv.id)}
+                title={conv.name}
+              >
+                <MessageSquare className="mr-2 h-4 w-4 flex-shrink-0 mt-1 opacity-70" />
+                <span className="flex-grow break-words line-clamp-2">{conv.name}</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 p-0 ml-1 text-red-400/90 hover:bg-red-500/15 hover:text-red-300 shrink-0"
+                onClick={(e) => onDeleteConversationClick(e, conv)}
+              >
+                <TrashIcon />
+              </Button>
+            </div>
+          ))}
 
+          {!isSearchActive && sidebarConversations.length > 5 && (
+            <div className="px-2 py-1">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-xs border-border text-muted-foreground hover:bg-[var(--accent)] hover:text-foreground bg-transparent"
+                onClick={() => setShowAllConversations(!showAllConversations)}
+              >
+                {showAllConversations ? (
+                  <>
+                    <ChevronLeft className="w-3 h-3 mr-1" />
+                    Show Recent Only
+                  </>
+                ) : (
+                  <>
+                    <ChevronRight className="w-3 h-3 mr-1" />
+                    Load More Chats ({sidebarConversations.length - 5})
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+
+          {!isSearchActive && sidebarConversations.length === 0 && (
             <p className="text-xs text-[rgba(148,163,184,0.75)] px-3 py-4 text-center">No chats yet</p>
-
           )}
 
         </div>
 
       </ScrollArea>
+
+      {selectMode && selectedConversationIds.size > 0 && (
+
+        <div className="shrink-0 border-t border-border bg-background p-2 flex gap-2">
+
+          <Button
+
+            variant="destructive"
+
+            size="sm"
+
+            className="flex-1"
+
+            onClick={onDeleteSelected}
+
+          >
+
+            Delete ({selectedConversationIds.size})
+
+          </Button>
+
+          <Button
+
+            variant="outline"
+
+            size="sm"
+
+            onClick={onSelectAll}
+
+          >
+
+            All
+
+          </Button>
+
+          <Button
+
+            variant="outline"
+
+            size="sm"
+
+            onClick={onClearSelection}
+
+          >
+
+            None
+
+          </Button>
+
+        </div>
+
+      )}
 
     </div>
 
@@ -312,9 +501,17 @@ function ConversationHistoryPanel({
 
 
 
-const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => {
+const Sidebar = ({
+  isOpen,
+  setIsOpen,
+  activeTab,
+  setActiveTab,
+  layoutMode,
+  historyPanelOpen,
+  setHistoryPanelOpen,
+}) => {
 
-  const { conversations, activeConversation, createNewConversation, goToHome, handleConversationClick, setAvailableModels, availableModels, deleteConversation, deleteAllConversations, autoDeleteChats, setAutoDeleteChats, openSettingsTab, conversationSaveStatus } = useApp();
+  const { conversations, activeConversation, createNewConversation, goToHome, handleConversationClick, setAvailableModels, availableModels, deleteConversation, deleteAllConversations, autoDeleteChats, setAutoDeleteChats, openSettingsTab, conversationSaveStatus, selectMode, selectedConversationIds, toggleSelectMode, toggleConversationSelection, selectAllConversations, clearSelection, deleteSelectedConversations, setSearchHighlightId, setRoomGalleryOpen } = useApp();
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
@@ -326,6 +523,10 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
   const [deleteAllPosition, setDeleteAllPosition] = useState({ x: 0, y: 0 });
 
+  const [batchDeleteDialogOpen, setBatchDeleteDialogOpen] = useState(false);
+
+  const [batchDeletePosition, setBatchDeletePosition] = useState({ x: 0, y: 0 });
+
   const [loadedModels, setLoadedModels] = useState([]);
 
 
@@ -333,10 +534,6 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
   const [selectedGpu, setSelectedGpu] = useState('0');
 
   const [showAllConversations, setShowAllConversations] = useState(false);
-
-  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
-
-
 
   const sidebarConversations = conversations.filter((c) => !isOutreachConversationId(c?.id));
 
@@ -399,6 +596,8 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
   const handleTabClick = (tab, event) => {
 
     if (tab === 'settings') {
+
+      setActiveTab('settings');
 
       openSettingsTab('general', { forceWindow: event?.shiftKey === true ? true : undefined });
 
@@ -512,17 +711,15 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
     { id: 'characters', label: 'Characters', icon: <UserCircle className="w-5 h-5" /> },
 
-    { id: 'chess', label: 'Chess', icon: <Swords className="w-5 h-5" /> },
+    { id: 'user-profiles', label: 'User Profiles', icon: <Contact className="w-5 h-5" /> },
 
-    { id: 'market-sim', label: 'Market Simulator', icon: <TrendingUp className="w-5 h-5" /> },
+    { id: 'audio', label: 'Audio', icon: <AudioLines className="w-5 h-5" /> },
 
-    { id: 'watch', label: 'Watch', icon: <Clapperboard className="w-5 h-5" /> },
-
-    { id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> },
+    ...(isModuleEnabled('pool') ? [{ id: 'pool', label: 'Pool', icon: <Heart className="w-5 h-5" /> }] : []),
 
     { id: 'memory', label: 'Memory tools', icon: <BookOpen className="w-5 h-5" /> },
 
-    { id: 'transcript-corpus', label: 'Transcript search', icon: <FolderSearch className="w-5 h-5" /> },
+    { id: 'docs', label: 'Help and guides', icon: <HelpCircle className="w-5 h-5" /> },
 
   ];
 
@@ -547,6 +744,20 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
     onDeleteAllClick,
 
     onDeleteConversationClick,
+
+    selectMode,
+
+    selectedConversationIds,
+
+    onToggleSelectMode: toggleSelectMode,
+
+    onSelectAll: selectAllConversations,
+
+    onClearSelection: clearSelection,
+
+    onDeleteSelected: () => setBatchDeleteDialogOpen(true),
+
+    toggleConversationSelection,
 
   };
 
@@ -580,7 +791,7 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
         className={cn(
 
-          'relative fixed inset-y-0 left-0 z-50 flex flex-col w-[75px] border-r transition-transform duration-300 ease-in-out md:relative md:translate-x-0',
+          'fixed inset-y-0 left-0 z-50 flex w-[75px] flex-col border-r transition-transform duration-300 ease-in-out md:relative md:translate-x-0',
 
           isOpen ? 'translate-x-0 max-md:w-72' : '-translate-x-full max-md:w-72',
 
@@ -610,11 +821,11 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
             }}
 
-            title="Eloquent Home"
+            title="Home"
 
           >
 
-            <img src="/eloquent-logo.png" alt="Eloquent" className="h-7 w-7" />
+            <img src="/eloquent_logo.png" alt="Mirid" className="h-7 w-7 dark:brightness-0 dark:invert" />
 
           </button>
 
@@ -642,7 +853,7 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
                     ? 'bg-secondary text-foreground shadow-[0_10px_25px_rgba(0,0,0,0.65),0_0_14px_rgba(63,231,252,0.18)] border border-primary/50'
 
-                    : 'bg-transparent text-muted-foreground border border-transparent hover:border-border hover:bg-[var(--nano-bg-hover)]'
+                    : 'bg-transparent text-muted-foreground border border-transparent hover:border-border hover:bg-[var(--accent)]'
 
                 )}
 
@@ -676,7 +887,7 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
                   ? 'bg-secondary text-foreground shadow-[0_10px_25px_rgba(0,0,0,0.65),0_0_14px_rgba(63,231,252,0.18)] border border-primary/50'
 
-                  : 'bg-transparent text-muted-foreground border border-transparent hover:border-border hover:bg-[var(--nano-bg-hover)]'
+                  : 'bg-transparent text-muted-foreground border border-transparent hover:border-border hover:bg-[var(--accent)]'
 
               )}
 
@@ -684,6 +895,15 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
               <History className="h-5 w-5" />
 
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setRoomGalleryOpen(true)}
+              title="Background gallery"
+              className="flex items-center justify-center h-10 w-10 rounded-2xl bg-transparent text-muted-foreground border border-transparent hover:border-border hover:bg-[var(--accent)] transition-all duration-200"
+            >
+              <ImageIcon className="h-5 w-5" />
             </button>
 
             {activeTab === 'chat' && (
@@ -714,7 +934,7 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
               title="Settings"
 
-              className="flex items-center justify-center h-10 w-10 rounded-2xl bg-transparent text-muted-foreground border border-transparent hover:border-border hover:bg-[var(--nano-bg-hover)] transition-all duration-150"
+              className="flex items-center justify-center h-10 w-10 rounded-2xl bg-transparent text-muted-foreground border border-transparent hover:border-border hover:bg-[var(--accent)] transition-all duration-150"
 
             >
 
@@ -928,6 +1148,30 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
       />
 
+
+
+      {/* Batch delete confirmation dialog */}
+
+      <DeleteConfirmDialog
+
+        isOpen={batchDeleteDialogOpen}
+
+        onClose={() => setBatchDeleteDialogOpen(false)}
+
+        onConfirm={() => {
+
+          deleteSelectedConversations();
+
+          setBatchDeleteDialogOpen(false);
+
+        }}
+
+        title={`${selectedConversationIds.size} selected chat(s)`}
+
+        position={batchDeletePosition}
+
+      />
+
     </>
 
   );
@@ -937,5 +1181,3 @@ const Sidebar = ({ isOpen, setIsOpen, activeTab, setActiveTab, layoutMode }) => 
 
 
 export default Sidebar;
-
-

@@ -1,0 +1,662 @@
+{
+  "schemaVersion": 1,
+  "resolvedAt": "2026-07-19T04:19:30.884896+00:00",
+  "repositories": {
+    "artifacts": "boneylizardwizard/mirid-runtime-packs",
+    "registrySpace": "boneylizardwizard/mirid-runtime-registry"
+  },
+  "versions": {
+    "llamaCpp": "b10068",
+    "stableDiffusionCpp": "master-782-b290693",
+    "llamaCppPython": "0.3.34",
+    "stableDiffusionCppPython": "0.4.7",
+    "mlx": "0.32.0",
+    "mlxMetal": "0.32.0",
+    "mlxLm": "0.31.3"
+  },
+  "packages": [
+    {
+      "id": "llama-windows-x86_64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-win-cpu-x64.zip",
+        "size": 18007324,
+        "sha256": "01d5f30876acfb4a0be59396710f450213495c7181d8fbcce2fad045835ceb89",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-win-cpu-x64.zip"
+      }
+    },
+    {
+      "id": "llama-windows-x86_64-vulkan",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-win-vulkan-x64.zip",
+        "size": 33271704,
+        "sha256": "4f3e6fd215fdf22d2fd6232a5501f9e791a93d9193db4faf59e391eff90f6169",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-win-vulkan-x64.zip"
+      }
+    },
+    {
+      "id": "llama-windows-x86_64-hip",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "hip",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-win-hip-radeon-x64.zip",
+        "size": 319848079,
+        "sha256": "22eafe69427e451d4631f0ca8e7d16a24acada115a172963908e4d8b1420b99b",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-win-hip-radeon-x64.zip"
+      }
+    },
+    {
+      "id": "llama-windows-aarch64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-aarch64",
+      "accelerator": "cpu",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-win-cpu-arm64.zip",
+        "size": 11856954,
+        "sha256": "2ef6252c9a002b98f0fd47d7187bd5a890c369c72b2c874b2a4e0fb1c7e5271a",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-win-cpu-arm64.zip"
+      }
+    },
+    {
+      "id": "llama-windows-aarch64-opencl",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "windows-aarch64",
+      "accelerator": "opencl-adreno",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-win-opencl-adreno-arm64.zip",
+        "size": 12547972,
+        "sha256": "1298d677c1cd5663df1240979783ce3f5e82b71a412c2c0ca7a489fe4ad6916f",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-win-opencl-adreno-arm64.zip"
+      }
+    },
+    {
+      "id": "llama-macos-aarch64-metal",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-macos-arm64.tar.gz",
+        "size": 10603591,
+        "sha256": "13aa2d40c76ad1dcb8ebeec5f0d2814bf3b2f84a66935c7d4dc6f7cca8e38d68",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-macos-arm64.tar.gz"
+      }
+    },
+    {
+      "id": "llama-linux-x86_64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-ubuntu-x64.tar.gz",
+        "size": 16066558,
+        "sha256": "6bf3d20de562e4df230f1a7c54fb7a06a80c7ff40f5311c953e8255744be4eb2",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-ubuntu-x64.tar.gz"
+      }
+    },
+    {
+      "id": "llama-linux-x86_64-vulkan",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-ubuntu-vulkan-x64.tar.gz",
+        "size": 32028597,
+        "sha256": "713641920dce6c8efb953ebc9ffa309977e200cec5e182e6ad0e8b086203cdc3",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-ubuntu-vulkan-x64.tar.gz"
+      }
+    },
+    {
+      "id": "llama-linux-x86_64-rocm",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-ubuntu-rocm-7.2-x64.tar.gz",
+        "size": 124280101,
+        "sha256": "81735d049c50e18c89de2e6d88f4e2091bf3e148eafafb859deadc4ac977225b",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-ubuntu-rocm-7.2-x64.tar.gz"
+      }
+    },
+    {
+      "id": "llama-linux-aarch64-cpu",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-aarch64",
+      "accelerator": "cpu",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-ubuntu-arm64.tar.gz",
+        "size": 12971827,
+        "sha256": "2c0e4d3d5932e472b6c669090968fdc84a7f6a2940f2e8bb40fa03225bd01960",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-ubuntu-arm64.tar.gz"
+      }
+    },
+    {
+      "id": "llama-linux-aarch64-vulkan",
+      "family": "text",
+      "engine": "llama.cpp",
+      "platform": "linux-aarch64",
+      "accelerator": "vulkan",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "ggml-org/llama.cpp",
+        "revision": "b10068",
+        "asset": "llama-b10068-bin-ubuntu-vulkan-arm64.tar.gz",
+        "size": 26119233,
+        "sha256": "c3c49e6e124a574165ca28317be021b1a12a2ea06977e3eb7daee3eb443eb186",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10068/llama-b10068-bin-ubuntu-vulkan-arm64.tar.gz"
+      }
+    },
+    {
+      "id": "sd-windows-x86_64-cpu",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-win-cpu-x64.zip",
+        "size": 23752890,
+        "sha256": "38da3539d3af6918f4c218fd198ac6e26cd71249e54feb3a491d184d3ca94ea0",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-cpu-x64.zip"
+      }
+    },
+    {
+      "id": "sd-windows-x86_64-vulkan",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-win-vulkan-x64.zip",
+        "size": 37747777,
+        "sha256": "431dd14e12cc5fb1abdc20ab213bbfdf390f18766ed7f54ecfd61d6b467a7915",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-vulkan-x64.zip"
+      }
+    },
+    {
+      "id": "sd-windows-x86_64-rocm-7.1",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "rocm-7.1",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-win-rocm-7.1.1-x64.zip",
+        "size": 328423284,
+        "sha256": "5389d4ba955e2ebfdedd31b3cf3a85f4dc0f3581a80147a99e8a94844d8bbdf3",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-rocm-7.1.1-x64.zip"
+      }
+    },
+    {
+      "id": "sd-windows-x86_64-rocm-7.13",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "windows-x86_64",
+      "accelerator": "rocm-7.13",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-win-rocm-7.13.0-x64.zip",
+        "size": 256533054,
+        "sha256": "58d1428f913505f99ad11f268d98bb2ae0c11594892db40f2113d9df4404c21a",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-win-rocm-7.13.0-x64.zip"
+      }
+    },
+    {
+      "id": "sd-macos-aarch64-metal",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-Darwin-macOS-26.4-arm64.zip",
+        "size": 49381624,
+        "sha256": "61620d31fa787d318ca1ec67ba73ef77b3236bc3a2dc891d66c161c7b075e45c",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-Darwin-macOS-26.4-arm64.zip"
+      }
+    },
+    {
+      "id": "sd-linux-x86_64-cpu",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64.zip",
+        "size": 32351865,
+        "sha256": "16547f8ffb35547f9058e2ea831a2eb36cfcb99594043fc97ad2895c6c485aaf",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64.zip"
+      }
+    },
+    {
+      "id": "sd-linux-x86_64-vulkan",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+        "size": 44910016,
+        "sha256": "e49466d0c0c5f985d9ca9f82c18bb55e8e02885c654210f918ca0c0098ea2829",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip"
+      }
+    },
+    {
+      "id": "sd-linux-x86_64-rocm-7.2",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm-7.2",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.2.1.zip",
+        "size": 166883140,
+        "sha256": "79a561548fac13f5f2e13bde58ade6a2dbb6ba3fe47bcfcf6abfcb4675c4e3c8",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.2.1.zip"
+      }
+    },
+    {
+      "id": "sd-linux-x86_64-rocm-7.13",
+      "family": "image",
+      "engine": "stable-diffusion.cpp",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm-7.13",
+      "kind": "native-archive",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "leejet/stable-diffusion.cpp",
+        "revision": "master-782-b290693",
+        "asset": "sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.13.0.zip",
+        "size": 248614731,
+        "sha256": "f3915030ca2a70f9503baaa42ffc459fb11f237fbdfbb3747e03709122e190c7",
+        "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-782-b290693/sd-master-b290693-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.13.0.zip"
+      }
+    },
+    {
+      "id": "llama-python-windows-x86_64-cpu",
+      "package": "llama-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "abetlen/llama-cpp-python",
+        "revision": "v0.3.34",
+        "asset": "llama_cpp_python-0.3.34-py3-none-win_amd64.whl",
+        "size": 6591398,
+        "sha256": "6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a",
+        "url": "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+      }
+    },
+    {
+      "id": "llama-python-windows-x86_64-vulkan",
+      "package": "llama-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "abetlen/llama-cpp-python",
+        "revision": "v0.3.34-vulkan",
+        "asset": "llama_cpp_python-0.3.34-py3-none-win_amd64.whl",
+        "size": 42323800,
+        "sha256": "8cfeb11af0405a2c76e7b93a677573575c631e8bc176b9af57a49dca7caffb17",
+        "url": "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+      }
+    },
+    {
+      "id": "llama-python-windows-x86_64-hip",
+      "package": "llama-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "hip",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "abetlen/llama-cpp-python",
+        "revision": "v0.3.34-hip-radeon",
+        "asset": "llama_cpp_python-0.3.34-py3-none-win_amd64.whl",
+        "size": 424849374,
+        "sha256": "56aa7725c009d21c5dd84fd81fed35e6c5411b8e8ea818e6d28053275515999c",
+        "url": "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-hip-radeon/llama_cpp_python-0.3.34-py3-none-win_amd64.whl"
+      }
+    },
+    {
+      "id": "llama-python-macos-aarch64-metal",
+      "package": "llama-cpp-python",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "abetlen/llama-cpp-python",
+        "revision": "v0.3.34-metal",
+        "asset": "llama_cpp_python-0.3.34-py3-none-macosx_11_0_arm64.whl",
+        "size": 17636420,
+        "sha256": "e451b30169dd42965a2a1088b0a4614cc2a90692d6991cd4b84e8336576b862d",
+        "url": "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-metal/llama_cpp_python-0.3.34-py3-none-macosx_11_0_arm64.whl"
+      }
+    },
+    {
+      "id": "llama-python-linux-x86_64-cpu",
+      "package": "llama-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "abetlen/llama-cpp-python",
+        "revision": "v0.3.34",
+        "asset": "llama_cpp_python-0.3.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "size": 23201155,
+        "sha256": "f34c26f51ec4fd4e0355c5384b7056f877bf7a38c9d7897a46c78118ca900366",
+        "url": "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/llama_cpp_python-0.3.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+      }
+    },
+    {
+      "id": "llama-python-linux-x86_64-vulkan",
+      "package": "llama-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "abetlen/llama-cpp-python",
+        "revision": "v0.3.34-vulkan",
+        "asset": "llama_cpp_python-0.3.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "size": 130139024,
+        "sha256": "8e8e6bc57837d2d738331aac9401468cb98de22456d156dcf8012bcd42d32d45",
+        "url": "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-vulkan/llama_cpp_python-0.3.34-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+      }
+    },
+    {
+      "id": "llama-python-linux-x86_64-hip",
+      "package": "llama-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "abetlen/llama-cpp-python",
+        "revision": "v0.3.34-hip-radeon",
+        "asset": "llama_cpp_python-0.3.34-py3-none-manylinux_2_35_x86_64.whl",
+        "size": 844030329,
+        "sha256": "dfdfef87658de738a7a87e1113b982f816bb519d7092208701154682683f6be0",
+        "url": "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-hip-radeon/llama_cpp_python-0.3.34-py3-none-manylinux_2_35_x86_64.whl"
+      }
+    },
+    {
+      "id": "mlx-python-macos-aarch64-metal",
+      "package": "mlx",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "PyPI/mlx",
+        "revision": "0.32.0",
+        "asset": "mlx-0.32.0-cp312-cp312-macosx_14_0_arm64.whl",
+        "size": 558889,
+        "sha256": "ea5a594355c89c0095eaba413fd39d4caa8642fa13432dfb0c9354d141046467",
+        "url": "https://files.pythonhosted.org/packages/aa/a6/489176d8a2a06137a299910057cc44dc3fccfb73151f7562fea2b75894d9/mlx-0.32.0-cp312-cp312-macosx_14_0_arm64.whl"
+      }
+    },
+    {
+      "id": "mlx-metal-macos-aarch64-metal",
+      "package": "mlx-metal",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "PyPI/mlx-metal",
+        "revision": "0.32.0",
+        "asset": "mlx_metal-0.32.0-py3-none-macosx_14_0_arm64.whl",
+        "size": 40824649,
+        "sha256": "5b64b20ac24b0c401f489de01e8209edc4d372125201f19314e6f39e385322aa",
+        "url": "https://files.pythonhosted.org/packages/d6/ef/d74ae99cfe9ddb59fd08abd14f47754c3d199291a93756903fa595b31b8a/mlx_metal-0.32.0-py3-none-macosx_14_0_arm64.whl"
+      }
+    },
+    {
+      "id": "mlx-lm-macos-aarch64-metal",
+      "package": "mlx-lm",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "kind": "python-wheel",
+      "validation": "source-sha256-verified",
+      "source": {
+        "repository": "PyPI/mlx-lm",
+        "revision": "0.31.3",
+        "asset": "mlx_lm-0.31.3-py3-none-any.whl",
+        "size": 408890,
+        "sha256": "758cfddf1180053b7613db76fad3d246a331a2a905808e1164a275621fc983b8",
+        "url": "https://files.pythonhosted.org/packages/90/02/9a67b8e4f87e3e2e5cd7b1ad79304b93c09a0db6af34bee75e6551c06c60/mlx_lm-0.31.3-py3-none-any.whl"
+      }
+    }
+  ],
+  "bindingBuilds": [
+    {
+      "id": "sd-python-windows-x86_64-cpu",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "cpu",
+      "cmakeArgs": [
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ],
+      "version": "0.4.7",
+      "source": {
+        "filename": "stable_diffusion_cpp_python-0.4.7.tar.gz",
+        "size": 20561087,
+        "sha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+        "url": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz"
+      }
+    },
+    {
+      "id": "sd-python-windows-x86_64-vulkan",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "vulkan",
+      "cmakeArgs": [
+        "-DSD_VULKAN=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ],
+      "version": "0.4.7",
+      "source": {
+        "filename": "stable_diffusion_cpp_python-0.4.7.tar.gz",
+        "size": 20561087,
+        "sha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+        "url": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz"
+      }
+    },
+    {
+      "id": "sd-python-windows-x86_64-hip",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "windows-x86_64",
+      "accelerator": "hip",
+      "requires": [
+        "AMD HIP SDK",
+        "GPU_TARGETS",
+        "AMDGPU_TARGETS"
+      ],
+      "cmakeArgs": [
+        "-DSD_HIPBLAS=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ],
+      "version": "0.4.7",
+      "source": {
+        "filename": "stable_diffusion_cpp_python-0.4.7.tar.gz",
+        "size": 20561087,
+        "sha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+        "url": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz"
+      }
+    },
+    {
+      "id": "sd-python-macos-aarch64-metal",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "macos-aarch64",
+      "accelerator": "metal",
+      "requires": [
+        "Apple Silicon",
+        "Xcode command-line tools"
+      ],
+      "cmakeArgs": [
+        "-DSD_METAL=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ],
+      "version": "0.4.7",
+      "source": {
+        "filename": "stable_diffusion_cpp_python-0.4.7.tar.gz",
+        "size": 20561087,
+        "sha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+        "url": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz"
+      }
+    },
+    {
+      "id": "sd-python-linux-x86_64-cpu",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "cpu",
+      "cmakeArgs": [
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ],
+      "version": "0.4.7",
+      "source": {
+        "filename": "stable_diffusion_cpp_python-0.4.7.tar.gz",
+        "size": 20561087,
+        "sha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+        "url": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz"
+      }
+    },
+    {
+      "id": "sd-python-linux-x86_64-vulkan",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "vulkan",
+      "requires": [
+        "Vulkan SDK"
+      ],
+      "cmakeArgs": [
+        "-DSD_VULKAN=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ],
+      "version": "0.4.7",
+      "source": {
+        "filename": "stable_diffusion_cpp_python-0.4.7.tar.gz",
+        "size": 20561087,
+        "sha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+        "url": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz"
+      }
+    },
+    {
+      "id": "sd-python-linux-x86_64-rocm",
+      "package": "stable-diffusion-cpp-python",
+      "platform": "linux-x86_64",
+      "accelerator": "rocm",
+      "requires": [
+        "ROCm",
+        "GPU_TARGETS",
+        "AMDGPU_TARGETS"
+      ],
+      "cmakeArgs": [
+        "-DSD_HIPBLAS=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DSD_BUILD_EXAMPLES=OFF"
+      ],
+      "version": "0.4.7",
+      "source": {
+        "filename": "stable_diffusion_cpp_python-0.4.7.tar.gz",
+        "size": 20561087,
+        "sha256": "998d1957260dd5ae4e18a8acc0c14b0a8757aaa9f96515197b6d5bbf46df9282",
+        "url": "https://files.pythonhosted.org/packages/b1/06/300aba9ac36e2166fbe45b4a29039a76f725ef08796f5472caf3e8c4e08d/stable_diffusion_cpp_python-0.4.7.tar.gz"
+      }
+    }
+  ]
+}

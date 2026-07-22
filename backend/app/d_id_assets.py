@@ -8,12 +8,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Literal
 
+from .runtime_paths import data_path
+
 Kind = Literal["avatar", "background"]
 
 
 def _path() -> Path:
-    root = Path(__file__).resolve().parents[2]
-    p = root / "backend" / "data" / "d_id_saved_assets.json"
+    p = data_path("d_id_saved_assets.json")
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 

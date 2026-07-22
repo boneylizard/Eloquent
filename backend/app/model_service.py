@@ -9,7 +9,13 @@ import threading
 import time
 from typing import Dict, Any, Optional
 from llama_cpp import Llama
+from llama_cpp.llama_chat_format import MTMDChatHandler
 import gc
+
+try:
+    from .vision_support import build_vision_completion_options, build_vision_messages, parse_json_object
+except ImportError:
+    from vision_support import build_vision_completion_options, build_vision_messages, parse_json_object
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +69,99 @@ class ModelService:
             else:
                 conn.close()
 
+    def _normalize_size(self, size_str: str) -> str:
+        """Normalize size strings for comparison (e.g., '450m' == '0.45b')."""
+        size_str = size_str.lower().replace('_', '').replace('-', '')
+        if size_str.endswith('m'):
+            try:
+                val = float(size_str[:-1]) / 1000
+                return f"{val}b"
+            except:
+                return size_str
+        elif size_str.endswith('b'):
+            return size_str
+        return size_str
+
+    def _find_matching_mmproj(self, model_path: str) -> Optional[str]:
+        """
+        Finds a matching mmproj file for a given model by parsing the model size
+        (e.g., 4b, 12b, 27b, 450m) from the filenames.
+        Supports Gemma and LFM2 (Liquid AI) models.
+        """
+        import re
+        from pathlib import Path
+        
+        model_dir = Path(model_path).parent
+        model_name = Path(model_path).stem.lower()
+        logging.info(f"🔍 Searching for mmproj to match model: {model_name}")
+
+        # Detect model family
+        is_gemma = "gemma" in model_name
+        is_lfm2 = any(x in model_name for x in ["lfm2", "liquid", "lfm-2"])
+
+        if not (is_gemma or is_lfm2):
+            logging.warning(f"Model '{model_name}' is not a recognized vision model family (gemma, lfm2). Vision support may not work correctly.")
+
+        # 1. Extract size from the main model's filename.
+        model_size_match = re.search(r'-(\d+(?:\.\d+)?[bm])-', model_name)
+        if not model_size_match:
+            model_size_match = re.search(r'(\d+(?:\.\d+)?[bm])', model_name)
+        if not model_size_match:
+            logging.warning(f"Could not determine model size from filename: {model_name}. Vision support will be disabled.")
+            return None
+        
+        model_size = model_size_match.group(1).lower()
+        logging.info(f"🔍 Determined model size to be: '{model_size}'")
+
+        # 2. Find all potential mmproj files in the directory.
+        mmproj_files = list(model_dir.glob("mmproj-*.gguf"))
+        if not mmproj_files:
+            logging.info("🔍 No mmproj files found in directory.")
+            return None
+
+        logging.info(f"🔍 Found potential mmproj files: {[f.name for f in mmproj_files]}")
+
+        model_is_extract = "extract" in model_name
+        matching_projectors = []
+        for mmproj_file in mmproj_files:
+            mmproj_name = mmproj_file.name.lower()
+            
+            mmproj_size_match = re.search(r'-(\d+(?:\.\d+)?[bm])-', mmproj_name)
+            if not mmproj_size_match:
+                mmproj_size_match = re.search(r'(\d+(?:\.\d+)?[bm])', mmproj_name)
+            
+            if mmproj_size_match:
+                mmproj_size = mmproj_size_match.group(1).lower()
+                logging.info(f"🔍 Checking '{mmproj_name}' (size: {mmproj_size}) against model size '{model_size}'")
+                
+                norm_model = self._normalize_size(model_size)
+                norm_mmproj = self._normalize_size(mmproj_size)
+                
+                if norm_model == norm_mmproj:
+                    family_match = (
+                        (is_gemma and "gemma" in mmproj_name) or
+                        (is_lfm2 and any(x in mmproj_name for x in ["lfm2", "liquid", "lfm-2"]))
+                    )
+                    
+                    if family_match or (not is_gemma and not is_lfm2):
+                        variant_matches = ("extract" in mmproj_name) == model_is_extract
+                        precision_score = 2 if "q8_0" in mmproj_name else (1 if "f16" in mmproj_name else 0)
+                        matching_projectors.append((variant_matches, precision_score, mmproj_file))
+
+        if matching_projectors:
+            matching_projectors.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            variant_matches, _, selected = matching_projectors[0]
+            if not variant_matches:
+                logging.warning(
+                    f"No projector explicitly matching {'Extract' if model_is_extract else 'base'} "
+                    f"was found; using {selected.name}"
+                )
+            logging.info(f"Found matching vision projector: {selected.name}")
+            return str(selected)
+
+        logging.error(f"Could not find a matching mmproj file for model size '{model_size}'.")
+        return None
+
     def load_model(self, model_name, model_path, gpu_id, context_length, params, gpu_usage_mode='split_services'):
         """Load a model with the correct environment and parameters for the selected GPU mode."""
         key = (model_name, gpu_id)
@@ -112,6 +211,24 @@ class ModelService:
         if is_embedding_model:
             model_params['embedding'] = True
             logging.info(f"✅ Loading '{model_name}' as an embedding model.")
+        
+        # LFM2-VL requires the GGUF's embedded chat template. MTMD handles both
+        # that template and the companion vision projector.
+        model_name_lower = model_name.lower()
+        is_lfm2_vision = any(x in model_name_lower for x in ["lfm2", "liquid", "lfm-2"]) and ("vision" in model_name_lower or "vl" in model_name_lower or "extract" in model_name_lower)
+        
+        chat_handler = None
+        if is_lfm2_vision:
+            clip_path = model_params.get("clip_model_path")
+            try:
+                if not clip_path:
+                    raise ValueError("No matching mmproj file was found for the LFM2 vision model")
+                chat_handler = MTMDChatHandler(clip_model_path=clip_path)
+                model_params.pop("clip_model_path", None)
+                logging.info("LFM2.5-VL loaded with MTMD and its embedded chat template")
+            except Exception as e:
+                logging.error(f"Could not attach the LFM2.5-VL MTMD handler: {e}")
+                raise
 
         # Add progress logging for large models
         model_size_mb = os.path.getsize(model_path) / (1024 * 1024) if os.path.exists(model_path) else 0
@@ -262,6 +379,7 @@ class ModelService:
             try:
                 model = Llama(
                     model_path=model_path,
+                    chat_handler=chat_handler,
                     **model_params
                 )
             except Exception as llama_error:
@@ -278,6 +396,7 @@ class ModelService:
                         logging.info(f"🔄 [ModelService] Retrying with fallback parameters (no tensor_split)...")
                         model = Llama(
                             model_path=model_path,
+                            chat_handler=chat_handler,
                             **fallback_params
                         )
                         logging.info(f"✅ [ModelService] Fallback loading successful without tensor_split!")
@@ -363,10 +482,11 @@ class ModelService:
             model_info = self.models[key]
             model = model_info['model']
             
-            logging.info(f"🔄 [ModelService] Running generation with kwargs: {kwargs}")
+            logging.info("[ModelService] Generation parameter keys: %s", sorted(kwargs.keys()))
             
             # Create a mutable copy of the parameters
             generation_params = kwargs.copy()
+            chat_messages = generation_params.pop('messages', None)
             
             # Add default parameters if not present
             if 'temperature' not in generation_params:
@@ -382,18 +502,27 @@ class ModelService:
 
             if is_streaming:
                 logging.info(f"🔄 [ModelService] Using create_completion with stream=True for llama.cpp")
-                completion_generator = model.create_completion(**generation_params)
+                completion_generator = (
+                    model.create_chat_completion(messages=chat_messages, **generation_params)
+                    if chat_messages is not None
+                    else model.create_completion(**generation_params)
+                )
                 for chunk in completion_generator:
                     # Extract text from the chunk
                     if isinstance(chunk, dict) and 'choices' in chunk and chunk['choices']:
-                        text = chunk['choices'][0].get('text', '')
+                        choice = chunk['choices'][0]
+                        text = choice.get('text', '') or (choice.get('delta') or {}).get('content', '')
                         if text:
                             # Send immediately without buffering
                             yield chunk
             else:
                 logging.info(f"🔄 [ModelService] Using create_completion with stream=False for llama.cpp")
                 # In non-streaming mode, we call the model and then yield the single, complete result.
-                result = model.create_completion(**generation_params)
+                result = (
+                    model.create_chat_completion(messages=chat_messages, **generation_params)
+                    if chat_messages is not None
+                    else model.create_completion(**generation_params)
+                )
                 yield result
                 
         except Exception as e:
@@ -415,6 +544,100 @@ class ModelService:
             return {"status": "success", "embedding": embedding_result}
         except Exception as e:
             logging.error(f"Embedding error: {e}")
+            return {"error": str(e)}
+
+    def _resize_image_base64(self, base64_str: str, max_size: int = 1280) -> str:
+        """Resize base64 image to limit visual tokens from vision encoder."""
+        try:
+            import base64
+            from io import BytesIO
+            from PIL import Image
+            
+            # Decode base64
+            if base64_str.startswith('data:'):
+                base64_str = base64_str.split(',', 1)[1]
+            image_data = base64.b64decode(base64_str)
+            
+            # Open and resize
+            img = Image.open(BytesIO(image_data))
+            if max(img.width, img.height) > max_size:
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            
+            # Encode back to base64
+            buffered = BytesIO()
+            img.save(buffered, format="PNG")
+            resized_b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            return resized_b64
+        except Exception as e:
+            logging.warning(f"Failed to resize image, using original: {e}")
+            return base64_str
+
+    def vision_extract(self, model_name, gpu_id, image_base64, schema_yaml=None, max_tokens=512, temperature=0.0, vision_mode="auto", repeat_penalty=1.0):
+        """
+        Run vision inference using LFM2 or other vision model.
+        
+        Args:
+            vision_mode: "auto" | "extract" | "chat"
+                - "extract": Structured JSON extraction (for -Extract models)
+                - "chat": General vision conversation (for base models)
+                - "auto": Detect from model name
+        """
+        # Vision models are loaded on GPU 0 at startup. Search across all GPUs.
+        key = (model_name, gpu_id)
+        if key not in self.models:
+            # Fallback: search for model on any GPU (vision models typically on GPU 0)
+            found_key = None
+            for k in self.models:
+                if k[0] == model_name:
+                    found_key = k
+                    break
+            if found_key is None:
+                return {"error": f"Model {model_name} not loaded on any GPU"}
+            key = found_key
+            logger.info(f"🔍 [Vision Extract] Model {model_name} found on GPU {key[1]} (requested GPU {gpu_id})")
+        
+        model_info = self.models[key]
+        model = model_info['model']
+        
+        model_name_lower = model_name.lower()
+        is_extract_model = "extract" in model_name_lower
+        
+        # Auto-detect mode from model name
+        if vision_mode == "auto":
+            vision_mode = "extract" if is_extract_model else "chat"
+        
+        try:
+            # Resize before SigLIP2 encoding. This keeps image work predictable
+            # without damaging ordinary screenshots and photographs.
+            image_base64 = self._resize_image_base64(image_base64, max_size=896)
+            
+            messages = build_vision_messages(image_base64, schema_yaml, vision_mode)
+
+            completion_options = build_vision_completion_options(
+                messages,
+                vision_mode,
+                max_tokens,
+                temperature,
+                repeat_penalty,
+            )
+            response = model.create_chat_completion(**completion_options)
+            
+            if response and response.get('choices'):
+                content = response['choices'][0]['message']['content']
+                
+                if vision_mode == "extract":
+                    parsed = parse_json_object(content)
+                    if parsed is not None:
+                        return {"status": "success", "extraction": parsed, "raw": content}
+                    return {"status": "success", "extraction": None, "raw": content, "warning": "Output was not valid JSON"}
+                else:
+                    # Return as text description for chat mode
+                    return {"status": "success", "description": content, "raw": content}
+            else:
+                return {"error": "Vision model returned no valid response"}
+                
+        except Exception as e:
+            logging.error(f"Vision inference error: {e}", exc_info=True)
             return {"error": str(e)}
 
 def send_msg(sock, data):
@@ -627,6 +850,79 @@ while True:
                 client.close()
             except Exception as e:
                 logging.error(f"❌ [ModelService] Error in embed: {e}")
+                send_msg(client, {"error": str(e)})
+                client.close()
+
+        elif action == 'vision_extract':
+            logging.info(f"🔄 [ModelService] Processing vision_extract request for {params.get('model_name', 'unknown')}")
+            model_name = params.get('model_name')
+            gpu_id = params.get('gpu_id')
+            image_base64 = params.get('image_base64')
+            schema_yaml = params.get('schema_yaml')
+            max_tokens = params.get('max_tokens', 512)
+            temperature = params.get('temperature', 0.0)
+            repeat_penalty = params.get('repeat_penalty', 1.0)
+            vision_mode = params.get('vision_mode', 'auto')
+            model_path = params.get('model_path')
+            requested_ctx = params.get('context_length', 32768)
+            
+            if not model_name or gpu_id is None or not image_base64:
+                error_msg = f"Missing required parameters for vision_extract: model_name={model_name}, gpu_id={gpu_id}, image_base64={bool(image_base64)}"
+                logging.error(f"❌ [ModelService] {error_msg}")
+                send_msg(client, {"error": error_msg})
+                client.close()
+                continue
+            
+            try:
+                # Check if model needs reload (wrong context or not loaded)
+                key = (model_name, gpu_id)
+                needs_reload = False
+                if key not in service.models:
+                    needs_reload = True
+                    logging.info(f"🔄 [Vision Extract] Model not loaded, will load")
+                else:
+                    current_ctx = service.models[key].get('context_length', 0)
+                    if current_ctx < requested_ctx:
+                        needs_reload = True
+                        logging.info(f"🔄 [Vision Extract] Model loaded with context {current_ctx}, need {requested_ctx}, will reload")
+                
+                if needs_reload and model_path and os.path.exists(model_path):
+                    logging.info(f"🔄 [Vision Extract] Loading {model_name} on GPU {gpu_id} with context {requested_ctx}")
+                    
+                    # Find matching mmproj (CLIP/MoonViT) for vision processing
+                    clip_model_path = service._find_matching_mmproj(model_path)
+                    load_params = {'n_gpu_layers': -1}
+                    if clip_model_path:
+                        load_params['clip_model_path'] = clip_model_path
+                        logging.info(f"🔧 [Vision Extract] Found vision encoder: {clip_model_path}")
+                    else:
+                        raise ValueError("No matching vision projector was found for this model")
+                    
+                    load_result = service.load_model(
+                        model_name=model_name,
+                        model_path=model_path,
+                        gpu_id=gpu_id,
+                        context_length=requested_ctx,
+                        params=load_params,
+                        gpu_usage_mode='split_services'
+                    )
+                    logging.info(f"🔄 [Vision Extract] Load result: {load_result}")
+                
+                result = service.vision_extract(
+                    model_name=model_name,
+                    gpu_id=gpu_id,
+                    image_base64=image_base64,
+                    schema_yaml=schema_yaml,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    vision_mode=vision_mode,
+                    repeat_penalty=repeat_penalty,
+                )
+                logging.info(f"✅ [ModelService] Vision extract completed, result type: {type(result)}")
+                send_msg(client, result)
+                client.close()
+            except Exception as e:
+                logging.error(f"❌ [ModelService] Error in vision_extract: {e}")
                 send_msg(client, {"error": str(e)})
                 client.close()
 

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mirid Docs — Begin without guesswork</title>
+    <meta name="description" content="Install Mirid, connect a provider or local GGUF model, create characters, use voice and connect other applications.">
+    <meta name="theme-color" content="#090b0a">
+    <link rel="canonical" href="https://mirid.ai/docs/">
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <nav class="nav shell" aria-label="Main navigation">
+        <a class="brand" href="/" aria-label="Mirid home"><img src="/assets/mirid-mark.svg" alt="" width="34" height="34"><span>Mirid</span></a>
+        <div class="nav-links"><a href="/#why-mirid">Why Mirid</a><a href="/docs/index.html" aria-current="page">Docs</a><a href="https://github.com/boneylizard/Eloquent">Source</a><a class="button compact" href="/download/index.html">Download for Windows</a></div>
+      </nav>
+    </header>
+
+    <main id="main">
+      <header class="page-hero">
+        <div class="shell">
+          <p class="eyebrow">Mirid docs</p>
+          <h1>Begin without guesswork.</h1>
+          <p>This is the short route from installer to conversation. Mirid exposes deeper controls when you need them; none are a toll gate on your way in.</p>
+        </div>
+      </header>
+
+      <div class="content-layout shell">
+        <nav class="side-nav" aria-label="On this page">
+          <a href="#first-run">First launch</a>
+          <a href="#api-only">API-only</a>
+          <a href="#local-model">Local models</a>
+          <a href="#characters">Characters</a>
+          <a href="#voice-images">Voice & images</a>
+          <a href="#server">Other apps</a>
+          <a href="#troubleshooting">Troubleshooting</a>
+        </nav>
+
+        <article class="content">
+          <section id="first-run">
+            <h2>First launch</h2>
+            <p>Install Mirid, open it, and leave the window running while the local engine arrives. Mirid downloads roughly 3.1 GB, verifies the archive, and extracts a runtime of about 9 GB.</p>
+            <ol>
+              <li>Keep about 14 GB of disk space free during setup.</li>
+              <li>Keep Mirid open until the progress screen completes.</li>
+              <li>If the connection stops, close and reopen Mirid. The download resumes rather than starting again.</li>
+              <li>When onboarding appears, choose hosted APIs, a local model, or both.</li>
+            </ol>
+            <div class="notice"><strong>No GPU?</strong> Mirid should still open. Choose API-only use for the lightest path, or run smaller GGUF models on the CPU if you are comfortable waiting longer.</div>
+          </section>
+
+          <section id="api-only">
+            <h2>Use hosted models</h2>
+            <p>Hosted providers are the simplest way to begin on an ordinary laptop. Mirid does not sell an account of its own; you add a key issued by the provider you choose.</p>
+            <ol>
+              <li>Open <strong>Settings → Providers</strong>.</li>
+              <li>Choose a provider and follow its link to create or view an API key.</li>
+              <li>Paste the key into Mirid, then refresh that provider’s model list.</li>
+              <li>Select a model in the model library and return to the conversation.</li>
+            </ol>
+            <p>NanoGPT is highlighted for broad text, image and audio access. OpenRouter is useful when you want one account across many model developers. Direct provider connections remain available when you prefer them.</p>
+            <div class="notice"><strong>Subscription access is not the same as an API key.</strong> A consumer chat subscription from a provider may not include API credit. Mirid shows links and guidance, but billing remains between you and that provider.</div>
+          </section>
+
+          <section id="local-model">
+            <h2>Run a local model</h2>
+            <p>Mirid runs GGUF text models through llama.cpp. You can select a file already on your machine or use the Hugging Face downloader.</p>
+            <h3>Choose a file you already have</h3>
+            <ol>
+              <li>Open <strong>Settings → Local models</strong>.</li>
+              <li>Select your <code class="code-block">.gguf</code> file.</li>
+              <li>Review the estimated memory use at the context lengths Mirid offers.</li>
+              <li>Choose a context that fits your available memory, then load the model.</li>
+            </ol>
+            <h3>Download from Hugging Face</h3>
+            <p>Paste a repository name such as <code>publisher/model-name</code>. If you know the exact quantisation, append its filename or choose it from the files Mirid discovers. A Q4 quantisation is often a sensible first attempt on modest hardware.</p>
+            <p>Model weights are separate from Mirid’s 3.1 GB runtime and can range from a few gigabytes to tens of gigabytes. The model’s repository should state its licence and intended use.</p>
+          </section>
+
+          <section id="characters">
+            <h2>Create or import a character</h2>
+            <p>Open the character library to start from a blank character, build one through Mirid’s guided creator, or import a compatible character card.</p>
+            <ul>
+              <li><strong>Guided creator:</strong> describe the idea in ordinary language and refine identity, voice, boundaries and opening scene through conversation.</li>
+              <li><strong>Character card:</strong> import supported PNG or JSON cards used by the wider roleplay ecosystem.</li>
+              <li><strong>Dataset import:</strong> map a collection of character records when its columns contain recognisable names, descriptions, greetings or example dialogue.</li>
+            </ul>
+            <p>Read imported material before using it. Character repositories are community content; their quality, permissions and safety vary.</p>
+          </section>
+
+          <section id="voice-images">
+            <h2>Add voice and images</h2>
+            <h3>Hear a reply</h3>
+            <p>Choose a voice in <strong>Settings → Audio</strong>, then press the play control beneath a message. Mirid shows that synthesis has started while the audio engine works. Kokoro is included in the core runtime; larger voice engines remain optional downloads.</p>
+            <h3>Bring images into chat</h3>
+            <p>Use the image attachment control to select one or more files, or drag images directly into the message area. The active model must support vision for the images to affect its reply.</p>
+            <h3>Generate an image</h3>
+            <p>Configure a supported hosted image model or a local Stable Diffusion model. Local image generation benefits greatly from a compatible GPU and requires additional model files.</p>
+          </section>
+
+          <section id="server">
+            <h2>Connect other applications</h2>
+            <p>Mirid can expose an OpenAI-compatible local endpoint so software such as SillyTavern can use the model currently available through Mirid.</p>
+            <ol>
+              <li>Open <strong>Settings → Server</strong> and enable the compatibility server.</li>
+              <li>Copy the endpoint address and access key shown by Mirid.</li>
+              <li>In the other application, choose an OpenAI-compatible or custom endpoint.</li>
+              <li>Paste the address and key, then select the Mirid model it discovers.</li>
+            </ol>
+            <p>Only expose the server beyond your own machine if you understand the network and authentication settings. A local endpoint can control models and incur provider charges using your configured credentials.</p>
+          </section>
+
+          <section id="troubleshooting">
+            <h2>Troubleshooting</h2>
+            <h3>The first launch appears stuck</h3>
+            <p>Large downloads can sit at one percentage while a chunk completes. Leave Mirid open. If there is no network activity for several minutes, relaunch it to resume. Verification begins after the download and can also take time on slower storage.</p>
+            <h3>Mirid opens an Edge “page not found” screen</h3>
+            <p>That indicates a development or incomplete build rather than the release installer. Remove that copy and install the current release from the download page. The production app embeds its interface and does not need a web server.</p>
+            <h3>A local model will not load</h3>
+            <p>Choose a smaller quantisation or context length. The memory estimate includes the model and context cache, and Windows still needs room for Mirid and other applications.</p>
+            <h3>A hosted model fails</h3>
+            <p>Confirm the provider key, available credit and exact model selection. If model rotation is enabled, make sure at least one model is included in the rotation—or turn rotation off to use the single selected model.</p>
+          </section>
+        </article>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell">
+        <div class="footer-grid"><div class="footer-brand"><a class="brand" href="/"><img src="/assets/mirid-mark.svg" alt="" width="34" height="34"><span>Mirid</span></a><p>Local and hosted AI, made approachable. Built independently in Australia.</p></div><nav class="footer-links" aria-label="Footer navigation"><a href="/download/index.html">Download</a><a href="/docs/index.html">Docs</a><a href="/privacy/index.html">Privacy</a><a href="/licence/index.html">Licence</a><a href="https://github.com/boneylizard/Eloquent">GitHub</a></nav></div>
+        <div class="footer-meta"><span>© 2025–2026 Bernard Peter Fitzgerald</span><span>Mirid is independent software. Provider names belong to their respective owners.</span></div>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -4,16 +4,12 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Layers, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages, Brain, Clock, AudioLines, Replace, ScrollText, MoreVertical, Heart, ShieldAlert } from 'lucide-react';
+import { Loader2, Send, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages, Brain, Clock, AudioLines, Replace, ScrollText, MoreVertical, Heart, ShieldAlert, History } from 'lucide-react';
 import { getSummaries, deleteSummary } from '../utils/summaryUtils';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import CharacterSelector from './CharacterSelector';
-import ModelSelector from './ModelSelector';
-import SimpleChatImageButton from './SimpleChatImageButton';
 import SimpleChatImageMessage from './SimpleChatImageMessage';
 import RAGIndicator from './RAGIndicator';
 import { Switch } from '@/components/ui/switch';
@@ -28,24 +24,15 @@ import {
 } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Slider } from '@/components/ui/slider';
-import ChatImageUploadButton from './ChatImageUploadButton';
 import FocusModeOverlay from './FocusModeOverlay';
 import AlignmentPanel from './AlignmentPanel';
 import CallModeOverlay from './CallModeOverlay';
-import { useIntensity } from '../contexts/IntensityContext';
-import { subscribeDualOverlaySync, broadcastDualOverlayMessage, isOverlayWindowOpen } from '../utils/dualOverlayWindow';
-import CompanionPresenceOverlay from './intensity/CompanionPresenceOverlay';
-import CommitmentLock from './intensity/CommitmentLock';
-import SessionHistoryDashboard from './intensity/SessionHistoryDashboard';
-import IntensityControlPanel from './intensity/IntensityControlPanel';
-import PresenceBadge from './intensity/PresenceBadge';
 import VoiceQuickPicker from './VoiceQuickPicker';
 import CodeBlock from './CodeBlock';
 import ChatInputForm from './ChatInputForm';
 import ChatMessage from './ChatMessage';
 import { applyReasoningMetaToBotMessage, stripThinkTags } from '../utils/thinkStreamParser';
 import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
-import NanoGptComposerToolbar from './NanoGptComposerToolbar';
 import {
   attachApiBotSpeakerMeta,
   resolveEndpointDisplay,
@@ -62,26 +49,11 @@ import {
   readNanoGptModelsCache,
   subscribeNanoGptModelsCache,
 } from '../utils/nanoGptModelsCache';
-import CodeEditorOverlay from './CodeEditorOverlay';
 import BookWriterOverlay from './BookWriterOverlay';
-import ForensicLinguistics from './ForensicLinguistics';
-import StoryTracker, { getStoryTrackerContext } from './StoryTracker';
-import ChoiceGenerator from './ChoiceGenerator';
 import ControlPanel from './ControlPanel';
 import AuthorsNotePanel from './AuthorsNotePanel';
 import { getBackendUrl } from '../config/api';
-import {
-  loadWebSearchMode,
-  saveWebSearchMode,
-  loadWebSearchArticleUrls,
-  saveWebSearchArticleUrls,
-  loadWebSearchSite,
-  saveWebSearchSite,
-  loadWebSearchStrategy,
-  saveWebSearchStrategy,
-  WEB_SEARCH_STRATEGIES,
-  webSearchPathLabel,
-} from '../utils/webSearchResearch';
+import { webSearchPathLabel } from '../utils/webSearchResearch';
 import { useMemory } from '../contexts/MemoryContext';
 import * as indexedDbStorage from '../utils/indexedDbStorage';
 import {
@@ -196,82 +168,24 @@ function countGlobalRegexMatches(text, re) {
 const WebSearchControl = ({
   webSearchEnabled,
   setWebSearchEnabled,
-  webSearchMode,
-  setWebSearchMode,
-  webSearchStrategy,
-  setWebSearchStrategy,
-  webSearchArticleUrls,
-  setWebSearchArticleUrls,
-  webSearchSite,
-  setWebSearchSite,
   searchStatusLabel,
   isGenerating,
   isRecording,
   isTranscribing,
 }) => (
-  <div className="flex flex-col gap-2 min-w-0">
-    <div className="flex flex-wrap items-center gap-2 px-2 py-1 bg-muted/50 rounded-md border">
-      <Switch
-        id="web-search"
-        checked={webSearchEnabled}
-        onCheckedChange={setWebSearchEnabled}
-        disabled={isGenerating || isRecording || isTranscribing}
-      />
-      <Label htmlFor="web-search" className="text-xs flex items-center gap-1 cursor-pointer">
-        <Globe size={14} className={webSearchEnabled ? 'text-blue-500' : 'text-muted-foreground'} />
-        Web Search
-      </Label>
-      {webSearchEnabled && (
-        <>
-          <select
-            className="text-xs rounded border bg-background px-1.5 py-0.5 max-w-[6.5rem]"
-            value={webSearchStrategy || 'auto'}
-            onChange={(e) => setWebSearchStrategy(e.target.value)}
-            disabled={isGenerating || isRecording || isTranscribing}
-            title="Auto: native API search when available, else Eloquent prefetch"
-          >
-            {WEB_SEARCH_STRATEGIES.map((s) => (
-              <option key={s} value={s}>
-                {s === 'auto' ? 'Auto' : s.charAt(0).toUpperCase() + s.slice(1)}
-              </option>
-            ))}
-          </select>
-          <select
-            className="text-xs rounded border bg-background px-1.5 py-0.5 max-w-[7rem]"
-            value={webSearchMode || ''}
-            onChange={(e) => setWebSearchMode(e.target.value)}
-            disabled={isGenerating || isRecording || isTranscribing}
-            title="Normal: DuckDuckGo snippets. Articles/Deep: optional URL list below (not your transcript folder)."
-          >
-            <option value="">Normal</option>
-            <option value="deep">Deep</option>
-            <option value="articles">Articles</option>
-          </select>
-        </>
-      )}
-      {webSearchEnabled && searchStatusLabel && (
-        <span className="text-[10px] text-muted-foreground tabular-nums">{searchStatusLabel}</span>
-      )}
-    </div>
-    {webSearchEnabled && (webSearchMode === 'articles' || webSearchMode === 'deep') && (
-      <div className="flex flex-col gap-1.5 px-2 py-1.5 bg-muted/30 rounded-md border border-dashed text-xs max-w-md">
-        <Label className="text-[10px] text-muted-foreground">Article URLs (optional, one per line)</Label>
-        <Textarea
-          rows={2}
-          className="font-mono text-[10px] min-h-0 py-1"
-          placeholder="https://..."
-          value={webSearchArticleUrls}
-          onChange={(e) => setWebSearchArticleUrls(e.target.value)}
-          disabled={isGenerating || isRecording || isTranscribing}
-        />
-        <Input
-          className="h-7 text-[10px]"
-          placeholder="Site hint e.g. uxmag.com (optional)"
-          value={webSearchSite}
-          onChange={(e) => setWebSearchSite(e.target.value)}
-          disabled={isGenerating || isRecording || isTranscribing}
-        />
-      </div>
+  <div className="flex flex-wrap items-center gap-2 px-2 py-1 bg-muted/50 rounded-md border">
+    <Switch
+      id="web-search"
+      checked={webSearchEnabled}
+      onCheckedChange={setWebSearchEnabled}
+      disabled={isGenerating || isRecording || isTranscribing}
+    />
+    <Label htmlFor="web-search" className="text-xs flex items-center gap-1 cursor-pointer">
+      <Globe size={14} className={webSearchEnabled ? 'text-blue-500' : 'text-muted-foreground'} />
+      Web Search
+    </Label>
+    {webSearchEnabled && searchStatusLabel && (
+      <span className="text-[10px] text-muted-foreground tabular-nums">{searchStatusLabel}</span>
     )}
   </div>
 );
@@ -292,11 +206,11 @@ const TimestampControl = ({ injectTimestamp, setInjectTimestamp, isGenerating, i
 );
 
 // Main Chat Component
-const Chat = ({ layoutMode, scrollContainerRef }) => {
+const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
   // Get state and functions from useApp context
   const {
     // Model/Chat state
-    activeModel, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, setPrimaryModel, secondaryModel, dualModeEnabled, setDualModeEnabled, buildSystemPrompt, buildSystemPersonaPrompt, formatPrompt, cleanModelOutput, abortController, setAbortController,
+    activeModel, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, setPrimaryModel, secondaryModel, dualModeEnabled, setDualModeEnabled, buildSystemPrompt, buildSystemPersonaPrompt, formatPrompt, prepareApiHistoryWithRollingMemory, cleanModelOutput, abortController, setAbortController,
     messages: messagesRaw, setMessages, sendMessage, sendDualMessage, isGenerating, isModelLoading,
     createNewConversation, completeCharacterIntro, applyIntroChatTitle, updateCharacterIntro, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateReply, fetchMemoriesFromAgent, fetchTriggeredLore, isStreamingStopped, handleStopGeneration,
     conversations, setConversations,
@@ -315,7 +229,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     getGenerationSystemPrompt,
     // Audio / STT / TTS flags & functions
     sttEnabled, ttsEnabled, isRecording, isTranscribing, primaryIsAPI, secondaryIsAPI,
-    isPlayingAudio, playTTS, getTtsOverridesForCharacterId, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue,
+    isPlayingAudio, ttsPlaybackState, playTTS, getTtsOverridesForCharacterId, stopTTS, audioError, setAudioError, generateUniqueId, saveCharacter, generateImage, SECONDARY_API_URL, startStreamingTTS, stopStreamingTTS, addStreamingText, endStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue,
     startRecording, stopRecording, MEMORY_API_URL, lastAgenticMemoryFeedback, lastAgenticRunStatus, setLastAgenticRunStatus, retryAgenticMemoryForLastTurn, lastAgenticInjectMeta,
     alignmentData, setAlignmentData, alignmentDetectionEnabled, setAlignmentDetectionEnabled, processAlignmentDetectionIfEnabled,
     // Avatar sizes
@@ -323,7 +237,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     // User profile
     userProfile,
     // Settings
-    settings, updateSettings, setIsGenerating, activeConversation, isCallModeActive, startCallMode, stopCallMode,
+    settings, updateSettings, setIsGenerating, setActiveTab, activeConversation, isCallModeActive, startCallMode, stopCallMode,
     backgroundImage, // Add backgroundImage from context
     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
     capturePromptSubmissionTime, // Latency monitoring
@@ -337,7 +251,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     apiError,
     clearError,
   } = useApp();
-  const intensity = useIntensity();
   const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
   const batchEditableBotMessages = useMemo(
     () =>
@@ -350,43 +263,9 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
       ),
     [messages]
   );
-  const { profiles, activeProfileId, switchProfile } = useMemory();
+  const { profiles, activeProfileId, switchProfile, isLoading: profilesLoading } = useMemory();
+  const profileList = Array.isArray(profiles) ? profiles : [];
 
-  useEffect(() => {
-    if (!outreachScrollToMessageId) return undefined;
-    const mid = outreachScrollToMessageId;
-    let cancelled = false;
-    const tryScroll = () => {
-      if (cancelled || typeof document === 'undefined') return false;
-      const el = document.getElementById(`chat-message-${mid}`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        dismissOutreachScrollTarget();
-        return true;
-      }
-      return false;
-    };
-    const raf = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (cancelled) return;
-        if (tryScroll()) return;
-        if (!messages.some((m) => m.id === mid)) dismissOutreachScrollTarget();
-      });
-    });
-    const retry = setTimeout(() => {
-      if (cancelled) return;
-      if (!tryScroll() && !messages.some((m) => m.id === mid)) dismissOutreachScrollTarget();
-    }, 200);
-    const giveUp = setTimeout(() => {
-      if (!cancelled) dismissOutreachScrollTarget();
-    }, 4000);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-      clearTimeout(retry);
-      clearTimeout(giveUp);
-    };
-  }, [outreachScrollToMessageId, messages, activeConversation, dismissOutreachScrollTarget]);
   const performanceMode = settings?.performanceMode === true;
   const PERFORMANCE_MESSAGE_LIMIT = 80;
   const activeConvMeta = useMemo(
@@ -425,8 +304,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
   );
 
   const showAnyIntro = showSystemIntro || showCharacterIntro;
-  const showFullLanding = messages.length === 0 && !showAnyIntro;
-  const showComposerToolbar = !showFullLanding;
   const introDisplayCharacter = primaryCharacter || systemPersonaCharacter;
   const effectiveIntroModel = useMemo(() => {
     if (primaryModel) return primaryModel;
@@ -710,17 +587,13 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     return () => {};
   }, [isFocusModeActive, isCallModeActive]);
   const [showAlignmentPanel, setShowAlignmentPanel] = useState(false);
-  const [showSessionDashboard, setShowSessionDashboard] = useState(false);
-  const [showIntensityPanel, setShowIntensityPanel] = useState(false);
-  const [intensityPanelTab, setIntensityPanelTab] = useState('presets');
+
   const [showBookWriterOverlay, setShowBookWriterOverlay] = useState(false);
   const [regeneratingMessageId, setRegeneratingMessageId] = useState(null);
   const prevMessageCount = useRef(messages.length);
   const [skippedMessageIds, setSkippedMessageIds] = useState(new Set());
   const [editingBotMessageId, setEditingBotMessageId] = useState(null);
   const [setIsStreamingStopped] = useState(false);
-  const [codeEditorEnabled, setCodeEditorEnabled] = useState(false);
-  const [showForensicLinguistics, setShowForensicLinguistics] = useState(false);
   const [characterReadiness, setCharacterReadiness] = useState({
     score: 0,
     detected_elements: [],
@@ -784,102 +657,24 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
   const regenerationProcessingRef = useRef(false);
 
   const handleSubmit = async (text, attachments = []) => {
-    if (!text?.trim()) return;
-    const images = (attachments || []).filter(a => a.type === 'image' && a.base64).map(a => ({ base64: a.base64, type: a.mimeType || a.type }));
-    await sendMessage(text.trim(), webSearchEnabled, null, images.length ? { images } : {});
+    const images = (attachments || [])
+      .filter((attachment) => (attachment.kind === 'image' || String(attachment.type || '').startsWith('image/')) && attachment.base64)
+      .map((attachment) => ({
+        base64: attachment.base64,
+        type: attachment.type || 'image/png',
+        name: attachment.name || 'image',
+      }));
+    const submittedText = text?.trim() || (
+      images.length > 1
+        ? 'Describe these images and explain the important similarities and differences.'
+        : images.length === 1
+          ? 'Describe this image and identify anything important in it.'
+          : ''
+    );
+    if (!submittedText) return;
+    await sendMessage(submittedText, webSearchEnabled, null, images.length ? { images } : {});
   };
 
-  const handleGenerateVariantRef = useRef(null);
-
-  // Dual overlay state sync with popup Call Mode window
-  useEffect(() => {
-    const unsubscribe = subscribeDualOverlaySync({
-      onCallInput: (input) => {
-        if (isRecording) {
-          stopRecording(async (transcript) => {
-            const cleaned = String(transcript || '').trim();
-            if (cleaned) sendMessage(cleaned);
-          });
-        } else if (input?.trim()) {
-          handleSubmit(input);
-        }
-      },
-      onCallToggleMic: async () => {
-        if (isRecording) {
-          await stopRecording(async (transcript) => {
-            const cleaned = String(transcript || '').trim();
-            if (cleaned) sendMessage(cleaned);
-          });
-        } else {
-          await startRecording();
-        }
-      },
-      onCallStopTts: () => {
-        stopTTS('call_window_stop');
-        handleStopGeneration();
-      },
-      onCallReroll: () => {
-        if (isGenerating || isTranscribing) return;
-        const lastBotMsg = [...messages].reverse().find(m => m.role === 'bot');
-        if (lastBotMsg) {
-          stopTTS('call_window_reroll');
-          handleStopGeneration();
-          handleGenerateVariantRef.current?.(lastBotMsg.id);
-        }
-      },
-      onCallCycleAvatar: () => {},
-      onCallAiContinue: () => {
-        if (isGenerating || isTranscribing) return;
-        stopTTS('call_window_ai_continue');
-        handleStopGeneration();
-        generateCallModeFollowUp?.();
-      },
-      onCallWindowClosed: () => {
-        if (isCallModeActive) {
-          stopCallMode();
-        }
-        if (!isFocusModeActive) {
-          updateSettings({ allowDualOverlay: false });
-        }
-      },
-      onCallStateRequest: () => {
-        broadcastDualOverlayMessage({
-          type: 'dual_state_sync',
-          state: {
-            messages: messages.slice(-50),
-            isGenerating,
-            isPlayingAudio,
-            ttsSubtitleCue: window.__ttsSubtitleCue || null,
-            characters: characters || [],
-            isRecording,
-            isTranscribing
-          }
-        });
-      }
-    });
-
-    return () => unsubscribe();
-  }, [isRecording, stopRecording, startRecording, sendMessage, handleSubmit, isGenerating, isTranscribing, isPlayingAudio, stopTTS, handleStopGeneration, isCallModeActive, stopCallMode, isFocusModeActive, characters, cycleCharacterAvatar, generateCallModeFollowUp, messages, updateSettings]);
-
-  // Broadcast state changes to Call Mode window when both overlays are active
-  useEffect(() => {
-    if (!settings?.allowDualOverlay || !isOverlayWindowOpen()) return;
-
-    const state = {
-      messages: messages.slice(-50),
-      isGenerating,
-      isPlayingAudio,
-      ttsSubtitleCue: window.__ttsSubtitleCue || null,
-      characters: characters || [],
-      isRecording,
-      isTranscribing
-    };
-
-    broadcastDualOverlayMessage({
-      type: 'dual_state_sync',
-      state
-    });
-  }, [messages, isGenerating, isPlayingAudio, characters, isRecording, isTranscribing, settings?.allowDualOverlay]);
   const regenerationAbortControllerRef = useRef(null);
   const [isRegenerationRunning, setIsRegenerationRunning] = useState(false);
   const [showCustomPrompt, setShowCustomPrompt] = useState(false);
@@ -898,28 +693,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
       /* ignore */
     }
   }, [webSearchEnabled]);
-  const [webSearchMode, setWebSearchMode] = useState(loadWebSearchMode);
-  const [webSearchStrategy, setWebSearchStrategy] = useState(loadWebSearchStrategy);
-  const [webSearchArticleUrls, setWebSearchArticleUrls] = useState(loadWebSearchArticleUrls);
-  const [webSearchSite, setWebSearchSite] = useState(loadWebSearchSite);
   const [liveWebSearchMeta, setLiveWebSearchMeta] = useState(null);
-  useEffect(() => {
-    saveWebSearchMode(webSearchMode);
-  }, [webSearchMode]);
-  useEffect(() => {
-    saveWebSearchArticleUrls(webSearchArticleUrls);
-  }, [webSearchArticleUrls]);
-  useEffect(() => {
-    saveWebSearchSite(webSearchSite);
-  }, [webSearchSite]);
-  useEffect(() => {
-    saveWebSearchStrategy(webSearchStrategy);
-  }, [webSearchStrategy]);
-  useEffect(() => {
-    if (settings?.webSearchStrategy && settings.webSearchStrategy !== webSearchStrategy) {
-      setWebSearchStrategy(settings.webSearchStrategy);
-    }
-  }, [settings?.webSearchStrategy]);
   useEffect(() => {
     if (!isGenerating) setLiveWebSearchMeta(null);
   }, [isGenerating]);
@@ -929,13 +703,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
       ? webSearchPathLabel(liveWebSearchMeta || { status: 'searching' })
       : '';
 
-  const handleWebSearchStrategyChange = useCallback(
-    (value) => {
-      setWebSearchStrategy(value);
-      updateSettings({ webSearchStrategy: value });
-    },
-    [updateSettings]
-  );
   const [characterImageSettings, setCharacterImageSettings] = useState({
     width: 512,
     height: 512,
@@ -968,11 +735,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
   /** literal = exact phrase; brackets = remove [...]; regex = JS RegExp pattern (global) */
   const [batchBoilerplateMode, setBatchBoilerplateMode] = useState('literal');
   const [batchBoilerplateRegex, setBatchBoilerplateRegex] = useState('');
-
-  // Story Tracker and Choice Generator state
-  const [showStoryTracker, setShowStoryTracker] = useState(false);
-  const [showChoiceGenerator, setShowChoiceGenerator] = useState(false);
-  const [isAnalyzingStory, setIsAnalyzingStory] = useState(false);
+  const [showMoreChatControls, setShowMoreChatControls] = useState(false);
 
   const autoEnhanceEnabled = localStorage.getItem('adetailer-auto-enhance') === 'true';
   const adetailerSettings = JSON.parse(localStorage.getItem('adetailer-settings') || '{}');
@@ -1049,7 +812,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     if (!settings.multiRoleMode) return [];
     const candidateIds = rosterCandidates.map(c => c.id);
     const candidateSet = new Set(candidateIds);
-    const base = Array.isArray(activeCharacterIds) && activeCharacterIds.length
+    const base = Array.isArray(activeCharacterIds)
       ? activeCharacterIds
       : candidateIds;
     return base.filter(id => candidateSet.has(id));
@@ -1061,7 +824,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
   );
   const rosterTotalCount = rosterCandidates.length;
   const ttsEngine = settings.ttsEngine || 'kokoro';
-  const isChatterboxEngine = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo';
+  const isChatterboxEngine = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo' || ttsEngine === 'chatterbox_nano' || ttsEngine === 'voxcpm';
   const isKokoroEngine = ttsEngine === 'kokoro';
   const formatRosterRole = useCallback((role) => {
     if (role === 'narrator') return 'Narrator';
@@ -1078,6 +841,9 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     if (!rosterCandidates.length) return;
     updateActiveCharacterIds(rosterCandidates.map(c => c.id));
   }, [rosterCandidates, updateActiveCharacterIds]);
+  const handleDeselectAllRoster = useCallback(() => {
+    updateActiveCharacterIds([]);
+  }, [updateActiveCharacterIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1106,7 +872,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
 
   useEffect(() => {
     if (!showRosterDialog) return;
-    if (settings.ttsEngine !== 'chatterbox' && settings.ttsEngine !== 'chatterbox_turbo' && settings.ttsEngine !== 'kokoro') return;
+    if (settings.ttsEngine !== 'chatterbox' && settings.ttsEngine !== 'chatterbox_turbo' && settings.ttsEngine !== 'chatterbox_nano' && settings.ttsEngine !== 'kokoro') return;
     fetchAvailableVoices();
   }, [showRosterDialog, settings.ttsEngine, fetchAvailableVoices]);
 
@@ -1203,80 +969,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     localStorage.removeItem('eloquent-author-note');
   };
 
-  // Story Tracker auto-detect handler
-  const handleAnalyzeStory = async () => {
-    // ... [Original Logic Preserved] ...
-    if (messages.length === 0) return;
-    setIsAnalyzingStory(true);
-    try {
-      const recentMessages = messages.slice(-15);
-      const context = recentMessages.map(m => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`).join('\n');
-      const prompt = `You are a story state tracker... [Truncated for brevity, but logic remains] ...`;
-
-      if (!primaryModel) { console.error('Story analysis error: No model loaded'); return; }
-
-      const storyRoute = resolveUnifiedRequestRoute({
-        primaryModel,
-        primaryIsAPI,
-        settings,
-        requestPurpose: 'story_analysis',
-      });
-      const storyTraceId = createRouteTraceId();
-      logRouteTrace({
-        action: 'story_analysis',
-        route: storyRoute,
-        requestPurpose: 'story_analysis',
-        traceId: storyTraceId,
-      });
-      const response = await fetch(`${PRIMARY_API_URL}/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Router-Trace-Id': storyTraceId,
-        },
-        body: JSON.stringify({
-          prompt,
-          model_name: storyRoute.effectiveModel || primaryModel,
-          max_tokens: 500,
-          temperature: 0.3,
-          stop: ['\n\n'],
-          stream: true,
-          gpu_id: 0,
-          request_purpose: 'story_analysis',
-          selected_model: storyRoute.selectedModel || undefined,
-          round_robin_enabled: storyRoute.autoEnabled,
-        })
-      });
-      const routeMeta = extractRouteMetaFromGenerateResult({}, response.headers);
-      if (routeMeta?.traceId || routeMeta?.effectiveModel) setLastRequestRouteMeta(routeMeta);
-
-      if (response.ok) {
-        // ... [Parsing logic preserved] ...
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          fullText += decoder.decode(value, { stream: true });
-        }
-        // ... [JSON extraction logic preserved] ...
-      }
-    } catch (err) {
-      console.error('Story analysis error:', err);
-    } finally {
-      setIsAnalyzingStory(false);
-    }
-  };
-
-  const handleChoiceSelect = async (choice, description = '', type = 'prose') => {
-    if (!choice || isGenerating) return;
-    let messageToSend = choice;
-    if (type === 'director') messageToSend = `(Director: ${choice})`;
-    else if (type === 'direct') messageToSend = `*${choice}*`;
-    await sendMessage(messageToSend);
-  };
-
   const handleAiContinue = useCallback(() => {
     if (isGenerating || isTranscribing) return;
     stopTTS();
@@ -1298,7 +990,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         }
         if (autoSendOnStop) {
           console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=autosend_start transcript_len=${cleaned.length}`);
-          await sendMessage(cleaned);
+          await handleSubmit(cleaned);
           console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=autosend_dispatched`);
         } else if (target === 'focus') {
           console.info(`[ASR_AUTOSEND_GUARD] trace_id=${asrTraceId} source=${asrSource} action=populate_focus transcript_len=${cleaned.length}`);
@@ -1348,7 +1040,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
       if (!target) return;
       saveCharacter({ ...target, ttsVoice: v });
       const ttsEngine = settings?.ttsEngine || 'kokoro';
-      const isChatterbox = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo';
+      const isChatterbox = ttsEngine === 'chatterbox' || ttsEngine === 'chatterbox_turbo' || ttsEngine === 'chatterbox_nano' || ttsEngine === 'voxcpm';
       if (isChatterbox && v && v !== 'default' && PRIMARY_API_URL) {
         try {
           await fetch(`${String(PRIMARY_API_URL).replace(/\/+$/, '')}/tts/save-voice-preference`, {
@@ -1518,7 +1210,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
     if (userMsgIndex < 0) return;
 
-    // Get the new content
     const editedPromptText = (overrideContent ?? messages[userMsgIndex].content ?? "").trim();
     if (!editedPromptText) return;
 
@@ -1528,14 +1219,12 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     const newController = new AbortController();
     setAbortController(newController);
 
-    // 1. Update the user message and remove subsequent messages
     const slicedMessages = messages.slice(0, userMsgIndex + 1).map((m) =>
       m.id === userMessageId ? { ...m, content: editedPromptText } : m
     );
 
     setMessages(slicedMessages);
 
-    // 2. Prepare for new bot response
     const speakerCharacter = await resolveSpeakerCharacter(editedPromptText, slicedMessages);
     const botMsgId = generateUniqueId();
     const ttsOverrides = getTtsOverridesForCharacterId(speakerCharacter?.id);
@@ -1558,10 +1247,8 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
 
     setMessages(prev => [...prev, tempBotMsg]);
 
-    // 3. Call generateReply
     try {
       if (settings?.streamResponses) {
-        // Start TTS streaming if enabled
         startStreamingTTS(botMsgId, ttsOverrides);
       }
 
@@ -1581,7 +1268,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
           );
         }));
 
-        // Calculate the new part of the text that hasn't been sent to TTS yet
         const newPart = currentFullText.slice(lastProcessedLength);
         if (newPart && settings?.streamResponses) {
           addStreamingText(newPart);
@@ -1591,7 +1277,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
 
       const responseText = await generateReply(
         editedPromptText,
-        slicedMessages, // History ends with the user message
+        slicedMessages,
         onToken,
         {
           authorNote,
@@ -1623,14 +1309,12 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
             : null,
         } : m));
 
-        // Finalize TTS if streaming
         if (settings?.streamResponses) {
           endStreamingTTS();
         } else if (settings?.ttsEnabled && settings?.ttsAutoPlay) {
           playTTS(botMsgId, responseText, ttsOverrides);
         }
 
-        // Ensure agentic memory runs for regenerated responses too
         setTimeout(() => {
           retryAgenticMemoryForLastTurn();
         }, 0);
@@ -1646,7 +1330,10 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     isGenerating, messages, setMessages, setIsGenerating, resolveSpeakerCharacter, generateReply,
     settings, webSearchEnabled, authorNote, startStreamingTTS, playTTS, abortController,
     setAbortController, generateUniqueId, getTtsOverridesForCharacterId, primaryModel, primaryIsAPI,
-    nanoGptCatalog, characters,
+    nanoGptCatalog, characters, conversations, activeConversation, formatPrompt,
+    getGenerationSystemPrompt, userProfile, activeCharacter, activeProfileId, activeContextSummary,
+    injectTimestamp, nanoGptSelectedModelCapsRef,
+    applyReasoningMetaToBotMessage, setLiveWebSearchMeta, retryAgenticMemoryForLastTurn,
   ]);
 
   const generateCharacterImagePrompt = useCallback((character) => {
@@ -1697,6 +1384,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
   }, []);
 
   const handleChunkedSpeakerClick = useCallback((messageId, text) => {
+    console.warn(`⏩ [TTS Chunked] handleChunkedSpeakerClick fired for msg=${messageId}, text=${text?.substring(0, 50)}...`);
     if (audioError) setAudioError(null);
     if (isPlayingAudio === messageId) {
       if (isStreamingTtsPaused) {
@@ -1706,10 +1394,17 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
       }
       return;
     }
-    if (isPlayingAudio) return;
+    if (isPlayingAudio) {
+      console.warn(`⏩ [TTS Chunked] BLOCKED — already playing msg=${isPlayingAudio}`);
+      return;
+    }
 
     const chunks = splitTextIntoTtsChunks(text);
-    if (!chunks.length) return;
+    if (!chunks.length) {
+      console.warn(`⏩ [TTS Chunked] BLOCKED — no chunks from text`);
+      return;
+    }
+    console.warn(`⏩ [TTS Chunked] Sending ${chunks.length} chunks: ${chunks.map(c => c.substring(0, 30)).join(' | ')}`);
 
     startStreamingTTS(messageId, getTtsOverridesForMessageId(messageId), { bypassAutoplayGate: true });
     chunks.forEach(chunk => addStreamingText(chunk, { immediate: true }));
@@ -1796,6 +1491,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     [primaryModel, primaryIsAPI, settings, nanoGptCatalog],
   );
 
+
   const formatModelName = useCallback((name) => {
     if (!name) return 'None';
     if (name === primaryModel && primaryIsAPI && primaryModelDisplay?.isAutoRouting) {
@@ -1812,44 +1508,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     }
     return displayName;
   }, [primaryModel, primaryIsAPI, primaryModelDisplay, settings, nanoGptCatalog]);
-
-  useEffect(() => {
-    if (messages && messages.length > 0 && autoAnalyzeImages) {
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage.type === 'image' && !lastMessage.autoAnalyzed) {
-        setMessages(prev => prev.map(msg => msg.id === lastMessage.id ? { ...msg, autoAnalyzed: true } : msg));
-        setTimeout(() => { handleAutoAnalyzeImage(lastMessage); }, 500);
-      }
-    }
-  }, [messages, autoAnalyzeImages]);
-
-  useEffect(() => {
-    setShowAllMessages(false);
-  }, [performanceMode, activeConversation]);
-
-  // Variant Storage Logic (IndexedDB to avoid localStorage quota)
-  useEffect(() => {
-    if (!activeConversation) { setMessageVariants({}); setCurrentVariantIndex({}); return; }
-    const key = `LiangLocal-variants-${activeConversation}`;
-    let cancelled = false;
-    indexedDbStorage.getItem(key).then(stored => {
-      if (cancelled) return;
-      try {
-        if (stored) {
-          const { messageVariants: v, currentVariantIndex: i } = JSON.parse(stored);
-          setMessageVariants(v || {}); setCurrentVariantIndex(i || {});
-        } else { setMessageVariants({}); setCurrentVariantIndex({}); }
-      } catch (e) { console.error(e); }
-    });
-    return () => { cancelled = true; };
-  }, [activeConversation]);
-
-  useEffect(() => {
-    if (!activeConversation) return;
-    indexedDbStorage.setItem(`LiangLocal-variants-${activeConversation}`, JSON.stringify({ messageVariants, currentVariantIndex }));
-  }, [activeConversation, messageVariants, currentVariantIndex]);
-
-// handleSubmit moved earlier in file
 
   const handleBeginCharacterIntro = useCallback(() => {
     if (!activeConversation) return;
@@ -1972,84 +1630,28 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
   }, [characterPartialJson, clearCharacterGenFailure]);
 
   const handleCallModeToggle = useCallback(async () => {
-    if (settings?.allowDualOverlay) return;
-    if (isCallModeActive) await stopCallMode(); else await startCallMode();
-  }, [isCallModeActive, startCallMode, stopCallMode, settings?.allowDualOverlay]);
+    if (isCallModeActive) {
+      await stopCallMode();
+      return;
+    }
+    setIsFocusModeActive(false);
+    await startCallMode();
+  }, [isCallModeActive, startCallMode, stopCallMode]);
+
+  const handleFocusModeToggle = useCallback(async () => {
+    if (isFocusModeActive) {
+      setIsFocusModeActive(false);
+      return;
+    }
+    if (isCallModeActive) await stopCallMode();
+    setIsFocusModeActive(true);
+  }, [isCallModeActive, isFocusModeActive, stopCallMode]);
 
   const handleNanoGptCapabilities = useCallback((caps) => {
     const next = caps || {};
     nanoGptSelectedModelCapsRef.current = next;
     setNanoGptModelCaps(next);
   }, []);
-
-  const handleQuickActionPrompt = useCallback((text) => {
-    try {
-      chatInputFormRef.current?.setValue(text);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const activeComposerMode = isCallModeActive ? 'call' : isFocusModeActive ? 'focus' : 'chat';
-
-  // Dual overlay: popup = Call Mode, main window = Focus Mode.
-  // Never start call mode in the main window when dual overlay is on.
-  const handleDualOverlayChange = useCallback(async (enabled) => {
-    if (enabled) {
-      const { writeCallOverlayState, openCallOverlayWindow } = await import('../utils/dualOverlayWindow');
-      writeCallOverlayState({
-        activeCharacter: activeCharacter || null,
-        characters: (characters || []).map(c => ({ id: c.id, name: c.name, character_order: c.character_order, avatar: c.avatar, avatar_url: c.avatar_url })),
-        primaryApiUrl: PRIMARY_API_URL || '',
-      });
-      openCallOverlayWindow();
-      updateSettings({ allowDualOverlay: true });
-      setIsFocusModeActive(true);
-    } else {
-      if (isCallModeActive) await stopCallMode();
-      const { closeCallOverlayWindow } = await import('../utils/dualOverlayWindow');
-      closeCallOverlayWindow();
-      updateSettings({ allowDualOverlay: false });
-    }
-  }, [stopCallMode, isCallModeActive, updateSettings]);
-
-  const handleComposerModeChange = useCallback(async (mode) => {
-    if (mode === 'focus') {
-      // Toggle focus mode independently of dual overlay or call mode
-      setIsFocusModeActive(prev => !prev);
-      return;
-    }
-    if (mode === 'call') {
-      // When dual overlay is on, the popup already owns call mode
-      if (settings?.allowDualOverlay) return;
-      if (!isCallModeActive) {
-        await startCallMode();
-      } else {
-        await stopCallMode();
-      }
-      return;
-    }
-    if (mode === 'chat') {
-      setIsFocusModeActive(false);
-      if (isCallModeActive) await stopCallMode();
-      updateSettings({ allowDualOverlay: false });
-      return;
-    }
-    if (mode === 'image') {
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('eloquent-open-chat-image'));
-      }
-    }
-  }, [isCallModeActive, startCallMode, stopCallMode, setIsFocusModeActive, updateSettings]);
-
-  // Close both overlays at once (for dual-overlay ESC behavior)
-  const handleCloseAllOverlays = useCallback(() => {
-    setIsFocusModeActive(false);
-    if (isCallModeActive) {
-      stopCallMode();
-      updateSettings({ allowDualOverlay: false });
-    }
-  }, [isCallModeActive, stopCallMode, updateSettings]);
 
   const handleRefineCharacter = useCallback(async () => {
     if (!generatedCharacter || !characterFeedback?.trim() || isGeneratingCharacter) return;
@@ -2504,15 +2106,15 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
   }, [
     isGenerating, messages, messageVariants, settings, generateReply, authorNote, webSearchEnabled,
     startStreamingTTS, playTTS, abortController, setAbortController, getTtsOverridesForMessageId,
-    resolveRegenModelCapabilities,
+    resolveRegenModelCapabilities, conversations, activeConversation, activeCharacter, activeProfileId,
+    userProfile, formatPrompt, getGenerationSystemPrompt, injectTimestamp, activeContextSummary,
+    getTtsOverridesForCharacterId, endStreamingTTS,
   ]);
 
   const handleGenerateVariantWithModel = useCallback((messageId, endpointId) => {
     const caps = resolveEndpointDisplay(endpointId, settings, nanoGptCatalog)?.capabilities || {};
     handleGenerateVariant(messageId, { modelName: endpointId, modelCapabilities: caps });
   }, [handleGenerateVariant, settings, nanoGptCatalog]);
-
-  useEffect(() => { handleGenerateVariantRef.current = handleGenerateVariant; }, [handleGenerateVariant]);
 
   /** Strip think tags from bot text (TTS, batch tools); bubble rendering uses thinkStreamParser at render time. */
   const filterThinkBlock = useCallback((text) => stripThinkTags(text), []);
@@ -3026,7 +2628,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
                 ? 'A model must be loaded before the system overview can generate.'
                 : 'A model must be loaded before the character introduction can generate.'}
             </p>
-            <Button variant="outline" onClick={() => setShowModelSelector(true)}>Load Model</Button>
+            <Button variant="outline" onClick={() => setModelPickerOpen(true)}>Load Model</Button>
           </div>
         );
       }
@@ -3047,64 +2649,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     }
 
     if (messages.length === 0) {
-      const displayName =
-        userProfile?.name ||
-        userProfile?.username ||
-        'friend';
-
-      return (
-        <div className="flex h-full items-center justify-center">
-          <div className="w-full max-w-3xl px-4 py-8 md:px-8">
-            {/* Greeting row */}
-            <div className="flex items-center justify-between gap-4 mb-8">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card/90 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                  <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_0_4px_rgba(63,231,252,0.28)]" />
-                  NanoGPT workspace · Local
-                </div>
-                <h1
-                  className="mt-4 text-2xl md:text-3xl font-semibold text-left"
-                  style={{ fontFamily: '"Open Sans Variable", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}
-                >
-                  Welcome back, {displayName}.
-                </h1>
-                <p className="mt-2 text-sm md:text-base text-muted-foreground max-w-xl text-left">
-                  Pick a mode, select a model, and start a new thread. Your NanoGPT memory and tools stay wired in.
-                </p>
-              </div>
-            </div>
-
-            <div className="mb-4">
-              <NanoGptComposerToolbar
-                variant="landing"
-                modelPickerOpen={modelPickerOpen}
-                onModelPickerOpenChange={setModelPickerOpen}
-                currentModelId={primaryModel}
-                primaryApiUrl={PRIMARY_API_URL}
-                onCapabilities={handleNanoGptCapabilities}
-                onQuickAction={handleQuickActionPrompt}
-                activeMode={activeComposerMode}
-                onModeChange={handleComposerModeChange}
-              />
-              {sttEnabled && (
-                <div className="mt-3 flex justify-end">
-                  <Button
-                    type="button"
-                    variant={isRecording ? 'destructive' : 'outline'}
-                    size="icon"
-                    className="h-9 w-9 flex-shrink-0 border-[rgba(120,170,220,0.5)] bg-[#111827]"
-                    onClick={handleMicClick}
-                    disabled={isTranscribing || isGenerating}
-                    title={isRecording ? 'Stop recording' : 'Start voice input'}
-                  >
-                    {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
-                  </Button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      );
+      return null;
     }
 
     const visibleMessages = performanceMode && !showAllMessages
@@ -3139,6 +2684,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
             isGenerating={isGenerating}
             isTranscribing={isTranscribing}
             isPlayingAudio={isPlayingAudio}
+            ttsPlaybackState={ttsPlaybackState}
             isStreamingTtsPaused={isStreamingTtsPaused}
             editingMessageId={editingMessageId}
             editingBotMessageId={editingBotMessageId}
@@ -3202,12 +2748,8 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
     primaryModel,
     modelPickerOpen,
     handleNanoGptCapabilities,
-    handleQuickActionPrompt,
-    activeComposerMode,
-    handleComposerModeChange,
     sttEnabled,
     handleMicClick,
-    setShowModelSelector,
     performanceMode,
     showAllMessages,
     isGenerating,
@@ -3269,6 +2811,8 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         backgroundColor: backgroundImage ? 'rgba(0,0,0,0.85)' : undefined
       }}
     >
+      {/* Main content row: chat area */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
       {/* Message Display Area — header + messages + composer share one scroll container */}
       <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
       <ControlPanel
@@ -3279,16 +2823,11 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         isPlayingAudio={isPlayingAudio}
         sttEnabled={sttEnabled}
         ttsEnabled={ttsEnabled}
-        settings={settings}
-        showModelSelector={showModelSelector}
         isSummarizing={isSummarizing}
         isGeneratingCharacter={isGeneratingCharacter}
         isAnalyzingCharacter={isAnalyzingCharacter}
         showAuthorNote={showAuthorNote}
-        showStoryTracker={showStoryTracker}
-        showChoiceGenerator={showChoiceGenerator}
         isCallModeActive={isCallModeActive}
-        setShowModelSelector={setShowModelSelector}
         createNewConversation={createNewConversation}
         handleVisualizeScene={handleVisualizeScene}
         handleAiContinue={handleAiContinue}
@@ -3298,18 +2837,13 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         stopTTS={stopTTS}
         handleAutoPlayToggle={handleAutoPlayToggle}
         isFocusModeActive={isFocusModeActive}
-        setIsFocusModeActive={setIsFocusModeActive}
-        handleDualOverlayChange={handleDualOverlayChange}
-        stopCallMode={stopCallMode}
+        handleFocusModeToggle={handleFocusModeToggle}
         handleCallModeToggle={handleCallModeToggle}
-        updateSettings={updateSettings}
         handleCreateSummary={handleCreateSummary}
         availableSummaries={availableSummaries}
         handleAppendToSummary={handleAppendToSummary}
         handleGenerateCharacter={handleGenerateCharacter}
         setShowAuthorNote={setShowAuthorNote}
-        setShowStoryTracker={setShowStoryTracker}
-        setShowChoiceGenerator={setShowChoiceGenerator}
         getCharacterButtonState={getCharacterButtonState}
           skippedMessageIds={skippedMessageIds}
           setSkippedMessageIds={setSkippedMessageIds}
@@ -3323,7 +2857,16 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         {/* Row 1: Title, Character Selector, and New Chat (on Mobile) */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 overflow-hidden">
-            <h2 className="text-xl font-semibold whitespace-nowrap">Chat</h2>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setActiveTab('characters')}
+              title="Open Character Library"
+              className="whitespace-nowrap"
+            >
+              <Users size={16} />
+              <span className="ml-1">Character Library</span>
+            </Button>
             <div className="flex-1 min-w-0 flex items-center gap-2">
               <CharacterSelector layoutMode={layoutMode} />
               {settings.multiRoleMode && (
@@ -3367,6 +2910,16 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
             <Button
               variant="outline"
               size="sm"
+              onClick={onOpenChatHistory}
+              title="Recent Chat History"
+              className="whitespace-nowrap"
+            >
+              <History size={16} />
+              <span className="ml-1 hidden md:inline">Recent Chat History</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setShowFloatingControls(!showFloatingControls)}
               title={showFloatingControls ? 'Hide Controls' : 'Show Controls'}
               className="whitespace-nowrap"
@@ -3391,16 +2944,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         {showFloatingControls && (
           <>
         <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0 no-scrollbar w-full mask-linear-fade">
-          <Button
-            variant="ghost" size="sm"
-            onClick={() => setShowModelSelector(!showModelSelector)}
-            className="whitespace-nowrap flex-shrink-0"
-          >
-            {/* Show icon only on mobile, text on desktop */}
-            <span className="md:hidden"><Cpu size={18} /></span>
-            <span className="hidden md:inline">{showModelSelector ? "Hide Models" : "Models"}</span>
-          </Button>
-
           <NanoGptModelSelectorPopover
             className="flex-shrink-0"
             compact
@@ -3424,6 +2967,11 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
                 <span className="truncate font-medium">
                   {display?.shortLabel || formatModelName(primaryModel) || 'Select model'}
                 </span>
+                {display?.providerLabel && (
+                  <span className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                    {display.providerLabel}
+                  </span>
+                )}
               </button>
             )}
           />
@@ -3433,87 +2981,100 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
           </div>
 
           <Button
-            variant={dualModeEnabled ? "secondary" : "outline"}
+            variant={settings.multiRoleMode ? "secondary" : "outline"}
             size="sm"
-            onClick={() => setDualModeEnabled(!dualModeEnabled)}
-            disabled={isGenerating || (!bothModelsLoaded && !dualModeEnabled)}
-            title={
-              !bothModelsLoaded && !dualModeEnabled
-                ? 'Load a primary and secondary model first (Models tab).'
-                : 'Toggle dual-model mode (two GPUs / two models).'
-            }
-            className="whitespace-nowrap flex-shrink-0"
-          >
-            <Layers size={16} />
-            <span className="ml-1 hidden md:inline">{dualModeEnabled ? "Dual Mode" : "Single Mode"}</span>
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowRosterDialog(true)}
-            disabled={!settings.multiRoleMode}
-            title={
-              settings.multiRoleMode
-                ? 'Choose which characters are active'
-                : 'Enable multi-role mode in Settings to use the roster.'
-            }
+            onClick={() => {
+              const enabled = !settings.multiRoleMode;
+              updateSettings({ multiRoleMode: enabled, autoSelectSpeaker: enabled });
+              if (!enabled) {
+                setShowRosterDialog(false);
+                setShowGroupContext(false);
+              }
+            }}
+            disabled={isGenerating}
+            title="Let several characters take part in this chat"
             className="whitespace-nowrap flex-shrink-0"
           >
             <Users size={16} />
-            <span className="ml-1 hidden md:inline">
-              {rosterTotalCount ? `Roster ${rosterActiveCount}/${rosterTotalCount}` : 'Roster'}
-            </span>
+            <span className="ml-1 hidden md:inline">Group Chat</span>
           </Button>
 
-          <Button
-            variant={showGroupContext ? "secondary" : "outline"}
-            size="sm"
-            onClick={() => setShowGroupContext(!showGroupContext)}
-            disabled={!settings.multiRoleMode}
-            title={
-              settings.multiRoleMode
-                ? 'Shared scene context for this chat'
-                : 'Enable multi-role mode in Settings to edit group context.'
-            }
-            className="whitespace-nowrap flex-shrink-0"
-          >
-            <BookOpen size={16} />
-            <span className="ml-1 hidden md:inline">Group Context</span>
-          </Button>
+          {settings.multiRoleMode && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowRosterDialog(true)}
+                title="Choose which characters can reply in this group chat"
+                className="whitespace-nowrap flex-shrink-0"
+              >
+                <Users size={16} />
+                <span className="ml-1 hidden md:inline">
+                  {rosterTotalCount ? `Characters ${rosterActiveCount}/${rosterTotalCount}` : 'Choose Characters'}
+                </span>
+              </Button>
+
+              <Button
+                variant={showGroupContext ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => setShowGroupContext(!showGroupContext)}
+                title="Add shared scene details or instructions for every character"
+                className="whitespace-nowrap flex-shrink-0"
+              >
+                <BookOpen size={16} />
+                <span className="ml-1 hidden md:inline">Shared Context</span>
+              </Button>
+            </>
+          )}
+
+          {settings.bookRunExperimentalEnabled === true && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowBookWriterOverlay(true)}
+              disabled={isGenerating || !activeConversation}
+              title={
+                !activeConversation
+                  ? 'Select or start a chat first.'
+                  : !primaryIsAPI
+                    ? 'Book Run requires an API model.'
+                    : 'Run a queued chapter list in this chat.'
+              }
+              className="whitespace-nowrap flex-shrink-0"
+            >
+              <ScrollText size={16} />
+              <span className="ml-1 hidden md:inline">Book Run</span>
+            </Button>
+          )}
 
           <Button
-            variant="outline"
+            variant={showMoreChatControls ? "secondary" : "ghost"}
             size="sm"
-            onClick={() => {
-              setShowBatchBoilerplateDialog(true);
-              setBatchBoilerplateSelectedIds([]);
-            }}
-            disabled={isGenerating || !batchEditableBotMessages.length}
-            title="Find and replace repeated text across assistant replies (current variant per message)"
+            onClick={() => setShowMoreChatControls((current) => !current)}
+            title={showMoreChatControls ? 'Hide additional chat tools' : 'Show additional chat tools'}
             className="whitespace-nowrap flex-shrink-0"
+            aria-expanded={showMoreChatControls}
           >
-            <span className="md:hidden"><Replace size={18} /></span>
-            <span className="hidden md:inline">Batch edit replies</span>
+            <MoreVertical size={16} />
+            <span className="ml-1 hidden md:inline">More…</span>
           </Button>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowBookWriterOverlay(true)}
-            disabled={isGenerating || !activeConversation}
-            title={
-              !activeConversation
-                ? 'Select or start a chat first.'
-                : !primaryIsAPI
-                  ? 'Primary model is not an API endpoint — open Models, choose an API model for GPU 0, and Load. You can still open this panel to read the queue UI.'
-                  : 'Run a queued chapter list (uses this chat thread; API / long context).'
-            }
-            className="whitespace-nowrap flex-shrink-0"
-          >
-            <ScrollText size={16} />
-            <span className="ml-1 hidden md:inline">Book run</span>
-          </Button>
+          {showMoreChatControls && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setShowBatchBoilerplateDialog(true);
+                setBatchBoilerplateSelectedIds([]);
+              }}
+              disabled={isGenerating || !batchEditableBotMessages.length}
+              title="Find and replace repeated text across assistant replies"
+              className="whitespace-nowrap flex-shrink-0"
+            >
+              <Replace size={16} />
+              <span className="ml-1 hidden md:inline">Batch Edit Replies</span>
+            </Button>
+          )}
 
           {/* Summarize Button */}
           {/* Summarize button moved to control panel */}
@@ -3560,38 +3121,82 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
           <Button variant="ghost" size="sm" onClick={createNewConversation} className="hidden md:flex whitespace-nowrap flex-shrink-0">
             New Chat
           </Button>
-        </div>
 
-        {/* Model selector (Collapsible) */}
-        {showModelSelector && <ModelSelector />}
+          <div className="flex flex-shrink-0 items-center gap-2 rounded-md border bg-muted/40 px-2 py-1">
+            <Checkbox
+              id="show-user-profiles"
+              checked={settings.showUserProfiles === true}
+              onCheckedChange={(checked) => updateSettings({ showUserProfiles: checked === true })}
+            />
+            <Label htmlFor="show-user-profiles" className="cursor-pointer whitespace-nowrap text-xs">
+              Show user profiles
+            </Label>
+          </div>
+
+          {settings.showUserProfiles === true && (
+            profilesLoading ? (
+              <div className="flex h-9 flex-shrink-0 items-center rounded-md border bg-muted/30 px-3 text-xs text-muted-foreground">
+                Loading profiles…
+              </div>
+            ) : profileList.length > 0 ? (
+              <Select
+                value={activeProfileId || undefined}
+                onValueChange={(profileId) => {
+                  if (profileId && profileId !== activeProfileId) switchProfile(profileId);
+                }}
+              >
+                <SelectTrigger className="h-9 w-[190px] flex-shrink-0">
+                  <SelectValue placeholder="Select user profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  {profileList.map((profile) => (
+                    <SelectItem key={profile.id} value={profile.id}>
+                      {profile.name || 'Unnamed profile'}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="flex flex-shrink-0 items-center gap-2 rounded-md border bg-muted/30 px-2 py-1 text-xs">
+                <span className="whitespace-nowrap text-muted-foreground">No user profile found.</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 whitespace-nowrap"
+                  onClick={() => setActiveTab('user-profiles')}
+                >
+                  Create profile now
+                </Button>
+              </div>
+            )
+          )}
+
+        </div>
 
         {settings.multiRoleMode && (
           <Dialog open={showRosterDialog} onOpenChange={setShowRosterDialog}>
-            <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
               <DialogHeader>
-                <DialogTitle>Active Characters</DialogTitle>
+                <DialogTitle>Group Chat Characters ({rosterActiveCount}/{rosterTotalCount})</DialogTitle>
+                <DialogDescription>
+                  Choose which characters can reply in this chat. The sliders influence how often each one is selected.
+                </DialogDescription>
               </DialogHeader>
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Active characters are eligible for auto speaker replies in this chat.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Use the sliders to bias how often each character is chosen.
-                </p>
+              <div className="space-y-4">
                 {rosterCandidates.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
                     No non-user characters are available. Assign roles in the Character Editor.
                   </p>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {rosterCandidates.map(character => {
                       const isChecked = activeRosterSet.has(character.id);
                       const isLastActive = isChecked && rosterActiveCount === 1;
                       const weightValue = activeCharacterWeights?.[character.id] ?? 50;
                       return (
-                        <div key={character.id} className="rounded border border-border px-3 py-2 space-y-2">
+                        <div key={character.id} className="rounded-lg border border-border px-4 py-3 space-y-3 bg-card">
                           <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
+                            <div className="min-w-0 flex-1">
                               <p className="text-sm font-medium truncate">{character.name || 'Unnamed'}</p>
                               <p className="text-xs text-muted-foreground">{formatRosterRole(character.chat_role)}</p>
                             </div>
@@ -3602,7 +3207,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
                             />
                           </div>
                           <div className="flex items-center gap-3">
-                            <span className="text-xs text-muted-foreground">Rare</span>
+                            <span className="text-xs text-muted-foreground shrink-0">Rare</span>
                             <Slider
                               value={[weightValue]}
                               min={1}
@@ -3615,8 +3220,8 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
                               }}
                               className="flex-1"
                             />
-                            <span className="text-xs text-muted-foreground">Often</span>
-                            <span className="text-xs text-muted-foreground w-8 text-right">{weightValue}</span>
+                            <span className="text-xs text-muted-foreground shrink-0">Often</span>
+                            <span className="text-xs text-muted-foreground w-8 text-right shrink-0">{weightValue}</span>
                           </div>
                           {(isChatterboxEngine || isKokoroEngine) && (
                             <div className="space-y-1">
@@ -3737,14 +3342,24 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
                 </div>
               </div>
               <DialogFooter className="flex items-center justify-between gap-2 sm:justify-between">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleSelectAllRoster}
-                  disabled={!rosterCandidates.length}
-                >
-                  Select All
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSelectAllRoster}
+                    disabled={!rosterCandidates.length}
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeselectAllRoster}
+                    disabled={!rosterActiveCount}
+                  >
+                    Deselect All
+                  </Button>
+                </div>
                 <Button size="sm" onClick={() => setShowRosterDialog(false)}>Done</Button>
               </DialogFooter>
             </DialogContent>
@@ -4006,72 +3621,15 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
           </div>
         )}
 
-        {/* Current model info with API indicators */}
-        <div className="flex flex-wrap gap-2 text-sm">
-          <div className={`px-2 py-1 rounded flex items-center gap-1 border ${(primaryModel || primaryModelDisplay?.isAutoRouting) ? 'bg-blue-100 text-blue-900 border-blue-200 dark:bg-blue-950 dark:text-blue-100 dark:border-blue-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
-            {primaryModelDisplay?.isAutoRouting
-              ? <span className="text-xs">⟳</span>
-              : (primaryIsAPI
-                ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" />
-                : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />)}
-            <span className="font-medium">Primary:</span>
-            <span>{primaryModelDisplay?.isAutoRouting ? 'Auto Router' : formatModelName(primaryModel)}</span>
-            {primaryIsAPI && !primaryModelDisplay?.isAutoRouting && <span className="text-xs opacity-75">(API)</span>}
-          </div>
-          <div
-            className={cn(
-              'px-2 py-1 rounded border text-xs',
-              !lastRequestRouteMeta?.effectiveModel
-                ? 'bg-muted text-muted-foreground border-transparent'
-                : (lastRequestRouteMeta?.autoEnabled === false
-                  && lastRequestRouteMeta?.selectedModel
-                  && lastRequestRouteMeta?.effectiveModel
-                  && lastRequestRouteMeta.selectedModel !== lastRequestRouteMeta.effectiveModel)
-                  ? 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-950 dark:text-amber-100 dark:border-amber-800'
-                  : 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-100 dark:border-emerald-800',
-            )}
-            title={lastRequestRouteMeta?.providerModel ? `Provider: ${lastRequestRouteMeta.providerModel}` : undefined}
-          >
-            {!lastRequestRouteMeta?.effectiveModel
-              ? 'Used: —'
-              : `Used: ${lastRequestRouteMeta.effectiveModel}`}
-            {lastRequestRouteMeta?.receivedAt
-              ? ` · ${new Date(lastRequestRouteMeta.receivedAt).toLocaleTimeString()}`
-              : ''}
-          </div>
-          <div className={`px-2 py-1 rounded flex items-center gap-1 border ${secondaryModel ? 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-950 dark:text-purple-100 dark:border-purple-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
-            {secondaryIsAPI ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" /> : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />}
-            <span className="font-medium">Secondary:</span>
-            <span>{formatModelName(secondaryModel)}</span>
-            {secondaryIsAPI && <span className="text-xs opacity-75">(API)</span>}
-          </div>
-         </div>
-
-        {/* Intensity & Presence indicators */}
-        {(intensity.activePreset || intensity.companionPresence > 0) && (
-          <div className="flex flex-wrap gap-2 mt-2">
-            {intensity.activePreset && (
-              <div className="px-2 py-1 rounded border text-xs flex items-center gap-1.5 bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950 dark:text-rose-200 dark:border-rose-800">
-                <span>&#9829;</span>
-                <span className="font-medium">{intensity.activePreset.name}</span>
-                <span className="opacity-70">P:{intensity.activePreset.physical_intensity} V:{intensity.activePreset.verbal_expression_level}</span>
-              </div>
-            )}
-            {intensity.companionPresence > 0 && (
-              <div className="px-2 py-1 rounded border text-xs flex items-center gap-1 bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
-                <span>&#9733;</span>
-                <span className="font-medium">Presence: {intensity.companionPresence}%</span>
-              </div>
-            )}
-            {intensity.commitmentLock && Date.now() < intensity.commitmentLock.expiry && (
-              <div className="px-2 py-1 rounded border text-xs flex items-center gap-1 bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
-                <span>&#128274;</span>
-                <span className="font-medium">{Math.max(0, Math.ceil((intensity.commitmentLock.expiry - Date.now()) / 60000))}m locked</span>
-              </div>
-            )}
-            {intensity.activePreset?.adaptive?.enabled && (
-              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" title="Adaptive intensity active" />
-            )}
+        {/* Optional secondary model */}
+        {dualModeEnabled && (
+          <div className="flex flex-wrap gap-2 text-sm">
+            <div className={`px-2 py-1 rounded flex items-center gap-1 border ${secondaryModel ? 'bg-purple-100 text-purple-900 border-purple-200 dark:bg-purple-950 dark:text-purple-100 dark:border-purple-800' : 'bg-muted text-muted-foreground border-transparent'}`}>
+              {secondaryIsAPI ? <Globe className="w-3 h-3 text-blue-500 dark:text-blue-400" /> : <Cpu className="w-3 h-3 text-green-600 dark:text-green-400" />}
+              <span className="font-medium">Secondary:</span>
+              <span>{formatModelName(secondaryModel)}</span>
+              {secondaryIsAPI && <span className="text-xs opacity-75">(API)</span>}
+            </div>
           </div>
         )}
 
@@ -4135,7 +3693,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         <div className="border-t border-border bg-blue-50 dark:bg-blue-950/20">
           <div className="max-w-4xl mx-auto px-4 py-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-bold text-sm text-blue-600">Group Scene Context</span>
+              <span className="font-bold text-sm text-blue-600">Shared Group Context</span>
               <Button
                 size="sm"
                 variant="ghost"
@@ -4150,7 +3708,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
             <Textarea
               value={multiRoleContext || ''}
               onChange={(e) => updateMultiRoleContext(e.target.value)}
-              placeholder="Shared context for this multi-character chat..."
+              placeholder="Shared scene details or instructions for every character..."
               className="w-full resize-none bg-background text-sm"
               rows={3}
             />
@@ -4174,14 +3732,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
             <WebSearchControl
               webSearchEnabled={webSearchEnabled}
               setWebSearchEnabled={setWebSearchEnabled}
-              webSearchMode={webSearchMode}
-              setWebSearchMode={setWebSearchMode}
-              webSearchStrategy={webSearchStrategy}
-              setWebSearchStrategy={handleWebSearchStrategyChange}
-              webSearchArticleUrls={webSearchArticleUrls}
-              setWebSearchArticleUrls={setWebSearchArticleUrls}
-              webSearchSite={webSearchSite}
-              setWebSearchSite={setWebSearchSite}
               searchStatusLabel={searchStatusLabel}
               isGenerating={isGenerating}
               isRecording={isRecording}
@@ -4195,26 +3745,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
               isTranscribing={isTranscribing}
             />
             <div className="flex items-center gap-1.5 border-l border-border/40 pl-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className={cn(
-                  "h-8 px-2 gap-1 flex-shrink-0",
-                  intensity.activePreset
-                    ? "bg-rose-500/10 border-rose-500/40 text-rose-600 hover:bg-rose-500/20"
-                    : "text-muted-foreground"
-                )}
-                onClick={() => { setIntensityPanelTab('presets'); setShowIntensityPanel(true); }}
-                title="Intensity Control Panel"
-              >
-                <Heart size={14} />
-                <span className="text-xs hidden sm:inline">Intensity</span>
-              </Button>
-              <PresenceBadge
-                onClick={() => { setIntensityPanelTab('presence'); setShowIntensityPanel(true); }}
-                disabled={isGenerating || isRecording || isTranscribing}
-              />
             </div>
           </div>
 
@@ -4279,32 +3809,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
                   >
                     <BookOpen size={16} />
                     <span className="text-xs">Author&apos;s Note</span>
-                  </Button>
-
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={cn(
-                      "h-8 justify-start gap-2 text-muted-foreground hover:text-primary"
-                    )}
-                    onClick={() => setShowSessionDashboard(true)}
-                    title="Session Insights"
-                  >
-                    <Brain size={16} />
-                    <span className="text-xs">Session Insights</span>
-                  </Button>
-
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={cn(
-                      "h-8 justify-start gap-2 text-muted-foreground hover:text-primary"
-                    )}
-                    onClick={() => { setIntensityPanelTab('presets'); setShowIntensityPanel(true); setToolbarOverflowOpen(false); }}
-                    title="Intensity Control"
-                  >
-                    <Heart size={16} />
-                    <span className="text-xs">Intensity Control</span>
                   </Button>
 
                   <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
@@ -4410,28 +3914,7 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
       })()}
       <div className="border-t border-border bg-background pb-4">
         <div className="max-w-4xl mx-auto">
-          <div
-            className={cn(
-              showComposerToolbar &&
-                'mx-2 md:mx-4 rounded-2xl border border-[rgba(120,170,220,0.35)] bg-[radial-gradient(circle_at_top,_rgba(120,170,220,0.08),transparent_55%),_#0b0c0f]/60 overflow-hidden',
-            )}
-          >
-            {showComposerToolbar && (
-              <div className="border-b border-[rgba(120,170,220,0.22)]">
-                <NanoGptComposerToolbar
-                  variant="compact"
-                  embedded
-                  modelPickerOpen={modelPickerOpen}
-                  onModelPickerOpenChange={setModelPickerOpen}
-                  currentModelId={primaryModel}
-                  primaryApiUrl={PRIMARY_API_URL}
-                  onCapabilities={handleNanoGptCapabilities}
-                  onQuickAction={handleQuickActionPrompt}
-                  activeMode={activeComposerMode}
-                  onModeChange={handleComposerModeChange}
-                />
-              </div>
-            )}
+          <div>
             {apiError && (
               <div
                 role="alert"
@@ -4463,13 +3946,14 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
               onBack={handleBack}
               canGoBack={messages.length > 0 && messages.some(m => m.role === 'user')}
               modelCapabilities={nanoGptModelCaps}
-              nanoGptChrome={showComposerToolbar}
+              nanoGptChrome={false}
             />
           </div>
         </div>
       </div>
         </ScrollArea>
       </div>
+      </div>{/* end flex-row wrapper */}
 
       {/* Character generation failure recovery */}
       {showCharacterGenFailure && (
@@ -4634,12 +4118,14 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
         </Dialog>
       )}
 
-      <BookWriterOverlay open={showBookWriterOverlay} onClose={() => setShowBookWriterOverlay(false)} />
+      {settings.bookRunExperimentalEnabled === true && (
+        <BookWriterOverlay open={showBookWriterOverlay} onClose={() => setShowBookWriterOverlay(false)} />
+      )}
 
       {isFocusModeActive && (
         <FocusModeOverlay
           isActive={isFocusModeActive}
-          onExit={settings?.allowDualOverlay ? handleCloseAllOverlays : () => setIsFocusModeActive(false)}
+          onExit={() => setIsFocusModeActive(false)}
           messages={messages}
           handleSubmit={handleSubmit}
           isGenerating={isGenerating}
@@ -4679,12 +4165,25 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
           isRecording={isRecording}
           isTranscribing={isTranscribing}
           onFocusModeMicClick={handleFocusModeMicClick}
-        />
-      )}
-      {codeEditorEnabled && (
-        <CodeEditorOverlay
-          isOpen={codeEditorEnabled}
-          onClose={() => setCodeEditorEnabled(false)}
+          modelReady={Boolean(
+            primaryModel
+            || (
+              primaryIsAPI
+              && settings?.apiEndpointRoundRobinEnabled === true
+              && (settings?.customApiEndpoints || []).some(
+                (endpoint) => endpoint?.enabled !== false && endpoint?.rotate_enabled !== false,
+              )
+            )
+          )}
+          ttsAutoPlay={settings?.ttsAutoPlay === true}
+          onTtsAutoPlayChange={handleAutoPlayToggle}
+          onTtsEnabledChange={(enabled) => updateSettings({ ttsEnabled: enabled })}
+          onSttEnabledChange={(enabled) => updateSettings({ sttEnabled: enabled })}
+          onStopGeneration={handleStopGeneration}
+          apiError={apiError}
+          audioError={audioError}
+          onDismissApiError={clearError}
+          onDismissAudioError={() => setAudioError(null)}
         />
       )}
       {isCallModeActive && (
@@ -4698,8 +4197,6 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
           onStartRecording={startRecording}
           onStopRecording={() => stopRecording((text) => chatInputFormRef.current?.setValue?.(text))}
           PRIMARY_API_URL={PRIMARY_API_URL}
-          onOpenStoryTracker={() => setShowStoryTracker(true)}
-          onOpenChoiceGenerator={() => setShowChoiceGenerator(true)}
           messages={messages}
           onRegenerate={handleGenerateVariant}
           ttsSubtitleCue={ttsSubtitleCue}
@@ -4707,49 +4204,8 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
           primaryModel={primaryModel}
         />
       )}
-      {showForensicLinguistics && (
-        <ForensicLinguistics
-          isOpen={showForensicLinguistics}
-          onClose={() => setShowForensicLinguistics(false)}
-        />
-      )}
-
-      <StoryTracker
-        isOpen={showStoryTracker}
-        onClose={() => setShowStoryTracker(false)}
-        messages={messages}
-        onAnalyze={handleAnalyzeStory}
-        isAnalyzing={isAnalyzingStory}
-        onInjectContext={(context) => chatInputFormRef.current?.appendValue?.(context)}
-        activeCharacter={activeCharacter}
-      />
-
-      <ChoiceGenerator
-        isOpen={showChoiceGenerator}
-        onClose={() => setShowChoiceGenerator(false)}
-        messages={messages}
-        onSelectChoice={handleChoiceSelect}
-        apiUrl={PRIMARY_API_URL}
-        isGenerating={isGenerating}
-        primaryModel={primaryModel}
-        primaryIsAPI={primaryIsAPI}
-        settings={settings}
-        activeCharacter={activeCharacter}
-        userProfile={userProfile}
-      />
 
       <VoiceQuickPicker open={voiceQuickOpen} onOpenChange={setVoiceQuickOpen} variant="dialog" />
-
-      <SessionHistoryDashboard
-        open={showSessionDashboard}
-        onClose={() => setShowSessionDashboard(false)}
-      />
-
-      <IntensityControlPanel
-        open={showIntensityPanel}
-        onOpenChange={setShowIntensityPanel}
-        initialTab={intensityPanelTab}
-      />
 
       <AlignmentPanel
         open={showAlignmentPanel}
@@ -4761,3 +4217,4 @@ const Chat = ({ layoutMode, scrollContainerRef }) => {
 };
 
 export default Chat;
+

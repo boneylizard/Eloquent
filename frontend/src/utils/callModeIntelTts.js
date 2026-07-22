@@ -76,9 +76,11 @@ export function buildIntelTtsOverrides(settings, intelVoice) {
     ttsEngine: engine,
     ttsSpeed: Number(settings?.ttsSpeed ?? 1.0) || 1.0,
   };
-  if (engine === 'chatterbox' || engine === 'chatterbox_turbo') {
+  if (engine === 'chatterbox' || engine === 'chatterbox_turbo' || engine === 'chatterbox_nano') {
     overrides.ttsExaggeration = settings?.ttsExaggeration ?? 0.5;
-    overrides.ttsCfg = settings?.ttsCfg ?? 0.5;
+    if (engine === 'chatterbox') {
+      overrides.ttsCfg = settings?.ttsCfg ?? 0.5;
+    }
   }
   return overrides;
 }

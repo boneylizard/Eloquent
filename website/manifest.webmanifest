@@ -1,0 +1,16 @@
+{
+  "name": "Mirid",
+  "short_name": "Mirid",
+  "description": "Local and hosted AI, made approachable.",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#090b0a",
+  "theme_color": "#090b0a",
+  "icons": [
+    {
+      "src": "/assets/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

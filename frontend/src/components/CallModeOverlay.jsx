@@ -23,6 +23,7 @@ import VoiceQuickPicker from './VoiceQuickPicker';
 import CallModeCharacterViewport, { CALL_PORTRAIT_FRAME_CLASS } from './CallModeCharacterViewport';
 import CallModeAboutPanel from './CallModeAboutPanel';
 import { cn } from '@/lib/utils';
+import { closeCurrentMiridWindow } from '../utils/desktopWindows.js';
 import { fetchCallModeCharacterAbout, CALL_MODE_ABOUT_SYSTEM_PROMPT_MODES } from '../utils/callModeCharacterAbout';
 import {
   composeLayeredSystemPrompt,
@@ -82,9 +83,6 @@ const CallModeOverlay = ({
   isRecording,
   isTranscribing,
   PRIMARY_API_URL,
-  // New props for control panel features
-  onOpenStoryTracker,
-  onOpenChoiceGenerator,
   messages,
   onRegenerate,
   ttsSubtitleCue, // ✅ USE PROP instead of context
@@ -385,7 +383,7 @@ const CallModeOverlay = ({
           flashStatus('Portrait window', 'cyan', 900);
         } else {
           if (isStandaloneWindow) {
-            window.close();
+            void closeCurrentMiridWindow();
           } else {
             onExit();
           }
@@ -1273,6 +1271,16 @@ const CallModeOverlay = ({
 
   return (
     <div className={isStandaloneWindow ? "h-screen w-screen cursor-default bg-black flex flex-col items-center justify-center overflow-hidden isolate" : "fixed inset-0 z-[9999] cursor-default bg-black flex flex-col items-center justify-center overflow-hidden isolate"}>
+      <button
+        type="button"
+        onClick={onExit}
+        className="absolute top-4 right-4 flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/35 text-white/65 opacity-60 backdrop-blur-sm transition-all hover:bg-white/15 hover:text-white hover:opacity-100 focus-visible:opacity-100"
+        style={{ zIndex: Z_CALL_CONTROLS }}
+        aria-label="Exit call mode"
+        title="Exit Call Mode"
+      >
+        <X className="h-4 w-4" aria-hidden />
+      </button>
       {/* Layer 1 — true fullscreen avatar (back); text/UI stacks above */}
       {fullscreenAvatar && (
         <div
@@ -1349,62 +1357,6 @@ const CallModeOverlay = ({
               </svg>
             </button>
           </div>
-
-          {/* Story Tracker Button */}
-          <button
-            onClick={() => {
-              setShowControlPanel(false);
-              onOpenStoryTracker?.();
-            }}
-            disabled={!onOpenStoryTracker}
-            className="w-full p-4 rounded-xl bg-gradient-to-r from-indigo-500/20 to-purple-500/20 
-                       border border-indigo-500/30 hover:border-indigo-400/50 
-                       text-white text-left transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]
-                       disabled:opacity-50 disabled:cursor-not-allowed group"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-indigo-500/30 flex items-center justify-center group-hover:bg-indigo-500/40 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-                </svg>
-              </div>
-              <div>
-                <div className="font-medium">Story Tracker</div>
-                <div className="text-xs text-white/60">Track characters, items & events</div>
-              </div>
-            </div>
-          </button>
-
-          {/* Choice Generator Button */}
-          <button
-            onClick={() => {
-              setShowControlPanel(false);
-              onOpenChoiceGenerator?.();
-            }}
-            disabled={!onOpenChoiceGenerator || !messages?.length}
-            className="w-full p-4 rounded-xl bg-gradient-to-r from-amber-500/20 to-orange-500/20 
-                       border border-amber-500/30 hover:border-amber-400/50 
-                       text-white text-left transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]
-                       disabled:opacity-50 disabled:cursor-not-allowed group"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-amber-500/30 flex items-center justify-center group-hover:bg-amber-500/40 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="2" width="20" height="20" rx="2" />
-                  <circle cx="8" cy="8" r="1.5" />
-                  <circle cx="16" cy="8" r="1.5" />
-                  <circle cx="8" cy="16" r="1.5" />
-                  <circle cx="16" cy="16" r="1.5" />
-                  <circle cx="12" cy="12" r="1.5" />
-                </svg>
-              </div>
-              <div>
-                <div className="font-medium">Choice Generator</div>
-                <div className="text-xs text-white/60">Generate action options</div>
-              </div>
-            </div>
-          </button>
 
           <button
             type="button"

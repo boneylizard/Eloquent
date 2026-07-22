@@ -415,7 +415,7 @@ export default function ChatlogCondenserOrchestratorPanel({
       {!apiReady && (
         <Alert>
           <AlertTitle>Waiting for backend</AlertTitle>
-          <AlertDescription>Start Eloquent and wait for storage hydration.</AlertDescription>
+          <AlertDescription>Start Mirid and wait for storage hydration.</AlertDescription>
         </Alert>
       )}
 

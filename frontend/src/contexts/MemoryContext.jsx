@@ -27,7 +27,7 @@ const createDefaultProfile = (name = "Default User") => ({
 
 // Initial state - only profile metadata, no memories
 const defaultMemoryState = {
-  profiles: [createDefaultProfile()],
+  profiles: [],
   activeProfileId: null
 };
 
@@ -184,6 +184,7 @@ export const MemoryProvider = ({ children }) => {
       profiles: [...prev.profiles, newProfile],
       activeProfileId: newProfile.id
     }));
+    setProfilesLoadStatus('loaded');
     
     return newProfile.id;
   }, []);

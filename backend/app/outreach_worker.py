@@ -311,6 +311,21 @@ async def process_rule(app, rule: Dict[str, Any], gen_defaults: Dict[str, Any]) 
         conv["messages"] = messages_out
         await outreach_db.save_conversation(conv)
 
+        uid = uprof.get("id")
+        if uid and char_id:
+            try:
+                mem_base = merge_gen.get("memory_api_base", "").rstrip("/") or f"http://127.0.0.1:{getattr(app.state, 'port', 8000)}"
+                async with httpx.AsyncClient(timeout=30.0) as mc:
+                    await mc.post(f"{mem_base}/memory/agentic/process", json={
+                        "user_id": uid,
+                        "character_id": char_id,
+                        "character_name": character.get("name", ""),
+                        "user_message": f"[Scheduled Outreach] Character outreach message was sent: {bot_content[:500]}",
+                        "ai_response": "[stored] Scheduled outreach message recorded.",
+                    })
+            except Exception:
+                logger.debug("Scheduled outreach memory write skipped (non-critical)")
+
         next_run = now + dt.timedelta(minutes=interval)
         next_iso = next_run.isoformat().replace("+00:00", "Z")
         await outreach_db.update_rule_schedule(rid, next_iso, now_iso, None)

@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Slider } from '@/components/ui/slider';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Globe, Cpu } from 'lucide-react';
+import { Globe, Cpu, Loader2, MemoryStick } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { getContextLength, saveContextLength } from '../utils/apiCall';
 
 const ModelSelector = () => {
@@ -35,6 +36,8 @@ const ModelSelector = () => {
   const [selectedGpu, setSelectedGpu] = useState('0');
   const [contextLength, setContextLength] = useState(getContextLength());
   const [gpuCount, setGpuCount] = useState(2); // Default to 2, will be updated from backend
+  const [memoryEstimate, setMemoryEstimate] = useState(null);
+  const [memoryEstimateStatus, setMemoryEstimateStatus] = useState('idle');
 
   // Fetch GPU count from backend
   useEffect(() => {
@@ -57,6 +60,36 @@ const ModelSelector = () => {
     };
     fetchGpuCount();
   }, [PRIMARY_API_URL, selectedGpu]);
+
+  useEffect(() => {
+    if (!selectedLocalModel) {
+      setMemoryEstimate(null);
+      setMemoryEstimateStatus('idle');
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const fetchMemoryEstimate = async () => {
+      setMemoryEstimateStatus('loading');
+      try {
+        const response = await fetch(
+          `${PRIMARY_API_URL}/models/memory-estimate/${encodeURIComponent(selectedLocalModel)}`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) throw new Error('Memory estimate unavailable');
+        setMemoryEstimate(await response.json());
+        setMemoryEstimateStatus('ready');
+      } catch (error) {
+        if (error.name === 'AbortError') return;
+        console.warn('Could not estimate GGUF memory:', error);
+        setMemoryEstimate(null);
+        setMemoryEstimateStatus('unavailable');
+      }
+    };
+
+    fetchMemoryEstimate();
+    return () => controller.abort();
+  }, [PRIMARY_API_URL, selectedLocalModel]);
 
   // Get API model options from settings
   const getAPIModels = () => {
@@ -162,6 +195,11 @@ const getAPIInfo = (modelId) => {
   // Format the context length for display
   const formatContextLength = (length) => {
     return `${(length / 1024).toFixed(0)}K`;
+  };
+
+  const formatBytes = (bytes) => {
+    if (!Number.isFinite(bytes)) return 'Unknown';
+    return `${(bytes / (1024 ** 3)).toFixed(1)} GB`;
   };
 
   // Handle context length slider change
@@ -416,7 +454,44 @@ const getAPIInfo = (modelId) => {
             </div>
             
             <div className="mt-2 text-xs text-muted-foreground">
-              <p>Larger context lengths allow longer outputs but use more GPU memory. Use 32K for coding tasks.</p>
+              <p>Longer context keeps more of the conversation in view, but reserves more memory.</p>
+            </div>
+
+            <div className="mt-3 rounded-md border bg-background/70 p-3" aria-live="polite">
+              <div className="mb-2 flex items-center gap-2">
+                <MemoryStick className="h-4 w-4 text-muted-foreground" />
+                <span className="text-xs font-medium">Estimated working memory</span>
+                {memoryEstimateStatus === 'loading' && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+              </div>
+              {memoryEstimateStatus === 'loading' && (
+                <p className="text-xs text-muted-foreground">Reading the model’s GGUF metadata…</p>
+              )}
+              {memoryEstimateStatus === 'unavailable' && (
+                <p className="text-xs text-muted-foreground">Mirid cannot estimate this model from its metadata. Loading still works normally.</p>
+              )}
+              {memoryEstimateStatus === 'ready' && memoryEstimate && (
+                <>
+                  <div className="mb-2 flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Model weights</span>
+                    <span className="font-medium">{formatBytes(memoryEstimate.weights_bytes)}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                    {memoryEstimate.estimates.map((estimate) => (
+                      <React.Fragment key={estimate.context_length}>
+                        <span className={estimate.context_length === contextLength ? 'font-semibold text-foreground' : 'text-muted-foreground'}>
+                          {formatContextLength(estimate.context_length)} context
+                        </span>
+                        <span className={`text-right ${estimate.context_length === contextLength ? 'font-semibold text-foreground' : ''}`}>
+                          ≈ {formatBytes(estimate.estimated_total_bytes)}
+                        </span>
+                      </React.Fragment>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                    Approximate total. With GPU offload, Mirid divides this between VRAM and system RAM; drivers and model architecture can change the final figure.
+                  </p>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -428,7 +503,7 @@ const getAPIInfo = (modelId) => {
             onClick={handleLoadLocalModel} 
             disabled={!selectedLocalModel || isModelLoading}
           >
-            {isModelLoading ? 'Loading...' : 'Load Model'}
+            {isModelLoading ? 'Loading model…' : 'Load Model'}
           </Button>
           <Button 
             className="flex-1" 

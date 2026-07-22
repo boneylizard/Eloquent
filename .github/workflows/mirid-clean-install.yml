@@ -1,0 +1,56 @@
+name: Mirid clean Windows install
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer_url:
+        description: Direct URL for the Mirid installer candidate
+        required: true
+        type: string
+      installer_sha256:
+        description: Expected SHA-256 for the installer candidate
+        required: true
+        type: string
+      expected_version:
+        description: Expected installed Mirid version
+        required: true
+        default: 1.0.7
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  clean-install:
+    name: Fresh Windows VM
+    runs-on: windows-2025
+    timeout-minutes: 300
+    env:
+      INSTALLER_URL: ${{ inputs.installer_url }}
+      INSTALLER_SHA256: ${{ inputs.installer_sha256 }}
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+
+    steps:
+      - name: Check out test scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Test installer from an empty Windows profile
+        shell: powershell
+        run: |
+          .\scripts\test_github_clean_install.ps1 `
+            -InstallerUrl $env:INSTALLER_URL `
+            -InstallerSha256 $env:INSTALLER_SHA256 `
+            -ExpectedVersion $env:EXPECTED_VERSION
+
+      - name: Upload clean-install evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mirid-clean-install-${{ github.run_id }}
+          path: artifacts/github-clean-install
+          if-no-files-found: warn
+          retention-days: 7

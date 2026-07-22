@@ -168,11 +168,20 @@ const ChatImageUploadButton = () => {
 
   // Process a single file into { file, name, size, type, base64, previewUrl }
   const processFile = useCallback(async (file) => {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const previewUrl = URL.createObjectURL(file);
     return {
       file,
       name: file.name,
       size: file.size,
       type: file.type,
+      base64,
+      previewUrl,
       cropRegion: null,
       cropped: false,
     };
@@ -507,6 +516,10 @@ const ChatImageUploadButton = () => {
           ? `System: You are ${activeCharacter.name}. ${activeCharacter.description}\n\n${activeCharacter.model_instructions}`
           : 'System: You are a helpful AI assistant.';
         const fullPrompt = `${systemPrompt}\n\nHuman: ${messageText.trim()}`;
+        // Include vision model from settings for two-stage pipeline
+        const visionModel = settings?.visionModel || null;
+        const visionSchema = settings?.visionSchema || null;
+        
         const response = await fetch(`${PRIMARY_API_URL}/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Router-Trace-Id': traceId },
@@ -521,6 +534,8 @@ const ChatImageUploadButton = () => {
             request_purpose: 'chat_image_analysis',
             selected_model: route.selectedModel || undefined,
             round_robin_enabled: route.autoEnabled,
+            vision_model: visionModel,
+            vision_schema: visionSchema,
           })
         });
         if (response.ok) {

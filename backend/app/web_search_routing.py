@@ -1,35 +1,17 @@
-"""
-Web search routing — dual-path architecture for Eloquent chat.
-
-Extension points (v1):
-  - resolve_web_search_path(): pick native vs Eloquent prefetch vs off
-  - apply_native_web_search_request(): provider plugins/tools (:online, OpenRouter, etc.)
-  - format_structured_search_block(): citation-friendly blocks for Eloquent inject
-  - load_web_search_settings(): global strategy from ~/.LiangLocal/settings.json
-
-Modes (settings.webSearchStrategy):
-  - auto (default): native when endpoint supports it; else Eloquent prefetch
-  - eloquent: always server-side DuckDuckGo/RSS + inject
-  - native: provider search only (falls back to eloquent for article/deep modes)
-  - off: disabled
-
-Per-endpoint: customApiEndpoints[].supports_native_search (bool | null for auto-detect)
-"""
+"""Automatic web-search routing for Mirid chat."""
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .openai_compat import get_configured_endpoint, is_api_endpoint
 
 logger = logging.getLogger(__name__)
 
-# Global strategy keys in settings.json
-WEB_SEARCH_STRATEGIES = ("auto", "eloquent", "native", "off")
+# Compatibility surface for callers that inspect supported strategies.
+WEB_SEARCH_STRATEGIES = ("auto",)
 DEFAULT_WEB_SEARCH_STRATEGY = "auto"
 
 # Hosts that typically offer built-in or plugin web search (auto-detect when checkbox unset)
@@ -69,37 +51,9 @@ _PATH_LABELS = {
 }
 
 
-def _settings_path() -> Path:
-    return Path.home() / ".LiangLocal" / "settings.json"
-
-
 def load_web_search_settings() -> Dict[str, Any]:
-    """Read global web search strategy from settings.json."""
-    try:
-        path = _settings_path()
-        if not path.exists():
-            return {"webSearchStrategy": DEFAULT_WEB_SEARCH_STRATEGY}
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        strategy = (data.get("webSearchStrategy") or DEFAULT_WEB_SEARCH_STRATEGY).strip().lower()
-        if strategy not in WEB_SEARCH_STRATEGIES:
-            strategy = DEFAULT_WEB_SEARCH_STRATEGY
-        return {"webSearchStrategy": strategy}
-    except Exception as e:
-        logger.debug("load_web_search_settings: %s", e)
-        return {"webSearchStrategy": DEFAULT_WEB_SEARCH_STRATEGY}
-
-
-def _endpoint_flag(endpoint_cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
-    """Tri-state: True/False from settings, None = auto-detect."""
-    if not endpoint_cfg:
-        return None
-    raw = endpoint_cfg.get("supports_native_search")
-    if raw is None:
-        raw = endpoint_cfg.get("supportsNativeSearch")
-    if raw is True or raw is False:
-        return bool(raw)
-    return None
+    """Return the only supported web-search strategy."""
+    return {"webSearchStrategy": DEFAULT_WEB_SEARCH_STRATEGY}
 
 
 def endpoint_supports_native_search(
@@ -109,14 +63,8 @@ def endpoint_supports_native_search(
 ) -> bool:
     """
     Whether this API endpoint can use provider-native web search (no Eloquent prefetch).
-    Respects per-endpoint checkbox; auto-detects from URL/model when unset.
+    Auto-detects support from the endpoint URL and model identifier.
     """
-    flag = _endpoint_flag(endpoint_cfg)
-    if flag is False:
-        return False
-    if flag is True:
-        return True
-
     url = ((endpoint_cfg or {}).get("url") or "").lower()
     model = (
         ((endpoint_cfg or {}).get("model") or "")
@@ -136,15 +84,12 @@ def requires_eloquent_prefetch(
     article_mode: bool = False,
     deep_research: bool = False,
     research_urls: Optional[List[str]] = None,
-    transcript_corpus_id: Optional[str] = None,
     user_query: str = "",
 ) -> bool:
-    """Article/deep/corpus flows need server-side fetch even when native search is on."""
+    """Article and deep-research flows need server-side fetch even when native search is on."""
     if article_mode or deep_research:
         return True
     if research_urls:
-        return True
-    if transcript_corpus_id:
         return True
     try:
         from .eloquent_agent_tools import detect_article_research_intent
@@ -165,46 +110,27 @@ def resolve_web_search_path(
     article_mode: bool = False,
     deep_research: bool = False,
     research_urls: Optional[List[str]] = None,
-    transcript_corpus_id: Optional[str] = None,
     user_query: str = "",
 ) -> str:
     """
-    Returns: 'off' | 'eloquent' | 'native'
+    Automatically returns 'off', 'eloquent', or 'native'.
+
+    ``strategy`` remains accepted for request compatibility but is ignored.
     """
     if not use_web_search:
-        return "off"
-
-    strat = (strategy or load_web_search_settings().get("webSearchStrategy") or DEFAULT_WEB_SEARCH_STRATEGY)
-    strat = strat.strip().lower()
-    if strat not in WEB_SEARCH_STRATEGIES:
-        strat = DEFAULT_WEB_SEARCH_STRATEGY
-    if strat == "off":
         return "off"
 
     needs_prefetch = requires_eloquent_prefetch(
         article_mode=article_mode,
         deep_research=deep_research,
         research_urls=research_urls,
-        transcript_corpus_id=transcript_corpus_id,
         user_query=user_query,
     )
 
-    if strat == "eloquent":
-        return "eloquent"
-
-    if strat == "native":
-        if needs_prefetch:
-            logger.info("Web search: native strategy but article/deep mode → eloquent prefetch")
-            return "eloquent"
-        if is_api_endpoint(model_name or "") and endpoint_supports_native_search(endpoint_cfg, model_name=model_name):
-            return "native"
-        logger.warning("Web search native-only: endpoint lacks native search → eloquent fallback")
-        return "eloquent"
-
-    # auto
     if needs_prefetch:
         return "eloquent"
-    if is_api_endpoint(model_name or "") and endpoint_supports_native_search(endpoint_cfg, model_name=model_name):
+    is_api_model = endpoint_cfg is not None or is_api_endpoint(model_name or "")
+    if is_api_model and endpoint_supports_native_search(endpoint_cfg, model_name=model_name):
         return "native"
     return "eloquent"
 

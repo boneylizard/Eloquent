@@ -241,9 +241,9 @@ def save_active_profile_id(profile_id):
         settings = {}
         if settings_path.exists():
             logger.info(f"📖 Reading existing settings from {settings_path}")
-            with open(settings_path, 'r') as f:
+            with open(settings_path, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
-                logger.info(f"📖 Current settings: {settings}")
+                logger.info("Existing settings loaded for profile update")
         else:
             logger.info(f"📝 Settings file doesn't exist, creating new one")
         
@@ -254,7 +254,7 @@ def save_active_profile_id(profile_id):
         logger.info(f"🔄 Updating activeProfileId: {previous_id} -> {profile_id}")
         
         # Write back
-        with open(settings_path, 'w') as f:
+        with open(settings_path, 'w', encoding='utf-8') as f:
             json.dump(settings, f, indent=2)
             
         logger.info(f"✅ Successfully saved active profile ID to settings")

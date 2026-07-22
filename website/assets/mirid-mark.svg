@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title description">
+  <title id="title">Mirid</title>
+  <desc id="description">A geometric amber M formed from four converging paths.</desc>
+  <defs>
+    <linearGradient id="amber" x1="9" y1="8" x2="55" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f5c678"/>
+      <stop offset="1" stop-color="#b85f2a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="17" fill="#121513"/>
+  <path d="M13 48V16l19 21 19-21v32" fill="none" stroke="url(#amber)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M22 48V29l10 11 10-11v19" fill="none" stroke="#f4ead8" stroke-opacity=".72" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

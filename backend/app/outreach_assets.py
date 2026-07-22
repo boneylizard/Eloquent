@@ -9,7 +9,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-_ASSETS_ROOT = Path(__file__).resolve().parent.parent / "data" / "outreach_assets"
+from .runtime_paths import data_path
+
+_ASSETS_ROOT = data_path("outreach_assets")
 _STATIC_OUTREACH = Path(__file__).resolve().parent / "static" / "outreach_runtime"
 _ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 

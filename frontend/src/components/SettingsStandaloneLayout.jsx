@@ -7,6 +7,7 @@ import { RefreshCw } from 'lucide-react';
 import { requestMainWindowReload } from '../utils/settingsCrossWindowSync';
 import { useAppBoot } from '../hooks/useAppBoot';
 import InfrastructureBanner from './InfrastructureBanner';
+import { closeCurrentMiridWindow } from '../utils/desktopWindows.js';
 
 export default function SettingsStandaloneLayout() {
   const [searchParams] = useSearchParams();
@@ -18,7 +19,7 @@ export default function SettingsStandaloneLayout() {
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-20 border-b border-border/70 bg-card/95 backdrop-blur-sm px-4 py-3 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">Eloquent</p>
+          <p className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">Mirid</p>
           <h1 className="text-lg font-semibold">Settings</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
             Changes sync with the main window automatically. Reload main if something looks stale.
@@ -38,7 +39,7 @@ export default function SettingsStandaloneLayout() {
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => window.close()}
+            onClick={() => void closeCurrentMiridWindow()}
           >
             Close
           </Button>

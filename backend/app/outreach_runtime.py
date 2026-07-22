@@ -12,11 +12,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Set
 
+from .runtime_paths import runtime_data_root
+
 logger = logging.getLogger(__name__)
 
 _sse_queues: Set[asyncio.Queue] = set()
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR = runtime_data_root()
 # pywebpush uses py_vapid: a *file path* uses Vapid.from_file() (reliable).
 # A PEM *string* uses Vapid.from_string() and often fails (ASN.1 / deserialize on Windows).
 VAPID_PEM_PATH = _DATA_DIR / "outreach_vapid_private.pem"

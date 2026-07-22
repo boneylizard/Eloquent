@@ -1,10 +1,8 @@
 
-// apiCall.js
 import { getTemplateForModel } from './chat_templates';
 import { retrieveRelevantMemories, formatMemoriesForPrompt } from './memoryUtils';
 import { getBackendUrl, getSecondaryUrl, getTtsUrl, fetchWithTimeout } from '../config/api';
 
-// Function to retrieve the currently active user profile object from localStorage
 function getUserProfile() {
   try {
     const memoryStateStr = localStorage.getItem('user-profiles'); // Key used in MemoryContext
@@ -166,6 +164,7 @@ export function callModelAPI(messages, modelName, options = {}, memoryContext = 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       prompt,
+      messages,
       max_tokens: maxTokens,
       temperature: options.temperature ?? 0.7,
       model_name: modelName,
@@ -276,6 +275,7 @@ export function streamModelAPI(messages, modelName, onChunk, onDone, onError, op
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       prompt: prompt,
+      messages: messages,
       max_tokens: requestOptions.max_tokens,
       temperature: requestOptions.temperature,
       model_name: modelName,
@@ -283,7 +283,7 @@ export function streamModelAPI(messages, modelName, onChunk, onDone, onError, op
       stream: true,
       memory_included: memoryResult.memory_count > 0,
       gpu_id: 0, // ✅ add this line to specify GPU ID
-      userProfile: userProfile(), // Use the active profile object
+      userProfile: userProfile, // Use the active profile object
     }),
   })
     .then(response => {
@@ -395,7 +395,7 @@ export async function streamModelAPIWithMemory(messages, modelName, onChunk, onD
     const requestOptions = { ...defaultOptions, ...options };
 
     // Continue with streaming API call
-    streamAPICall(prompt, modelName, requestOptions, onChunk, onDone, onError, memoryResult.memory_count > 0);
+    streamAPICall(prompt, messages, modelName, requestOptions, onChunk, onDone, onError, memoryResult.memory_count > 0);
   } catch (error) {
     console.error('Error preparing streaming request:', error);
     onError(error);
@@ -403,7 +403,7 @@ export async function streamModelAPIWithMemory(messages, modelName, onChunk, onD
 }
 
 // Helper function to perform the actual streaming API call
-function streamAPICall(prompt, modelName, options, onChunk, onDone, onError, hasMemories) {
+function streamAPICall(prompt, messages, modelName, options, onChunk, onDone, onError, hasMemories) {
   // Black-box stream debug snapshot (survives tab crashes via localStorage).
   const debugSessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let contentEvents = 0;
@@ -454,6 +454,7 @@ function streamAPICall(prompt, modelName, options, onChunk, onDone, onError, has
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       prompt: prompt,
+      messages: messages,
       max_tokens: options.max_tokens,
       temperature: options.temperature,
       model_name: modelName,
@@ -799,12 +800,15 @@ export const synthesizeSpeech = async (text, options = {}) => {
       }
     }
 
+    const speed = options.speed != null ? options.speed : 1.0;
+
     console.log(`Calling TTS API with engine "${engine}" and voice "${voice}":`, text.substring(0, 50));
 
     const payload = {
       text,
       voice,
       engine,
+      speed,
       exaggeration,
       cfg,
       save_full_response_audio,
@@ -820,6 +824,13 @@ export const synthesizeSpeech = async (text, options = {}) => {
       payload.audio_prompt_path = audio_prompt_path;
       console.log(`Using voice cloning with reference: ${audio_prompt_path}`);
     }
+    // VoxCPM2-specific parameters
+    if (options.voxcpm_cfg_value != null) payload.voxcpm_cfg_value = options.voxcpm_cfg_value;
+    if (options.voxcpm_inference_timesteps != null) payload.voxcpm_inference_timesteps = options.voxcpm_inference_timesteps;
+    if (options.voxcpm_normalize != null) payload.voxcpm_normalize = options.voxcpm_normalize;
+    if (options.voxcpm_denoise != null) payload.voxcpm_denoise = options.voxcpm_denoise;
+    if (options.voxcpm_retry_badcase != null) payload.voxcpm_retry_badcase = options.voxcpm_retry_badcase;
+    if (options.voxcpm_voice_design) payload.voxcpm_voice_design = options.voxcpm_voice_design;
     // Dia voice cloning
     if (engine === 'dia' && options.dia_audio_prompt_path) {
       payload.dia_audio_prompt_path = options.dia_audio_prompt_path;
@@ -948,113 +959,6 @@ export const transcribeAudio = async (audioBlob, engine = "whisper") => {
 };
 
 
-// --- Chat Title Generation ---
-export const generateChatTitle = async (message, modelName) => {
-  console.log("🔤 [TITLE] Generating title for message:", message.substring(0, 30) + "...");
-
-  if (!message || typeof message !== 'string' || message.trim() === '') {
-    console.warn("🔤 [TITLE] Empty message provided, returning default title");
-    return "New Chat";
-  }
-
-  try {
-    // Handle different modelName formats more carefully
-    let actualModelName;
-    if (typeof modelName === 'object' && modelName !== null) {
-      // Try to extract model name from object with multiple fallbacks
-      actualModelName = modelName.name || modelName.model_name || modelName.model;
-      console.log("🔤 [TITLE] Extracted model name from object:", actualModelName);
-    } else if (typeof modelName === 'string') {
-      actualModelName = modelName;
-      console.log("🔤 [TITLE] Using string model name:", actualModelName);
-    } else {
-      console.warn("🔤 [TITLE] Invalid model name, returning default title");
-      return "New Chat"; // Just return default without API call if model is invalid
-    }
-
-    // Additional validation to prevent "Unknown" model error
-    if (!actualModelName || actualModelName === "Unknown") {
-      console.warn("🔤 [TITLE] Missing or invalid model name:", actualModelName);
-      return "New Chat";
-    }
-
-    console.log(`🔤 [TITLE] Using model for title generation: ${actualModelName}`);
-
-    // Simple and direct API call
-    const apiUrl = `${getBackendUrl()}/generate`;
-    console.log("🔤 [TITLE] API URL:", apiUrl);
-    const payload = {
-      prompt: `Generate a short title (3-5 words) for a chat that starts with this message. Reply with ONLY the title, no quotes or explanations:\n\n${message}`,
-      model_name: actualModelName,
-      temperature: 0.7,
-      max_tokens: 20,
-      stream: false,
-      gpu_id: 0,
-      request_purpose: "title_generation" // <<< ADD THIS LINE
-    };
-
-    console.log("🔤 [TITLE] Sending API request with payload:", {
-      modelName: payload.model_name,
-      promptPreview: payload.prompt.substring(0, 60) + "..."
-    });
-
-    const response = await fetchWithTimeout(
-      apiUrl,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      },
-      30000
-    );
-
-    console.log("🔤 [TITLE] API response status:", response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("🔤 [TITLE] API error response:", errorText);
-      return "New Chat"; // Return default title on API error
-    }
-
-    const data = await response.json();
-    console.log("🔤 [TITLE] Raw API response:", data);
-
-    if (!data || !data.text) {
-      console.error("🔤 [TITLE] Missing text in API response");
-      return "New Chat";
-    }
-
-    let title = data.text.trim();
-    console.log("🔤 [TITLE] Raw title:", title);
-
-    // More thorough cleaning of common artifacts
-    title = title
-      .replace(/^["'`]|["'`]$/g, '') // Remove quotes at start/end
-      .replace(/^title:?\s*|^chat title:?\s*/i, '') // Remove "Title:" prefix
-      .replace(/^the\s+/i, '') // Remove leading "The"
-      .replace(/[.!?]$/, '') // Remove ending punctuation
-      .trim();
-
-    console.log("🔤 [TITLE] Cleaned title:", title);
-
-    // Only check if completely empty, not minimum length
-    if (!title) {
-      console.warn("🔤 [TITLE] Empty title, using default");
-      return "New Chat";
-    }
-
-    // Title length caps
-    if (title.length > 40) {
-      title = title.substring(0, 37) + "...";
-      console.log("🔤 [TITLE] Truncated long title:", title);
-    }
-
-    return title;
-  } catch (error) {
-    console.error("🔤 [TITLE] Title generation error:", error);
-    return "New Chat"; // Fallback title on any error
-  }
-};
 class TTSWebSocketClient {
   constructor() {
     this.socket = null;
@@ -1072,6 +976,147 @@ class TTSWebSocketClient {
     this.onErrorCallback = null;
     /** Text fragments queued when socket is not OPEN (live streaming TTS must not drop deltas). */
     this.pendingTextFragments = [];
+    this.prebufferSeconds = 0;
+    this.prebufferGateOpen = true;
+    this.prebufferEndSent = false;
+    this.prebufferBackendDone = false;
+    this.prebufferLastQueueLen = -1;
+    this.prebufferStableSince = 0;
+    this.prebufferStartedAt = 0;
+    this.prebufferFirstAudioAt = 0;
+    this.prebufferBackendDoneAt = 0;
+    this.prebufferTimer = null;
+  }
+
+  _nowMs() {
+    return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+  }
+
+  _clearPrebufferTimer() {
+    if (this.prebufferTimer) {
+      clearTimeout(this.prebufferTimer);
+      this.prebufferTimer = null;
+    }
+  }
+
+  _beginPrebuffer(seconds) {
+    this._clearPrebufferTimer();
+    this.prebufferSeconds = Math.max(0, Number(seconds) || 0);
+    this.prebufferGateOpen = this.prebufferSeconds <= 0;
+    this.prebufferEndSent = false;
+    this.prebufferBackendDone = false;
+    this.prebufferLastQueueLen = -1;
+    this.prebufferStableSince = 0;
+    this.prebufferStartedAt = this._nowMs();
+    this.prebufferFirstAudioAt = 0;
+    this.prebufferBackendDoneAt = 0;
+    console.warn(`🎛️ [TTS Prebuffer WS] Begin gate: target=${this.prebufferSeconds}s, open=${this.prebufferGateOpen}, countdown=waiting_for_audio`);
+  }
+
+  _estimateAudioDurationMs(chunk) {
+    if (!chunk) return 0;
+    const sub = chunk.subtitle;
+    if (sub && typeof sub.durationMs === 'number' && sub.durationMs > 0) {
+      return sub.durationMs;
+    }
+    const ab = chunk.audio || chunk;
+    if (!(ab instanceof ArrayBuffer) || ab.byteLength < 44) return 0;
+    try {
+      const view = new DataView(ab);
+      if (view.getUint32(0, false) !== 0x52494646) return 0; // RIFF
+      const byteRate = view.getUint32(28, true);
+      if (!byteRate) return 0;
+      let offset = 12;
+      while (offset + 8 <= ab.byteLength) {
+        const id = view.getUint32(offset, false);
+        const size = view.getUint32(offset + 4, true);
+        if (id === 0x64617461) return (size / byteRate) * 1000; // data
+        offset += 8 + size + (size & 1);
+      }
+    } catch (e) {
+      return 0;
+    }
+    return 0;
+  }
+
+  _queuedAudioDurationMs() {
+    return this.audioQueue.reduce((sum, chunk) => sum + this._estimateAudioDurationMs(chunk), 0);
+  }
+
+  _notifyAudioQueueUpdate() {
+    if (this.onAudioQueueUpdate) this.onAudioQueueUpdate();
+  }
+
+  _schedulePrebufferPoll() {
+    if (this.prebufferTimer || this.prebufferGateOpen || this.prebufferSeconds <= 0) return;
+    this.prebufferTimer = setTimeout(() => {
+      this.prebufferTimer = null;
+      this._maybeNotifyAudioQueueUpdate('poll');
+    }, 250);
+  }
+
+  _maybeNotifyAudioQueueUpdate(reason = 'audio') {
+    if (this.prebufferGateOpen || this.prebufferSeconds <= 0) {
+      this._notifyAudioQueueUpdate();
+      return;
+    }
+
+    const now = this._nowMs();
+    const targetMs = this.prebufferSeconds * 1000;
+    const bufferedMs = this._queuedAudioDurationMs();
+    const elapsedMs = this.prebufferStartedAt ? Math.max(0, now - this.prebufferStartedAt) : 0;
+    const firstAudioElapsedMs = this.prebufferFirstAudioAt ? Math.max(0, now - this.prebufferFirstAudioAt) : 0;
+    const wallClockRemainingMs = this.prebufferFirstAudioAt ? Math.max(0, targetMs - firstAudioElapsedMs) : targetMs;
+    const audioRemainingMs = Math.max(0, targetMs - bufferedMs);
+    const stableRemainingMs = this.prebufferBackendDone && this.prebufferStableSince
+      ? Math.max(0, 3000 - (now - this.prebufferStableSince))
+      : null;
+    const countdown = this.audioQueue.length === 0
+      ? 'waiting_for_first_audio'
+      : `${Math.ceil(wallClockRemainingMs / 1000)}s_wall_clock_or_${Math.ceil(audioRemainingMs / 1000)}s_audio_needed`;
+    const fallbackCountdown = stableRemainingMs == null
+      ? 'n/a'
+      : `${Math.ceil(stableRemainingMs / 1000)}s_until_short_response_release`;
+    console.warn(`⏳ [TTS Prebuffer WS] ${reason}: buffered=${Math.round(bufferedMs)}ms/${targetMs}ms, countdown=${countdown}, fallback=${fallbackCountdown}, elapsed=${Math.round(elapsedMs)}ms, queue=${this.audioQueue.length}, endSent=${this.prebufferEndSent}, backendDone=${this.prebufferBackendDone}`);
+
+    if (this.audioQueue.length > 0 && this.prebufferFirstAudioAt && firstAudioElapsedMs >= targetMs) {
+      this.prebufferGateOpen = true;
+      this._clearPrebufferTimer();
+      console.warn(`✅ [TTS Prebuffer WS] Wall-clock target reached after first audio (${Math.round(firstAudioElapsedMs)}ms >= ${targetMs}ms). Releasing playback with ${Math.round(bufferedMs)}ms measured audio, queue=${this.audioQueue.length}.`);
+      this._notifyAudioQueueUpdate();
+      return;
+    }
+
+    if (bufferedMs >= targetMs) {
+      this.prebufferGateOpen = true;
+      this._clearPrebufferTimer();
+      console.warn(`✅ [TTS Prebuffer WS] Target reached. Releasing playback with queue=${this.audioQueue.length}.`);
+      this._notifyAudioQueueUpdate();
+      return;
+    }
+
+    if (this.prebufferBackendDone) {
+      const qLen = this.audioQueue.length;
+      if (qLen === 0) {
+        console.warn(`⏳ [TTS Prebuffer WS] ${reason}: backend done but no audio queued; holding gate closed, countdown=waiting_for_first_audio`);
+        this.prebufferLastQueueLen = 0;
+        this.prebufferStableSince = 0;
+        this._schedulePrebufferPoll();
+        return;
+      }
+      if (qLen !== this.prebufferLastQueueLen) {
+        this.prebufferLastQueueLen = qLen;
+        this.prebufferStableSince = now;
+      } else if (this.prebufferStableSince && now - this.prebufferStableSince > 3000) {
+        this.prebufferGateOpen = true;
+        this._clearPrebufferTimer();
+        console.warn(`✅ [TTS Prebuffer WS] Backend done and queue stable. Releasing ${Math.round(bufferedMs)}ms buffered audio.`);
+        this._notifyAudioQueueUpdate();
+        return;
+      }
+    }
+
+    this._schedulePrebufferPoll();
   }
 
   _flushPendingTextFragments() {
@@ -1146,6 +1191,11 @@ class TTSWebSocketClient {
               text: data.text || '',
               durationMs: data.duration_ms
             };
+          } else if (data && data.type === 'tts_done') {
+            this.prebufferBackendDone = true;
+            this.prebufferBackendDoneAt = this._nowMs();
+            console.warn(`🏁 [TTS Prebuffer WS] Backend done signal received. queue=${this.audioQueue.length}, buffered=${Math.round(this._queuedAudioDurationMs())}ms`);
+            this._maybeNotifyAudioQueueUpdate('backend_done');
           }
         } catch (e) {
           // Ignore non-JSON messages
@@ -1162,10 +1212,16 @@ class TTSWebSocketClient {
           audio: arrayBuffer,
           subtitle: this._pendingCue || null
         });
+        if (!this.prebufferFirstAudioAt) {
+          this.prebufferFirstAudioAt = this._nowMs();
+          const waitMs = this.prebufferStartedAt ? Math.round(this.prebufferFirstAudioAt - this.prebufferStartedAt) : 0;
+          console.warn(`⏱️ [TTS Prebuffer WS] First audio arrived after ${waitMs}ms.`);
+        }
         this._pendingCue = null; // Clear for next chunk
 
-        // Notify the AppContext that new audio is available
-        if (this.onAudioQueueUpdate) this.onAudioQueueUpdate();
+        // Notify the AppContext only after the configured frontend prebuffer opens.
+        console.warn(`📥 [WebSocket] Audio blob received (${arrayBuffer.byteLength} bytes), queue=${this.audioQueue.length}, handler=${!!this.onAudioQueueUpdate}, prebuffer=${this.prebufferSeconds}s, gateOpen=${this.prebufferGateOpen}`);
+        this._maybeNotifyAudioQueueUpdate('audio');
       }
     };
 
@@ -1202,14 +1258,24 @@ class TTSWebSocketClient {
 
     // For settings, just store them and send if connected
     if (isSettings) {
-      console.log("🔧 [WebSocket] Received settings for new message:", text);
+      const frontendPrebufferSeconds = Math.max(
+        0,
+        Number(text.frontend_prebuffer_seconds ?? text.ttsPrebufferSeconds ?? 0) || 0
+      );
+      const backendSettings = { ...text };
+      delete backendSettings.frontend_prebuffer_seconds;
+      delete backendSettings.ttsPrebufferSeconds;
+
+      console.log("🔧 [WebSocket] Received settings for new message:", backendSettings);
+      console.warn(`🎛️ [WebSocket] Frontend prebuffer for this stream: ${frontendPrebufferSeconds}s`);
+      this._beginPrebuffer(frontendPrebufferSeconds);
       this.pendingTextFragments = [];
-      this.pendingSettings = text;
+      this.pendingSettings = backendSettings;
       this.settingsSent = false;
 
       if (this.socket && this.socket.readyState === 1) {
         console.log("📤 [WebSocket] Sending settings immediately (already connected)");
-        this.socket.send(JSON.stringify(text));
+        this.socket.send(JSON.stringify(backendSettings));
         this.settingsSent = true;
         this.pendingSettings = null;
         this._flushPendingTextFragments();
@@ -1242,6 +1308,8 @@ class TTSWebSocketClient {
       this.socket.send("--END--");
       this.settingsSent = false;  // Reset for next message
       this.pendingSettings = null;
+      this.prebufferEndSent = true;
+      this._maybeNotifyAudioQueueUpdate('end');
     }
   }
 
@@ -1262,6 +1330,9 @@ class TTSWebSocketClient {
         console.warn("⚠️ [WebSocket] Failed to send interrupt signal:", e);
       }
     }
+    this._clearPrebufferTimer();
+    this.prebufferGateOpen = true;
+    this.prebufferEndSent = false;
   }
 
   // FORCE CLEAR all pending state (kill switch)
@@ -1270,6 +1341,9 @@ class TTSWebSocketClient {
     this.pendingSettings = null;
     this.settingsSent = false;
     this.pendingTextFragments = [];
+    this._clearPrebufferTimer();
+    this.prebufferGateOpen = true;
+    this.prebufferEndSent = false;
   }
 
   // Disconnect the WebSocket entirely
@@ -1285,6 +1359,7 @@ class TTSWebSocketClient {
       this.socket.close();
       this.socket = null;
       this.settingsSent = false;
+      this._clearPrebufferTimer();
     }
   }
 

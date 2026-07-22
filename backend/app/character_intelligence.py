@@ -194,7 +194,7 @@ def generate_analysis_summary(concept_scores: List[float], detected_elements: Li
 
 MAX_CHARACTER_GEN_ATTEMPTS = 3
 CHARACTER_API_MAX_ATTEMPTS = 3
-CHARACTER_API_MAX_TOKENS = 1_000_000
+CHARACTER_API_MAX_TOKENS = 16384
 _CHARACTER_API_TIMEOUT_MSG = (
     "The character API stopped responding before the model finished (read timeout). "
     "Try again, use a faster model, or shorten the conversation context."
@@ -630,9 +630,13 @@ You are a highly advanced AI with a specialization in creative character profili
 **REQUIRED JSON OUTPUT STRUCTURE:**
 * `"name"`: (String) The character's full name.
 * `"description"`: (String) A brief, one-sentence summary of the character.
+* `"personality"`: (String) Their temperament, contradictions, desires, fears, boundaries, and relationship habits.
+* `"background"`: (String) The history and formative experiences that matter during roleplay.
 * `"model_instructions"`: (String) Detailed instructions for an AI on how to accurately roleplay this character, including their speaking style, motivations, and key behaviors.
+* `"speech_style"`: (String) Concrete guidance for vocabulary, rhythm, tone, verbal habits, and use of action prose.
 * `"scenario"`: (String) The setting and context where interactions with this character typically take place.
 * `"first_message"`: (String) A sample opening greeting from the character that captures their voice and personality.
+* `"alternate_greetings"`: (Array of Strings) Optional alternate opening messages for different starting scenes.
 * `"example_dialogue"`: (Array of Objects) A list containing one or more user/character exchanges. Each object must have a "role" (`"user"` or `"character"`) and "content" (the message).
 * `"loreEntries"`: (Array of Objects) A list of relevant background facts. Each object must have "content" (the fact) and "keywords" (an array of strings that trigger this lore).
 

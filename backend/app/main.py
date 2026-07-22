@@ -1,7 +1,16 @@
+from __future__ import annotations
+
 import os
+from .compute_capabilities import disable_incompatible_torchao, force_cpu_mode
+
+disable_incompatible_torchao()
+
 # Disable problematic Torch optimizations for Python 3.12+ (MUST BE AT TOP)
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
+if os.environ.get("MIRID_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ.setdefault("RAG_EMBEDDING_DEVICE", "cpu")
 
 # MONKEYPATCH: Disable torch.compile to avoid Dynamo error on Python 3.12+
 try:
@@ -23,7 +32,6 @@ os.environ["GGML_CUDA_NO_PINNED"] = "0"
 # --- END: DEFINITIVE GPU ISOLATION ---
 from pyexpat.errors import messages
 from fastapi import FastAPI, HTTPException, Depends, APIRouter, File, UploadFile, BackgroundTasks, Request, Query, Body, WebSocket, WebSocketDisconnect, Form
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Tuple
@@ -41,11 +49,16 @@ import fnmatch
 import asyncio
 import datetime
 from contextlib import asynccontextmanager
+from .module_policy import module_enabled
+from .cors_policy import configure_cors
 from . import memory_intelligence
 from . import character_intelligence
 from .memory_routes import memory_router
 from .alignment_routes import alignment_router
-from .chatlog_condenser_routes import chatlog_condenser_router
+if module_enabled("chatlog_condenser"):
+    from .chatlog_condenser_routes import chatlog_condenser_router
+else:
+    chatlog_condenser_router = None
 import httpx
 import logging
 from fastapi.logger import logger # Use FastAPI's logger
@@ -53,13 +66,14 @@ import sys
 import time
 from . import openai_compat
 import shutil
-from .forensic_linguistics_service import ForensicLinguisticsService, TextDocument, SimilarityScore
+if module_enabled("forensics"):
+    from .forensic_linguistics_service import ForensicLinguisticsService, TextDocument, SimilarityScore
 import uuid
 from .tts_client import TTSClient  # Use TTS client instead of direct service
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 import re
-from .model_manager import ModelManager
+from .model_manager import CTRANSFORMERS_AVAILABLE, LLAMA_CPP_AVAILABLE, ModelManager
 from . import inference
 import io
 import yaml
@@ -67,14 +81,13 @@ import tempfile
 from .stt_service import transcribe_audio # Assuming this is the correct import path for your STT service
 from .inference import generate_text
 from . import dual_chat_utils as dcu # Assuming this is the correct import path for your dual chat util
+from . import chat_template_engine
 import base64
 from urllib.parse import urlparse
 import threading
 from .Document_routes import document_router
-from .transcript_corpus_routes import corpus_router
 from . import rag_utils # Assuming this is the correct import path for your RAG utils
 import logging
-import signal
 from PIL import Image, PngImagePlugin
 import requests
 from io import BytesIO
@@ -83,19 +96,59 @@ from .automation_service import AutomationService
 # Configure logging BEFORE importing modules that use it
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+# Suppress llama.cpp CUDA Graph spam (C++ backend writes to stderr directly)
+import sys
+class CudaGraphFilter:
+    def filter(self, record):
+        msg = record.getMessage()
+        return "CUDA Graph" not in msg
+
+for name in ["llama_cpp", "llama.cpp", ""]:
+    logging.getLogger(name).addFilter(CudaGraphFilter())
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 from .rembg_routes import router as rembg_router
 import rembg
-from . import election_forecast
-from .auth_routes import auth_router
-try:
-    from .market_sim.routes import router as market_sim_router
-except ModuleNotFoundError:
+ELECTION_FUNDAMENTAL_WEIGHT_BASE_DEFAULT = 0.10
+ELECTION_TIME_DECAY_CURVE_DEFAULT = "decay"
+ELECTION_STATE_LEAN_MULTIPLIER_DEFAULT = 1.0
+if module_enabled("elections"):
+    from . import election_forecast
+    from .election_db import election_db
+    from .election_data_service import election_service, normalize_rtwh_polls
+    from . import votehub_service
+    from . import rcp_service
+    from .election_ai_service import election_ai_service
+    from . import election_simulation
+    from . import ballotpedia_scraper
+    ELECTION_FUNDAMENTAL_WEIGHT_BASE_DEFAULT = election_forecast.FUNDAMENTAL_WEIGHT_BASE_DEFAULT
+    ELECTION_TIME_DECAY_CURVE_DEFAULT = election_forecast.TIME_DECAY_CURVE_DEFAULT
+    ELECTION_STATE_LEAN_MULTIPLIER_DEFAULT = election_forecast.STATE_LEAN_MULTIPLIER_DEFAULT
+if module_enabled("chess"):
+    from .chess_auth_db import chess_auth_db
+    from . import chess_ai_service
+    from .chess_engine import chess_engine_service
+    from .auth_routes import auth_router
+else:
+    auth_router = None
+if module_enabled("market"):
+    try:
+        from .market_sim.routes import router as market_sim_router
+    except ModuleNotFoundError:
+        market_sim_router = None
+else:
     market_sim_router = None
 from .outreach_routes import router as outreach_router
 from .remote_routes import router as remote_router
 from .d_id_routes import d_id_router
+from .sanctuary import sanctuary_router
+from .model_library import router as model_library_router
+from .character_datasets import router as character_datasets_router
+from .provider_catalog import router as provider_catalog_router
+from .sillytavern_bridge import router as sillytavern_bridge_router
+from .mirid_docs import router as mirid_docs_router
 
 # --- Update status tracking ---
 UPDATE_LOCK = threading.Lock()
@@ -137,7 +190,7 @@ def _get_update_state() -> Dict[str, Any]:
 
 def get_log_dir():
     """Resolve the log directory (project-root logs/ by default)."""
-    env_dir = os.environ.get("ELOQUENT_LOG_DIR")
+    env_dir = os.environ.get("MIRID_LOG_DIR") or os.environ.get("ELOQUENT_LOG_DIR")
     if env_dir:
         log_dir = Path(env_dir)
     else:
@@ -217,7 +270,7 @@ def persist_full_tts_audio(
 
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     message_id = _safe_name(metadata.get("message_id", "msg"))
-    content_hash = hashlib.sha1(audio_bytes).hexdigest()[:10]
+    content_hash = hashlib.sha256(audio_bytes).hexdigest()[:10]
 
     split_blobs: Optional[List[bytes]] = None
     if max_chunk_seconds is not None and float(max_chunk_seconds) > 0:
@@ -366,7 +419,6 @@ from .web_search_routing import (
     apply_native_web_search_request,
     build_search_meta,
     get_endpoint_config_for_model,
-    load_web_search_settings,
     resolve_web_search_path,
     sources_from_results,
 )
@@ -393,7 +445,10 @@ from .openai_compat import (
     note_endpoint_failure,
     note_endpoint_success,
 )
-import pynvml
+try:
+    import pynvml
+except ImportError:
+    pynvml = None
 from .devstral_service import devstral_service, DevstralService
 # Only set DEBUG-level loggers to WARNING to suppress their excessive output
 logging.getLogger('numba.core').setLevel(logging.WARNING)
@@ -540,6 +595,7 @@ class GenerateRequest(BaseModel):
     stream: bool = False
     use_rag: bool = False # Keep if used elsewhere
     rag_docs: List[str] = [] # Keep if used elsewhere
+    rag_agent_tools: bool = False
     gpu_id: Optional[int] = None
     userProfile: Optional[Dict[str, Any]] = None
     is_dual_chat: bool = False # Added for dual chat support
@@ -552,15 +608,18 @@ class GenerateRequest(BaseModel):
     memory_curation: Optional[bool] = False
     use_web_search: bool = False  # NEW: Web search toggle
     web_search_query: Optional[str] = None  # NEW: Optional web search query
-    web_search_mode: Optional[str] = None  # 'normal' | 'deep' | 'articles' (many full pages)
-    web_search_strategy: Optional[str] = None  # override: auto | eloquent | native | off
+    web_search_mode: Optional[str] = None  # Retired compatibility field; automatic search ignores it
+    web_search_strategy: Optional[str] = None  # Retired compatibility field; always automatic
     # None = auto (agent tools for API endpoints, legacy inject for local GGUF)
     use_agent_tools: Optional[bool] = None
     research_urls: Optional[List[str]] = None  # explicit article URLs to fetch
-    transcript_corpus_id: Optional[str] = None  # indexed .txt corpus from Transcript search tab
     research_site: Optional[str] = None  # e.g. uxmag.com for site: searches
     image_base64: Optional[str] = None  # NEW: Optional base64-encoded image for context
     image_type: Optional[str] = None  # NEW: Optional image type (e.g., "png", "jpg")
+    images: Optional[List[Dict[str, str]]] = None  # Multiple image attachments
+    vision_model: Optional[str] = None  # NEW: Vision model name (e.g., "LFM2.5-VL-450M-Extract")
+    vision_schema: Optional[str] = None  # NEW: Optional YAML schema for structured extraction
+    use_local_vision: Optional[bool] = None  # NEW: Enable/disable local vision fallback
     authorNote: Optional[str] = None  # Author's note for custom session instructions
     summaryContext: Optional[str] = None  # Optional story summary context
     injectTimestamp: Optional[bool] = False  # Prepend current date/time to context (same path as authorNote/summaryContext)
@@ -638,14 +697,12 @@ class BackupRequest(BaseModel):
 # Assume 'app = FastAPI(...)' is defined correctly
 app = FastAPI(title="LLM Frontend API") # Example instantiation
 
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    return {"status": "healthy", "service": "backend"}
+
 # --- CORS Configuration ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # Allow all origins for local network access
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app)
 
 # --- Authentication Middleware ---
 @app.middleware("http")
@@ -654,9 +711,19 @@ async def check_authentication(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
+    path = request.url.path
+    if path.startswith("/code_editor") or path.startswith("/devstral") or path.startswith("/forensic"):
+        return JSONResponse(status_code=404, content={"detail": "Module not available"})
+    if path.startswith("/chess") or path.startswith("/auth"):
+        return JSONResponse(status_code=404, content={"detail": "Module not available"})
+    if path.startswith("/election") and not module_enabled("elections"):
+        return JSONResponse(status_code=404, content={"detail": "Election module is disabled"})
+    if path.startswith("/market") and not module_enabled("market"):
+        return JSONResponse(status_code=404, content={"detail": "Market module is disabled"})
+
     # List of paths that don't need auth (static files, health checks, etc.)
     # Note: websocket connections are handled separately or assume trusted for now if upgraded
-    public_paths = ["/static", "/favicon.ico", "/docs", "/openapi.json"]
+    public_paths = ["/health", "/static", "/favicon.ico", "/docs", "/openapi.json"]
     if any(request.url.path.startswith(path) for path in public_paths):
         return await call_next(request)
 
@@ -702,7 +769,7 @@ async def check_authentication(request: Request, call_next):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required"},
-                headers={"WWW-Authenticate": "Basic realm='Eloquent Remote Access'"}
+                    headers={"WWW-Authenticate": "Basic realm='Mirid Remote Access'"}
             )
 
     return await call_next(request)
@@ -714,13 +781,12 @@ router = APIRouter()   # Re-initialize router to avoid conflicts
 
 
 # --- Startup Events ---
-from .download_book import ensure_chess_book_background
-
 @app.on_event("startup")
 async def startup_event():
     logger.info("Application starting up...")
-    # Trigger background check/download of chess book
-    ensure_chess_book_background()
+    if module_enabled("chess"):
+        from .download_book import ensure_chess_book_background
+        ensure_chess_book_background()
 
 # --- Static Files Setup ---
 
@@ -875,40 +941,91 @@ async def get_forensic_service(request: Request) -> ForensicLinguisticsService:
         raise HTTPException(status_code=503, detail="Forensic Linguistics Service is not available.")
     return request.app.state.forensic_service
 
-async def synthesize_speech(
-    text: str, 
-    voice: str = 'af_heart', 
-    engine: str = 'kokoro',
-    audio_prompt_path: str = None,
-    exaggeration: float = 0.5,
-    cfg: float = 0.5
-) -> bytes:
-    """
-    TTS synthesis with Kokoro and Chatterbox support
-    """
-    print(f"🗣️ [TTS Service] Synthesizing with engine: {engine}, voice: {voice}")
-    
-    cleaned_text = clean_markdown_for_tts(text)
-    if not cleaned_text:
-        logger.warning("🗣️ [TTS Service] Text became empty after cleaning")
-        return b""
-    
-    if engine.lower() == 'chatterbox':
-        return await _synthesize_with_chatterbox(cleaned_text, audio_prompt_path, exaggeration, cfg)
-    else:  # Default to kokoro
-        return await _synthesize_with_kokoro(cleaned_text, voice)
+# NOTE: legacy in-process synthesize_speech removed — TTS lives in tts_service.py / TTS service on port 8002.
 # --- Model Manager Dependency ---
 # Assume app.state.model_manager is initialized in lifespan
 
     # No need to do anything here, as the lifespan will handle cleanup
 # --- Election Tracker (first duplicate removed; DB-backed endpoints registered later) ---
 
+@router.get("/system/runtime-capabilities")
+async def get_runtime_capabilities(request: Request):
+    model_manager = getattr(request.app.state, "model_manager", None)
+    if model_manager is None:
+        raise HTTPException(status_code=503, detail="Model support is still starting.")
+    return await asyncio.to_thread(model_manager.get_runtime_capabilities)
+
+
+@router.post("/system/runtime-test")
+async def test_local_runtime(request: Request):
+    model_manager = getattr(request.app.state, "model_manager", None)
+    if model_manager is None:
+        raise HTTPException(status_code=503, detail="Model support is still starting.")
+    return await asyncio.to_thread(model_manager.test_local_runtime)
+
 @router.get("/system/gpu_info")
 async def get_gpu_info(request: Request):
-    """Return GPU count and single GPU mode status."""
+    """Return current GPU inventory without initialising a CUDA context."""
+    model_manager = getattr(request.app.state, "model_manager", None)
+    capabilities = (
+        await asyncio.to_thread(model_manager.get_runtime_capabilities)
+        if model_manager is not None
+        else {"formats": {"gguf": {"available": False, "selected": None}}}
+    )
+    gguf_support = capabilities.get("formats", {}).get("gguf", {})
+    selected_runtime = gguf_support.get("selected") or {}
+    selected_accelerator = selected_runtime.get("accelerator")
+    if force_cpu_mode():
+        return {
+            "gpu_count": 0,
+            "single_gpu_mode": True,
+            "gpus": [],
+            "cuda_available": False,
+            "compute_mode": "cpu",
+            "hosted_models_recommended": True,
+            "local_gguf_available": bool(gguf_support.get("available")),
+            "local_acceleration_available": False,
+            "local_runtime": capabilities,
+        }
+    gpus = []
+    try:
+        if pynvml is None:
+            raise RuntimeError("NVIDIA telemetry is not installed")
+        pynvml.nvmlInit()
+        for gpu_id in range(pynvml.nvmlDeviceGetCount()):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+            memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", errors="replace")
+            gpus.append({
+                "id": gpu_id,
+                "name": name,
+                "total_mb": round(memory.total / (1024 * 1024)),
+                "free_mb": round(memory.free / (1024 * 1024)),
+                "used_mb": round(memory.used / (1024 * 1024)),
+            })
+    except Exception:
+        gpus = []
+    finally:
+        try:
+            if pynvml is not None:
+                pynvml.nvmlShutdown()
+        except Exception:
+            pass
+    detected_gpu_count = len(gpus) if gpus else check_gpu_count()
+    compute_mode = selected_accelerator or ("nvidia" if detected_gpu_count > 0 else "cpu")
+    accelerated = compute_mode != "cpu"
     return {
-        "gpu_count": check_gpu_count(),
-        "single_gpu_mode": getattr(request.app.state, 'single_gpu_mode', False)
+        "gpu_count": detected_gpu_count,
+        "single_gpu_mode": getattr(request.app.state, 'single_gpu_mode', False),
+        "gpus": gpus,
+        "cuda_available": detected_gpu_count > 0,
+        "compute_mode": compute_mode,
+        "hosted_models_recommended": not accelerated,
+        "local_gguf_available": bool(gguf_support.get("available")),
+        "local_acceleration_available": accelerated,
+        "local_runtime": capabilities,
     }
 
 
@@ -1168,58 +1285,6 @@ def _run_update_task(update_id: str) -> None:
             "error": str(e),
             "finished_at": _now_iso()
         })
-
-@router.post("/system/shutdown")
-async def shutdown_system():
-    """Shutdown both backend and frontend processes."""
-    def _shutdown():
-        # Kill Frontend (search by window title set in run.bat)
-        subprocess.run('taskkill /F /FI "WINDOWTITLE eq Eloquent Frontend" /T', shell=True)
-        # Kill Backend (search by window title set in run.bat)
-        # This will kill the current process, so it must be last
-        subprocess.run('taskkill /F /FI "WINDOWTITLE eq Eloquent Backend" /T', shell=True)
-        # Fallback if window title doesn't match (e.g. running from VSCode)
-        os.kill(os.getpid(), signal.SIGTERM)
-
-    # Run in background to allow response to return
-    threading.Thread(target=_shutdown, daemon=True).start()
-    return {"status": "success", "message": "System shutting down..."}
-
-
-@router.post("/system/restart")
-async def restart_system():
-    """Restart the entire application by launching a temporary batch file."""
-    try:
-        # Create a temporary batch file to handle the restart
-        # It waits, kills processes, then starts run.bat
-        project_root = os.getcwd() # Assumes backend runs from root or we can find run.bat
-        if not os.path.exists(os.path.join(project_root, "run.bat")):
-             # Try going up a level if we are in backend/app
-             project_root = str(Path(__file__).parents[2])
-        
-        restart_bat_path = os.path.join(project_root, "restart_eloquent_temp.bat")
-        run_bat_path = os.path.join(project_root, "run.bat")
-        
-        bat_content = f"""@echo off
-timeout /t 2 >nul
-taskkill /F /FI "WINDOWTITLE eq Eloquent Frontend" /T
-taskkill /F /FI "WINDOWTITLE eq Eloquent Backend" /T
-timeout /t 2 >nul
-cd /d "{project_root}"
-start "" "{run_bat_path}"
-del "%~f0"
-"""
-        with open(restart_bat_path, "w") as f:
-            f.write(bat_content)
-            
-        # Execute the batch file detached
-        subprocess.Popen(restart_bat_path, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
-        
-        return {"status": "success", "message": "System restarting..."}
-    except Exception as e:
-        logger.error(f"Restart failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Restart failed: {str(e)}")
-
 
 @router.post("/system/select-directory")
 async def select_directory(data: SelectDirectoryRequest = Body(...)):
@@ -1955,7 +2020,7 @@ async def batch_analyze_statements(
                     })
             
             # Cache batch results
-            batch_id = hashlib.md5(f"{person_name}_{time.time()}".encode()).hexdigest()[:8]
+            batch_id = hashlib.sha256(f"{person_name}_{time.time()}".encode()).hexdigest()[:8]
             batch_cache_file = forensic_service.cache_dir / f"batch_{batch_id}.json"
             
             with open(batch_cache_file, 'w') as f:
@@ -2073,84 +2138,104 @@ async def extract_stylometric_features(data: dict = Body(...), forensic_service:
         logger.error(f"❌ [Forensic] Error extracting features: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# --- STONED METER ANALYSIS ---
+class StonedAnalyzeRequest(BaseModel):
+    text: str
+    verbose: bool = False
+
+@router.post("/api/stoned/analyze")
+async def analyze_stoned_endpoint(data: StonedAnalyzeRequest = Body(...)):
+    """Analyze text for cannabis intoxication markers (StonerDetector)."""
+    try:
+        from docs.stonerdetector import analyze_intoxication
+        result = analyze_intoxication(data.text, data.verbose)
+        return {
+            "status": "success",
+            "analysis": result
+        }
+    except Exception as e:
+        logger.error(f"❌ [StonedMeter] Error analyzing: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/export_character_png")
 async def export_character_png(character_data: dict):
     """Export character as PNG with embedded JSON data in tEXt chunk."""
     try:
-        character_name = character_data.get('name', 'character')
-        avatar_url = character_data.get('avatar')
-        
-        # Convert to TavernAI format directly in Python
-        tavern_data = {
-            "spec": "chara_card_v2",
-            "spec_version": "2.0",
-            "data": {
-                "name": character_data.get('name', ''),
-                "description": character_data.get('description', ''),
-                "personality": '',  # Not used in GingerGUI
-                "scenario": character_data.get('scenario', ''),
-                "first_mes": character_data.get('first_message', ''),
-                "mes_example": '',
-                "creator_notes": 'Exported from GingerGUI',
-                "system_prompt": character_data.get('model_instructions', ''),
-                "post_history_instructions": '',
-                "alternate_greetings": [],
-                "tags": [],
-                "creator": 'GingerGUI',
-                "character_version": '1.0',
-                "extensions": {
-                    "ginger_gui": {
-                        "exported_at": datetime.datetime.now().isoformat(),
-                        "original_format": "ginger_gui"
-                    },
-                    "eloquent": {
-                        "ethics_justification": (character_data.get("ethics_justification") or "").strip()
-                    }
-                }
+        avatar_url = character_data.get("avatar")
+        provided_tavern_card = character_data.get("tavern_card")
+        if (
+            isinstance(provided_tavern_card, dict)
+            and provided_tavern_card.get("spec") == "chara_card_v2"
+            and isinstance(provided_tavern_card.get("data"), dict)
+        ):
+            tavern_data = provided_tavern_card
+        else:
+            extensions = dict(character_data.get("card_extensions") or {})
+            mirid_extension = dict(extensions.get("mirid") or {})
+            mirid_extension.update({
+                "exported_at": datetime.datetime.now().isoformat(),
+                "original_format": mirid_extension.get("original_format") or "mirid",
+                "background": character_data.get("background", ""),
+                "speech_style": character_data.get("speech_style", ""),
+                "chat_role": "user" if character_data.get("chat_role") == "user" else "npc",
+                "ethics_justification": (character_data.get("ethics_justification") or "").strip(),
+                "avatars": character_data.get("avatars") or [],
+                "activeAvatarIndex": character_data.get("activeAvatarIndex", 0),
+            })
+            extensions["mirid"] = mirid_extension
+            tavern_data = {
+                **dict(character_data.get("card_top_level") or {}),
+                "spec": "chara_card_v2",
+                "spec_version": "2.0",
+                "data": {
+                    **dict(character_data.get("card_data_passthrough") or {}),
+                    "name": character_data.get("name", ""),
+                    "description": character_data.get("description", ""),
+                    "personality": character_data.get("personality", ""),
+                    "scenario": character_data.get("scenario", ""),
+                    "first_mes": character_data.get("first_message", ""),
+                    "mes_example": "",
+                    "creator_notes": character_data.get("creator_notes", ""),
+                    "system_prompt": character_data.get("model_instructions", ""),
+                    "post_history_instructions": character_data.get("post_history_instructions", ""),
+                    "alternate_greetings": character_data.get("alternate_greetings") or [],
+                    "tags": character_data.get("tags") or [],
+                    "creator": character_data.get("creator") or "Mirid",
+                    "character_version": character_data.get("character_version") or "1.0",
+                    "extensions": extensions,
+                },
             }
-        }
-        
-        # Convert example dialogue if it exists
-        example_dialogue = character_data.get('example_dialogue', [])
-        if example_dialogue and len(example_dialogue) > 0:
+
             example_lines = []
-            for dialogue in example_dialogue:
-                if dialogue.get('role') == 'user':
-                    example_lines.append(f"{{{{user}}}}: {dialogue.get('content', '')}")
-                elif dialogue.get('role') == 'character':
-                    example_lines.append(f"{{{{char}}}}: {dialogue.get('content', '')}")
-            tavern_data['data']['mes_example'] = '\n'.join(example_lines)
-        
-        # Convert lore entries to character_book if they exist
-        lore_entries = character_data.get('loreEntries', [])
-        if lore_entries and len(lore_entries) > 0:
-            tavern_data['data']['character_book'] = {
-                "name": f"{character_name} Lorebook",
-                "description": f"Lorebook for {character_name}",
-                "scan_depth": 100,
-                "token_budget": 500,
-                "recursive_scanning": False,
-                "entries": []
-            }
-            
-            for index, entry in enumerate(lore_entries):
-                tavern_entry = {
-                    "id": index,
-                    "keys": entry.get('keywords', []),
-                    "content": entry.get('content', ''),
-                    "extensions": {},
-                    "enabled": True,
-                    "insertion_order": index,
-                    "case_sensitive": False,
-                    "name": f"Entry {index + 1}",
-                    "priority": 100,
-                    "comment": '',
-                    "selective": True,
-                    "secondary_keys": [],
-                    "constant": False,
-                    "position": "before_char"
-                }
-                tavern_data['data']['character_book']['entries'].append(tavern_entry)
+            for dialogue in character_data.get("example_dialogue") or []:
+                if not dialogue.get("content"):
+                    continue
+                prefix = "{{user}}" if dialogue.get("role") == "user" else "{{char}}"
+                example_lines.append(f"{prefix}: {dialogue.get('content', '')}")
+            tavern_data["data"]["mes_example"] = "\n".join(example_lines)
+
+            lore_entries = character_data.get("loreEntries") or []
+            book_metadata = dict(character_data.get("character_book_metadata") or {})
+            if lore_entries or book_metadata:
+                book_metadata["name"] = book_metadata.get("name") or f"{character_data.get('name') or 'Character'} Lorebook"
+                book_metadata["extensions"] = dict(book_metadata.get("extensions") or {})
+                book_metadata["entries"] = []
+                for index, entry in enumerate(lore_entries):
+                    tavern_entry = dict(entry.get("tavern_entry") or {})
+                    tavern_entry.update({
+                        "id": tavern_entry.get("id", index),
+                        "keys": entry.get("keywords") or [],
+                        "content": entry.get("content", ""),
+                        "extensions": dict(tavern_entry.get("extensions") or {}),
+                        "enabled": tavern_entry.get("enabled", True),
+                        "insertion_order": tavern_entry.get("insertion_order", index),
+                    })
+                    book_metadata["entries"].append(tavern_entry)
+                tavern_data["data"]["character_book"] = book_metadata
+
+        character_name = tavern_data.get("data", {}).get("name") or character_data.get("name") or "character"
         
         character_json = json.dumps(tavern_data)
         
@@ -2582,9 +2667,9 @@ async def lifespan(app: FastAPI):
     try:
         logging.info(f"🔍 Looking for settings at: {settings_path}")
         if settings_path.exists():
-            with open(settings_path, 'r') as f:
+            with open(settings_path, 'r', encoding='utf-8') as f:
                 settings = json.load(f)
-                logging.info(f"🔍 Settings file contents: {settings}")
+                logging.info("Settings loaded successfully.")
         else:
             logging.info("🔍 No settings file found.")
     except Exception as e:
@@ -2615,14 +2700,15 @@ async def lifespan(app: FastAPI):
         gpu_usage_mode = 'unified_model'  # ✅ Add this default
         logging.info(f"🔍 Invalid or missing GPU mode, using default: {gpu_usage_mode}")
 
+    if gpu_count <= 0:
+        gpu_usage_mode = "split_services"
+        logging.info("No CUDA GPU detected. Using direct CPU model loading instead of the GPU model service.")
+
     # SD model directory
-    sd_model_dir = settings.get('sdModelDirectory')
-    if sd_model_dir:
-        app.state.sd_model_directory = sd_model_dir
-        logger.info(f"SD model directory set to: {sd_model_dir}")
-    else:
-        app.state.sd_model_directory = None
-        logger.warning("No SD model directory set in settings, using default.")
+    sd_model_dir = settings.get('sdModelDirectory') or str(Path.home() / "models" / "stable-diffusion")
+    Path(sd_model_dir).mkdir(parents=True, exist_ok=True)
+    app.state.sd_model_directory = sd_model_dir
+    logger.info(f"SD model directory set to: {sd_model_dir}")
     # Also check if you changed this line:
     logging.info(f"🔍 About to create ModelManager with gpu_usage_mode: {gpu_usage_mode}")
     
@@ -2630,12 +2716,16 @@ async def lifespan(app: FastAPI):
     app.state.single_gpu_mode = SINGLE_GPU_MODE
     app.state.gpu_usage_mode = gpu_usage_mode
     app.state.gpu_count = gpu_count
+    app.state.compute_mode = "cuda" if gpu_count > 0 else "cpu"
     # NEW CODE END
 
     logger.info(f"Lifespan: Running on Port {port}, Default GPU {default_gpu}, GPU Mode: {gpu_usage_mode}")
 
     # --- CRITICAL FIX: Set CUDA_VISIBLE_DEVICES at startup ---
-    if gpu_usage_mode == "split_services":
+    if gpu_count <= 0:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        logging.info("CPU mode active. Local services will not attempt CUDA initialisation.")
+    elif gpu_usage_mode == "split_services":
         # In split mode, isolate this server instance to its assigned GPU
         os.environ["CUDA_VISIBLE_DEVICES"] = str(default_gpu)
         logging.info(f"✅ [Split Mode] Set CUDA_VISIBLE_DEVICES to {default_gpu}")
@@ -2661,10 +2751,11 @@ async def lifespan(app: FastAPI):
         logger.error(f"FATAL: Failed to initialize ModelManager: {init_err}", exc_info=True)
         raise init_err
 
-    # Initialize SD Manager in a separate worker process
+    # The native image worker starts lazily on first use. This keeps backend
+    # startup independent of CUDA while preserving its CPU fallback.
     try:
         app.state.sd_manager = SDWorkerClient()
-        logger.info("SD Worker initialized")
+        logger.info("SD Worker client initialized; worker process deferred until first use")
     except Exception as sd_err:
         logger.error(f"Failed to initialize SD Worker: {sd_err}")
         app.state.sd_manager = None
@@ -2677,7 +2768,6 @@ async def lifespan(app: FastAPI):
         try:
             logger.info("🔗 Checking TTS service availability...")
             import httpx
-            import asyncio
             
             # Wait a moment for TTS service to start
             await asyncio.sleep(2)
@@ -2724,25 +2814,28 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error initializing RAG system: {rag_error}", exc_info=True)
         app.state.rag_available = False
 
-    # Election tracker: SQLite DB + one-time source refresh at startup (no periodic rescrapes).
-    # Use Elections tab "↻ Refresh Data" or POST /election/polls/refresh to update later.
-    try:
-        await election_db.initialize()
-        asyncio.create_task(votehub_service.refresh_votehub_all())
-        asyncio.create_task(rcp_service.refresh_rcp_all())
-        asyncio.create_task(_refresh_racetothewh(["house"]))
+    # Elections are an opt-in module. Personal builds can enable them through
+    # MIRID_ENABLED_MODULES=elections or settings.modules.elections.
+    if module_enabled("elections"):
+        try:
+            await election_db.initialize()
+            asyncio.create_task(votehub_service.refresh_votehub_all())
+            asyncio.create_task(rcp_service.refresh_rcp_all())
+            asyncio.create_task(_refresh_racetothewh(["house"]))
+            app.state.election_scheduler = None
+            logger.info("Election module enabled; data refresh tasks started")
+        except Exception as e:
+            logger.warning("Election init failed: %s", e)
+    else:
         app.state.election_scheduler = None
-        logger.info("Election DB initialized; one-time VoteHub/RCP/RTWH refresh tasks started (no background scheduler)")
-    except Exception as e:
-        logger.warning("Election init failed: %s", e)
+        logger.info("Election module disabled; startup work skipped")
 
-    # Chess OAuth (Lichess/Chess.com) and imported games DB
-    try:
-        await chess_auth_db.initialize()
-        logger.info("Chess auth DB initialized")
-    except Exception as e:
-        logger.warning("Chess auth DB init failed: %s", e)
-        app.state.election_scheduler = None
+    if module_enabled("chess"):
+        try:
+            await chess_auth_db.initialize()
+            logger.info("Chess auth DB initialized")
+        except Exception as e:
+            logger.warning("Chess auth DB init failed: %s", e)
 
     try:
         from . import outreach_db
@@ -2755,17 +2848,7 @@ async def lifespan(app: FastAPI):
     except Exception as oe:
         logger.warning("Outreach scheduler init failed: %s", oe)
     
-    # Initialize Forensic Linguistics Service
-    try:
-        logger.info("Initializing Forensic Linguistics Service...")
-        app.state.forensic_service = ForensicLinguisticsService(
-            model_manager=app.state.model_manager,
-            cache_dir="./forensic_cache"
-        )
-        logger.info("✅ Forensic Linguistics Service initialized (no embedding model loaded - use Settings to load manually)")
-    except Exception as forensic_error:
-        logger.error(f"Error initializing Forensic Linguistics Service: {forensic_error}", exc_info=True)
-        app.state.forensic_service = None
+    app.state.forensic_service = None
         
     # Initialize Voice Sculpt Automation Service
     try:
@@ -2793,11 +2876,47 @@ async def lifespan(app: FastAPI):
         app.state.active_profile_id = None
         app.state.active_profile = None
 
+    # Auto-load vision model from settings at startup (non-blocking)
+    # DISABLED: Causes CUDA context conflict with NeMo/Parakeet ASR
+    # Vision model can be loaded on-demand via model manager API if needed
+    # try:
+    #     settings_path = Path.home() / ".LiangLocal" / "settings.json"
+    #     if settings_path.exists():
+    #         with open(settings_path, 'r') as f:
+    #             settings = json.load(f)
+    #         
+    #         vision_model = settings.get("visionModel")
+    #         if vision_model:
+    #             logger.info(f"🔍 Scheduling vision model auto-load: {vision_model}")
+    #             async def load_vision_model_bg():
+    #                 try:
+    #                     if hasattr(app.state, "model_manager") and app.state.model_manager:
+    #                         vision_model_lower = vision_model.lower()
+    #                         if "lfm2" in vision_model_lower and "extract" in vision_model_lower:
+    #                             vision_ctx = 131072
+    #                         else:
+    #                             vision_ctx = 32768
+    #                         await app.state.model_manager.load_model(
+    #                             model_name=vision_model,
+    #                             gpu_id=0,
+    #                             context_length=vision_ctx,
+    #                             purpose="vision"
+    #                         )
+    #                         logger.info(f"✅ Vision model {vision_model} loaded in background with {vision_ctx} context")
+    #                     else:
+    #                         logger.warning("⚠️ Model manager not available for vision model auto-load")
+    #                 except Exception as e:
+    #                     logger.error(f"❌ Failed to auto-load vision model {vision_model}: {e}")
+    #             asyncio.create_task(load_vision_model_bg())
+    # except Exception as e:
+    #     logger.error(f"❌ Error scheduling vision model load: {e}")
+
     yield # Application runs here
 
     # Shutdown logic
     logger.info(f"Application lifespan shutdown on port {port}...")
-    await chess_engine_service.close()
+    if module_enabled("chess"):
+        await chess_engine_service.close()
     if getattr(app.state, "election_scheduler", None):
         app.state.election_scheduler.shutdown()
         logger.info("Election scheduler stopped")
@@ -2806,6 +2925,21 @@ async def lifespan(app: FastAPI):
         logger.info("Models unloaded.")
     else:
         logger.warning("ModelManager not found in app state during shutdown.")
+    
+    # Cleanup Moonshine worker
+    try:
+        from .stt_service import _moonshine_worker_process
+        if _moonshine_worker_process is not None and _moonshine_worker_process.poll() is None:
+            logger.info("Terminating Moonshine worker...")
+            _moonshine_worker_process.terminate()
+            try:
+                _moonshine_worker_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _moonshine_worker_process.kill()
+            logger.info("Moonshine worker terminated.")
+    except Exception as e:
+        logger.warning(f"Error terminating Moonshine worker: {e}")
+    
     logger.info("Server shutdown complete.")
 
 app.router.lifespan_context = lifespan # Register the lifespan context with the app
@@ -2837,7 +2971,7 @@ async def load_stt_engine_endpoint(data: dict = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/tts/load-engine")
-async def load_tts_engine_endpoint(data: dict = Body(...)):
+async def load_tts_engine_endpoint(request: Request, data: dict = Body(...)):
     """Forward TTS engine loading request to TTS service on port 8002."""
     try:
         engine = data.get("engine", "kokoro")
@@ -3738,170 +3872,6 @@ async def unload_forensic_models_endpoint(
         logger.error(f"❌ [Forensic] Error unloading models: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/tts/shutdown")
-async def shutdown_tts_service():
-    """Shutdown TTS service running on port 8002"""
-    try:
-        import socket
-        import platform
-        
-        port = int(os.environ.get("TTS_PORT", 8002))
-        logger.info(f"🛑 Attempting to shutdown TTS service on port {port}...")
-        
-        # Check if port is in use
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
-        result = sock.connect_ex(('localhost', port))
-        sock.close()
-        
-        if result != 0:
-            return {
-                "status": "info",
-                "message": f"TTS service on port {port} is not running"
-            }
-        
-        # Find and kill process using port 8002
-        system = platform.system()
-        if system == "Windows":
-            # Windows: use netstat to find PID, then taskkill
-            try:
-                # Find PID using netstat (Windows format)
-                netstat_cmd = ["netstat", "-ano"]
-                result = subprocess.run(netstat_cmd, capture_output=True, text=True, shell=True)
-                lines = result.stdout.split('\n')
-                
-                pid = None
-                for line in lines:
-                    if f":{port}" in line and "LISTENING" in line.upper():
-                        # Parse Windows netstat output format
-                        parts = line.strip().split()
-                        # PID is the last column in Windows netstat -ano output
-                        if len(parts) >= 5:
-                            pid = parts[-1]
-                            # Validate PID is numeric
-                            try:
-                                int(pid)
-                                break
-                            except ValueError:
-                                pid = None
-                
-                if pid:
-                    # Kill the process
-                    kill_cmd = ["taskkill", "/F", "/PID", pid]
-                    subprocess.run(kill_cmd, capture_output=True)
-                    logger.info(f"✅ TTS service process (PID: {pid}) terminated")
-                    return {
-                        "status": "success",
-                        "message": f"TTS service on port {port} has been shut down (PID: {pid})"
-                    }
-                else:
-                    return {
-                        "status": "warning",
-                        "message": f"Port {port} is in use but PID could not be determined"
-                    }
-            except Exception as e:
-                logger.error(f"Error shutting down TTS service: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to shutdown TTS service: {str(e)}")
-        else:
-            # Linux/Mac: use lsof or fuser
-            try:
-                lsof_cmd = ["lsof", "-ti", f":{port}"]
-                result = subprocess.run(lsof_cmd, capture_output=True, text=True)
-                pid = result.stdout.strip()
-                
-                if pid:
-                    subprocess.run(["kill", "-9", pid], capture_output=True)
-                    logger.info(f"✅ TTS service process (PID: {pid}) terminated")
-                    return {
-                        "status": "success",
-                        "message": f"TTS service on port {port} has been shut down (PID: {pid})"
-                    }
-                else:
-                    return {
-                        "status": "warning",
-                        "message": f"Port {port} is in use but PID could not be determined"
-                    }
-            except Exception as e:
-                logger.error(f"Error shutting down TTS service: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to shutdown TTS service: {str(e)}")
-                
-    except Exception as e:
-        logger.error(f"❌ Error shutting down TTS service: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/tts/restart")
-async def restart_tts_service(request: Request):
-    """Restart TTS service"""
-    try:
-        import platform
-        from pathlib import Path
-        
-        port = int(os.environ.get("TTS_PORT", 8002))
-        logger.info(f"🔄 Attempting to restart TTS service on port {port}...")
-        
-        # First, shutdown existing service
-        try:
-            await shutdown_tts_service()
-            await asyncio.sleep(2)  # Wait for process to fully terminate
-        except:
-            pass  # Ignore errors during shutdown
-        
-        # Get project root (assuming main.py is in backend/app/)
-        project_root = Path(__file__).parent.parent.parent
-        
-        # Start TTS service
-        tts_script = project_root / "launch_tts.py"
-        
-        if not tts_script.exists():
-            raise HTTPException(status_code=500, detail="TTS launch script not found")
-        
-        system = platform.system()
-        
-        # Launch TTS service in background
-        if system == "Windows":
-            # Use subprocess.Popen to start in background
-            cmd = [sys.executable, str(tts_script)]
-            process = subprocess.Popen(
-                cmd,
-                cwd=str(project_root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-        else:
-            # Linux/Mac
-            cmd = [sys.executable, str(tts_script)]
-            process = subprocess.Popen(
-                cmd,
-                cwd=str(project_root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-        
-        # Wait a moment for service to start
-        await asyncio.sleep(3)
-        
-        # Check if service is running
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        result = sock.connect_ex(('localhost', port))
-        sock.close()
-        
-        if result == 0:
-            logger.info(f"✅ TTS service restarted successfully on port {port}")
-            return {
-                "status": "success",
-                "message": f"TTS service restarted on port {port} (PID: {process.pid})"
-            }
-        else:
-            return {
-                "status": "warning",
-                "message": f"TTS service process started (PID: {process.pid}) but port {port} is not yet responding. It may still be starting up."
-            }
-            
-    except Exception as e:
-        logger.error(f"❌ Error restarting TTS service: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 # MODIFIED existing endpoint to be smarter
 @router.get("/models/by-purpose")
 async def get_models_by_purpose_endpoint(
@@ -3974,36 +3944,6 @@ async def initialize_services_endpoint(
     except Exception as e:
         logger.error(f"Error initializing services: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# Add this new endpoint anywhere in your main.py (before the app.include_router lines)
-@router.post("/system/shutdown")
-async def shutdown_system(
-    background_tasks: BackgroundTasks,
-    model_manager: ModelManager = Depends(get_model_manager)
-):
-    """Signal shutdown by creating a file."""
-    try:
-        logger.info("🔴 Shutdown request received")
-        
-        # Unload models first
-        logger.info("🔄 Unloading all models...")
-        await model_manager.unload_all_models()
-        logger.info("✅ All models unloaded")
-        
-        # Create shutdown signal file
-        with open("SHUTDOWN_SIGNAL", "w") as f:
-            f.write("shutdown_requested")
-        
-        logger.info("🔴 Shutdown signal file created")
-        
-        return {
-            "status": "success", 
-            "message": "Shutdown initiated. Servers will stop shortly."
-        }
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
-        raise HTTPException(status_code=500, detail=f"Shutdown failed: {str(e)}")
 @router.get("/")
 async def read_root(request: Request):
     default_gpu = request.app.state.default_gpu if hasattr(request.app.state, 'default_gpu') else 'N/A'
@@ -4017,6 +3957,18 @@ async def list_available_models_endpoint(model_manager: ModelManager = Depends(g
 @router.get("/models/loaded")
 async def list_loaded_models_endpoint(model_manager: ModelManager = Depends(get_model_manager)):
     return model_manager.get_loaded_models()
+
+@router.get("/models/memory-estimate/{model_name}")
+async def model_memory_estimate_endpoint(
+    model_name: str,
+    model_manager: ModelManager = Depends(get_model_manager),
+):
+    try:
+        return model_manager.get_model_memory_estimate(model_name)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 @router.post("/upload_avatar", status_code=201)
 async def upload_avatar_image(request: Request, file: UploadFile = File(...)):
@@ -4194,12 +4146,11 @@ async def get_tools_registry():
     return {
         "tools": get_eloquent_chat_tools(simple=True, include_news=True),
         "agent_web_search_default": True,
-        "web_search_strategies": ["auto", "eloquent", "native", "off"],
-        "default_web_search_strategy": load_web_search_settings().get("webSearchStrategy", "auto"),
+        "web_search_strategies": ["auto"],
+        "default_web_search_strategy": "auto",
         "notes": (
-            "Dual-path web search: auto prefers provider-native (OpenRouter web_search tool, "
-            ":online) when the endpoint supports it; otherwise Eloquent prefetch inject. "
-            "Configure in Settings → Web Search and per API endpoint."
+            "Web search routes automatically: provider-native search when supported, "
+            "otherwise Mirid's search tools."
         ),
     }
 
@@ -4295,64 +4246,13 @@ async def generate_character_from_conversation_endpoint(
 
         return generation_result
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error generating character from conversation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-async def warmup_chatterbox_voices():
-    """Warm up voices from settings.json"""
-    import json
-    from pathlib import Path
-    
-    try:
-        # Read settings.json
-        settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        if not settings_path.exists():
-            logger.info("No settings.json found, skipping voice warmup")
-            return
-            
-        with open(settings_path, 'r') as f:
-            settings = json.load(f)
-            
-        voice_cache = settings.get('voice_cache', [])
-        if not voice_cache:
-            logger.info("No voices in cache, skipping voice warmup")
-            return
-            
-        logger.info(f"🔥 Warming up {len(voice_cache)} cached voices...")
-        
-        from . import tts_service
-        voices_dir = Path(__file__).parent / "static" / "voice_references"
-        
-        for voice_entry in voice_cache:
-            if voice_entry.get('engine') == 'chatterbox':
-                voice_id = voice_entry.get('voice_id')
-                if voice_id:
-                    voice_path = voices_dir / voice_id
-                    if voice_path.exists():
-                        try:
-                            logger.info(f"🔥 Warming up voice: {voice_id}")
-                            # This will trigger conditional preparation and caching
-                            if hasattr(request.app.state, 'tts_client') and request.app.state.tts_client:
-                                await request.app.state.tts_client.synthesize_speech(
-                                    text="Warmup test",
-                                    engine="chatterbox",
-                                    audio_prompt_path=str(voice_path),
-                                    exaggeration=0.5,
-                                    cfg=0.3
-                                )
-                            else:
-                                logger.warning("TTS client not available for warmup")
-                            logger.info(f"✅ Warmed up voice: {voice_id}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to warm up voice {voice_id}: {e}")
-                    else:
-                        logger.warning(f"⚠️ Voice file not found: {voice_path}")
-        
-        logger.info("✅ Voice warmup complete")
-        
-    except Exception as e:
-        logger.error(f"Voice warmup failed: {e}", exc_info=True)
+# NOTE: legacy warmup_chatterbox_voices() removed — never called; TTS warmup handled by TTS service (port 8002).
 
 @router.post("/character/refine-generated")
 async def refine_generated_character_endpoint(
@@ -4397,10 +4297,14 @@ You are a character refinement specialist. Your task is to take an existing char
 **REQUIRED JSON STRUCTURE:**
 {{
   "name": "string",
-  "description": "string", 
+  "description": "string",
+  "personality": "string",
+  "background": "string",
   "model_instructions": "string",
+  "speech_style": "string",
   "scenario": "string",
   "first_message": "string",
+  "alternate_greetings": ["string"],
   "example_dialogue": [
     {{"role": "user", "content": "string"}},
     {{"role": "character", "content": "string"}}
@@ -4475,6 +4379,8 @@ Apply the user's feedback to improve the character while keeping all good elemen
         else:
             return {"status": "error", "error": "Could not extract valid JSON from refinement response"}
             
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error refining character: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -4569,6 +4475,181 @@ async def get_available_stt_engines():
             content={"status": "error", "message": str(e)}
         )
 
+
+@router.get("/stt/nanogpt-models")
+async def get_nanogpt_stt_models():
+    """Fetch available STT models from NanoGPT API."""
+    try:
+        from .stt_service import _load_nanogpt_settings, NANOGPT_API_BASE
+        import httpx
+        
+        settings = _load_nanogpt_settings()
+        api_key = settings.get('nanogpt_api_key') or settings.get('nanoGptApiKey')
+        
+        if not api_key:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "NanoGPT API key not configured"}
+            )
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {"x-api-key": api_key}
+            response = await client.get(
+                f"{NANOGPT_API_BASE}/v1/audio-models?type=stt&detailed=true",
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                models = data.get("data", [])
+                # Filter to STT models and format for frontend
+                stt_models = []
+                for model in models:
+                    if model.get("capabilities", {}).get("speech_to_text"):
+                        stt_models.append({
+                            "id": model.get("id"),
+                            "name": model.get("name", model.get("id")),
+                            "description": model.get("description", ""),
+                            "pricing": model.get("pricing", {}),
+                            "capabilities": model.get("capabilities", {}),
+                            "supported_parameters": model.get("supported_parameters", {}),
+                        })
+                return {
+                    "models": stt_models,
+                    "default": "fun-asr-flash-2026-06-15"
+                }
+            else:
+                logger.warning(f"NanoGPT audio-models API returned {response.status_code}: {response.text}")
+                # Fallback to known models
+                from .stt_service import NANOGPT_STT_MODELS, NANOGPT_DEFAULT_STT_MODEL
+                fallback_models = [
+                    {"id": k, "name": v, "description": v}
+                    for k, v in NANOGPT_STT_MODELS.items()
+                ]
+                return {
+                    "models": fallback_models,
+                    "default": NANOGPT_DEFAULT_STT_MODEL
+                }
+    except Exception as e:
+        logger.error(f"Error fetching NanoGPT STT models: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)}
+        )
+
+
+@router.get("/tts/nanogpt-models")
+async def get_nanogpt_tts_models():
+    """Fetch available TTS models from NanoGPT API."""
+    try:
+        from .stt_service import _load_nanogpt_settings, NANOGPT_API_BASE
+        from .tts_service import NANOGPT_TTS_MODEL_PROFILES
+        import httpx
+        
+        settings = _load_nanogpt_settings()
+        api_key = settings.get('nanogpt_api_key') or settings.get('nanoGptApiKey')
+        
+        if not api_key:
+            # Return fallback models from local profiles
+            fallback_models = [
+                {
+                    "id": model_id,
+                    "name": model_id,
+                    "description": f"NanoGPT {model_id} TTS",
+                    "default_voice": profile["voice_default"],
+                    "voices": profile["voice_valid"],
+                }
+                for model_id, profile in NANOGPT_TTS_MODEL_PROFILES.items()
+            ]
+            return {
+                "models": fallback_models,
+                "default": "Kokoro-82m"
+            }
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {"x-api-key": api_key}
+            response = await client.get(
+                f"{NANOGPT_API_BASE}/v1/audio-models?type=tts&detailed=true",
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                models = data.get("data", [])
+                tts_models = []
+                for model in models:
+                    if model.get("capabilities", {}).get("text_to_speech"):
+                        model_id = model.get("id")
+                        # Extract voices from supported_parameters if available
+                        supported_params = model.get("supported_parameters", {})
+                        voice_param = supported_params.get("voice", {})
+                        voice_options = voice_param.get("options", [])
+                        voice_default = voice_param.get("default", None)
+                        
+                        # Merge with local profile if available
+                        local_profile = NANOGPT_TTS_MODEL_PROFILES.get(model_id, {})
+                        if not voice_options and local_profile.get("voice_valid"):
+                            voice_options = local_profile["voice_valid"]
+                        if not voice_default and local_profile.get("voice_default"):
+                            voice_default = local_profile["voice_default"]
+                        
+                        tts_models.append({
+                            "id": model_id,
+                            "name": model.get("name", model_id),
+                            "description": model.get("description", ""),
+                            "pricing": model.get("pricing", {}),
+                            "capabilities": model.get("capabilities", {}),
+                            "supported_parameters": model.get("supported_parameters", {}),
+                            "default_voice": voice_default,
+                            "voices": voice_options,
+                        })
+                return {
+                    "models": tts_models,
+                    "default": "Kokoro-82m"
+                }
+            else:
+                logger.warning(f"NanoGPT audio-models API returned {response.status_code}: {response.text}")
+                # Fallback to local profiles only (no API voice data)
+                fallback_models = [
+                    {
+                        "id": model_id,
+                        "name": model_id,
+                        "description": f"NanoGPT {model_id} TTS",
+                        "default_voice": profile["voice_default"],
+                        "voices": profile["voice_valid"],
+                    }
+                    for model_id, profile in NANOGPT_TTS_MODEL_PROFILES.items()
+                ]
+                return {
+                    "models": fallback_models,
+                    "default": "Kokoro-82m"
+                }
+    except Exception as e:
+        logger.error(f"Error fetching NanoGPT TTS models: {e}", exc_info=True)
+        # Fallback to local profiles
+        try:
+            from .tts_service import NANOGPT_TTS_MODEL_PROFILES
+            fallback_models = [
+                {
+                    "id": model_id,
+                    "name": model_id,
+                    "description": f"NanoGPT {model_id} TTS",
+                    "default_voice": profile["voice_default"],
+                    "voices": profile["voice_valid"],
+                }
+                for model_id, profile in NANOGPT_TTS_MODEL_PROFILES.items()
+            ]
+            return {
+                "models": fallback_models,
+                "default": "Kokoro-82m"
+            }
+        except:
+            return JSONResponse(
+                status_code=500,
+                content={"status": "error", "message": str(e)}
+            )
+
+
 @router.post("/stt/install-engine")
 async def install_stt_engine(engine: str = Query(...)):
     """Install requested STT engine."""
@@ -4616,6 +4697,58 @@ async def install_stt_engine(engine: str = Query(...)):
         except Exception as e:
             logger.error(f"Error installing Parakeet-ZH: {e}", exc_info=True)
             return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+    elif engine == "moonshine":
+        try:
+            from .stt_service import setup_moonshine_venv, is_moonshine_available
+            logger.info("Starting Moonshine Streaming Tiny installation...")
+            
+            if is_moonshine_available():
+                return {"status": "success", "message": "Moonshine Streaming Tiny already installed"}
+            
+            success, message = await setup_moonshine_venv()
+            if success:
+                logger.info("Moonshine installation successful!")
+                return {"status": "success", "message": "Moonshine Streaming Tiny installed successfully"}
+            else:
+                logger.error(f"Moonshine installation failed: {message}")
+                return JSONResponse(status_code=500, content={"status": "error", "message": message})
+        except Exception as e:
+            logger.error(f"Error installing Moonshine: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+    elif engine == "parakeet-cpp":
+        try:
+            from .stt_service import is_parakeet_cpp_available
+            if is_parakeet_cpp_available():
+                return {"status": "success", "message": "parakeet-cli binary found"}
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": "Parakeet.cpp is unavailable in this Mirid runtime. "
+                               "Update Mirid or choose another speech-to-text engine."
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error checking parakeet-cpp: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+    elif engine == "voxcpm-gguf":
+        try:
+            from .tts_service import is_voxcpm_gguf_available
+            if is_voxcpm_gguf_available():
+                return {"status": "success", "message": "voxcpm2-cli binary found"}
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": "voxcpm2-cli not found. Build llama.cpp-omni: "
+                               "git clone https://github.com/tc-mb/llama.cpp-omni && "
+                               "cd llama.cpp-omni && cmake -B build -DCMAKE_BUILD_TYPE=Release && "
+                               "cmake --build build --target voxcpm2-cli -j"
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error checking voxcpm-gguf: {e}", exc_info=True)
+            return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
     else:
         logger.warning(f"Unknown engine requested for installation: {engine}")
         return JSONResponse(
@@ -4644,31 +4777,191 @@ async def fix_parakeet_numpy():
             status_code=500,
             content={"status": "error", "message": f"Failed to fix NumPy: {str(e)}"}
         )
+
+
+@router.get("/stt/parakeet-cpp/status")
+async def parakeet_cpp_status():
+    """Check if parakeet-cli binary is available."""
+    from .stt_service import is_parakeet_cpp_available, _get_parakeet_cpp_binary
+    binary = _get_parakeet_cpp_binary()
+    return {
+        "available": is_parakeet_cpp_available(),
+        "binary_path": binary,
+        "setup_instructions": (
+            "Update Mirid or choose another speech-to-text engine."
+        ) if not binary else None,
+    }
+
+
+@router.get("/stt/parakeet-cpp/models")
+async def parakeet_cpp_list_models():
+    """List all parakeet-cpp GGUF models with download status."""
+    from .stt_service import (
+        PARAKEET_CPP_GGUF_MODELS,
+        list_parakeet_cpp_downloaded_models,
+        is_parakeet_cpp_available,
+    )
+    downloaded = list_parakeet_cpp_downloaded_models()
+    downloaded_set = {d["filename"] for d in downloaded}
+
+    catalog = []
+    for model_id, info in PARAKEET_CPP_GGUF_MODELS.items():
+        variants = []
+        for quant_key, file_info in info["files"].items():
+            variants.append({
+                "quant": quant_key,
+                "filename": file_info["name"],
+                "size_mb": file_info["size_mb"],
+                "downloaded": file_info["name"] in downloaded_set,
+            })
+        catalog.append({
+            "id": model_id,
+            "label": info["label"],
+            "source": info["source"],
+            "arch": info["arch"],
+            "params": info["params"],
+            "recommended": info["recommended"],
+            "variants": variants,
+        })
+
+    return {
+        "models": catalog,
+        "cli_available": is_parakeet_cpp_available(),
+        "downloaded_count": len(downloaded),
+    }
+
+
+@router.post("/stt/parakeet-cpp/download")
+async def parakeet_cpp_download_model(data: dict = Body(...)):
+    """Download a specific parakeet-cpp GGUF model."""
+    from .stt_service import download_parakeet_cpp_model
+    model_id = data.get("model_id", "")
+    quant = data.get("quant", "f16")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id is required")
+    success, message = await download_parakeet_cpp_model(model_id, quant)
+    if success:
+        return {"status": "success", "message": message}
+    return JSONResponse(status_code=500, content={"status": "error", "message": message})
+
+
+@router.delete("/stt/parakeet-cpp/model")
+async def parakeet_cpp_delete_model(filename: str = Query(...)):
+    """Delete a downloaded parakeet-cpp GGUF model file."""
+    from .stt_service import delete_parakeet_cpp_model
+    success, message = await delete_parakeet_cpp_model(filename)
+    if success:
+        return {"status": "success", "message": message}
+    return JSONResponse(status_code=404, content={"status": "error", "message": message})
+
+
+# --- VoxCPM2 GGUF Model Management Routes ---
+
+@router.get("/tts/voxcpm-gguf/status")
+async def voxcpm_gguf_status():
+    """Check if voxcpm2-cli binary is available."""
+    from .tts_service import is_voxcpm_gguf_available, _get_voxcpm_cli_binary
+    binary = _get_voxcpm_cli_binary()
+    return {
+        "available": is_voxcpm_gguf_available(),
+        "binary_path": binary,
+        "setup_instructions": (
+            "git clone https://github.com/tc-mb/llama.cpp-omni && "
+            "cd llama.cpp-omni && cmake -B build -DCMAKE_BUILD_TYPE=Release && "
+            "cmake --build build --target voxcpm2-cli -j"
+        ) if not binary else None,
+    }
+
+
+@router.get("/tts/voxcpm-gguf/models")
+async def voxcpm_gguf_list_models():
+    """List all VoxCPM2 GGUF models with download status."""
+    from .tts_service import (
+        VOXCPM_GGUF_MODELS,
+        list_voxcpm_gguf_downloaded_models,
+        is_voxcpm_gguf_available,
+    )
+    downloaded = list_voxcpm_gguf_downloaded_models()
+    downloaded_set = {d["filename"] for d in downloaded}
+
+    catalog = []
+    for model_id, info in VOXCPM_GGUF_MODELS.items():
+        catalog.append({
+            "id": model_id,
+            "label": info["label"],
+            "filename": info["filename"],
+            "size_mb": info["size_mb"],
+            "component": info["component"],
+            "downloaded": info["filename"] in downloaded_set,
+        })
+
+    return {
+        "models": catalog,
+        "cli_available": is_voxcpm_gguf_available(),
+        "downloaded_count": len(downloaded),
+    }
+
+
+@router.post("/tts/voxcpm-gguf/download")
+async def voxcpm_gguf_download_model(data: dict = Body(...)):
+    """Download a specific VoxCPM2 GGUF model."""
+    from .tts_service import download_voxcpm_gguf_model
+    model_id = data.get("model_id", "")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id is required")
+    success, message = await download_voxcpm_gguf_model(model_id)
+    if success:
+        return {"status": "success", "message": message}
+    return JSONResponse(status_code=500, content={"status": "error", "message": message})
+
+
+@router.delete("/tts/voxcpm-gguf/model")
+async def voxcpm_gguf_delete_model(filename: str = Query(...)):
+    """Delete a downloaded VoxCPM2 GGUF model file."""
+    from .tts_service import delete_voxcpm_gguf_model
+    success, message = await delete_voxcpm_gguf_model(filename)
+    if success:
+        return {"status": "success", "message": message}
+    return JSONResponse(status_code=404, content={"status": "error", "message": message})
+
+
 @router.get("/gpu/count")
 def check_gpu_count():
     """Check how many GPUs are available using pynvml to avoid initializing a CUDA context."""
+    if force_cpu_mode() or pynvml is None:
+        return 0
     try:
         pynvml.nvmlInit()
         gpu_count = pynvml.nvmlDeviceGetCount()
         pynvml.nvmlShutdown()
         return gpu_count
-    except (pynvml.NVMLError, NameError):
-        # Fallback or log warning if pynvml is not available
-        # For this fix, we assume it is installed. If not: pip install pynvml
+    except Exception:
         return 0
 
+
+
+def _resolve_sd_model_directory(request: Request) -> Path:
+    settings_path = Path.home() / ".LiangLocal" / "settings.json"
+    configured = None
+    try:
+        if settings_path.exists():
+            configured = json.loads(settings_path.read_text(encoding="utf-8")).get("sdModelDirectory")
+    except Exception as error:
+        logger.warning("Could not read the image model directory setting: %s", error)
+    model_path = Path(
+        configured
+        or getattr(request.app.state, "sd_model_directory", None)
+        or (Path.home() / "models" / "stable-diffusion")
+    ).expanduser()
+    model_path.mkdir(parents=True, exist_ok=True)
+    request.app.state.sd_model_directory = str(model_path)
+    return model_path
 
 
 @router.get("/sd-local/list-models")
 async def list_local_sd_models(request: Request):
     """List available local Stable Diffusion models from the configured directory."""
-    sd_model_dir = getattr(request.app.state, 'sd_model_directory', None)
-    if not sd_model_dir:
-        return {"status": "error", "message": "SD model directory not configured.", "models": []}
-
-    model_path = Path(sd_model_dir)
-    if not model_path.is_dir():
-        return {"status": "error", "message": f"Configured directory not found: {model_path}", "models": []}
+    model_path = _resolve_sd_model_directory(request)
 
     # Scan for .safetensors and .ckpt files
     allowed_extensions = {".safetensors", ".ckpt", ".gguf"}
@@ -4690,11 +4983,7 @@ async def sd_local_load_model(data: dict, request: Request):
     if not model_filename:
         raise HTTPException(status_code=400, detail="model_filename required")
 
-    sd_model_dir = getattr(request.app.state, 'sd_model_directory', None)
-    if not sd_model_dir:
-        raise HTTPException(status_code=500, detail="SD model directory not configured on backend.")
-
-    full_model_path = str(Path(sd_model_dir) / model_filename)
+    full_model_path = str(_resolve_sd_model_directory(request) / Path(model_filename).name)
     try:
         success = sd_manager.load_model(full_model_path, gpu_id=gpu_id)
     except RuntimeError as load_err:
@@ -4785,6 +5074,7 @@ async def tts_endpoint(request: Request):
     text = data.get("text")
     voice = data.get("voice", "af_heart")  # Default Kokoro voice
     engine = data.get("engine", "kokoro")  # Default to Kokoro
+    speed = data.get("speed", 1.0)
     audio_prompt_path = data.get("audio_prompt_path")  # For Chatterbox voice cloning
     save_full_response_audio = data.get("save_full_response_audio") is True
     message_id = data.get("message_id")
@@ -4799,14 +5089,22 @@ async def tts_endpoint(request: Request):
     if max_chunk_seconds is not None and max_chunk_seconds <= 0:
         max_chunk_seconds = None
 
-    # Chatterbox / Turbo: use voice id as clone path when not explicitly set (matches streaming WS)
-    if engine in ("chatterbox", "chatterbox_turbo") and not audio_prompt_path and voice != "default":
+    # Chatterbox / Turbo / VoxCPM: use voice id as clone path when not explicitly set (matches streaming WS)
+    if (engine in ("chatterbox", "chatterbox_turbo", "chatterbox_nano", "voxcpm")) and not audio_prompt_path and voice != "default":
         audio_prompt_path = voice
         logger.info(f"🔊 [TTS] {engine}: using voice '{voice}' as audio_prompt_path")
 
     # Chatterbox-specific parameters
     exaggeration = data.get("exaggeration", 0.5)
     cfg = data.get("cfg", 0.5)
+
+    # VoxCPM2-specific parameters
+    voxcpm_cfg_value = data.get("voxcpm_cfg_value", 2.0)
+    voxcpm_inference_timesteps = data.get("voxcpm_inference_timesteps", 8)
+    voxcpm_normalize = data.get("voxcpm_normalize", False)
+    voxcpm_denoise = data.get("voxcpm_denoise", False)
+    voxcpm_retry_badcase = data.get("voxcpm_retry_badcase", False)
+    voxcpm_voice_design = data.get("voxcpm_voice_design")
 
     if not text:
         return JSONResponse(content={"detail": "No text provided"}, status_code=400)
@@ -4821,7 +5119,14 @@ async def tts_endpoint(request: Request):
             engine=engine,
             audio_prompt_path=audio_prompt_path,
             exaggeration=exaggeration,
-            cfg=cfg
+            cfg=cfg,
+            speed=speed,
+            voxcpm_cfg_value=voxcpm_cfg_value,
+            voxcpm_inference_timesteps=voxcpm_inference_timesteps,
+            voxcpm_normalize=voxcpm_normalize,
+            voxcpm_denoise=voxcpm_denoise,
+            voxcpm_retry_badcase=voxcpm_retry_badcase,
+            voxcpm_voice_design=voxcpm_voice_design,
         )
 
         save_headers = {
@@ -4959,6 +5264,21 @@ async def list_available_voices():
         
         # Chatterbox is always available (primary engine)
         available_engines.append("chatterbox")
+        
+        # Chatterbox Turbo and Nano are available if their vendored loaders imported
+        try:
+            from .tts_service import ChatterboxTurboTTS
+            if ChatterboxTurboTTS is not None:
+                available_engines.append("chatterbox_turbo")
+        except Exception:
+            pass
+        
+        try:
+            from .tts_service import ChatterboxNanoTTS
+            if ChatterboxNanoTTS is not None:
+                available_engines.append("chatterbox_nano")
+        except Exception:
+            pass
         
         # Kokoro voices (built-in voices)
         kokoro_voices = []
@@ -5455,10 +5775,39 @@ async def generate(
     if summary_context and body.request_purpose not in ["title_generation", "model_judging", "model_testing", "continuation", "call_mode_character_about", "character_intro", "system_intro"]:
         interaction_components.append("[PREVIOUS STORY SUMMARY]:\n" + summary_context + "\n[End of Summary]")
 
+    document_agent_tools_active = False
+    if (
+        body.use_rag
+        and body.rag_agent_tools
+        and bool(body.rag_docs)
+        and body.request_purpose not in [
+            "title_generation",
+            "model_testing",
+            "model_judging",
+            "continuation",
+            "book_chapter_json_outline",
+        ]
+    ):
+        try:
+            from backend.app.eloquent_agent_tools import deepseek_likely_no_tools
+
+            document_tool_endpoint = get_endpoint_config_for_model(
+                body.model_name, request_purpose=body.request_purpose
+            )
+            document_agent_tools_active = bool(
+                document_tool_endpoint
+                and supports_native_tool_calling(body.model_name, document_tool_endpoint)
+                and not deepseek_likely_no_tools(body.model_name, document_tool_endpoint)
+            )
+        except Exception as exc:
+            logger.warning("Could not enable agent document search: %s", exc)
+
     # 7) Optionally integrate RAG (ONLY for user chats)
     if body.use_rag and body.request_purpose != "title_generation":
-        logger.info(f"🔍 Attempting RAG with query: '{user_query_from_split[:100]}...' and docs: {body.rag_docs}")
-        if getattr(request.app.state, 'rag_available', False):
+        if document_agent_tools_active:
+            logger.info("Deferring document retrieval to the model tool loop for %d checked document(s)", len(body.rag_docs))
+        elif getattr(request.app.state, 'rag_available', False):
+            logger.info(f"🔍 Attempting RAG with query: '{user_query_from_split[:100]}...' and docs: {body.rag_docs}")
             try:
                 rag_res = rag_utils.query_documents(
                     question=user_query_from_split, # Use the clean user query
@@ -5493,22 +5842,21 @@ async def generate(
         "book_chapter_json_outline",
     ]:
         search_input = body.web_search_query if body.web_search_query else user_query_from_split
-        mode = (body.web_search_mode or "").lower()
-        article_mode = mode in ("articles", "article", "corpus")
-        deep_research = mode in ("deep", "articles", "article")
+        mode = "normal"
+        article_mode = False
+        deep_research = False
         article_intent = detect_article_research_intent(search_input)
         if article_intent and not article_mode:
             article_mode = True
             deep_research = True
             logger.info("🌐 Auto-enabled Articles research from query intent")
-        site_hint = (body.research_site or "").strip() or None
+        site_hint = None
         if article_intent and not site_hint and re.search(
             r"ux\s*mag|uxmag", search_input, re.IGNORECASE
         ):
             site_hint = "uxmag.com"
 
-        ws_settings = load_web_search_settings()
-        strategy = (body.web_search_strategy or ws_settings.get("webSearchStrategy") or "auto").lower()
+        strategy = "auto"
         endpoint_cfg = get_endpoint_config_for_model(
             body.model_name, request_purpose=body.request_purpose
         )
@@ -5519,8 +5867,6 @@ async def generate(
             endpoint_cfg=endpoint_cfg,
             article_mode=article_mode,
             deep_research=deep_research,
-            research_urls=body.research_urls,
-            transcript_corpus_id=body.transcript_corpus_id,
             user_query=search_input,
         )
 
@@ -5577,103 +5923,149 @@ async def generate(
             logger.info("🌐 Native web search enabled (method=%s)", native_method)
 
         elif search_path == "eloquent":
-            if body.model_name:
-                async def web_search_llm(prompt_text: str) -> str:
-                    if char_context:
-                        prompt_text = char_context + "\n\n" + prompt_text
-                    return await generate_llm_response(
-                        prompt_text,
-                        model_manager=model_manager,
-                        model_name=body.model_name,
-                        max_tokens=512,
-                        temperature=0.2,
-                        top_p=0.9,
-                    )
-
-                set_web_search_llm(web_search_llm)
-
-            web_search_meta = build_search_meta(
-                path="eloquent",
-                status="searching",
-                mode=mode or "normal",
-                strategy=strategy,
+            from backend.app.eloquent_agent_tools import (
+                supports_native_tool_calling,
+                deepseek_likely_no_tools,
             )
-            try:
-                research_block, research_steps, research_ok, citation_results = (
-                    await gather_reliable_web_research(
-                        search_input,
-                        body.model_name,
-                        character_context=char_context,
-                        deep_research=deep_research,
-                        article_mode=article_mode or bool(body.research_urls),
-                        research_urls=body.research_urls,
-                        transcript_corpus_id=body.transcript_corpus_id,
-                        site_hint=site_hint or body.research_site,
-                        mode=mode or "normal",
-                    )
-                )
-                sources = sources_from_results(citation_results)
+            # Check if we're using new tool calling instead of old prefetch
+            endpoint_cfg = get_endpoint_config_for_model(
+                body.model_name, request_purpose=body.request_purpose
+            )
+            use_tool_calling = (
+                body.use_web_search
+                and body.request_purpose not in [
+                    "title_generation",
+                    "model_testing",
+                    "model_judging",
+                    "continuation",
+                    "book_chapter_json_outline",
+                ]
+                and not web_search_native_for_api
+                and supports_native_tool_calling(body.model_name, endpoint_cfg)
+                and not deepseek_likely_no_tools(body.model_name, endpoint_cfg)
+            )
+
+            if use_tool_calling:
+                # New agentic tool calling path - tools added in API request, executed pre-streaming
+                logger.info("🌐 Using agentic tool calling (web_search + web_fetch) instead of legacy prefetch")
                 web_search_meta = build_search_meta(
-                    path="eloquent",
-                    status="complete" if research_ok else "error",
-                    source_count=len(sources),
-                    sources=sources,
-                    queries=[
-                        s.get("query")
-                        for s in research_steps
-                        if isinstance(s.get("query"), str)
-                    ]
-                    or [
-                        q
-                        for s in research_steps
-                        for q in (s.get("query") if isinstance(s.get("query"), list) else [])
-                    ],
+                    path="eloquent_tools",
+                    status="tool_calling",
                     mode=mode or "normal",
                     strategy=strategy,
-                    steps=research_steps,
                 )
+                # Skip old gather_reliable_web_research - tools handle search during generation
+                research_block, research_steps, research_ok, citation_results = "", [], True, []
+                sources = []
                 receipt = build_web_search_receipt(
-                    ok=research_ok,
-                    steps=research_steps,
+                    ok=True,
+                    steps=[],
                     model_name=body.model_name,
                     mode=mode or "normal",
-                    path="eloquent_prefetch",
-                    source_count=len(sources),
+                    path="eloquent_tools",
+                    source_count=0,
                 )
-                if research_ok and research_block:
-                    interaction_components.append(
-                        receipt + "\n\n" + research_block + "\n\n" + WEB_SEARCH_MODEL_INSTRUCTIONS
-                    )
-                    logger.info(
-                        "🌐 Eloquent prefetch: %d sources, %d steps",
-                        len(sources),
-                        len(research_steps),
-                    )
-                else:
-                    interaction_components.append(
-                        receipt
-                        + "\n\n[WEB SEARCH: No live results retrieved this turn.]\n\n"
-                        + WEB_SEARCH_MODEL_INSTRUCTIONS
-                    )
-            except Exception as e:
-                logger.error("❌ Web search error: %s", e, exc_info=True)
+                interaction_components.append(
+                    receipt + "\n\n[WEB SEARCH: Agentic tool calling enabled — model will search during generation.]\n\n" + WEB_SEARCH_MODEL_INSTRUCTIONS
+                )
+            else:
+                # Legacy prefetch path
+                if body.model_name:
+                    async def web_search_llm(prompt_text: str) -> str:
+                        if char_context:
+                            prompt_text = char_context + "\n\n" + prompt_text
+                        return await generate_llm_response(
+                            prompt_text,
+                            model_manager=model_manager,
+                            model_name=body.model_name,
+                            max_tokens=512,
+                            temperature=0.2,
+                            top_p=0.9,
+                        )
+
+                    set_web_search_llm(web_search_llm)
+
                 web_search_meta = build_search_meta(
                     path="eloquent",
-                    status="error",
+                    status="searching",
                     mode=mode or "normal",
                     strategy=strategy,
                 )
-                interaction_components.append(
-                    build_web_search_receipt(
-                        ok=False,
-                        steps=[],
+                try:
+                    research_block, research_steps, research_ok, citation_results = (
+                        await gather_reliable_web_research(
+                            search_input,
+                            body.model_name,
+                            character_context=char_context,
+                            deep_research=deep_research,
+                            article_mode=article_mode,
+                            research_urls=None,
+                            site_hint=site_hint,
+                            mode=mode,
+                        )
+                    )
+                    sources = sources_from_results(citation_results)
+                    web_search_meta = build_search_meta(
+                        path="eloquent",
+                        status="complete" if research_ok else "error",
+                        source_count=len(sources),
+                        sources=sources,
+                        queries=[
+                            s.get("query")
+                            for s in research_steps
+                            if isinstance(s.get("query"), str)
+                        ]
+                        or [
+                            q
+                            for s in research_steps
+                            for q in (s.get("query") if isinstance(s.get("query"), list) else [])
+                        ],
+                        mode=mode or "normal",
+                        strategy=strategy,
+                        steps=research_steps,
+                    )
+                    receipt = build_web_search_receipt(
+                        ok=research_ok,
+                        steps=research_steps,
                         model_name=body.model_name,
                         mode=mode or "normal",
                         path="eloquent_prefetch",
+                        source_count=len(sources),
                     )
-                    + f"\n\n[WEB SEARCH ERROR: {e}]\n\n"
-                    + WEB_SEARCH_MODEL_INSTRUCTIONS
-                )
+                    if research_ok and research_block:
+                        interaction_components.append(
+                            receipt + "\n\n" + research_block + "\n\n" + WEB_SEARCH_MODEL_INSTRUCTIONS
+                        )
+                        logger.info(
+                            "🌐 Eloquent prefetch: %d sources, %d steps",
+                            len(sources),
+                            len(research_steps),
+                        )
+                    else:
+                        interaction_components.append(
+                            receipt
+                        + "\n\n[WEB SEARCH: No live results retrieved this turn.]\n\n"
+                        + WEB_SEARCH_MODEL_INSTRUCTIONS
+                    )
+                except Exception as e:
+                    logger.error("❌ Web search error: %s", e, exc_info=True)
+                    web_search_meta = build_search_meta(
+                        path="eloquent",
+                        status="error",
+                        mode=mode or "normal",
+                        strategy=strategy,
+                    )
+                    interaction_components.append(
+                        build_web_search_receipt(
+                            ok=False,
+                            steps=[],
+                            model_name=body.model_name,
+                            mode=mode or "normal",
+                            path="eloquent_prefetch",
+                        )
+                        + f"\n\n[WEB SEARCH ERROR: {e}]\n\n"
+                        + WEB_SEARCH_MODEL_INSTRUCTIONS
+                    )
     elif body.use_web_search and body.request_purpose == "title_generation":
         logger.info("🌐 Title generation request: Skipping web search")
     elif body.use_web_search:
@@ -5893,8 +6285,164 @@ Vary your sentence structure and word choices naturally."""
     if body.request_purpose == "continuation":
         llm_prompt = original_client_prompt
         logger.info(f"[generate] Continuation: using client prompt as-is ({len(llm_prompt)} chars)")
+
+    # Resolve effective model name early for chat-template lookup (full resolution happens later)
+    effective_model_name = body.model_name
+
+    # --- Custom Jinja chat template override (LM Studio-style) ---
+    custom_template_stops = None
+    custom_template_entry = chat_template_engine.lookup(effective_model_name)
+    if custom_template_entry and body.messages and body.request_purpose != "continuation":
+        try:
+            messages_for_template = chat_template_engine.merge_backend_context(
+                body.messages,
+                system_block_for_llm,
+                final_interaction_block,
+            )
+            rendered_prompt, custom_template_stops = chat_template_engine.render_with_stops(
+                messages_for_template,
+                effective_model_name,
+                add_generation_prompt=True,
+                enable_thinking=False,
+                preserve_thinking=True,
+            )
+            llm_prompt = rendered_prompt
+            logger.info(
+                f"[generate] Using custom Jinja chat template for {effective_model_name} "
+                f"({len(llm_prompt)} chars, stops={custom_template_stops})"
+            )
+        except Exception as tmpl_exc:
+            logger.error(
+                f"[generate] Custom Jinja template render failed for {effective_model_name}: {tmpl_exc}. "
+                f"Falling back to legacy prompt assembly.",
+                exc_info=True,
+            )
+            custom_template_stops = None
+
     # 10) Log the final prompt sent to LLM
     logger.info(f"[generate] FULL LLM PROMPT ({len(llm_prompt)} chars) >>>\n{llm_prompt}\n<<<")
+
+    # 10.5) Two-stage vision pipeline: if vision_model is specified, run extraction first
+    vision_extraction_result = None
+    vision_inputs = [
+        image for image in (body.images or [])
+        if isinstance(image, dict) and image.get("base64")
+    ]
+    if not vision_inputs and body.image_base64:
+        vision_inputs = [{
+            "base64": body.image_base64,
+            "type": body.image_type or "image/png",
+            "name": "image",
+        }]
+    if body.vision_model and vision_inputs:
+        logger.info(f"🔍 [Vision Pipeline] Running two-stage vision: vision_model={body.vision_model}")
+        try:
+            import socket
+            import struct
+            import pickle
+
+            def send_msg(sock, data):
+                msg = pickle.dumps(data)
+                msg_len = struct.pack('>I', len(msg))
+                sock.sendall(msg_len + msg)
+
+            def recv_exact(sock, size):
+                chunks = []
+                remaining = size
+                while remaining:
+                    chunk = sock.recv(remaining)
+                    if not chunk:
+                        return None
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                return b''.join(chunks)
+
+            def recv_msg(sock):
+                raw_msglen = recv_exact(sock, 4)
+                if not raw_msglen:
+                    return None
+                msglen = struct.unpack('>I', raw_msglen)[0]
+                data = recv_exact(sock, msglen)
+                if data is None:
+                    return None
+                return pickle.loads(data)
+
+            model_name_lower = (body.vision_model or "").lower()
+            is_extract_model = "extract" in model_name_lower
+            vision_mode = "extract" if is_extract_model else "chat"
+
+            model_path = None
+            try:
+                model_key = (body.vision_model, gpu_id)
+                model_info = model_manager.loaded_models.get(model_key)
+                if model_info:
+                    model_path = model_info.get("path")
+                else:
+                    # Search across GPUs
+                    for k, v in model_manager.loaded_models.items():
+                        if k[0] == body.vision_model:
+                            model_path = v.get("path")
+                            break
+            except Exception as e:
+                logger.warning(f"⚠️ [Vision Pipeline] Could not get model path from ModelManager: {e}")
+
+            if "lfm2" in model_name_lower:
+                # Each image is analysed in its own short turn. Reserving the
+                # model's full 128k maximum wastes memory without improving extraction.
+                vision_ctx = 8192
+            else:
+                vision_ctx = 32768
+
+            analyses = []
+            for index, image in enumerate(vision_inputs, start=1):
+                request = {
+                    'action': 'vision_extract',
+                    'params': {
+                        'model_name': body.vision_model,
+                        'gpu_id': gpu_id,
+                        'image_base64': image['base64'],
+                        'schema_yaml': body.vision_schema,
+                        'max_tokens': 512,
+                        'temperature': 0.0,
+                        'repeat_penalty': 1.0,
+                        'vision_mode': vision_mode,
+                        'model_path': model_path,
+                        'context_length': vision_ctx
+                    }
+                }
+                with socket.create_connection(('localhost', 5555), timeout=120) as sock:
+                    sock.settimeout(120)
+                    send_msg(sock, request)
+                    response = recv_msg(sock)
+
+                if response and isinstance(response, dict) and response.get('status') == 'success':
+                    raw = response.get('raw', '')
+                    extraction = response.get('extraction') if is_extract_model else None
+                    analysis = json.dumps(extraction, indent=2) if extraction else response.get('description', raw)
+                    image_name = str(image.get('name') or f'image {index}')
+                    analyses.append(f"IMAGE {index} ({image_name})\n{analysis}")
+                    logger.info(f"✅ [Vision Pipeline] Analysed image {index}/{len(vision_inputs)}")
+                else:
+                    error = response.get('error') if isinstance(response, dict) else 'invalid response'
+                    logger.error(f"❌ [Vision Pipeline] Image {index} failed: {error}")
+
+            if analyses:
+                combined = '\n\n'.join(analyses)
+                vision_extraction_result = (
+                    f"\n\n[VISION ANALYSIS FROM {body.vision_model}]\n"
+                    f"{combined}\n[END VISION ANALYSIS]\n"
+                )
+        except Exception as e:
+            logger.error(f"❌ [Vision Pipeline] Error during vision extraction: {e}", exc_info=True)
+    
+    # Inject vision extraction into prompt if available
+    if vision_extraction_result:
+        # Insert before the final "Assistant:" marker
+        if llm_prompt.endswith("\n\nAssistant:"):
+            llm_prompt = llm_prompt[:-12] + vision_extraction_result + "\n\nAssistant:"
+        else:
+            llm_prompt = llm_prompt + vision_extraction_result + "\n\nAssistant:"
+        logger.info(f"[generate] PROMPT WITH VISION ({len(llm_prompt)} chars) >>>\n{llm_prompt}\n<<<")
 
     agentic_wire_logged = False
 
@@ -6088,6 +6636,7 @@ Vary your sentence structure and word choices naturally."""
             user_profile_for_detection_task: dict,
             is_title_generation_request: bool
         ):
+            import json
             
             streamed_content_accumulator = []
             try:
@@ -6110,7 +6659,7 @@ Vary your sentence structure and word choices naturally."""
                         yield f"data: {json.dumps({'done': True})}\n\n"
                         return
                     intro_prompt_tokens = None
-                    if body.image_base64:
+                    if body.image_base64 and not vision_extraction_result:
                         messages = inject_openai_vision_into_messages(
                             messages,
                             body.image_base64,
@@ -6140,7 +6689,7 @@ Vary your sentence structure and word choices naturally."""
                     if stop_seqs:
                         request_data["stop"] = stop_seqs
 
-                    if body.image_base64 or getattr(body, "skip_openai_message_pruning", False):
+                    if body.image_base64 and not vision_extraction_result or getattr(body, "skip_openai_message_pruning", False):
                         request_data["_skip_openai_message_pruning"] = True
 
                     if model_id_implies_extended_thinking(body.model_name):
@@ -6176,6 +6725,42 @@ Vary your sentence structure and word choices naturally."""
                         expiration_days=body.nano_gpt_context_memory_expiration_days,
                     ) if endpoint_config else {}
 
+                    if body.use_web_search and body.request_purpose not in [
+                        "title_generation",
+                        "model_testing",
+                        "model_judging",
+                        "continuation",
+                        "book_chapter_json_outline",
+                    ]:
+                        if not web_search_native_for_api:
+                            from backend.app.eloquent_agent_tools import (
+                                get_eloquent_chat_tools,
+                                supports_native_tool_calling,
+                                deepseek_likely_no_tools,
+                            )
+                            endpoint_cfg = get_endpoint_config_for_model(
+                                body.model_name, request_purpose=body.request_purpose
+                            )
+                            if supports_native_tool_calling(body.model_name, endpoint_cfg) and not deepseek_likely_no_tools(body.model_name, endpoint_cfg):
+                                request_data["tools"] = get_eloquent_chat_tools(simple=True, include_news=True, include_fetch_urls=True, include_web_fetch=True)
+                                request_data["tool_choice"] = "auto"
+                                logger.info("🌐 Added web search + fetch tools to API request")
+
+                    if document_agent_tools_active:
+                        from backend.app.eloquent_agent_tools import get_document_search_tool_definition
+
+                        request_tools = list(request_data.get("tools") or [])
+                        document_tool = get_document_search_tool_definition()
+                        document_tool_name = (document_tool.get("function") or {}).get("name")
+                        if not any(
+                            (tool.get("function") or {}).get("name") == document_tool_name
+                            for tool in request_tools
+                        ):
+                            request_tools.append(document_tool)
+                        request_data["tools"] = request_tools
+                        request_data["tool_choice"] = "auto"
+                        logger.info("Added local document search tool for %d checked document(s)", len(body.rag_docs))
+
                     log_agentic_wire(request_data)
 
                     log_generate_outbound(
@@ -6202,6 +6787,173 @@ Vary your sentence structure and word choices naturally."""
                         request_data.get("model"),
                     )
                     logger.info(f"[generate] Forwarding {effective_model_name} to {endpoint_config['name']} at {url}")
+
+                    # Pre-streaming tool calling loop
+                    if request_data.get("tools"):
+                        from backend.app.eloquent_agent_tools import execute_eloquent_tool
+                        from backend.app.openai_compat import forward_to_configured_endpoint_non_streaming, _remove_orphaned_tool_messages
+                        
+                        max_tool_rounds = 2
+                        any_tools_executed = False
+                        executed_tool_names = set()
+                        for tool_round in range(max_tool_rounds):
+                            logger.info(f"🌐 Tool calling round {tool_round + 1}/{max_tool_rounds}")
+                            
+
+                            
+                            # Non-streaming call to get tool_calls
+                            tool_request = dict(request_data)
+                            tool_request["stream"] = False
+                            
+                            try:
+                                response = await forward_to_configured_endpoint_non_streaming(
+                                    endpoint_config, url, tool_request, api_extra_headers if api_extra_headers else None
+                                )
+                                
+                                choice = (response.get("choices") or [{}])[0]
+                                message_obj = choice.get("message") or {}
+                                content = message_obj.get("content") or ""
+                                tool_calls = message_obj.get("tool_calls") or []
+                                
+                                if not tool_calls:
+                                    logger.info("No tool calls, proceeding to streaming")
+                                    break
+                                
+                                logger.info(f"Executing {len(tool_calls)} tool call(s)")
+                                
+                                # Yield progress to frontend as structured event
+                                tool_names = [tc.get('function', {}).get('name') for tc in tool_calls]
+                                tool_queries = []
+                                for tc in tool_calls:
+                                    func = tc.get('function') or {}
+                                    raw_args = func.get('arguments', '{}')
+                                    try:
+                                        arguments = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
+                                        query = arguments.get('query') or arguments.get('search_queries') or arguments.get('url') or ''
+                                        if isinstance(query, list):
+                                            query = query[0] if query else ''
+                                        tool_queries.append({
+                                            'tool': func.get('name'),
+                                            'query': query
+                                        })
+                                    except json.JSONDecodeError:
+                                        tool_queries.append({
+                                            'tool': func.get('name'),
+                                            'query': str(raw_args)[:100]
+                                        })
+                                
+                                progress_kind = "documents" if tool_names and all(
+                                    name in ("search_documents", "document_search", "search_document_context")
+                                    for name in tool_names
+                                ) else "web"
+                                yield f"data: {json.dumps({'web_search_progress': {'round': tool_round + 1, 'tool_calls': tool_names, 'queries': tool_queries, 'kind': progress_kind}})}\n\n"
+                                
+                                # Record the tool round as PLAIN TEXT messages instead of
+                                # OpenAI assistant.tool_calls + role:"tool" messages.
+                                # Several provider adapters (e.g. NanoGPT model proxies) drop
+                                # assistant messages that carry tool_calls with empty content,
+                                # which orphans the following role:"tool" message and the API
+                                # rejects the request with a 400 "orphan_tool_message"
+                                # (tool_call_id '...' has no preceding assistant.tool_calls entry).
+                                # Plain text is accepted everywhere, and the model can still
+                                # issue new tool_calls next round since "tools" stays in the payload.
+                                if "messages" not in request_data:
+                                    request_data["messages"] = []
+                                call_summaries = []
+                                for tc in tool_calls:
+                                    fn = tc.get("function") or {}
+                                    call_summaries.append(
+                                        f"{fn.get('name') or 'web_search'}({str(fn.get('arguments', ''))[:200]})"
+                                    )
+                                assistant_text = (content + "\n\n") if content else ""
+                                assistant_text += "[Requested tools: " + "; ".join(call_summaries) + "]"
+                                request_data["messages"].append({
+                                    "role": "assistant",
+                                    "content": assistant_text,
+                                })
+                                
+                                tool_result_blocks = []
+                                for idx, tool_call in enumerate(tool_calls):
+                                    func = tool_call.get("function") or {}
+                                    tool_name = func.get("name") or "web_search"
+                                    raw_args = func.get("arguments", "{}")
+                                    
+                                    try:
+                                        arguments = raw_args if isinstance(raw_args, dict) else json.loads(raw_args)
+                                    except json.JSONDecodeError:
+                                        arguments = {"query": str(raw_args)}
+
+                                    if tool_name in ("search_documents", "document_search", "search_document_context"):
+                                        arguments = dict(arguments)
+                                        arguments["_document_ids"] = list(body.rag_docs or [])
+                                    
+                                    result = await execute_eloquent_tool(
+                                        tool_name,
+                                        arguments,
+                                        max_results=5,
+                                        deep_research=False,
+                                        max_chars_per_result=1200,
+                                    )
+                                    
+                                    tool_result_blocks.append(f"[{tool_name} result]\n{result}")
+                                    any_tools_executed = True
+                                    executed_tool_names.add(tool_name)
+                                    logger.info(f"Tool {tool_name} done ({len(result)} chars)")
+                                
+                                request_data["messages"].append({
+                                    "role": "user",
+                                    "content": (
+                                        "[SYSTEM: Tool results — automated, not written by the user]\n\n"
+                                        + "\n\n".join(tool_result_blocks)
+                                    ),
+                                })
+                                
+                            except Exception as e:
+                                logger.error(f"Tool calling round failed: {e}")
+                                break
+                        else:
+                            logger.warning("Max tool rounds reached")
+                        
+                        # Tool phase over: the final request streams a normal completion.
+                        # Remove tools so no provider chokes on tools/tool_choice in the
+                        # streaming request and the model can't emit further tool calls.
+                        request_data.pop("tools", None)
+                        request_data.pop("tool_choice", None)
+                        
+                        # After tool calling, trim messages if still too long
+                        messages = request_data.get("messages", [])
+                        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+                        if total_chars > 50000:
+                            # Keep system message + last few messages
+                            system_msgs = [m for m in messages if m.get("role") == "system"]
+                            other_msgs = [m for m in messages if m.get("role") != "system"]
+                            # Keep last 6 non-system messages
+                            trimmed = system_msgs + other_msgs[-6:]
+                            # Remove orphaned tool messages (tool results with no matching assistant tool_calls)
+                            trimmed = _remove_orphaned_tool_messages(trimmed)
+                            request_data["messages"] = trimmed
+                            logger.info(f"Trimmed messages from {len(messages)} to {len(trimmed)} to fit context")
+                        
+                        if any_tools_executed:
+                            document_only = executed_tool_names and executed_tool_names.issubset({
+                                "search_documents",
+                                "document_search",
+                                "search_document_context",
+                            })
+                            # Add a nudge for the model to respond after tool calls
+                            request_data["messages"].append({
+                                "role": "system",
+                                "content": (
+                                    "You have finished searching the user's enabled documents. Answer using the retrieved passages and cite their [DOC n: filename] labels."
+                                    if document_only
+                                    else "You have completed the requested searches. Now answer the user's question using the results above and cite the supplied sources."
+                                )
+                            })
+                            
+                            # Signal to frontend that searching is done, model is now responding
+                            status_text = "Document search complete" if document_only else "Search complete"
+                            status_message = f"\n\n[✓ {status_text} — generating response...]\n\n"
+                            yield f"data: {json.dumps({'text': status_message})}\n\n"
 
                     buffer = b""
                     stream_yield_count = 0
@@ -6304,33 +7056,51 @@ Vary your sentence structure and word choices naturally."""
                                 sum(len(x or "") for x in streamed_content_accumulator),
                             )
 
-                elif body.image_base64:
-                    log_agentic_wire(prompt_text_for_llm)
-                    llm_output_raw_text = await generate_text_with_vision(
-                        model_manager=model_manager,
-                        model_name=effective_model_name,
-                        prompt=prompt_text_for_llm,
-                        image_base64=body.image_base64,
-                        max_tokens=max_tokens,
-                        temperature=body.temperature,
-                        top_p=body.top_p,
-                        top_k=body.top_k,
-                        repetition_penalty=body.repetition_penalty,
-                        stop_sequences=dcu.get_stop_sequences(body.stop),
-                        gpu_id=gpu_id,
-                        echo=body.echo,
-                        request_purpose=body.request_purpose,
-                    )
+                elif body.image_base64 and not body.vision_model:
+                    # Check useLocalVision setting (default True for backward compatibility)
+                    settings_path = Path.home() / ".LiangLocal" / "settings.json"
+                    use_local_vision = True
+                    if settings_path.exists():
+                        try:
+                            with open(settings_path, 'r') as f:
+                                settings = json.load(f)
+                            use_local_vision = settings.get("useLocalVision", True)
+                        except Exception:
+                            pass
+                    
+                    if use_local_vision:
+                        log_agentic_wire(prompt_text_for_llm)
+                        llm_output_raw_text = await generate_text_with_vision(
+                            model_manager=model_manager,
+                            model_name=effective_model_name,
+                            prompt=prompt_text_for_llm,
+                            image_base64=body.image_base64,
+                            max_tokens=max_tokens,
+                            temperature=body.temperature,
+                            top_p=body.top_p,
+                            top_k=body.top_k,
+                            repetition_penalty=body.repetition_penalty,
+                            stop_sequences=dcu.get_stop_sequences(body.stop),
+                            gpu_id=gpu_id,
+                            echo=body.echo,
+                            request_purpose=body.request_purpose,
+                        )
+                    else:
+                        # Local vision disabled, no cloud vision endpoint selected
+                        yield f"data: {json.dumps({'error': 'Local vision is disabled. Please select a cloud vision model endpoint that supports vision, or enable local vision in settings.'})}\n\n"
+                        yield f"data: {json.dumps({'done': True})}\n\n"
+                        return
                     clean_llm_response = llm_output_raw_text.replace("<|DONE|>", "").strip()
                     streamed_content_accumulator.append(clean_llm_response)
                     yield f"data: {json.dumps({'text': clean_llm_response})}\n\n"
                 else:
                     log_agentic_wire(prompt_text_for_llm)
+                    stream_stops = custom_template_stops if custom_template_stops else dcu.get_stop_sequences(body.stop)
                     async for token in inference.generate_text_streaming(
                         model_manager=model_manager, model_name=effective_model_name, prompt=prompt_text_for_llm,
                         max_tokens=max_tokens, temperature=body.temperature, top_p=body.top_p,
                         top_k=body.top_k, repetition_penalty=body.repetition_penalty,
-                        stop_sequences=dcu.get_stop_sequences(body.stop), gpu_id=gpu_id, echo=body.echo,
+                        stop_sequences=stream_stops, gpu_id=gpu_id, echo=body.echo,
                         request_purpose=body.request_purpose
                     ):
                         try:
@@ -6462,7 +7232,7 @@ Vary your sentence structure and word choices naturally."""
                         status_code=400,
                         detail="No messages to send to API provider after prompt conversion.",
                     )
-                if body.image_base64:
+                if body.image_base64 and not vision_extraction_result:
                     messages = inject_openai_vision_into_messages(
                         messages,
                         body.image_base64,
@@ -6497,7 +7267,7 @@ Vary your sentence structure and word choices naturally."""
                             ),
                         )
                 # Use centralized helper for config, URL, and CONTEXT PRUNING
-                if getattr(body, "skip_openai_message_pruning", False) or body.image_base64:
+                if getattr(body, "skip_openai_message_pruning", False) or (body.image_base64 and not vision_extraction_result):
                     request_data["_skip_openai_message_pruning"] = True
                 if model_id_implies_extended_thinking(body.model_name):
                     request_data["_force_extended_thinking"] = True
@@ -6580,8 +7350,12 @@ Vary your sentence structure and word choices naturally."""
                 # --- UNIFIED DISPATCH LOGIC ---
                 # This logic block decides how to call the model based on whether an image is present.
                 # It uses the fully assembled 'llm_prompt' for both paths.
+                # If vision_model was used (two-stage pipeline), vision info is already in llm_prompt,
+                # so we use text-only path even if image_base64 is present.
                 
-                if body.image_base64:
+                use_vision_path = body.image_base64 and not body.vision_model
+                
+                if use_vision_path:
                     # --- VISION PATH ---
                     # For vision, we must use create_chat_completion. Our custom GemmaVisionChatHandler
                     # expects the full prompt string to be passed within the "text" part of the user message.
@@ -6619,6 +7393,7 @@ Vary your sentence structure and word choices naturally."""
                     # For text, we call the model directly with the full prompt string.
                     logger.info("✅ Dispatching to standard text generation.")
                     log_agentic_wire(llm_prompt)
+                    text_stops = custom_template_stops if custom_template_stops else ["<end_of_turn>", "<|DONE|>"] + dcu.get_stop_sequences(body.stop)
                     response = model_instance(
                         prompt=llm_prompt,
                         max_tokens=max_tokens,
@@ -6626,7 +7401,7 @@ Vary your sentence structure and word choices naturally."""
                         top_p=body.top_p,
                         top_k=body.top_k,
                         repeat_penalty=body.repetition_penalty,
-                        stop=["<end_of_turn>", "<|DONE|>"] + dcu.get_stop_sequences(body.stop)
+                        stop=text_stops
                     )
                     if response and response.get('choices'):
                         llm_output_raw_text = response['choices'][0]['text']
@@ -6773,9 +7548,7 @@ async def performance_test_endpoint(
         # Get model instance
         model = model_manager.get_model(model_name, gpu_id)
         
-        # Check if it's unified mode
-        is_unified_mode = isinstance(model, model_manager.RemoteModelWrapper)
-        mode_name = "unified_model" if is_unified_mode else "split_services"
+        mode_name = getattr(model, "gpu_usage_mode", "embedded_model")
         
         logger.info(f"🚀 [Performance Test] Testing {mode_name} mode")
         
@@ -7002,7 +7775,7 @@ async def set_adetailer_directory(request: Request, data: dict = Body(...)):
 async def list_adetailer_models():
     """List available ADetailer models from the configured directory."""
     try:
-        settings_path = Path("C:/Users/user/.LiangLocal/settings.json")
+        settings_path = Path.home() / ".LiangLocal" / "settings.json"
         if not settings_path.exists():
              return {"models": []}
         
@@ -7173,6 +7946,7 @@ async def refresh_model_directory(
 # This endpoint updates the SD model directory and saves it to settings.
 @router.post("/sd-local/refresh-directory")
 async def refresh_sd_model_directory(
+    request: Request,
     data: dict = Body(...),
 ):
     """Update the SD model directory and save to settings"""
@@ -7199,6 +7973,8 @@ async def refresh_sd_model_directory(
         
         with open(settings_path, 'w') as f:
             json.dump(settings, f)
+
+        request.app.state.sd_model_directory = str(Path(new_directory).resolve())
         
         return {"status": "success", "message": "SD model directory updated"}
     except Exception as e:
@@ -7442,7 +8218,8 @@ async def sd_local_status(request: Request):
     status = sd_manager.get_status()
     return {
         "available": True,
-        "loaded_models": status.get("loaded_models", {})
+        "loaded_models": status.get("loaded_models", {}),
+        "model_directory": str(_resolve_sd_model_directory(request)),
     }
 
 # ============================================================================
@@ -8016,11 +8793,7 @@ async def sd_local_load_model(data: dict, request: Request):
         raise HTTPException(status_code=400, detail="Request body must include 'model_filename'")
 
     # The backend now correctly builds the full path from the configured directory
-    sd_model_dir = getattr(request.app.state, 'sd_model_directory', None)
-    if not sd_model_dir:
-        raise HTTPException(status_code=500, detail="SD model directory not configured on backend.")
-
-    full_model_path = str(Path(sd_model_dir) / model_filename)
+    full_model_path = str(_resolve_sd_model_directory(request) / Path(model_filename).name)
     try:
         success = sd_manager.load_model(full_model_path)
     except RuntimeError as load_err:
@@ -8558,45 +9331,7 @@ async def search_files(request: SearchFilesRequest):
 
 @app.post("/code_editor/run_command")
 async def run_command(request: RunCommandRequest):
-    """Run a shell command (use with caution!)"""
-    try:
-        # Basic command validation - you might want to make this more restrictive
-        dangerous_commands = ['rm -rf', 'del', 'format', 'mkfs', 'dd if=', ':(){']
-        if any(dangerous in request.command.lower() for dangerous in dangerous_commands):
-            raise HTTPException(status_code=403, detail="Command not allowed")
-        
-        working_dir = CODE_EDITOR_BASE_DIR
-        if request.working_dir:
-            safe_dir = get_safe_path(CODE_EDITOR_BASE_DIR, request.working_dir)
-            if safe_dir and os.path.isdir(safe_dir):
-                working_dir = safe_dir
-        
-        # Run command with timeout
-        result = subprocess.run(
-            request.command,
-            shell=True,
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-            timeout=request.timeout
-        )
-        
-        return {
-            "success": result.returncode == 0,
-            "command": request.command,
-            "returncode": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "working_dir": working_dir
-        }
-    
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=408, detail="Command timed out")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error running command {request.command}: {e}")
-        raise HTTPException(status_code=500, detail=f"Error running command: {str(e)}")
+    raise HTTPException(status_code=410, detail="The code editor has been retired")
 
 @app.post("/code_editor/create_backup")
 async def create_backup(request: BackupRequest):
@@ -9025,9 +9760,10 @@ async def chat_completions_with_tools(
             out = []
             for msg in msgs:
                 content = msg.get("content")
+                tool_calls = msg.get("tool_calls")
                 if content is not None and str(content).strip() != "":
                     out.append(msg)
-                elif msg.get("tool_calls") or msg.get("role") == "tool":
+                elif (isinstance(tool_calls, list) and len(tool_calls) > 0) or msg.get("role") == "tool":
                     out.append(msg)
             return out
 
@@ -9478,6 +10214,41 @@ async def update_settings(data: dict = Body(...)):
                 f"Updated single_gpu_mode to {SINGLE_GPU_MODE} (requested: {requested_mode}, "
                 f"gpu_count: {gpu_count})"
             )
+
+        # Auto-load vision model if specified
+        if "visionModel" in data:
+            vision_model = data.get("visionModel")
+            if vision_model:
+                logger.info(f"🔍 Auto-loading vision model: {vision_model}")
+                try:
+                    model_manager = app.state.model_manager
+                    if model_manager:
+                        # Load on GPU 0 (default)
+                        vision_model_lower = vision_model.lower()
+                        if "lfm2" in vision_model_lower:
+                            vision_ctx = 8192
+                        else:
+                            vision_ctx = 32768  # 32k context for other vision models
+                        await model_manager.load_model(
+                            model_name=vision_model,
+                            gpu_id=0,
+                            context_length=vision_ctx,
+                            purpose="vision"
+                        )
+                        logger.info(f"✅ Vision model {vision_model} loaded successfully with {vision_ctx} context")
+                    else:
+                        logger.warning("⚠️ Model manager not available for vision model auto-load")
+                except Exception as e:
+                    logger.error(f"❌ Failed to auto-load vision model {vision_model}: {e}")
+            else:
+                # visionModel set to null/empty - could unload here if needed
+                logger.info("Vision model cleared from settings")
+
+        # Handle useLocalVision setting
+        if "useLocalVision" in data:
+            use_local_vision = data.get("useLocalVision")
+            settings["useLocalVision"] = use_local_vision
+            logger.info(f"🔧 useLocalVision set to: {use_local_vision}")
             
         # Save back
         with open(settings_path, 'w') as f:
@@ -9880,17 +10651,17 @@ async def run_election_simulation(
     calibration_weight: float = Query(1.0, ge=0.0, le=2.0, description="Scale for calibration swing (0=ignore, 1=full, 0.5=half). How much 2024→now swing influences the baseline."),
     use_sophisticated_forecast: bool = Query(True, description="Quality-weighted polls + subtle fundamentals prior"),
     fundamental_weight_base: float = Query(
-        election_forecast.FUNDAMENTAL_WEIGHT_BASE_DEFAULT,
+        ELECTION_FUNDAMENTAL_WEIGHT_BASE_DEFAULT,
         ge=0.0,
         le=0.5,
         description="Prior influence on state mean (e.g. 0.05–0.20). Exposed for tuning.",
     ),
     time_decay_curve: str = Query(
-        election_forecast.TIME_DECAY_CURVE_DEFAULT,
+        ELECTION_TIME_DECAY_CURVE_DEFAULT,
         description="Prior time curve: 'decay' (prior fades as election nears) or 'flat'.",
     ),
     state_lean_multiplier: float = Query(
-        election_forecast.STATE_LEAN_MULTIPLIER_DEFAULT,
+        ELECTION_STATE_LEAN_MULTIPLIER_DEFAULT,
         ge=0.0,
         le=2.0,
         description="Scale for state partisan lean (0=ignore, 1=full). Exposed for tuning.",
@@ -10817,23 +11588,44 @@ async def demo_showcase_install(request: Request):
     raise HTTPException(status_code=500, detail=str(e))
 
 
+# Retired modules remain in source but are not registered or exposed.
+if not module_enabled("chess"):
+    router.routes = [
+        route for route in router.routes
+        if not getattr(route, "path", "").startswith("/chess")
+    ]
+
 # mount the "generate" router
 app.include_router(router)
-app.include_router(auth_router)
-app.include_router(market_sim_router)
+if auth_router is not None:
+    app.include_router(auth_router)
+if market_sim_router is not None:
+    app.include_router(market_sim_router)
 app.include_router(outreach_router)
 app.include_router(remote_router)
 app.include_router(d_id_router)
 app.include_router(voice_sculpt_router, prefix="/voice-sculpt")
 app.include_router(rembg_router, prefix="/rembg")
+app.include_router(model_library_router)
+app.include_router(character_datasets_router)
+app.include_router(provider_catalog_router)
+app.include_router(sillytavern_bridge_router)
+app.include_router(mirid_docs_router)
+
+# Room background image gallery
+from .room_gallery_routes import router as room_gallery_router
+app.include_router(room_gallery_router)
 
 # mount your memory endpoints under the "/memory" prefix
 app.include_router(memory_router, prefix="/memory")
 app.include_router(alignment_router, prefix="/memory/alignment")
-app.include_router(chatlog_condenser_router, prefix="/memory/chatlog-condenser")
+if chatlog_condenser_router is not None:
+    app.include_router(chatlog_condenser_router, prefix="/memory/chatlog-condenser")
 app.include_router(document_router)
-app.include_router(corpus_router)
 # Add OpenAI compatibility layer
 app.include_router(openai_router)
+# Sanctuary Evolution — agentic orchestration pipeline
+app.include_router(sanctuary_router, prefix="/agentic")
+logger.info("🔮 Sanctuary agentic endpoints available at /agentic/turn and /agentic/state")
 # TTS service router removed - TTS now runs separately on port 8002
 logger.info("🔗 OpenAI-compatible API endpoints available at /v1/chat/completions and /v1/models")

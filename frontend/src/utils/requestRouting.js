@@ -1,4 +1,4 @@
-import { resolvePrimaryEndpointIdForRequest } from './resolveEndpointDisplay';
+import { getRotationPool, resolvePrimaryEndpointIdForRequest } from './resolveEndpointDisplay.js';
 
 const EXCEPTION_PURPOSES = new Set([
   'character_intro',
@@ -28,20 +28,25 @@ export function resolveUnifiedRequestRoute({
   const selectedModel = primaryIsAPI
     ? resolvePrimaryEndpointIdForRequest(overrideModel || primaryModel || '', true, settings)
     : (overrideModel || primaryModel || '');
-  const autoEnabled = Boolean(primaryIsAPI && settings?.apiEndpointRoundRobinEnabled === true);
   const exceptionPinned = isRoutingExceptionPurpose(requestPurpose) || Boolean(overrideModel);
+  const autoConfigured = Boolean(primaryIsAPI && settings?.apiEndpointRoundRobinEnabled === true);
+  const rotationPoolSize = autoConfigured ? getRotationPool(settings).length : 0;
+  const autoEnabled = Boolean(autoConfigured && rotationPoolSize > 0 && !exceptionPinned);
   const effectiveModel = primaryIsAPI
     ? (
-        autoEnabled && !exceptionPinned
+        autoEnabled
           ? (resolveAutoAnchor(settings) || selectedModel)
           : selectedModel
       )
     : selectedModel;
   return {
     autoEnabled,
+    autoConfigured,
+    rotationPoolSize,
     selectedModel,
     effectiveModel,
     exceptionPinned,
+    fallbackReason: autoConfigured && rotationPoolSize === 0 ? 'empty_rotation_pool' : null,
   };
 }
 

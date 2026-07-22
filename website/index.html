@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mirid.ai — Simple. Modern. Human.</title>
+<meta name="description" content="Mirid is a one-click solution for AI chat and roleplay on Windows, using either local models or APIs.">
+<meta property="og:title" content="mirid.ai">
+<meta property="og:description" content="Simple. Modern. Human.">
+<meta property="og:url" content="https://mirid.ai">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600&family=Inter:wght@400;500&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/landing.css?v=20260720-1">
+<style>
+  :root{
+    --black:#050507;
+    --blue:#3E6BF4;
+    --blue-soft:#5B82F7;
+    --white:#EDEFF4;
+    --slate:#8A93A8;
+    --trace:#2A3550;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--black);
+    color:var(--white);
+    font-family:"Inter",system-ui,sans-serif;
+    font-size:16.5px;line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+  /* ---- circuit traces, top-left and bottom-right ---- */
+  .trace{position:fixed;pointer-events:none;z-index:0;opacity:.9}
+  .trace.tl{top:0;left:0}
+  .trace.br{bottom:0;right:0}
+  .wrap{
+    position:relative;z-index:1;
+    width:min(1040px,calc(100% - 3rem));
+    margin:0 auto;
+  }
+  /* ---- hero: MiridMan right, identity left ---- */
+  .hero{
+    display:grid;
+    grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);
+    align-items:center;
+    gap:2rem;
+    padding:10vh 0 3rem;
+  }
+  .wordmark{
+    font-family:"Oxanium",sans-serif;
+    font-weight:600;
+    font-size:clamp(2.8rem,7vw,4.2rem);
+    letter-spacing:.02em;
+    line-height:1;
+  }
+  .wordmark .ai{color:var(--blue)}
+  .tagline{
+    margin-top:1.1rem;
+    font-size:.95rem;
+    letter-spacing:.32em;
+    text-transform:uppercase;
+    color:var(--slate);
+  }
+  .tagline b{color:var(--white);font-weight:500}
+  .miridman{
+    width:100%;max-width:520px;
+    height:auto;
+    justify-self:end;
+    display:block;
+    filter:drop-shadow(0 0 60px rgba(62,107,244,.10));
+    user-select:none;
+  }
+  /* ---- about: his copy ---- */
+  .about{
+    max-width:640px;
+    display:grid;gap:1.2rem;
+    padding-bottom:2.6rem;
+  }
+  .about a{color:var(--blue-soft);text-decoration:none}
+  .about a:hover{text-decoration:underline}
+  .cta{
+    display:flex;flex-wrap:wrap;align-items:center;gap:1.1rem;
+    padding-bottom:3.2rem;
+  }
+  .btn{
+    font-family:"Oxanium",sans-serif;
+    font-weight:600;font-size:1rem;
+    letter-spacing:.08em;text-transform:uppercase;
+    color:#fff;background:var(--blue);
+    text-decoration:none;
+    padding:.95rem 1.9rem;
+    border-radius:4px;
+    transition:background .15s ease;
+  }
+  .btn:hover{background:var(--blue-soft)}
+  .btn:focus-visible,a:focus-visible{outline:2px solid var(--blue-soft);outline-offset:3px}
+  .cta .aside{color:var(--slate);font-size:.9rem;letter-spacing:.04em}
+  .cta .aside a{color:var(--slate)}
+  /* ---- release line: facts in mono, trace-styled ---- */
+  .release{
+    border-top:1px solid var(--trace);
+    padding:1.4rem 0 4rem;
+    font-family:"IBM Plex Mono",monospace;
+    font-size:.82rem;line-height:2;
+    color:var(--slate);
+    overflow-x:auto;white-space:nowrap;
+  }
+  .release .dot{color:var(--blue)}
+  .release .h{color:var(--blue-soft);word-break:break-all;white-space:normal}
+  footer{
+    border-top:1px solid var(--trace);
+    position:relative;z-index:1;
+  }
+  .foot{
+    width:min(1040px,calc(100% - 3rem));
+    margin:0 auto;
+    padding:1.5rem 0 2.4rem;
+    display:flex;flex-wrap:wrap;gap:.5rem 1.6rem;
+    font-size:.85rem;letter-spacing:.05em;
+    color:var(--slate);
+  }
+  .foot a{color:var(--slate);text-decoration:none}
+  .foot a:hover{color:var(--white)}
+  .foot .grow{flex:1 1 100%}
+  @media (max-width:760px){
+    .hero{grid-template-columns:1fr;padding-top:7vh;gap:1rem}
+    .miridman{justify-self:center;max-width:340px;order:-1}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    .hero > *,.about,.cta,.release{opacity:0;transform:translateY(10px);animation:rise .7s ease forwards}
+    .about{animation-delay:.12s}.cta{animation-delay:.2s}.release{animation-delay:.28s}
+    @keyframes rise{to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+
+<!-- circuit traces -->
+<svg class="trace tl" width="220" height="260" viewBox="0 0 220 260" fill="none" aria-hidden="true">
+  <path d="M60 0v96l28 28v76" stroke="#2A3550" stroke-width="2"/>
+  <path d="M0 40h96l24 24" stroke="#2A3550" stroke-width="2"/>
+  <circle cx="88" cy="200" r="5" fill="#3E6BF4"/>
+  <circle cx="120" cy="64" r="5" fill="#3E6BF4"/>
+</svg>
+<svg class="trace br" width="240" height="300" viewBox="0 0 240 300" fill="none" aria-hidden="true">
+  <path d="M180 300V180l-32-32V60" stroke="#2A3550" stroke-width="2"/>
+  <path d="M240 240h-84l-28-28" stroke="#2A3550" stroke-width="2"/>
+  <circle cx="148" cy="60" r="5" fill="#3E6BF4"/>
+  <circle cx="128" cy="212" r="5" fill="#3E6BF4"/>
+</svg>
+
+<div class="wrap">
+  <header class="hero">
+    <div>
+      <h1 class="wordmark">mirid<span class="ai">.ai</span></h1>
+      <p class="tagline"><b>Simple.</b> <b>Modern.</b> <b>Human.</b></p>
+    </div>
+    <img class="miridman" src="miridman.png" alt="The MiridMan" width="1024" height="1024">
+  </header>
+
+  <section class="about">
+    <p>Mirid was built as a simple tool for downloading, running and talking to an LLM on your computer. It aims to lower the barrier for Windows users to explore AI for themselves, with less setup and more control over where their conversations go.</p>
+    <p>It grew out of my personal AI workstation <a href="https://github.com/boneylizard/Eloquent">Eloquent</a> and contains approximately six months of unpublished development work. Mirid brings together open-source text and multimodal AI projects built by dedicated and highly talented developers—too many to thank individually.</p>
+    <p>The current Mirid build is for Windows 10 and 11 and supports NVIDIA or AMD GPUs as well as CPU-only systems. Linux and macOS builds are planned.</p>
+    <p>You can try Mirid yourself by downloading it here:</p>
+  </section>
+
+  <div class="cta">
+    <a class="btn" href="https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/main/releases/v1.0.7/Mirid_1.0.7_x64-setup.exe?download=true">Download for Windows</a>
+    <span class="aside">32&nbsp;MB installer · Windows&nbsp;10/11 · <a href="https://github.com/boneylizard/Eloquent">source</a></span>
+  </div>
+
+  <div class="release" aria-label="Release details">
+    <span class="dot">●</span> Mirid_1.0.7_x64-setup.exe &nbsp;·&nbsp; first launch fetches a verified ~3.1&nbsp;GB runtime &nbsp;·&nbsp; keep ~14&nbsp;GB free<br>
+    <span class="dot">●</span> sha256 <span class="h">2DC8E67BF8C0DE57D2AF6308EF0D8E4DB82B5884647DA5C50914EFF2C5AAADC4</span>
+  </div>
+</div>
+
+<footer>
+  <div class="foot">
+    <span class="grow">© 2025–2026 Bernard Peter Fitzgerald · Built independently in Australia · AGPL-3.0</span>
+    <a href="https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/main/releases/v1.0.7/Mirid_1.0.7_x64-setup.exe?download=true">Download</a>
+    <a href="https://github.com/boneylizard/Eloquent">GitHub</a>
+    <a href="https://github.com/boneylizard/Eloquent/blob/main/LICENSE">Licence</a>
+  </div>
+</footer>
+</body>
+</html>

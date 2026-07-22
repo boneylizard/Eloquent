@@ -1,10 +1,10 @@
 import React, { useMemo, useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Loader2, Send, ArrowLeft, Plus, X, StopCircle } from 'lucide-react';
+import { Loader2, Send, ArrowLeft, Plus, X, StopCircle, ImagePlus } from 'lucide-react';
 import SimpleChatImageButton from './SimpleChatImageButton';
-import ChatImageUploadButton from './ChatImageUploadButton';
 import { cn } from '@/lib/utils';
+import { useApp } from '@/contexts/AppContext';
 
 // Local input state so typing never re-renders parent Chat (fixes lag as chat grows).
 // Parent can set/append value via ref for STT and StoryTracker inject.
@@ -27,10 +27,15 @@ const ChatInputForm = forwardRef(({
 }, ref) => {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef(null);
-  const [attachments, setAttachments] = useState([]); // { id, name, type, base64 }
+  const [attachments, setAttachments] = useState([]); // { id, kind, name, type, base64 }
   const [plusOpen, setPlusOpen] = useState(false);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const { settings } = useApp();
+  const hasAutoRoute = settings?.apiEndpointRoundRobinEnabled === true
+    && (settings?.customApiEndpoints || []).some((endpoint) => endpoint?.enabled !== false && endpoint?.rotate_enabled !== false);
+  const hasUsableModel = Boolean(primaryModel) || hasAutoRoute;
 
   useImperativeHandle(ref, () => ({
     setValue(text) {
@@ -58,6 +63,10 @@ const ChatInputForm = forwardRef(({
 
   const handleSubmit = (e) => {
     e?.preventDefault?.();
+    if (!hasUsableModel) {
+      onOpenModelSelector?.();
+      return;
+    }
     const trimmedValue = inputValue.trim();
     if (!trimmedValue && attachments.length === 0) return;
     onSubmit(trimmedValue, attachments);
@@ -81,7 +90,7 @@ const ChatInputForm = forwardRef(({
     const computedStyle = window.getComputedStyle(textarea);
     const lineHeight = parseInt(computedStyle.lineHeight) || 24;
     const minHeight = lineHeight;
-    const maxHeight = lineHeight * 16;
+    const maxHeight = Math.min(lineHeight * 16, window.innerWidth < 768 ? lineHeight * 8 : lineHeight * 16);
     const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
     textarea.style.height = newHeight + 'px';
 
@@ -92,18 +101,22 @@ const ChatInputForm = forwardRef(({
     }
   }, [inputValue, performanceMode]);
 
-  const isDisabled = isGenerating || isModelLoading || agentConversationActive || isRecording || isTranscribing;
+  const isDisabled = !hasUsableModel || isGenerating || isModelLoading || agentConversationActive || isRecording || isTranscribing;
   const placeholderText =
-    isRecording ? "Recording..." :
+    !hasUsableModel ? "Choose a model to start" :
+      isRecording ? "Recording..." :
         isTranscribing ? "Transcribing..." :
           isGenerating ? "Generating..." :
             webSearchEnabled ? "Message (Web)..." :
               "Message...";
 
+  const visionModel = settings?.visionModel || null;
+
   const capabilities = modelCapabilities && typeof modelCapabilities === 'object' ? modelCapabilities : {};
   const canVision = capabilities.vision === true;
+  const canAttachImages = canVision || Boolean(visionModel);
   const canPdf = capabilities.pdf === true || capabilities['pdf-upload'] === true;
-  const canUploadAny = canVision || canPdf;
+  const canUploadAny = canAttachImages || canPdf;
 
   const fileToDataUrl = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -118,8 +131,9 @@ const ChatInputForm = forwardRef(({
     const next = [];
     for (const f of files) {
       if (f.type && f.type.startsWith('image/')) {
+        if (!canAttachImages) continue;
         const base64 = await fileToDataUrl(f);
-        next.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, name: f.name, type: f.type, base64 });
+        next.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, kind: 'image', name: f.name, type: f.type, base64 });
       } else if (canPdf && (f.type === 'application/pdf' || f.name?.toLowerCase().endsWith('.pdf'))) {
         // Minimal placeholder: keep as "file" attachment without upload wiring yet.
         next.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`, name: f.name, type: f.type || 'application/octet-stream', base64: null });
@@ -162,7 +176,7 @@ const ChatInputForm = forwardRef(({
       )}
       onSubmit={handleSubmit}
     >
-      <div className="relative flex-1">
+      <div className={cn('relative flex-1 rounded-lg', isDraggingFiles && 'ring-2 ring-primary ring-offset-2 ring-offset-background')}>
         {attachmentChips}
         <Textarea
           ref={inputRef}
@@ -173,7 +187,7 @@ const ChatInputForm = forwardRef(({
             const items = Array.from(e.clipboardData?.items || []);
             const images = items.filter((it) => it.kind === 'file' && it.type && it.type.startsWith('image/'));
             if (!images.length) return;
-            if (!canVision) return;
+            if (!canAttachImages) return;
             e.preventDefault();
             const files = images.map((it) => it.getAsFile()).filter(Boolean);
             await addFiles(files);
@@ -183,15 +197,20 @@ const ChatInputForm = forwardRef(({
             if (!files.length) return;
             if (!canUploadAny) return;
             e.preventDefault();
+            setIsDraggingFiles(false);
             await addFiles(files);
           }}
           onDragOver={(e) => {
             if (!canUploadAny) return;
-            if (e.dataTransfer?.types?.includes?.('Files')) e.preventDefault();
+            if (e.dataTransfer?.types?.includes?.('Files')) {
+              e.preventDefault();
+              setIsDraggingFiles(true);
+            }
           }}
+          onDragLeave={() => setIsDraggingFiles(false)}
           placeholder={placeholderText}
           disabled={isDisabled}
-          className="flex-1 resize-none border-input bg-background pr-16 md:pr-20 text-base py-2"
+          className="flex-1 resize-none border-input bg-background pr-16 md:pr-20 text-base py-2 focus-visible:ring-2 focus-visible:ring-[var(--chat-input-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-background transition-shadow"
           rows={performanceMode ? 3 : 1}
           style={{
             minHeight: performanceMode ? '96px' : '40px',
@@ -225,13 +244,24 @@ const ChatInputForm = forwardRef(({
           }}
         />
 
-        <div className="absolute right-1 bottom-1.5 flex gap-1">
-          {/* Legacy buttons kept for now (minimal regression) */}
-          <SimpleChatImageButton />
-          <ChatImageUploadButton />
+        <div className="absolute right-1 bottom-1.5 flex gap-1 items-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full p-0"
+            title={canAttachImages ? `Attach one or more images${visionModel ? ` · ${visionModel}` : ''}` : 'Choose a vision model before attaching images'}
+            aria-label="Attach images"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={isDisabled || !canAttachImages}
+          >
+            <ImagePlus className="h-4 w-4" />
+          </Button>
 
-          {/* NanoGPT-style "+" popover (upwards) */}
-          <div className="relative">
+          {/* Image generation remains separate from ordinary attachments. */}
+          <SimpleChatImageButton />
+
+          {canPdf && <div className="relative">
             <Button
               type="button"
               variant="ghost"
@@ -244,53 +274,20 @@ const ChatInputForm = forwardRef(({
               <Plus className="h-4 w-4" />
             </Button>
             {plusOpen && (
-              <div className="absolute bottom-10 right-0 z-50 w-56 rounded-xl border border-border bg-background shadow-lg p-1">
+              <div className="absolute bottom-10 right-0 z-50 w-56 rounded-xl border border-border bg-background shadow-lg p-1 animate-in fade-in slide-in-from-bottom-2 zoom-in-95 duration-150">
                 <button
                   type="button"
-                  className={`w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-muted ${canPdf ? '' : 'opacity-50 cursor-not-allowed'}`}
+                  className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-muted"
                   onClick={() => {
-                    if (!canPdf) return;
                     fileInputRef.current?.click();
                     setPlusOpen(false);
                   }}
                 >
-                  Add files
-                </button>
-                <button
-                  type="button"
-                  className={`w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-muted ${canVision ? '' : 'opacity-50 cursor-not-allowed'}`}
-                  onClick={() => {
-                    if (!canVision) return;
-                    imageInputRef.current?.click();
-                    setPlusOpen(false);
-                  }}
-                >
-                  Add images
-                </button>
-                <button
-                  type="button"
-                  className="w-full rounded-lg px-3 py-2 text-left text-sm opacity-50 cursor-not-allowed"
-                  onClick={() => {}}
-                >
-                  Import from Drive (stub)
-                </button>
-                <button
-                  type="button"
-                  className="w-full rounded-lg px-3 py-2 text-left text-sm opacity-50 cursor-not-allowed"
-                  onClick={() => {}}
-                >
-                  Upload conversation JSON (stub)
-                </button>
-                <button
-                  type="button"
-                  className="w-full rounded-lg px-3 py-2 text-left text-sm opacity-50 cursor-not-allowed"
-                  onClick={() => {}}
-                >
-                  Memory toggle (stub)
+                  Attach PDF files
                 </button>
               </div>
             )}
-          </div>
+          </div>}
         </div>
       </div>
 
@@ -313,7 +310,7 @@ const ChatInputForm = forwardRef(({
         onClick={isGenerating && typeof onStop === 'function' ? onStop : undefined}
         disabled={(!inputValue.trim() && attachments.length === 0) || isDisabled}
         size="icon"
-        className="h-11 w-11 flex-shrink-0"
+        className={cn("h-11 w-11 flex-shrink-0 transition-all duration-150", !isGenerating && "active:scale-95 hover:brightness-110")}
       >
         {isGenerating
           ? (typeof onStop === 'function'

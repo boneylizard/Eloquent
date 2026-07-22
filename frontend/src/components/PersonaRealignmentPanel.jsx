@@ -1,49 +1,39 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { CheckCircle2, ChevronRight, Copy, Loader2, Sparkles } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { useMemory } from '../contexts/MemoryContext';
-import { fetchWithTimeout } from '../config/api';
+import { fetchWithTimeout, formatFetchError } from '../config/api';
+import { mergeNanoGptMemoryIntoPayload } from '../utils/nanoGptMemoryPayload';
+import { cleanModelOutput } from '../utils/cleanOutput';
+import {
+  createRouteTraceId,
+  extractRouteMetaFromGenerateResult,
+  logRouteTrace,
+  resolveUnifiedRequestRoute,
+} from '../utils/requestRouting';
 import { Button } from './ui/button';
-import { Label } from './ui/label';
-import { Textarea } from './ui/textarea';
-import { Input } from './ui/input';
 import { Checkbox } from './ui/checkbox';
-import { Alert, AlertDescription, AlertTitle } from './ui/alert';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
-import { Loader2, Copy, Sparkles, FileJson, CheckCircle2, ChevronRight } from 'lucide-react';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Textarea } from './ui/textarea';
 
-const ACK_STORAGE_KEY = 'eloquent:personaRealignmentAckV1';
+const REALIGNMENT_TIMEOUT_MS = 1_200_000;
 
-function loadAck() {
-  try {
-    return localStorage.getItem(ACK_STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function saveAck() {
-  try {
-    localStorage.setItem(ACK_STORAGE_KEY, '1');
-  } catch {
-    /* ignore */
-  }
-}
-
-function speakerLabel(msg) {
-  const r = msg?.role;
-  if (r === 'user') return 'User';
-  if (r === 'assistant' || r === 'bot') return 'Assistant';
-  return r ? String(r) : 'Message';
+function speakerLabel(message) {
+  if (message?.role === 'user') return 'User';
+  if (message?.role === 'assistant' || message?.role === 'bot') return 'Assistant';
+  return message?.role ? String(message.role) : 'Message';
 }
 
 function transcriptFromMessages(messages, maxChars) {
   if (!Array.isArray(messages) || !messages.length) return '';
   const parts = [];
   let total = 0;
-  for (const m of messages) {
-    const body = String(m?.content ?? '').trim();
+  for (const message of messages) {
+    const body = String(message?.content ?? '').trim();
     if (!body) continue;
-    const line = `${speakerLabel(m)}: ${body}\n\n`;
+    const line = `${speakerLabel(message)}: ${body}\n\n`;
     if (total + line.length > maxChars) break;
     parts.push(line);
     total += line.length;
@@ -53,7 +43,7 @@ function transcriptFromMessages(messages, maxChars) {
 
 function toCharacterCard(character) {
   if (!character || typeof character !== 'object') return null;
-  const pick = (k) => (character[k] != null ? String(character[k]).trim() : '');
+  const pick = (key) => (character[key] != null ? String(character[key]).trim() : '');
   return {
     name: pick('name') || undefined,
     description: pick('description') || undefined,
@@ -67,265 +57,343 @@ function toCharacterCard(character) {
   };
 }
 
-/** One numbered block in the tutorial layout */
-function TutorialStep({ step, title, subtitle, children }) {
-  return (
-    <section className="rounded-xl border border-border/80 bg-card/60 shadow-sm overflow-hidden">
-      <header className="flex gap-3 items-start px-4 py-3 border-b border-border/60 bg-muted/25">
-        <span className="flex h-9 min-w-[2.25rem] shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-bold tabular-nums">
-          {step}
-        </span>
-        <div className="min-w-0 pt-0.5">
-          <h3 className="text-sm font-semibold leading-snug">{title}</h3>
-          {subtitle ? <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{subtitle}</p> : null}
-        </div>
-      </header>
-      <div className="p-4 space-y-3">{children}</div>
-    </section>
-  );
-}
-
-/**
- * Settings → Memory Browser → Persona realign (beta).
- * Tutorial-style UI for persona realignment prompt pack + optional results handling.
- */
 export default function PersonaRealignmentPanel() {
   const { activeProfileId } = useMemory();
   const {
     MEMORY_API_URL,
+    PRIMARY_API_URL,
     portsReady,
     storageHydrated,
     characters = [],
     conversations = [],
     activeConversation,
+    activeCharacter,
     userProfile,
     buildSystemPrompt,
+    primaryModel,
+    primaryIsAPI,
+    activeModel,
+    loadedModels = [],
+    settings,
+    saveCharacter,
   } = useApp();
 
   const apiReady = portsReady && storageHydrated;
-  const apiUrl = MEMORY_API_URL;
-
-  const [acknowledged, setAcknowledged] = useState(loadAck);
   const [characterId, setCharacterId] = useState('');
   const [includeTranscriptActive, setIncludeTranscriptActive] = useState(true);
-  const [transcriptMaxChars, setTranscriptMaxChars] = useState(120000);
-  const [extraConvId, setExtraConvId] = useState('');
   const [includeRollingActive, setIncludeRollingActive] = useState(true);
+  const [includeBackendMemories, setIncludeBackendMemories] = useState(true);
+  const [includeCharacterMemories, setIncludeCharacterMemories] = useState(true);
+  const [alsoRewriteUserProfile, setAlsoRewriteUserProfile] = useState(false);
+  const [profileRewriteMode, setProfileRewriteMode] = useState('merge');
+  const [extraConvId, setExtraConvId] = useState('');
   const [includeRollingExtra, setIncludeRollingExtra] = useState(false);
+  const [transcriptMaxChars, setTranscriptMaxChars] = useState(120000);
   const [agenticMode, setAgenticMode] = useState('ranked');
   const [agenticMaxChars, setAgenticMaxChars] = useState(48000);
   const [ragQuery, setRagQuery] = useState('');
-  const [includeBackendMemories, setIncludeBackendMemories] = useState(true);
   const [extraNotes, setExtraNotes] = useState('');
   const [currentInstructions, setCurrentInstructions] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);
-  const [alsoRewriteUserProfile, setAlsoRewriteUserProfile] = useState(false);
-  const [profileRewriteMode, setProfileRewriteMode] = useState('merge');
-  const [realignPaste, setRealignPaste] = useState('');
-  const [realignParsed, setRealignParsed] = useState(null);
-  const [realignParseError, setRealignParseError] = useState(null);
-  const [applyProfileBusy, setApplyProfileBusy] = useState(false);
+  const [stage, setStage] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [promptPack, setPromptPack] = useState(null);
+  const [rawResponse, setRawResponse] = useState('');
+  const [parsedResult, setParsedResult] = useState(null);
+  const [proposedInstructions, setProposedInstructions] = useState('');
 
   const selectableCharacters = useMemo(
-    () => (characters || []).filter((c) => c?.id && c.chat_role !== 'user'),
+    () => (characters || []).filter((character) => character?.id && character.chat_role !== 'user'),
     [characters]
   );
 
   useEffect(() => {
-    if (!characterId && selectableCharacters.length) {
-      setCharacterId(selectableCharacters[0].id);
-    }
-  }, [characterId, selectableCharacters]);
+    if (characterId || selectableCharacters.length === 0) return;
+    const preferred = selectableCharacters.find((character) => character.id === activeCharacter?.id);
+    setCharacterId(preferred?.id || selectableCharacters[0].id);
+  }, [activeCharacter?.id, characterId, selectableCharacters]);
 
   const selectedCharacter = useMemo(
-    () => (characters || []).find((c) => c.id === characterId),
-    [characters, characterId]
+    () => selectableCharacters.find((character) => character.id === characterId) || null,
+    [characterId, selectableCharacters]
   );
 
   useEffect(() => {
-    if (!selectedCharacter) return;
+    if (!selectedCharacter) {
+      setCurrentInstructions('');
+      return;
+    }
     try {
-      setCurrentInstructions(buildSystemPrompt(selectedCharacter) || '');
+      setCurrentInstructions(buildSystemPrompt(selectedCharacter) || selectedCharacter.model_instructions || '');
     } catch {
       setCurrentInstructions(selectedCharacter.model_instructions || '');
     }
-  }, [selectedCharacter, buildSystemPrompt]);
+    setPromptPack(null);
+    setRawResponse('');
+    setParsedResult(null);
+    setProposedInstructions('');
+    setError('');
+    setSuccess('');
+  }, [buildSystemPrompt, selectedCharacter]);
 
-  const activeConv = useMemo(
-    () => (conversations || []).find((c) => c.id === activeConversation),
-    [conversations, activeConversation]
+  const activeChat = useMemo(
+    () => (conversations || []).find((conversation) => conversation.id === activeConversation),
+    [activeConversation, conversations]
   );
-
-  const extraConv = useMemo(
-    () => (conversations || []).find((c) => c.id === extraConvId),
+  const extraChat = useMemo(
+    () => (conversations || []).find((conversation) => conversation.id === extraConvId),
     [conversations, extraConvId]
   );
 
-  const handleAcknowledge = () => {
-    saveAck();
-    setAcknowledged(true);
-  };
+  const selectedModel = useMemo(() => {
+    if (primaryModel) return primaryModel;
+    if (typeof activeModel === 'string' && activeModel.trim()) return activeModel.trim();
+    return loadedModels.find((model) => model.gpu_id === 0)?.name || null;
+  }, [activeModel, loadedModels, primaryModel]);
+
+  const requestRoute = useMemo(
+    () => resolveUnifiedRequestRoute({
+      primaryModel: selectedModel,
+      primaryIsAPI,
+      settings,
+      requestPurpose: 'memory_curation',
+    }),
+    [primaryIsAPI, selectedModel, settings]
+  );
+  const canRunModel = Boolean(PRIMARY_API_URL && requestRoute.effectiveModel);
 
   const buildPayload = useCallback(() => {
     const transcripts = [];
-    if (includeTranscriptActive && activeConv?.messages?.length) {
-      const t = transcriptFromMessages(activeConv.messages, Number(transcriptMaxChars) || 120000);
-      if (t) transcripts.push(t);
+    if (includeTranscriptActive && activeChat?.messages?.length) {
+      const transcript = transcriptFromMessages(activeChat.messages, Number(transcriptMaxChars) || 120000);
+      if (transcript) transcripts.push(`[Transcript: ${activeChat.title || 'Active chat'}]\n\n${transcript}`);
     }
-    if (extraConvId && extraConv?.messages?.length) {
-      const t2 = transcriptFromMessages(extraConv.messages, Math.floor((Number(transcriptMaxChars) || 120000) / 2));
-      if (t2) transcripts.push(t2);
+    if (extraConvId && extraChat?.messages?.length) {
+      const transcript = transcriptFromMessages(
+        extraChat.messages,
+        Math.floor((Number(transcriptMaxChars) || 120000) / 2)
+      );
+      if (transcript) transcripts.push(`[Transcript: ${extraChat.title || 'Additional chat'}]\n\n${transcript}`);
     }
 
     const rollingPacks = [];
-    if (includeRollingActive && activeConv?.rollingMemoryPack?.trim()) {
-      rollingPacks.push(activeConv.rollingMemoryPack.trim());
+    if (includeRollingActive && activeChat?.rollingMemoryPack?.trim()) {
+      rollingPacks.push(`[Rolling summary: ${activeChat.title || 'Active chat'}]\n\n${activeChat.rollingMemoryPack.trim()}`);
     }
-    if (includeRollingExtra && extraConv?.rollingMemoryPack?.trim()) {
-      rollingPacks.push(extraConv.rollingMemoryPack.trim());
+    if (includeRollingExtra && extraChat?.rollingMemoryPack?.trim()) {
+      rollingPacks.push(`[Rolling summary: ${extraChat.title || 'Additional chat'}]\n\n${extraChat.rollingMemoryPack.trim()}`);
     }
 
-    const card = toCharacterCard(selectedCharacter);
-    const displayName =
-      (userProfile?.name || userProfile?.username || userProfile?.displayName || '').trim() || undefined;
-
+    const displayName = (userProfile?.name || userProfile?.username || userProfile?.displayName || '').trim();
     return {
       user_id: activeProfileId,
       character_id: characterId,
       character_name: selectedCharacter?.name || undefined,
-      user_display_name: displayName,
-      character_card: card,
+      user_display_name: displayName || undefined,
+      character_card: toCharacterCard(selectedCharacter),
       current_character_instructions: currentInstructions,
       rolling_packs: rollingPacks.length ? rollingPacks : undefined,
       transcripts: transcripts.length ? transcripts : undefined,
       include_backend_memories: includeBackendMemories,
-      agentic_mode: agenticMode,
+      agentic_mode: includeCharacterMemories ? agenticMode : 'none',
       agentic_max_chars: Math.min(500000, Math.max(4000, Number(agenticMaxChars) || 48000)),
-      agentic_rag_query: agenticMode === 'rag' && ragQuery.trim() ? ragQuery.trim() : undefined,
+      agentic_rag_query: includeCharacterMemories && agenticMode === 'rag' && ragQuery.trim() ? ragQuery.trim() : undefined,
       extra_notes: extraNotes.trim() || undefined,
       also_rewrite_user_profile: alsoRewriteUserProfile,
       user_profile_rewrite_mode: profileRewriteMode === 'from_scratch' ? 'from_scratch' : 'merge',
     };
   }, [
+    activeChat,
     activeProfileId,
+    agenticMaxChars,
+    agenticMode,
+    alsoRewriteUserProfile,
     characterId,
-    selectedCharacter,
-    userProfile,
     currentInstructions,
-    includeTranscriptActive,
-    transcriptMaxChars,
-    activeConv,
-    extraConv,
+    extraChat,
     extraConvId,
+    extraNotes,
+    includeBackendMemories,
+    includeCharacterMemories,
     includeRollingActive,
     includeRollingExtra,
-    includeBackendMemories,
-    agenticMode,
-    agenticMaxChars,
-    ragQuery,
-    extraNotes,
-    alsoRewriteUserProfile,
+    includeTranscriptActive,
     profileRewriteMode,
+    ragQuery,
+    selectedCharacter,
+    transcriptMaxChars,
+    userProfile,
   ]);
 
-  const runBuildPack = async () => {
-    if (!activeProfileId || !characterId) {
-      setError('Select an active profile and character.');
+  const requestPromptPack = useCallback(async () => {
+    const response = await fetchWithTimeout(
+      `${MEMORY_API_URL}/memory/persona_realignment/prompt_pack`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildPayload()),
+      },
+      120000
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.status !== 'success' || !data.combined) {
+      throw new Error(data.detail || data.message || 'Mirid could not gather the selected memory context.');
+    }
+    setPromptPack(data);
+    return data;
+  }, [MEMORY_API_URL, buildPayload]);
+
+  const runSelectedModel = useCallback(async (pack) => {
+    const traceId = createRouteTraceId();
+    logRouteTrace({ action: 'persona_realignment', route: requestRoute, requestPurpose: 'memory_curation', traceId });
+    const configuredMaxTokens = settings?.max_tokens;
+    const maxTokens = typeof configuredMaxTokens === 'number' && configuredMaxTokens > 0
+      ? Math.min(configuredMaxTokens, 262144)
+      : 65536;
+    const payload = mergeNanoGptMemoryIntoPayload({
+      prompt: pack.combined,
+      model_name: requestRoute.effectiveModel || selectedModel,
+      selected_model: requestRoute.selectedModel || undefined,
+      round_robin_enabled: requestRoute.autoEnabled,
+      max_tokens: maxTokens,
+      temperature: typeof settings?.temperature === 'number' ? settings.temperature : 0.25,
+      top_p: settings?.top_p ?? 0.9,
+      top_k: settings?.top_k ?? 40,
+      repetition_penalty: settings?.repetition_penalty ?? 1.05,
+      frequency_penalty: settings?.frequencyPenalty ?? 0,
+      presence_penalty: settings?.presencePenalty ?? 0,
+      memoryEnabled: false,
+      directProfileInjection: false,
+      stream: false,
+      use_rag: false,
+      use_web_search: false,
+      gpu_id: 0,
+      request_purpose: 'model_testing',
+      memory_curation: true,
+      skip_openai_message_pruning: true,
+    }, settings);
+    const response = await fetchWithTimeout(
+      `${PRIMARY_API_URL}/generate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Router-Trace-Id': traceId },
+        body: JSON.stringify(payload),
+      },
+      REALIGNMENT_TIMEOUT_MS
+    );
+    const data = await response.json().catch(() => ({}));
+    extractRouteMetaFromGenerateResult(data, response.headers);
+    if (!response.ok) throw new Error(data.detail || data.message || `Status ${response.status}`);
+    const raw = data.text ?? data.response ?? data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
+    if (!String(raw).trim()) throw new Error('The selected model returned no review.');
+    const cleaned = cleanModelOutput(String(raw));
+    setRawResponse(cleaned);
+    return cleaned;
+  }, [PRIMARY_API_URL, requestRoute, selectedModel, settings]);
+
+  const parseResponse = useCallback(async (raw) => {
+    const response = await fetchWithTimeout(
+      `${MEMORY_API_URL}/memory/persona_realignment/parse_response`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw_text: raw, character_id: characterId, user_id: activeProfileId }),
+      },
+      60000
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.status !== 'success') {
+      throw new Error(data.detail || 'The model replied, but Mirid could not read the proposed changes.');
+    }
+    setParsedResult(data);
+    setProposedInstructions(String(data.revised_model_instructions || '').trim());
+    return data;
+  }, [MEMORY_API_URL, activeProfileId, characterId]);
+
+  const runAutomatedReview = useCallback(async () => {
+    if (!activeProfileId || !selectedCharacter) {
+      setError('Choose a user profile and character first.');
       return;
     }
-    setBusy(true);
-    setError(null);
-    setResult(null);
+    if (!canRunModel) {
+      setError('Choose or load a text model before reviewing this character.');
+      return;
+    }
+    setError('');
+    setSuccess('');
+    setParsedResult(null);
+    setProposedInstructions('');
     try {
-      const body = buildPayload();
-      const res = await fetchWithTimeout(
-        `${apiUrl}/memory/persona_realignment/prompt_pack`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        },
-        120000
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.detail || data.message || `HTTP ${res.status}`);
-      }
-      if (data.status !== 'success' || !data.combined) {
-        throw new Error(data.detail || 'Unexpected response from prompt pack');
-      }
-      setResult(data);
-    } catch (e) {
-      setError(e?.message || String(e));
+      setStage('gathering');
+      const pack = await requestPromptPack();
+      setStage('reviewing');
+      const raw = await runSelectedModel(pack);
+      setStage('reading');
+      await parseResponse(raw);
+      setSuccess('Review complete. Nothing has been changed yet.');
+    } catch (reviewError) {
+      setError(formatFetchError(reviewError, { timeoutMs: REALIGNMENT_TIMEOUT_MS }));
     } finally {
-      setBusy(false);
+      setStage('');
     }
-  };
+  }, [activeProfileId, canRunModel, parseResponse, requestPromptPack, runSelectedModel, selectedCharacter]);
 
-  const copyCombined = async () => {
-    if (!result?.combined) return;
-    try {
-      await navigator.clipboard.writeText(result.combined);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const copyCharacterInstructions = async () => {
-    const t = realignParsed?.revised_character_instructions;
-    if (!t) return;
-    try {
-      await navigator.clipboard.writeText(String(t));
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const parseRealignResponse = async () => {
-    setRealignParseError(null);
-    setRealignParsed(null);
-    if (!realignPaste.trim()) {
-      setRealignParseError('Paste the model JSON first.');
+  const buildForAnotherModel = useCallback(async () => {
+    if (!activeProfileId || !selectedCharacter) {
+      setError('Choose a user profile and character first.');
       return;
     }
+    setError('');
+    setSuccess('');
     try {
-      const res = await fetchWithTimeout(
-        `${apiUrl}/memory/persona_realignment/parse_response`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ raw_text: realignPaste }),
-        },
-        60000
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      setRealignParsed(data);
-    } catch (e) {
-      setRealignParseError(e?.message || String(e));
+      setStage('gathering');
+      await requestPromptPack();
+    } catch (buildError) {
+      setError(formatFetchError(buildError, { timeoutMs: 120000 }));
+    } finally {
+      setStage('');
     }
-  };
+  }, [activeProfileId, requestPromptPack, selectedCharacter]);
 
-  const applyProposedUserProfile = async () => {
-    const memories = realignParsed?.revised_user_profile_memories;
-    if (!activeProfileId || !Array.isArray(memories) || memories.length === 0) {
-      alert('No revised_user_profile_memories to apply. Parse a response that includes them.');
+  const parseEditedResponse = useCallback(async () => {
+    if (!rawResponse.trim()) {
+      setError('Paste the model response first.');
       return;
     }
-    if (
-      !window.confirm(
-        `Replace ALL backend profile memories for this user with ${memories.length} proposed rows? This cannot be undone automatically.`
-      )
-    ) {
-      return;
-    }
-    setApplyProfileBusy(true);
-    setError(null);
+    setError('');
+    setSuccess('');
     try {
-      const res = await fetchWithTimeout(
-        `${apiUrl}/memory/curator/apply_profile`,
+      setStage('reading');
+      await parseResponse(rawResponse);
+      setSuccess('Response read successfully. Nothing has been changed yet.');
+    } catch (parseError) {
+      setError(formatFetchError(parseError, { timeoutMs: 60000 }));
+    } finally {
+      setStage('');
+    }
+  }, [parseResponse, rawResponse]);
+
+  const saveCharacterUpdate = useCallback(() => {
+    if (!selectedCharacter || !proposedInstructions.trim()) return;
+    const hasExisting = Boolean(String(selectedCharacter.model_instructions || '').trim());
+    const prompt = hasExisting
+      ? `Replace ${selectedCharacter.name}'s current Model Instructions with this reviewed version?`
+      : `Save these reviewed Model Instructions to ${selectedCharacter.name}?`;
+    if (!window.confirm(prompt)) return;
+    saveCharacter({ ...selectedCharacter, model_instructions: proposedInstructions.trim() });
+    setSuccess(`${selectedCharacter.name}'s Model Instructions were updated.`);
+  }, [proposedInstructions, saveCharacter, selectedCharacter]);
+
+  const applyProposedProfile = useCallback(async () => {
+    const memories = parsedResult?.revised_user_profile_memories;
+    if (!activeProfileId || !Array.isArray(memories) || memories.length === 0) return;
+    if (!window.confirm(`Replace all saved profile memories with these ${memories.length} reviewed entries? This cannot be undone automatically.`)) return;
+    setError('');
+    setSuccess('');
+    try {
+      setStage('saving-profile');
+      const response = await fetchWithTimeout(
+        `${MEMORY_API_URL}/memory/curator/apply_profile`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -333,407 +401,247 @@ export default function PersonaRealignmentPanel() {
         },
         60000
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-      alert(`Saved ${data.saved ?? memories.length} profile memories.`);
-      setRealignPaste('');
-      setRealignParsed(null);
-    } catch (e) {
-      setError(e?.message || String(e));
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Status ${response.status}`);
+      setSuccess(`${data.saved ?? memories.length} profile memories were saved.`);
+    } catch (saveError) {
+      setError(formatFetchError(saveError, { timeoutMs: 60000 }));
     } finally {
-      setApplyProfileBusy(false);
+      setStage('');
     }
-  };
+  }, [MEMORY_API_URL, activeProfileId, parsedResult]);
 
-  if (!acknowledged) {
-    return (
-      <Alert className="border-amber-500/40 bg-amber-50/50 dark:bg-amber-950/20">
-        <Sparkles className="h-4 w-4 shrink-0" />
-        <AlertTitle className="text-base">Persona realignment — quick orientation</AlertTitle>
-        <AlertDescription className="space-y-4 mt-3 text-sm leading-relaxed">
-          <p>
-            This helps you refresh how a <strong>character</strong> should behave <strong>for you</strong>, using your memories,
-            chats, and notes — packed into <em>one big prompt</em> you send to a strong model.
-          </p>
-          <p className="text-muted-foreground">
-            Nothing is saved automatically. You copy the model&apos;s answer and paste only what you agree with (character text into the editor,
-            optional profile list via the button at the end).
-          </p>
-          <ol className="list-decimal pl-5 space-y-2 text-muted-foreground border border-border/50 rounded-lg py-3 px-2 bg-background/50">
-            <li>Pick the character and tweak their current instructions if needed.</li>
-            <li>Choose what data to attach (defaults are usually fine).</li>
-            <li>Build prompt → copy → paste into your best model → ask for JSON only.</li>
-            <li>Paste the reply back here to extract text and optionally apply profile memories.</li>
-          </ol>
-          <p className="text-xs text-muted-foreground">Uses extra tokens on purpose — run it rarely, when a big refresh is worth it.</p>
-          <Button type="button" size="sm" variant="default" onClick={handleAcknowledge}>
-            Continue to the steps
-          </Button>
-        </AlertDescription>
-      </Alert>
-    );
-  }
+  const copyPrompt = useCallback(async () => {
+    if (!promptPack?.combined) return;
+    try {
+      await navigator.clipboard.writeText(promptPack.combined);
+      setSuccess('Prompt copied.');
+    } catch {
+      setError('Mirid could not copy the prompt to the clipboard.');
+    }
+  }, [promptPack]);
+
+  const stageText = {
+    gathering: 'Gathering the selected history…',
+    reviewing: `Asking ${requestRoute.effectiveModel || 'the selected model'} to review it…`,
+    reading: 'Reading the proposed changes…',
+    'saving-profile': 'Saving reviewed profile memories…',
+  }[stage];
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      <div className="rounded-xl border border-border/70 bg-gradient-to-br from-muted/40 to-transparent px-4 py-3">
-        <p className="text-sm font-medium flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-primary shrink-0" />
-          How this tutorial is laid out
-        </p>
-        <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-          Follow the numbered steps in order. Advanced knobs stay tucked away so you are not stuck reading jargon on day one.
+    <div className="space-y-5 rounded-xl border bg-card/70 p-5">
+      <div>
+        <h2 className="text-lg font-semibold">Refresh how a character responds to you</h2>
+        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+          Mirid reviews this character’s instructions against the history and memories you allow, then proposes a more consistent way for them to respond to you. You review the result before anything is saved.
         </p>
       </div>
 
-      {!apiReady && (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground rounded-lg border border-dashed px-3 py-2">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Connecting…
-        </div>
-      )}
-
-      {!activeProfileId && (
-        <p className="text-sm text-amber-800 dark:text-amber-300 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-          Choose a <strong>user profile</strong> in the profile selector first — this ties memories to the right person.
+      {!activeProfileId ? (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
+          Choose a user profile first. Memories are stored separately for each profile.
         </p>
-      )}
+      ) : null}
 
-      <TutorialStep
-        step={1}
-        title="Pick the character you’re realigning"
-        subtitle="This is whose instructions we’re improving — the snapshot below loads from your character card."
-      >
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <Label>Character</Label>
-            <Select value={characterId} onValueChange={setCharacterId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Choose character" />
-              </SelectTrigger>
-              <SelectContent>
-                {selectableCharacters.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name || c.id}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>Optional: second chat</Label>
-            <Select value={extraConvId || '__none__'} onValueChange={(v) => setExtraConvId(v === '__none__' ? '' : v)}>
-              <SelectTrigger>
-                <SelectValue placeholder="None" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">None — only use my active chat</SelectItem>
-                {(conversations || []).map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {(c.title || 'Chat').slice(0, 48)} {c.id === activeConversation ? '(active)' : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">Adds that chat&apos;s transcript and (if you enable it below) its rolling summary.</p>
-          </div>
-        </div>
-
+      <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <Label>Starting instructions (you can edit before building)</Label>
-          <Textarea
-            value={currentInstructions}
-            onChange={(e) => setCurrentInstructions(e.target.value)}
-            className="min-h-[120px] text-sm font-mono"
-            spellCheck={false}
-          />
-          <p className="text-xs text-muted-foreground">
-            The model sees this as the baseline to improve — tweak here if something is already wrong.
+          <Label>Character to refresh</Label>
+          <Select value={characterId} onValueChange={setCharacterId}>
+            <SelectTrigger><SelectValue placeholder="Choose a character" /></SelectTrigger>
+            <SelectContent>
+              {selectableCharacters.map((character) => (
+                <SelectItem key={character.id} value={character.id}>{character.name || character.id}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="rounded-lg border bg-muted/15 p-3 text-sm">
+          <p className="font-medium">Model used for the review</p>
+          <p className="mt-1 text-muted-foreground">
+            {canRunModel ? requestRoute.effectiveModel : 'No text model selected'}
           </p>
         </div>
-      </TutorialStep>
+      </div>
 
-      <TutorialStep
-        step={2}
-        title="Choose what context to pack in"
-        subtitle="Defaults include profile memories, this character’s long-term memories about you, your active chat, and continuity notes. Uncheck anything you want to skip."
-      >
-        <div className="rounded-lg border border-border/50 bg-muted/15 p-3 space-y-3">
-          <div className="flex flex-wrap gap-x-6 gap-y-2">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <Checkbox checked={includeBackendMemories} onCheckedChange={setIncludeBackendMemories} />
-              Saved profile memories (about you)
-            </label>
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <Checkbox checked={includeTranscriptActive} onCheckedChange={setIncludeTranscriptActive} />
-              Active chat transcript
-            </label>
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <Checkbox checked={includeRollingActive} onCheckedChange={setIncludeRollingActive} />
-              Active rolling memory summary
-            </label>
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <Checkbox checked={includeRollingExtra} onCheckedChange={setIncludeRollingExtra} disabled={!extraConvId} />
-              Second chat rolling summary
-            </label>
-          </div>
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="space-y-1">
-              <Label className="text-xs">Max characters from transcripts</Label>
-              <Input
-                type="number"
-                min={5000}
-                max={2000000}
-                value={transcriptMaxChars}
-                onChange={(e) => setTranscriptMaxChars(Number(e.target.value))}
-                className="h-9 w-36"
-              />
-            </div>
-          </div>
-        </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 text-sm">
+          <Checkbox checked={includeTranscriptActive} onCheckedChange={(value) => setIncludeTranscriptActive(Boolean(value))} className="mt-0.5" />
+          <span><span className="block font-medium">Use the current chat</span><span className="mt-1 block text-xs text-muted-foreground">Lets the review learn from your recent interaction with this character.</span></span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 text-sm">
+          <Checkbox checked={includeBackendMemories} onCheckedChange={(value) => setIncludeBackendMemories(Boolean(value))} className="mt-0.5" />
+          <span><span className="block font-medium">Use memories about me</span><span className="mt-1 block text-xs text-muted-foreground">Includes durable facts attached to your current user profile.</span></span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 text-sm">
+          <Checkbox checked={includeCharacterMemories} onCheckedChange={(value) => setIncludeCharacterMemories(Boolean(value))} className="mt-0.5" />
+          <span><span className="block font-medium">Use this character’s memories</span><span className="mt-1 block text-xs text-muted-foreground">Includes what this character has learned separately from its own chats with you.</span></span>
+        </label>
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 text-sm">
+          <Checkbox checked={alsoRewriteUserProfile} onCheckedChange={(value) => setAlsoRewriteUserProfile(Boolean(value))} className="mt-0.5" />
+          <span><span className="block font-medium">Also propose cleaner profile memories</span><span className="mt-1 block text-xs text-muted-foreground">Optional. Saving that list remains a separate confirmed action.</span></span>
+        </label>
+      </div>
 
-        <details className="group rounded-lg border border-border/60 bg-muted/10">
-          <summary className="cursor-pointer list-none flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-foreground hover:bg-muted/30 rounded-lg">
-            <ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />
-            Advanced: how much “character memory” (agentic) to send
-          </summary>
-          <div className="px-3 pb-4 pt-1 space-y-3 border-t border-border/40">
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              If you don&apos;t know what this means, leave <strong>ranked</strong> and the default size. Raise the limit only if this character&apos;s
-              memory file is huge and you need more of it in one shot.
-            </p>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label className="text-xs">Mode</Label>
-                <Select value={agenticMode} onValueChange={setAgenticMode}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="ranked">Ranked (recommended)</SelectItem>
-                    <SelectItem value="rag">Search-like pick (needs embeddings on server)</SelectItem>
-                    <SelectItem value="full">Pack as much as fits</SelectItem>
-                    <SelectItem value="none">Don&apos;t send character memory file</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label className="text-xs">Character memory budget (characters)</Label>
-                <Input
-                  type="number"
-                  min={4000}
-                  max={500000}
-                  value={agenticMaxChars}
-                  onChange={(e) => setAgenticMaxChars(Number(e.target.value))}
-                  className="h-9"
-                />
-              </div>
-            </div>
-            {agenticMode === 'rag' && (
-              <div className="space-y-2">
-                <Label className="text-xs">What to search for (optional)</Label>
-                <Input
-                  value={ragQuery}
-                  onChange={(e) => setRagQuery(e.target.value)}
-                  placeholder="e.g. tone, boundaries, things I’ve asked for before…"
-                />
-              </div>
-            )}
-          </div>
-        </details>
-
-        <details className="group rounded-lg border border-border/60 bg-muted/10">
-          <summary className="cursor-pointer list-none flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-foreground hover:bg-muted/30 rounded-lg">
-            <ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />
-            Optional: also propose a fresh list of profile memories (same model reply)
-          </summary>
-          <div className="px-3 pb-4 pt-1 space-y-3 border-t border-border/40">
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Same JSON answer can include a cleaned-up <strong>user profile memory list</strong>. You still decide later whether to save it (Step 5).
-              Turn off &quot;Saved profile memories&quot; above if the bullet list is huge but you still want indexed rows only — saves tokens.
-            </p>
-            <label className="flex items-start gap-2 text-sm cursor-pointer">
-              <Checkbox
-                checked={alsoRewriteUserProfile}
-                onCheckedChange={(v) => setAlsoRewriteUserProfile(!!v)}
-                className="mt-0.5"
-              />
-              <span>Ask for a rewritten profile memory list in the same JSON</span>
-            </label>
-            {alsoRewriteUserProfile && (
-              <div className="space-y-2 max-w-md">
-                <Label className="text-xs">Style</Label>
-                <Select value={profileRewriteMode} onValueChange={setProfileRewriteMode}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="merge">Merge & dedupe what I already have</SelectItem>
-                    <SelectItem value="from_scratch">Rebuild from everything you’re sending</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-        </details>
-
-        <div className="space-y-2">
-          <Label>Anything else the model should know for this run?</Label>
-          <Textarea
-            value={extraNotes}
-            onChange={(e) => setExtraNotes(e.target.value)}
-            className="min-h-[64px] text-sm"
-            placeholder="Optional — e.g. focus on shorter replies, or stress-test boundaries…"
-          />
-        </div>
-      </TutorialStep>
-
-      <TutorialStep
-        step={3}
-        title="Build the prompt and copy it"
-        subtitle="Creates one long message ready for your smartest model. Use “Copy” — the preview below may be truncated."
-      >
-        <div className="flex flex-wrap gap-2 items-center">
-          <Button type="button" onClick={runBuildPack} disabled={busy || !apiReady || !activeProfileId || !characterId}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
-            Build prompt pack
-          </Button>
-          {result?.combined && (
-            <Button type="button" variant="outline" size="sm" onClick={copyCombined}>
-              <Copy className="h-4 w-4 mr-2" />
-              Copy full prompt
-            </Button>
-          )}
-        </div>
-
-        {error && (
-          <div className="text-sm text-red-700 dark:text-red-400 bg-red-500/10 rounded-md p-3 border border-red-500/20">
-            {error}
-          </div>
-        )}
-
-        {result?.stats && (
-          <p className="text-xs text-muted-foreground">
-            Rough size ~{result.stats.bundle_chars?.toLocaleString?.() ?? result.stats.bundle_chars} characters · character-memory rows included:{' '}
-            {result.stats.agentic_insight_count} · profile memories rows: {result.stats.backend_memory_count}
-            {result.stats.also_rewrite_user_profile ? (
-              <> · also asking for profile rewrite ({result.stats.user_profile_rewrite_mode || 'merge'})</>
-            ) : null}
-          </p>
-        )}
-
-        {result?.combined && (
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Preview (first chunk only)</Label>
-            <Textarea readOnly value={result.combined.slice(0, 24000)} className="min-h-[160px] text-xs font-mono" spellCheck={false} />
-            {result.combined.length > 24000 && (
-              <p className="text-xs text-amber-700 dark:text-amber-400">Preview is cut off — always use Copy for the full prompt.</p>
-            )}
-          </div>
-        )}
-      </TutorialStep>
-
-      <TutorialStep
-        step={4}
-        title="Run it in your model"
-        subtitle="Paste the copied prompt into the model you trust for hard reasoning. Ask it to answer with JSON only (no chat around it)."
-      >
-        <ul className="text-xs text-muted-foreground space-y-2 list-disc pl-5 leading-relaxed">
-          <li>Use your best / largest context model if you can — this is a one-off quality pass.</li>
-          <li>If you route through this app&apos;s chat, using something like “testing / judge” mode avoids extra memory noise on that request.</li>
-        </ul>
-        <details className="text-xs border border-border/50 rounded-md px-3 py-2 bg-muted/20">
-          <summary className="cursor-pointer font-medium text-foreground">Technical detail</summary>
-          <p className="mt-2 text-muted-foreground">
-            Backend route is <code className="text-[11px] px-1 rounded bg-muted">/memory/persona_realignment/prompt_pack</code>.
-            For local /generate, <code className="text-[11px] px-1 rounded bg-muted">request_purpose: model_testing</code> skips extra retrieval on that turn.
-          </p>
-        </details>
-      </TutorialStep>
-
-      <TutorialStep
-        step={5}
-        title="Paste the reply back and use what you like"
-        subtitle="Nothing saves until you say so. Character instructions are copy-only; replacing saved profile memories is a separate confirm button."
-      >
+      <div className="space-y-2">
+        <Label htmlFor="realignment-notes">What should improve? <span className="font-normal text-muted-foreground">Optional</span></Label>
         <Textarea
-          value={realignPaste}
-          onChange={(e) => setRealignPaste(e.target.value)}
-          placeholder="Paste the model’s entire JSON reply here…"
-          className="min-h-[100px] text-xs font-mono"
-          spellCheck={false}
+          id="realignment-notes"
+          value={extraNotes}
+          onChange={(event) => setExtraNotes(event.target.value)}
+          placeholder="For example: shorter replies, stronger continuity, fewer repeated questions, clearer boundaries."
+          className="min-h-[72px]"
         />
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" variant="secondary" onClick={parseRealignResponse} disabled={!realignPaste.trim()}>
-            <FileJson className="h-4 w-4 mr-2" />
-            Parse JSON
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={applyProposedUserProfile}
-            disabled={applyProfileBusy || !realignParsed?.revised_user_profile_memories?.length}
-          >
-            {applyProfileBusy ? (
-              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-            ) : (
-              <CheckCircle2 className="h-4 w-4 mr-2" />
-            )}
-            Apply proposed profile memories (destructive)
-          </Button>
-        </div>
-        {realignParseError && <p className="text-xs text-red-600">{realignParseError}</p>}
-        {realignParsed?.status === 'success' && (
-          <div className="space-y-3 text-sm border border-border/50 rounded-lg p-3 bg-muted/10">
-            {realignParsed.user_profile_rewrite_summary && (
-              <p className="text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Profile changes summary:</span> {realignParsed.user_profile_rewrite_summary}
-              </p>
-            )}
-            {realignParsed.revised_character_instructions != null && realignParsed.revised_character_instructions !== '' && (
-              <div className="space-y-1">
-                <div className="flex flex-wrap gap-2 items-center justify-between">
-                  <Label className="text-xs font-semibold">New character instructions — paste into Character editor</Label>
-                  <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={copyCharacterInstructions}>
-                    <Copy className="h-3 w-3 mr-1" />
-                    Copy
-                  </Button>
-                </div>
-                <Textarea
-                  readOnly
-                  value={String(realignParsed.revised_character_instructions)}
-                  className="min-h-[120px] text-xs font-mono"
-                  spellCheck={false}
-                />
-              </div>
-            )}
-            {realignParsed.revised_model_instructions != null && String(realignParsed.revised_model_instructions).trim() !== '' && (
-              <div className="space-y-1">
-                <Label className="text-xs">Extra model-style instructions (if present)</Label>
-                <Textarea
-                  readOnly
-                  value={String(realignParsed.revised_model_instructions)}
-                  className="min-h-[64px] text-xs font-mono"
-                  spellCheck={false}
-                />
-              </div>
-            )}
-            <p className="text-xs">
-              Proposed profile memory rows: <strong>{realignParsed.revised_user_profile_memories?.length ?? 0}</strong>
-              {!realignParsed.has_user_profile_memories ? ' (none in this JSON)' : ''}
-            </p>
-            {(realignParsed.revised_user_profile_memories?.length ?? 0) > 0 && (
-              <details className="text-xs">
-                <summary className="cursor-pointer text-muted-foreground">Peek at first rows</summary>
-                <pre className="mt-2 max-h-36 overflow-auto rounded border bg-background/80 p-2 whitespace-pre-wrap">
-                  {JSON.stringify(realignParsed.revised_user_profile_memories.slice(0, 8), null, 2)}
-                </pre>
-              </details>
-            )}
+      </div>
+
+      <details className="group rounded-lg border bg-muted/10">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-muted/30">
+          <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
+          More context options
+        </summary>
+        <div className="space-y-4 border-t px-3 py-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Include another chat</Label>
+              <Select value={extraConvId || '__none__'} onValueChange={(value) => setExtraConvId(value === '__none__' ? '' : value)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No additional chat</SelectItem>
+                  {(conversations || []).map((conversation) => (
+                    <SelectItem key={conversation.id} value={conversation.id}>
+                      {(conversation.title || 'Chat').slice(0, 48)}{conversation.id === activeConversation ? ' · current' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Transcript limit</Label>
+              <Input type="number" min={5000} max={2000000} value={transcriptMaxChars} onChange={(event) => setTranscriptMaxChars(Number(event.target.value))} />
+            </div>
           </div>
-        )}
-      </TutorialStep>
+
+          <div className="flex flex-wrap gap-4 text-sm">
+            <label className="flex cursor-pointer items-center gap-2"><Checkbox checked={includeRollingActive} onCheckedChange={(value) => setIncludeRollingActive(Boolean(value))} />Use current continuity summary</label>
+            <label className="flex cursor-pointer items-center gap-2"><Checkbox checked={includeRollingExtra} onCheckedChange={(value) => setIncludeRollingExtra(Boolean(value))} disabled={!extraConvId} />Use additional chat summary</label>
+          </div>
+
+          {includeCharacterMemories ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Character-memory selection</Label>
+                <Select value={agenticMode} onValueChange={setAgenticMode}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ranked">Most important memories first</SelectItem>
+                    <SelectItem value="rag">Find memories matching a topic</SelectItem>
+                    <SelectItem value="full">Include as much as fits</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Character-memory limit</Label>
+                <Input type="number" min={4000} max={500000} value={agenticMaxChars} onChange={(event) => setAgenticMaxChars(Number(event.target.value))} />
+              </div>
+              {agenticMode === 'rag' ? (
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Topic to look for</Label>
+                  <Input value={ragQuery} onChange={(event) => setRagQuery(event.target.value)} placeholder="For example: tone, boundaries or recurring preferences" />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {alsoRewriteUserProfile ? (
+            <div className="space-y-2 max-w-md">
+              <Label>Profile-memory approach</Label>
+              <Select value={profileRewriteMode} onValueChange={setProfileRewriteMode}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="merge">Merge duplicates and preserve distinct facts</SelectItem>
+                  <SelectItem value="from_scratch">Build a fresh list from the selected context</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
+          <details className="rounded-md border px-3 py-2 text-xs">
+            <summary className="cursor-pointer font-medium">Current instructions sent as the baseline</summary>
+            <Textarea value={currentInstructions} onChange={(event) => setCurrentInstructions(event.target.value)} className="mt-3 min-h-[140px] font-mono text-xs" spellCheck={false} />
+          </details>
+        </div>
+      </details>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button type="button" onClick={runAutomatedReview} disabled={Boolean(stage) || !apiReady || !activeProfileId || !selectedCharacter || !canRunModel}>
+          {stage && stage !== 'saving-profile' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+          Review this character
+        </Button>
+        {stageText ? <span className="text-sm text-muted-foreground">{stageText}</span> : null}
+      </div>
+
+      {error ? <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}
+      {success ? <p className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-800 dark:text-emerald-200"><CheckCircle2 className="h-4 w-4" />{success}</p> : null}
+
+      {parsedResult ? (
+        <div className="space-y-4 rounded-xl border border-primary/25 bg-primary/5 p-4">
+          <div>
+            <h3 className="font-semibold">Proposed character update</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Read and edit this before saving. It replaces only this character’s Model Instructions; the character card, chats and memories remain intact.</p>
+          </div>
+
+          {Array.isArray(parsedResult.delta_vs_current_instructions) && parsedResult.delta_vs_current_instructions.length ? (
+            <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+              {parsedResult.delta_vs_current_instructions.slice(0, 8).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
+            </ul>
+          ) : null}
+
+          <Textarea
+            aria-label="Proposed model instructions"
+            value={proposedInstructions}
+            onChange={(event) => setProposedInstructions(event.target.value)}
+            className="min-h-[180px]"
+            placeholder="The model did not return an apply-ready Model Instructions block. You can inspect its full response under Run elsewhere below."
+          />
+          <Button type="button" onClick={saveCharacterUpdate} disabled={!proposedInstructions.trim()}>
+            <CheckCircle2 className="mr-2 h-4 w-4" />Save to {selectedCharacter?.name || 'character'}
+          </Button>
+
+          {Array.isArray(parsedResult.revised_user_profile_memories) && parsedResult.revised_user_profile_memories.length ? (
+            <div className="space-y-2 border-t pt-4">
+              <p className="text-sm font-medium">Proposed profile-memory list: {parsedResult.revised_user_profile_memories.length} entries</p>
+              <p className="text-xs text-muted-foreground">This replaces the current profile-memory list only after a separate confirmation.</p>
+              <Button type="button" variant="outline" onClick={applyProposedProfile} disabled={stage === 'saving-profile'}>
+                {stage === 'saving-profile' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
+                Save reviewed profile memories
+              </Button>
+            </div>
+          ) : null}
+
+          {parsedResult.revised_character_instructions ? (
+            <details className="rounded-md border bg-background/60 px-3 py-2 text-xs">
+              <summary className="cursor-pointer font-medium">Full rewritten character prompt</summary>
+              <Textarea readOnly value={String(parsedResult.revised_character_instructions)} className="mt-3 min-h-[160px] font-mono text-xs" spellCheck={false} />
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+
+      <details className="group rounded-lg border bg-muted/10">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium hover:bg-muted/30">
+          <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
+          Run elsewhere or inspect the generated prompt
+        </summary>
+        <div className="space-y-3 border-t px-3 py-4">
+          <p className="text-xs leading-relaxed text-muted-foreground">Use this only when you want to run the review in another application or repair a model response manually.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={buildForAnotherModel} disabled={Boolean(stage) || !apiReady || !activeProfileId || !selectedCharacter}>Build prompt</Button>
+            <Button type="button" size="sm" variant="ghost" onClick={copyPrompt} disabled={!promptPack?.combined}><Copy className="mr-2 h-4 w-4" />Copy prompt</Button>
+          </div>
+          {promptPack?.combined ? <Textarea readOnly value={promptPack.combined.slice(0, 24000)} className="min-h-[140px] font-mono text-xs" spellCheck={false} /> : null}
+          <Textarea value={rawResponse} onChange={(event) => setRawResponse(event.target.value)} className="min-h-[120px] font-mono text-xs" placeholder="Paste a model response here" spellCheck={false} />
+          <Button type="button" size="sm" variant="secondary" onClick={parseEditedResponse} disabled={Boolean(stage) || !rawResponse.trim()}>Read pasted response</Button>
+        </div>
+      </details>
     </div>
   );
 }

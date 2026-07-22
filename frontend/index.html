@@ -4,9 +4,239 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Local LLM Frontend - Run GGUF models locally with a modern web interface" />
-    <title>Local LLM Frontend</title>
-    
+    <script>
+      (function () {
+        try {
+          var k = 'LiangLocal-tv-performance';
+          var q = new URLSearchParams(window.location.search).get('tv');
+          if (
+            q === '1' ||
+            q === 'true' ||
+            q === 'yes' ||
+            window.location.hash === '#tv' ||
+            localStorage.getItem(k) === '1'
+          ) {
+            document.documentElement.classList.add('tv-performance');
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <script>
+      (function () {
+        try {
+          var storedTheme =
+            localStorage.getItem('vite-ui-theme') ||
+            localStorage.getItem('ui-theme') ||
+            'dark';
+          document.documentElement.dataset.theme = storedTheme;
+          document.documentElement.classList.remove('light', 'dark', 'messenger', 'whatsapp');
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
+    <meta name="description" content="Mirid — local AI chat, memory, and creative tools" />
+    <meta name="theme-color" content="#121018" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Mirid</title>
+    <link rel="preload" href="/startscreen_logo.png" as="image" type="image/png" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #101113;
+        color: #e8eaed;
+      }
+
+      html[data-theme="nanogpt"],
+      html[data-theme="nanogpt"] body {
+        background: #121018;
+        color: #f1f3f5;
+      }
+
+      #root {
+        min-height: 100vh;
+      }
+
+      .eloquent-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        transition: opacity 0.45s ease, visibility 0.45s ease;
+        background:
+          radial-gradient(ellipse 70% 50% at 50% 30%, rgba(158, 79, 242, 0.09) 0%, transparent 58%),
+          radial-gradient(ellipse 80% 55% at 50% 38%, rgba(63, 231, 252, 0.09) 0%, transparent 58%),
+          radial-gradient(ellipse 65% 45% at 50% 72%, rgba(148, 130, 210, 0.08) 0%, transparent 55%),
+          linear-gradient(180deg, #101113 0%, #14161a 42%, #1a1b1e 100%);
+      }
+
+      html[data-theme="nanogpt"] .eloquent-splash {
+        background:
+          radial-gradient(ellipse 70% 50% at 50% 30%, rgba(158, 79, 242, 0.1) 0%, transparent 58%),
+          radial-gradient(ellipse 80% 55% at 50% 38%, rgba(63, 231, 252, 0.09) 0%, transparent 58%),
+          radial-gradient(ellipse 65% 45% at 50% 72%, rgba(148, 130, 210, 0.09) 0%, transparent 55%),
+          linear-gradient(180deg, #121018 0%, #16141e 42%, #1b1a20 100%);
+      }
+
+      .eloquent-splash--out {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+
+      .eloquent-splash__inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1.35rem;
+        padding: 2rem 1.5rem;
+        text-align: center;
+        animation: eloquent-splash-enter 0.7s ease both;
+      }
+
+      .eloquent-splash__logo-wrap {
+        position: relative;
+        width: min(220px, 52vw);
+        aspect-ratio: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .eloquent-splash__logo-glow {
+        position: absolute;
+        inset: 8%;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(63, 231, 252, 0.42) 0%, rgba(120, 170, 220, 0.18) 42%, transparent 72%);
+        filter: blur(22px);
+        animation: eloquent-logo-glow 3.2s ease-in-out infinite;
+      }
+
+      .eloquent-splash__logo {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        height: auto;
+        object-fit: contain;
+        filter: brightness(0) invert(1) drop-shadow(0 0 28px rgba(63, 231, 252, 0.35)) drop-shadow(0 0 48px rgba(120, 170, 220, 0.22));
+        animation: eloquent-logo-float 4.5s ease-in-out infinite;
+      }
+
+      .eloquent-splash__wordmark {
+        margin: 0;
+        font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: clamp(1.55rem, 4.8vw, 2rem);
+        font-weight: 600;
+        letter-spacing: 0.34em;
+        text-indent: 0.34em;
+        text-transform: uppercase;
+        color: #f1f5f9;
+        text-shadow: 0 0 24px rgba(63, 231, 252, 0.28);
+      }
+
+      .eloquent-splash__tagline {
+        margin: -0.65rem 0 0;
+        font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 0.72rem;
+        font-weight: 500;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: rgba(148, 163, 184, 0.82);
+      }
+
+      .eloquent-splash__spinner {
+        width: 28px;
+        height: 28px;
+        margin-top: 0.35rem;
+        border-radius: 50%;
+        border: 2px solid rgba(148, 130, 210, 0.22);
+        border-top-color: #3fe7fc;
+        border-right-color: #9e9eff;
+        animation: eloquent-spinner 0.85s linear infinite;
+      }
+
+      @keyframes eloquent-splash-enter {
+        from {
+          opacity: 0;
+          transform: translateY(10px) scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      @keyframes eloquent-logo-glow {
+        0%,
+        100% {
+          opacity: 0.72;
+          transform: scale(0.96);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1.04);
+        }
+      }
+
+      @keyframes eloquent-logo-float {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-6px);
+        }
+      }
+
+      @keyframes eloquent-spinner {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .eloquent-splash {
+          transition-duration: 0.15s;
+        }
+
+        .eloquent-splash__inner,
+        .eloquent-splash__logo-glow,
+        .eloquent-splash__logo,
+        .eloquent-splash__spinner {
+          animation: none;
+        }
+      }
+
+      .eloquent-startup-video {
+        position: fixed;
+        inset: 0;
+        z-index: 100000;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        background: #0a0a0c;
+        transition: opacity 0.5s ease, visibility 0.5s ease;
+      }
+
+      .eloquent-startup-video--hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .eloquent-startup-video {
+          display: none;
+        }
+      }
+    </style>
+
     <!-- Preload fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -20,80 +250,96 @@
     />
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-      /* Apply fonts immediately to prevent flicker */
       body {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
       }
-      
-      code, pre, .font-mono {
+
+      code,
+      pre,
+      .font-mono {
         font-family: 'JetBrains Mono', monospace;
-      }
-      
-      /* Loading state */
-      .initial-loader {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100vh;
-        width: 100vw;
-        background-color: #f8f9fa;
-      }
-      
-      .dark .initial-loader {
-        background-color: #1a1b1e;
-        color: #f8f9fa;
-      }
-      
-      .loader-spinner {
-        width: 48px;
-        height: 48px;
-        border: 5px solid #e2e8f0;
-        border-bottom-color: #3b82f6;
-        border-radius: 50%;
-        animation: rotation 1s linear infinite;
-        margin-bottom: 1rem;
-      }
-      
-      .dark .loader-spinner {
-        border-color: #2d3748;
-        border-bottom-color: #3b82f6;
-      }
-      
-      @keyframes rotation {
-        0% {
-          transform: rotate(0deg);
-        }
-        100% {
-          transform: rotate(360deg);
-        }
       }
     </style>
   </head>
   <body>
-    <div id="root">
-      <!-- Initial loading state before React loads -->
-      <div class="initial-loader">
-        <div class="loader-spinner"></div>
-        <h2>Loading Local LLM Frontend...</h2>
-        <p>Initializing the application, please wait</p>
-      </div>
-    </div>
-    <script type="module" src="/src/main.jsx"></script>
-    
     <script>
-      // Early hydration for theme to prevent flash
-      (function() {
-        try {
-          const storedTheme = localStorage.getItem('ui-theme') || 'dark';
-          document.documentElement.dataset.theme = storedTheme;
-          // Clean up any legacy classes just in case
-          document.documentElement.classList.remove('light', 'dark', 'messenger', 'whatsapp');
-        } catch (e) {
-          // Fallback
-          document.documentElement.dataset.theme = 'dark';
+      window.__eloquentSplashStartMs =
+        typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+    </script>
+    <video
+      id="eloquent-startup-video"
+      class="eloquent-startup-video"
+      src="/Eloquent_splash_video.mp4"
+      autoplay
+      muted
+      playsinline
+      preload="auto"
+      aria-hidden="true"
+    ></video>
+    <script>
+      (function () {
+        var video = document.getElementById('eloquent-startup-video');
+        var splash = document.getElementById('eloquent-splash');
+        var prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+        function showSplash() {
+          if (splash) {
+            splash.style.opacity = '1';
+            splash.style.visibility = 'visible';
+            splash.style.pointerEvents = 'auto';
+          }
+          if (video) {
+            video.classList.add('eloquent-startup-video--hidden');
+          }
+        }
+
+        function hideSplash() {
+          if (splash) {
+            splash.style.opacity = '0';
+            splash.style.visibility = 'hidden';
+            splash.style.pointerEvents = 'none';
+          }
+        }
+
+        if (prefersReducedMotion) {
+          video.remove();
+          showSplash();
+        } else if (sessionStorage.getItem('eloquentVideoPlayed') === '1') {
+          video.remove();
+          showSplash();
+        } else {
+          hideSplash();
+          video.addEventListener('ended', function () {
+            sessionStorage.setItem('eloquentVideoPlayed', '1');
+            showSplash();
+          }, { once: true });
+          video.addEventListener('error', function () {
+            sessionStorage.setItem('eloquentVideoPlayed', '1');
+            showSplash();
+          }, { once: true });
         }
       })();
     </script>
+    <div id="eloquent-splash" class="eloquent-splash" role="status" aria-live="polite" aria-label="Starting Mirid">
+      <div class="eloquent-splash__inner">
+        <div class="eloquent-splash__logo-wrap">
+          <div class="eloquent-splash__logo-glow" aria-hidden="true"></div>
+          <img
+            class="eloquent-splash__logo"
+            src="/startscreen_logo.png"
+            width="220"
+            height="220"
+            alt=""
+            decoding="async"
+            fetchpriority="high"
+          />
+        </div>
+        <h1 class="eloquent-splash__wordmark">Mirid</h1>
+        <p class="eloquent-splash__tagline">Simple. Modern. Human.</p>
+        <div class="eloquent-splash__spinner" aria-hidden="true"></div>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

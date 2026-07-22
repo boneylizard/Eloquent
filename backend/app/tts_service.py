@@ -17,27 +17,17 @@ import json
 import inspect
 import wave
 import aiohttp
+from typing import Optional
 # --- FastAPI and WebSocket Imports ---
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
+from backend.app.cors_policy import configure_cors
 
 
 # --- Initialize FastAPI App and CORS Middleware ---
 app = FastAPI()
 router = APIRouter()
 
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for local development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app)
 
 # Include the router in the app
 app.include_router(router)
@@ -85,6 +75,34 @@ except Exception as e:
     ChatterboxTurboTTS = None
 
 try:
+    # Vendored Nano loader
+    try:
+        from .chatterbox_turbo.tts_nano import ChatterboxNanoTTS
+    except ImportError:
+        try:
+            from app.chatterbox_turbo.tts_nano import ChatterboxNanoTTS
+        except ImportError:
+            from chatterbox_turbo.tts_nano import ChatterboxNanoTTS
+    
+    startup_logger.info("✅ Chatterbox Nano (Vendored) library loaded successfully")
+except Exception as e:
+    startup_logger = logging.getLogger(__name__)
+    startup_logger.warning(f"\n--- WARNING: Chatterbox Nano (Vendored) not available: {e} ---")
+    ChatterboxNanoTTS = None
+
+try:
+    from voxcpm import VoxCPM
+    startup_logger.info("✅ VoxCPM2 library loaded successfully")
+except ImportError:
+    startup_logger = logging.getLogger(__name__)
+    startup_logger.warning("\n--- WARNING ---")
+    startup_logger.warning("'voxcpm' library not found. Please install it:")
+    startup_logger.warning("pip install voxcpm")
+    startup_logger.warning("VoxCPM2 TTS will not be available")
+    startup_logger.warning("-------------\n")
+    VoxCPM = None
+
+try:
     from datasets import load_dataset
 except ImportError:
     startup_logger = logging.getLogger(__name__)
@@ -98,10 +116,43 @@ logger = logging.getLogger(__name__)
 tts_pipeline = None
 chatterbox_model = None
 chatterbox_turbo_model = None # NEW: Turbo model global
+chatterbox_nano_model = None # NEW: Nano model global
+voxcpm_model = None # VoxCPM2 model global
 speaker_embeddings = None
 CHATTERBOX_VOICE_WARMED_UP = False
 CHATTERBOX_TURBO_VOICE_WARMED_UP = False # NEW: Turbo warmup flag
+CHATTERBOX_NANO_VOICE_WARMED_UP = False # NEW: Nano warmup flag
+VOXCPM_VOICE_WARMED_UP = False
+VOXCPM_EXECUTOR = None # Separate executor for VoxCPM2 — never share with Chatterbox
 CHATTERBOX_EXECUTOR = None # Global executor to keep synthesis on one persistent thread
+
+# --- VoxCPM2 GGUF Model Catalog ---
+# Source: https://huggingface.co/DennisHuang648/VoxCPM2-GGUF
+VOXCPM_GGUF_HF_REPO = "DennisHuang648/VoxCPM2-GGUF"
+
+VOXCPM_GGUF_MODELS = {
+    "BaseLM-Q8_0": {
+        "label": "VoxCPM2 BaseLM Q8_0 (Recommended, ~1.6 GB)",
+        "filename": "VoxCPM2-BaseLM-Q8_0.gguf",
+        "size_mb": 1600,
+        "component": "Base language model, 8-bit quantized",
+        "required": True,
+    },
+    "BaseLM-F16": {
+        "label": "VoxCPM2 BaseLM F16 (Full precision, ~3.0 GB)",
+        "filename": "VoxCPM2-BaseLM-F16.gguf",
+        "size_mb": 3000,
+        "component": "Base language model (28-layer, n_embd=2048)",
+        "required": True,
+    },
+    "Acoustic-F16": {
+        "label": "VoxCPM2 Acoustic F16 (Required, ~1.7 GB)",
+        "filename": "VoxCPM2-Acoustic-F16.gguf",
+        "size_mb": 1700,
+        "component": "Acoustic stack (ResidualLM + FSQ + LocEnc/LocDiT CFM + AudioVAE)",
+        "required": True,
+    },
+}
 
 def get_chatterbox_executor():
     """Returns a persistent ThreadPoolExecutor with 1 worker to ensure CUDA thread consistency."""
@@ -120,7 +171,8 @@ def get_device(preferred_gpu_id: int = 0):
     """
     try:
         import torch
-        if torch.cuda.is_available():
+        force_cpu = os.environ.get("MIRID_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}
+        if torch.cuda.is_available() and not force_cpu:
             # Use the first available GPU for TTS service
             device = "cuda:0"
             
@@ -172,7 +224,8 @@ def get_tts_device():
 # Additional safety: Log the current CUDA device to verify isolation
 try:
     import torch
-    if torch.cuda.is_available():
+    force_cpu = os.environ.get("MIRID_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}
+    if torch.cuda.is_available() and not force_cpu:
         current_device = torch.cuda.current_device()
         current_device_name = torch.cuda.get_device_name(current_device)
         logger.info(f"🔒 CUDA current device verified: {current_device} ({current_device_name})")
@@ -372,6 +425,8 @@ def clean_markdown_for_tts(text: str, engine: str = 'kokoro') -> str:
         # Standard cleaning removes brackets and other special chars
         text = re.sub(r'[:;(){}[\]"""``~@#$%^&*+=<>|\\/_-]', '', text)
     
+    # Collapse consecutive periods to prevent Kokoro click artifacts from solo "." chunks
+    text = re.sub(r'\.{2,}', '.', text)
     text = re.sub(r'\s{2,}', ' ', text).strip()
     return text
 def load_settings():
@@ -428,123 +483,347 @@ def load_tts_pipeline(lang_code='a'):
     return tts_pipeline
 
 async def synthesize_speech(
-    text: str, 
-    voice: str = 'af_heart', 
-    engine: str = 'kokoro',  # Default to Kokoro
+    text: str,
+    voice: str = 'af_heart',
+    engine: str = 'kokoro',
     audio_prompt_path: str = None,
     exaggeration: float = 0.5,
-    cfg: float = 0.5
+    cfg: float = 0.5,
+    speed: float = 1.0,
+    voxcpm_cfg_value: float = 2.0,
+    voxcpm_inference_timesteps: int = 10,
+    voxcpm_normalize: bool = True,
+    voxcpm_denoise: bool = True,
+    voxcpm_retry_badcase: bool = False,
+    voxcpm_voice_design: str = None,
 ) -> bytes:
     """
     Cleans input text, synthesizes speech using the specified engine, and returns raw audio bytes.
-    Available engines: kokoro, chatterbox
+    Available engines: kokoro, chatterbox, chatterbox_turbo, chatterbox_nano, voxcpm, nanogpt-*
     """
 
     cleaned_text = clean_markdown_for_tts(text, engine=engine)
-    
-    # Fallback: If using Chatterbox/Turbo and no audio_prompt_path is provided, 
+
+    # Fallback: If using Chatterbox/Turbo/VoxCPM and no audio_prompt_path is provided,
     # try to use the 'voice' parameter as the path (if it's not 'default' or 'af_heart')
-    if (engine.lower().startswith('chatterbox')) and not audio_prompt_path:
+    if (engine.lower().startswith('chatterbox') or engine.lower() == 'voxcpm') and not audio_prompt_path:
         if voice and voice.lower() not in ('default', 'af_heart'):
             audio_prompt_path = voice
             logger.info(f"🗣️ [TTS Service] Adapting 'voice' parameter '{voice}' as audio_prompt_path")
 
     if not cleaned_text:
-        logger.warning("🗣️ [TTS Service] Text became empty after cleaning, skipping synthesis.")
+        logger.debug("🗣️ [TTS Service] Text became empty after cleaning, skipping synthesis.")
         return b""
-    
-    logger.info(f"🗣️ [TTS Service] Using engine '{engine}' for: '{cleaned_text[:60]}...'")
-    
+
+    logger.debug(f"🗣️ [TTS Service] Using engine '{engine}' for: '{cleaned_text[:60]}...'")
+
     if engine.lower() == 'kokoro':
         # Use Kokoro TTS
         if KPipeline is None:
             logger.warning("⚠️ Kokoro not available, falling back to Chatterbox")
             return await _synthesize_with_chatterbox(
-                cleaned_text, 
+                cleaned_text,
                 audio_prompt_path=audio_prompt_path,
-                exaggeration=exaggeration, 
+                exaggeration=exaggeration,
                 cfg=cfg
             )
-        return await _synthesize_with_kokoro(cleaned_text, voice)
+        return await _synthesize_with_kokoro(cleaned_text, voice, speed=speed)
     elif engine.lower() == 'chatterbox':
         return await _synthesize_with_chatterbox(
-            cleaned_text, 
+            cleaned_text,
             audio_prompt_path=audio_prompt_path,
-            exaggeration=exaggeration, 
+            exaggeration=exaggeration,
             cfg=cfg
         )
     elif engine.lower() == 'chatterbox_turbo':
         return await _synthesize_with_chatterbox_turbo(
             cleaned_text,
             audio_prompt_path=audio_prompt_path,
-            exaggeration=exaggeration, # Note: Turbo warns this is unused, but we pass it for compat
+            exaggeration=exaggeration,
             cfg=cfg
+        )
+    elif engine.lower() == 'chatterbox_nano':
+        return await _synthesize_with_chatterbox_nano(
+            cleaned_text,
+            audio_prompt_path=audio_prompt_path,
+            exaggeration=exaggeration,
+            cfg=cfg
+        )
+    elif engine.lower() == 'voxcpm':
+        return await _synthesize_with_voxcpm(
+            cleaned_text,
+            audio_prompt_path=audio_prompt_path,
+            cfg_value=voxcpm_cfg_value,
+            inference_timesteps=voxcpm_inference_timesteps,
+            normalize=voxcpm_normalize,
+            denoise=voxcpm_denoise,
+            retry_badcase=voxcpm_retry_badcase,
+            voice_design=voxcpm_voice_design,
+        )
+    elif engine.lower() == 'voxcpm-gguf':
+        return await _synthesize_with_voxcpm_gguf(
+            cleaned_text,
+            audio_prompt_path=audio_prompt_path,
+            cfg_value=voxcpm_cfg_value,
+            inference_timesteps=voxcpm_inference_timesteps,
+            voice_design=voxcpm_voice_design,
         )
     elif engine.lower().startswith('nanogpt-'):
-        # Extract model from engine name (e.g., 'nanogpt-gpt-4o-mini-tts')
-        model = engine.split('-', 1)[1] if '-' in engine else 'gpt-4o-mini-tts'
-        return await _synthesize_with_nanogpt(cleaned_text, voice, model=model)
+        model = engine.split('-', 1)[1] if '-' in engine else 'Qwen-3-TTS-1.7B'
+        return await _synthesize_with_nanogpt(cleaned_text, voice, model=model, speed=speed)
     else:
-        # Default to Kokoro for unknown engines, fall back to Chatterbox if unavailable
         logger.warning(f"⚠️ Unknown engine '{engine}', using Kokoro.")
         if KPipeline is not None:
-            return await _synthesize_with_kokoro(cleaned_text, voice)
+            return await _synthesize_with_kokoro(cleaned_text, voice, speed=speed)
         return await _synthesize_with_chatterbox(
-            cleaned_text, 
+            cleaned_text,
             audio_prompt_path=audio_prompt_path,
-            exaggeration=exaggeration, 
+            exaggeration=exaggeration,
             cfg=cfg
         )
 
 
 
-async def _synthesize_with_nanogpt(text: str, voice: str, model: str = 'gpt-4o-mini-tts') -> bytes:
+NANOGPT_TTS_MODEL_PROFILES = {
+    "Kokoro-82m": {
+        "voice_default": "af_bella",
+        "voice_valid": [
+            "af_alloy", "af_aoede", "af_bella", "af_jessica", "af_kore", "af_nicole",
+            "af_nova", "af_river", "af_sarah", "af_sky",
+            "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+            "am_onyx", "am_puck",
+            "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+            "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+            "ff_siwis",
+            "hf_alpha", "hf_beta",
+            "hm_omega", "hm_psi",
+            "if_sara",
+            "im_nicola",
+            "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro",
+            "jm_kumo",
+            "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+            "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang"
+        ],
+        "extra_params": [],
+        "max_input_chars": 10000,
+    },
+    "Qwen-3-TTS-1.7B": {
+        "voice_default": "Vivian",
+        "voice_valid": ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"],
+        "extra_params": ["language", "top_k", "top_p", "temperature", "repetition_penalty",
+                         "subtalker_dosample", "subtalker_top_k", "subtalker_top_p",
+                         "subtalker_temperature", "max_new_tokens"],
+        "max_input_chars": None,
+    },
+}
+
+
+def _get_nanogpt_model_profile(model: str) -> dict:
+    """Get the profile for a NanoGPT TTS model, with fallback to minimal profile for unknown models."""
+    # For known models (Kokoro, Qwen), return full profile with voice validation
+    # For unknown models, return minimal profile - no voice validation (let API handle it)
+    known = NANOGPT_TTS_MODEL_PROFILES.get(model)
+    if known:
+        return known
+    return {
+        "voice_default": None,
+        "voice_valid": [],  # Empty = don't validate, pass voice through to API
+        "extra_params": [],
+        "max_input_chars": 10000,
+    }
+
+
+async def _synthesize_with_nanogpt(text: str, voice: str, model: str = 'Qwen-3-TTS-1.7B', speed: float = 1.0) -> bytes:
     """
-    Synthesize speech using NanoGPT TTS API with server-side API key resolution.
-    Uses buffered responses initially (stream: false) for compatibility.
+    Synthesize speech using NanoGPT TTS API with model-aware payload construction.
+    Supports Kokoro-82m, Qwen-3-TTS-1.7B, and future models via NANOGPT_TTS_MODEL_PROFILES.
+    Handles both synchronous (HTTP 200) and asynchronous (HTTP 202) responses by polling
+    the status endpoint when the job is queued.
     """
     import time
-    
+    import asyncio
+
     try:
-        # Get the API key from server-side settings
         settings = load_settings()
-        nanogpt_api_key = settings.get('nanogpt_api_key')
-        
+        nanogpt_api_key = settings.get('nanogpt_api_key') or settings.get('nanoGptApiKey')
+
         if not nanogpt_api_key:
             logger.error("❌ NanoGPT API key not configured in settings")
             raise RuntimeError("NanoGPT API key not configured")
-        
-        # Prepare request to NanoGPT API
-        # Use the global API endpoint for TTS
-        url = "http://localhost:6000/api/v1/audio/speech"  # Default NanoGPT TTS endpoint
-        
+
+        base_url = "https://nano-gpt.com"
+        tts_url = f"{base_url}/api/tts"
+
         headers = {
-            "Authorization": f"Bearer {nanogpt_api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "x-api-key": nanogpt_api_key
         }
-        
-        # Prepare payload - using OpenAI-compatible format
+
+        profile = _get_nanogpt_model_profile(model)
+        valid_voices = profile["voice_valid"]
+        default_voice = profile["voice_default"]
+        max_input_chars = profile["max_input_chars"]
+
+        # For known models: treat valid_voices as a suggestion list, not a hard restriction.
+        # If the user explicitly provides a voice name, respect it even if unknown.
+        # Only fall back to default when no voice was given (None or sentinel values).
+        if voice and voice not in ('default', ''):
+            resolved_voice = voice
+            if valid_voices and voice not in valid_voices:
+                logger.warning(f"Voice '{voice}' is not in the known list for {model}, passing through anyway")
+        elif default_voice:
+            resolved_voice = default_voice
+        else:
+            resolved_voice = None
+
+        if max_input_chars and len(text) > max_input_chars:
+            logger.warning(f"⚠️ Input text ({len(text)} chars) exceeds {model} limit ({max_input_chars}), truncating")
+            text = text[:max_input_chars]
+
+        speed = max(0.25, min(4.0, float(speed or 1.0)))
+
         payload = {
-            "model": model,
             "input": text,
-            "voice": voice,
-            "response_format": "mp3",  # Start with MP3 for broad compatibility
-            "speed": 1.0,
-            "stream": False  # Start with buffered response
+            "speed": speed,
+            "model": model,
         }
-        
-        logger.info(f"🎵 Calling NanoGPT TTS API with model '{model}' for text: '{text[:60]}...'")
-        
+        if resolved_voice is not None:
+            payload["voice"] = resolved_voice
+
+        if model == "Qwen-3-TTS-1.7B":
+            payload.update({
+                "language": "Auto",
+                "top_k": 50,
+                "top_p": 1,
+                "temperature": 0.9,
+                "repetition_penalty": 1.05,
+                "subtalker_dosample": True,
+                "subtalker_top_k": 50,
+                "subtalker_top_p": 1,
+                "subtalker_temperature": 0.9,
+                "max_new_tokens": 8192,
+            })
+
+        logger.info(f"🎵 Calling NanoGPT TTS API (model='{model}', voice='{resolved_voice}', speed={speed}) for text: '{text[:60]}...'")
+
         start_time = time.perf_counter()
-        
-        # Make async request to NanoGPT API
+
+        # Magic-byte signatures for known audio container formats.
+        def _looks_like_audio(data: bytes) -> bool:
+            if not data or len(data) < 4:
+                return False
+            return (
+                data[:4] == b"RIFF"        # WAV
+                or data[:3] == b"ID3"      # MP3 with ID3 tag
+                or data[:2] == b"\xff\xfb" # MP3 frame
+                or data[:2] == b"\xff\xf3" # MP3 frame
+                or data[:2] == b"\xff\xf2" # MP3 frame
+                or data[:4] == b"OggS"     # Ogg/Opus
+                or data[:4] == b"fLaC"     # FLAC
+            )
+
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
+            async with session.post(tts_url, headers=headers, json=payload) as response:
+                # NanoGPT may return the async "job queued" ticket either as HTTP 202
+                # OR as HTTP 200 with a JSON body (status=pending/queued/processing).
+                # Detect a ticket regardless of status code and route into polling.
+                ticket = None
+                if response.status in (200, 202):
+                    content_type = (response.headers.get("Content-Type") or "").lower()
+                    if "application/json" in content_type:
+                        try:
+                            maybe = await response.json()
+                            if isinstance(maybe, dict) and (
+                                maybe.get("runId")
+                                or maybe.get("status") in ("pending", "queued", "processing")
+                            ):
+                                ticket = maybe
+                        except Exception:
+                            ticket = None
+
+                if ticket is not None:
+                    run_id = ticket.get("runId")
+                    if not run_id:
+                        raise RuntimeError(f"NanoGPT API returned a queued ticket but no runId: {ticket}")
+
+                    logger.info(f"⏳ NanoGPT TTS queued (HTTP {response.status}, runId={run_id}), polling for completion...")
+
+                    # Poll on a TIME budget, not a fixed attempt count. Long text can take
+                    # several minutes to synthesize, so allow plenty of headroom. As long as
+                    # the job keeps reporting pending/processing, we keep waiting up to the
+                    # wall-clock budget. Interval backs off so we don't hammer the API.
+                    poll_interval = 1.0
+                    max_poll_interval = 5.0
+                    poll_budget_seconds = 30 * 60  # 30 minutes of wall-clock headroom
+                    poll_deadline = time.perf_counter() + poll_budget_seconds
+                    cost = ticket.get("cost")
+                    payment_source = ticket.get("paymentSource")
+                    is_api_request = ticket.get("isApiRequest", True)
+
+                    attempt = 0
+                    while time.perf_counter() < poll_deadline:
+                        attempt += 1
+                        await asyncio.sleep(poll_interval)
+                        poll_interval = min(poll_interval * 1.2, max_poll_interval)
+
+                        params = {
+                            "runId": run_id,
+                            "model": model,
+                        }
+                        if cost is not None:
+                            params["cost"] = cost
+                        if payment_source is not None:
+                            params["paymentSource"] = payment_source
+                        if is_api_request is not None:
+                            params["isApiRequest"] = str(is_api_request).lower()
+
+                        status_url = f"{base_url}/api/tts/status"
+                        async with session.get(status_url, headers=headers, params=params) as status_resp:
+                            if status_resp.status != 200:
+                                error_detail = await status_resp.text()
+                                logger.warning(f"⚠️ NanoGPT status poll returned {status_resp.status}: {error_detail}")
+                                continue
+
+                            status_data = await status_resp.json()
+                            job_status = status_data.get("status")
+
+                            if job_status == "completed":
+                                audio_url = status_data.get("audioUrl")
+                                if not audio_url:
+                                    raise RuntimeError(f"NanoGPT TTS completed but no audioUrl: {status_data}")
+
+                                logger.info(f"📥 NanoGPT TTS completed, downloading audio from {audio_url}")
+
+                                async with session.get(audio_url, headers=headers) as audio_resp:
+                                    if audio_resp.status != 200:
+                                        raise RuntimeError(f"Failed to download audio from {audio_url}: HTTP {audio_resp.status}")
+                                    audio_bytes = await audio_resp.read()
+
+                                end_time = time.perf_counter()
+                                duration_ms = (end_time - start_time) * 1000
+                                logger.info(f"✅ NanoGPT TTS completed in {duration_ms:.2f}ms, {len(audio_bytes)} bytes")
+                                return audio_bytes
+
+                            elif job_status in ("failed", "error"):
+                                error_msg = status_data.get("error", "Unknown error")
+                                raise RuntimeError(f"NanoGPT TTS failed: {error_msg}")
+
+                            elif job_status in ("pending", "queued", "processing"):
+                                if attempt % 5 == 0:
+                                    elapsed = time.perf_counter() - start_time
+                                    logger.info(f"⏳ NanoGPT TTS still {job_status} ({elapsed:.0f}s elapsed)...")
+                                continue
+
+                            else:
+                                logger.warning(f"⚠️ NanoGPT TTS unknown status '{job_status}', retrying...")
+                                continue
+
+                    raise RuntimeError(f"NanoGPT TTS timed out after {poll_budget_seconds}s (runId={run_id})")
+
                 if response.status != 200:
                     error_detail = await response.text()
                     logger.error(f"❌ NanoGPT API request failed with status {response.status}: {error_detail}")
-                    
-                    # Check for specific error codes from NanoGPT
+
                     if response.status == 401:
                         raise RuntimeError("Invalid API key for NanoGPT")
                     elif response.status == 403:
@@ -552,7 +831,6 @@ async def _synthesize_with_nanogpt(text: str, voice: str, model: str = 'gpt-4o-m
                     elif response.status == 429:
                         raise RuntimeError("Rate limit exceeded - too many requests")
                     elif response.status == 400:
-                        # Try to parse error details
                         try:
                             error_json = await response.json()
                             raise RuntimeError(f"Bad request: {error_json.get('detail', error_detail)}")
@@ -560,23 +838,30 @@ async def _synthesize_with_nanogpt(text: str, voice: str, model: str = 'gpt-4o-m
                             raise RuntimeError(f"Bad request: {error_detail}")
                     else:
                         raise RuntimeError(f"API request failed with status {response.status}")
-                
-                # Read the audio response
+
                 audio_bytes = await response.read()
-        
+
         end_time = time.perf_counter()
         duration_ms = (end_time - start_time) * 1000
-        
+
         if not audio_bytes:
             logger.error("❌ NanoGPT API returned empty audio response")
             raise RuntimeError("Empty audio response from NanoGPT")
-        
+
+        if not _looks_like_audio(audio_bytes):
+            preview = audio_bytes[:200]
+            try:
+                preview_text = preview.decode("utf-8", errors="replace")
+            except Exception:
+                preview_text = repr(preview)
+            logger.error(f"❌ NanoGPT returned non-audio payload ({len(audio_bytes)} bytes): {preview_text}")
+            raise RuntimeError(f"NanoGPT returned non-audio response: {preview_text}")
+
         logger.info(f"✅ NanoGPT TTS completed in {duration_ms:.2f}ms, {len(audio_bytes)} bytes")
-        
+
         return audio_bytes
-        
+
     except RuntimeError:
-        # Re-raise runtime errors as-is
         raise
     except Exception as e:
         logger.error(f"❌ NanoGPT TTS synthesis failed: {e}", exc_info=True)
@@ -735,11 +1020,11 @@ async def _synthesize_with_chatterbox(
         estimated_tokens = int(len(text) * 1.5)
         
         if estimated_tokens > 400:  # Use chunked generation for texts that might hit cache limits  
-            logger.info(f"🔀 Long text detected ({len(text)} chars, ~{estimated_tokens} tokens), using chunked generation")
+            logger.debug(f"🔀 Long text detected ({len(text)} chars, ~{estimated_tokens} tokens), using chunked generation")
             
             # Split text into smaller chunks - Chatterbox needs chunks under ~800 chars to stay within cache
             text_chunks = _split_text_for_chunked_generation(text, max_tokens=200)
-            logger.info(f"🔀 Split into {len(text_chunks)} chunks")
+            logger.debug(f"🔀 Split into {len(text_chunks)} chunks")
             
             # Generate all chunks and concatenate audio
             all_audio_chunks = []
@@ -747,7 +1032,7 @@ async def _synthesize_with_chatterbox(
             # Use persistent executor
             executor = get_chatterbox_executor()
             for i, chunk in enumerate(text_chunks):
-                logger.info(f"🔀 Generating chunk {i+1}/{len(text_chunks)} ({len(chunk)} chars)")
+                logger.debug(f"🔀 Generating chunk {i+1}/{len(text_chunks)} ({len(chunk)} chars)")
                 
                 def _generate_chunk(c=chunk): # Bind chunk locally
                     with torch.inference_mode():
@@ -880,11 +1165,21 @@ def _call_chatterbox_generate(model, text, audio_prompt_path=None, **kwargs):
     return model.generate(text, **call_kwargs)
 
 
-async def _synthesize_with_kokoro(text: str, voice: str) -> bytes:
+async def _synthesize_with_kokoro(text: str, voice: str, speed: float = 1.0) -> bytes:
     """Synthesize speech using Kokoro TTS and return raw audio bytes."""
     import time
     import numpy as np
     import tempfile
+
+    # Validate voice — Kokoro only supports native voice codes (e.g. af_heart, am_adam)
+    # or local .pt files. Chatterbox-style filenames (.wav, .wav.pt, etc.) will fail.
+    if not voice or voice == 'default':
+        voice = 'af_heart'
+    elif not voice.endswith('.pt') and any(c in voice for c in '.\\/'):
+        logger.warning(f"⚠️ [Kokoro] Voice '{voice}' looks like a file path, not a Kokoro native voice. Falling back to 'af_heart'")
+        voice = 'af_heart'
+
+    speed = max(0.25, min(4.0, float(speed or 1.0)))
 
     try:
         total_start_time = time.perf_counter()
@@ -898,11 +1193,11 @@ async def _synthesize_with_kokoro(text: str, voice: str) -> bytes:
         if not pipeline:
             raise RuntimeError("Failed to load Kokoro TTS pipeline")
         
-        logger.info(f"🗣️ [Kokoro] Synthesizing with voice '{voice}': '{text[:50]}...'")
+        logger.info(f"🗣️ [Kokoro] Synthesizing with voice '{voice}', speed={speed}x: '{text[:50]}...'")
         
         # --- 2. Core TTS Inference ---
         synth_start_time = time.perf_counter()
-        generator = pipeline(text, voice=voice)
+        generator = pipeline(text, voice=voice, speed=speed)
         audio_chunks = [audio for _, _, audio in generator]
         synth_end_time = time.perf_counter()
         
@@ -1070,6 +1365,217 @@ async def _synthesize_with_chatterbox_turbo(
         logger.error(f"Chatterbox Turbo synthesis failed: {e}")
         raise RuntimeError(f"Chatterbox Turbo synthesis failed: {str(e)}")
 
+
+async def _synthesize_with_chatterbox_nano(
+    text: str, 
+    audio_prompt_path: str = None,
+    exaggeration: float = 0.5,
+    cfg: float = 0.5
+) -> bytes:
+    """Synthesize speech using Chatterbox TTS (Nano) and return raw audio bytes."""
+    global CHATTERBOX_NANO_VOICE_WARMED_UP
+    import time
+    import tempfile
+    import os
+    import soundfile as sf
+    import asyncio
+    import torch
+    
+    loop = asyncio.get_event_loop()
+    
+    if audio_prompt_path and not os.path.isabs(audio_prompt_path):
+        voices_dir = Path(__file__).parent / "static" / "voice_references"
+        full_path = voices_dir / audio_prompt_path
+        if full_path.exists():
+            audio_prompt_path = str(full_path)
+        else:
+            audio_prompt_path = None
+    
+    try:
+        model = load_chatterbox_nano_model()
+        if not model:
+            raise RuntimeError("Failed to load Chatterbox Nano model")
+
+        # One-time voice warmup - MUST BE IN EXECUTOR
+        if audio_prompt_path and not CHATTERBOX_NANO_VOICE_WARMED_UP:
+            def _warmup_nano():
+                with torch.inference_mode():
+                    model.generate("warm up", audio_prompt_path=audio_prompt_path)
+            
+            logger.info("🔥 [Chatterbox Nano] Warming up voice reference on persistent thread...")
+            await loop.run_in_executor(get_chatterbox_executor(), _warmup_nano)
+            CHATTERBOX_NANO_VOICE_WARMED_UP = True
+        
+        # Generation kwargs for Nano
+        generation_kwargs = {
+            'temperature': 0.8,
+        }
+        
+        if audio_prompt_path and os.path.exists(audio_prompt_path):
+            generation_kwargs['audio_prompt_path'] = audio_prompt_path
+        
+        synthesis_start = time.perf_counter()
+        
+        # CHECK IF TEXT NEEDS CHUNKING
+        # Nano has small max_text_tokens/max_speech_tokens, so chunking is important
+        estimated_tokens = int(len(text) * 1.5)
+        
+        if estimated_tokens > 400:  # Use chunked generation for texts that might hit cache limits  
+            logger.info(f"🔀 [Nano] Long text detected ({len(text)} chars, ~{estimated_tokens} tokens), using chunked generation")
+            
+            text_chunks = _split_text_for_chunked_generation(text, max_tokens=200)
+            logger.info(f"🔀 [Nano] Split into {len(text_chunks)} chunks")
+            
+            all_audio_chunks = []
+            executor = get_chatterbox_executor()
+            
+            for i, chunk in enumerate(text_chunks):
+                logger.info(f"🔀 [Nano] Generating chunk {i+1}/{len(text_chunks)} ({len(chunk)} chars)")
+                
+                def _generate_chunk_nano(c=chunk): 
+                    with torch.inference_mode():
+                        return model.generate(c, **generation_kwargs)
+                
+                chunk_audio = await loop.run_in_executor(executor, _generate_chunk_nano)
+                all_audio_chunks.append(chunk_audio)
+                
+                logger.info(f"✅ [Nano] Chunk {i+1}/{len(text_chunks)} complete")
+            
+            audio_tensor = torch.cat(all_audio_chunks, dim=-1)
+            
+        else:
+            # STANDARD SINGLE GENERATION
+            def _generate_nano():
+                with torch.inference_mode():
+                    return model.generate(text, **generation_kwargs)
+            
+            audio_tensor = await loop.run_in_executor(get_chatterbox_executor(), _generate_nano)
+        
+        # Calculate and log RTF
+        synthesis_time = time.perf_counter() - synthesis_start
+        if hasattr(model, 'sr') and model.sr:
+            total_audio_length = audio_tensor.shape[-1] if hasattr(audio_tensor, 'shape') else len(audio_tensor)
+            audio_duration = total_audio_length / model.sr
+            rtf = synthesis_time / audio_duration
+            logger.info(f"🚀 [Nano] RTF: {rtf:.3f} ({synthesis_time:.2f}s for {audio_duration:.2f}s audio)")
+
+        # Convert to audio bytes
+        if hasattr(audio_tensor, 'detach'):
+            audio_tensor = audio_tensor.detach()
+        if hasattr(audio_tensor, 'to'):
+            audio_tensor = audio_tensor.to('cpu')
+        
+        if hasattr(audio_tensor, 'numpy'):
+            audio_numpy = audio_tensor.numpy()
+        elif hasattr(audio_tensor, 'cpu'):
+            audio_numpy = audio_tensor.cpu().numpy()
+        else:
+            audio_numpy = audio_tensor
+        
+        if len(audio_numpy.shape) > 1:
+            audio_numpy = audio_numpy.squeeze()
+        
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        try:
+            sf.write(temp_path, audio_numpy, model.sr)
+            with open(temp_path, 'rb') as f:
+                audio_bytes = f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        
+        return audio_bytes
+
+    except Exception as e:
+        logger.error(f"Chatterbox Nano synthesis failed: {e}")
+        raise RuntimeError(f"Chatterbox Nano synthesis failed: {str(e)}")
+
+
+async def _synthesize_with_voxcpm(
+    text: str,
+    audio_prompt_path: str = None,
+    cfg_value: float = 2.0,
+    inference_timesteps: int = 8,
+    normalize: bool = False,
+    denoise: bool = False,
+    retry_badcase: bool = False,
+    voice_design: str = None,
+) -> bytes:
+    """Synthesize speech using VoxCPM2 and return raw audio bytes (WAV)."""
+    import time
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    if audio_prompt_path and not os.path.isabs(audio_prompt_path):
+        voices_dir = Path(__file__).parent / "static" / "voice_references"
+        full_path = voices_dir / audio_prompt_path
+        if full_path.exists():
+            audio_prompt_path = str(full_path)
+        else:
+            audio_prompt_path = None
+
+    try:
+        model = load_voxcpm_model()
+        if not model:
+            raise RuntimeError("Failed to load VoxCPM2 model")
+
+        synthesis_start = time.perf_counter()
+
+        generation_kwargs = {
+            'cfg_value': cfg_value,
+            'inference_timesteps': inference_timesteps,
+            'normalize': normalize,
+            'denoise': denoise,
+            'retry_badcase': retry_badcase,
+            'max_len': 2048,
+        }
+
+        if voice_design and voice_design.strip():
+            text = f"({voice_design.strip()}){text}"
+        elif audio_prompt_path and os.path.exists(audio_prompt_path):
+            generation_kwargs['reference_wav_path'] = audio_prompt_path
+
+        voxcpm_executor = get_voxcpm_executor()
+
+        def _generate():
+            return model.generate(text=text, **generation_kwargs)
+
+        audio_numpy = await loop.run_in_executor(voxcpm_executor, _generate)
+
+        # Calculate RTF
+        synthesis_time = time.perf_counter() - synthesis_start
+        sr = model.tts_model.sample_rate if hasattr(model, 'tts_model') else 48000
+        audio_duration = len(audio_numpy) / sr
+        rtf = synthesis_time / audio_duration if audio_duration > 0 else 0
+        logger.info(f"🚀 [VoxCPM2] RTF: {rtf:.3f} ({synthesis_time:.2f}s for {audio_duration:.2f}s audio)")
+
+        # Convert to WAV bytes
+        if hasattr(audio_numpy, 'detach'):
+            audio_numpy = audio_numpy.detach().cpu().numpy()
+        if len(audio_numpy.shape) > 1:
+            audio_numpy = audio_numpy.squeeze()
+
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            sf.write(temp_path, audio_numpy, sr)
+            with open(temp_path, 'rb') as f:
+                audio_bytes = f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+        return audio_bytes
+
+    except Exception as e:
+        logger.error(f"VoxCPM2 synthesis failed: {e}")
+        raise RuntimeError(f"VoxCPM2 synthesis failed: {str(e)}")
+
+
 # --- NEW BACKEND STREAMING LOGIC ---
 
 
@@ -1135,23 +1641,23 @@ class TTSStreamer:
         import re
         
         # Chatterbox benefits from fast first chunk extraction
-        is_slow_engine = self._tts_settings.get('engine') in ('chatterbox', 'chatterbox_turbo')
+        is_slow_engine = self._tts_settings.get('engine') in ('chatterbox', 'chatterbox_turbo', 'chatterbox_nano', 'voxcpm')
 
-        # For Chatterbox engines: configurable sentence grouping.
-        # Default is 2 sentences/chunk for smoother continuity with modest initial wait.
+        # For slow engines (Chatterbox, VoxCPM): configurable sentence grouping.
+        # Minimum 3 sentences/chunk — the buffer waits for enough text to arrive
+        # from the LLM before queueing synthesis, so chunks respect the grouping
+        # setting. Leftover text is flushed by finish() at stream end.
         if is_slow_engine:
             target_sentences = self._get_stream_chunk_sentence_count()
+            logger.debug(f"🧩 [Streamer] Slow engine active, target={target_sentences} sentences/chunk, buffer={len(self._text_buffer)} chars")
             while True:
                 chunk_info = self._extract_n_sentence_chunk(self._text_buffer, target_sentences)
-                if not chunk_info and target_sentences > 1:
-                    # Fallback prevents unnecessary stalls when there is not enough punctuation yet.
-                    chunk_info = self._extract_one_sentence_chunk(self._text_buffer)
                 if not chunk_info:
-                    # Latency fallback: if the model hasn't produced sentence-ending punctuation yet,
-                    # allow comma-based splits once the buffer is long enough. This matches the intent
-                    # of "start speaking early" even for run-on sentences.
+                    # Only fall back to comma-based splitting for very long run-on
+                    # text (30+ words with no sentence boundary) to avoid stalling
+                    # on malformed input.
                     words = self._text_buffer.split()
-                    if len(words) >= 16:
+                    if len(words) >= 30:
                         chunk_info = self._extract_smart_chunk(self._text_buffer)
                 if chunk_info:
                     chunk_text = chunk_info['text']
@@ -1159,7 +1665,7 @@ class TTSStreamer:
                     if chunk_text.strip():
                         self._synthesis_queue.put_nowait(chunk_text.strip())
                         self._has_queued_before = True
-                        logger.info(f"🧠 [Streamer] Queued one-sentence chunk: '{chunk_text[:60]}...'")
+                        logger.debug(f"🧠 [Streamer] Queued {target_sentences}-sentence chunk: '{chunk_text[:60]}...'")
                 else:
                     break
             return
@@ -1173,14 +1679,14 @@ class TTSStreamer:
             
             if first_chunk:
                 engine_name = self._tts_settings.get('engine', 'Unknown').title()
-                logger.info(f"✅ [CHUNK LOGIC - {engine_name} First] Fast first chunk: '{first_chunk['text'][:100]}...'")
+                logger.debug(f"✅ [CHUNK LOGIC - {engine_name} First] Fast first chunk: '{first_chunk['text'][:100]}...'")
                 
                 # Update buffer by removing what we processed
                 self._text_buffer = self._text_buffer[first_chunk['end_pos']:]
                 
                 self._synthesis_queue.put_nowait(first_chunk['text'])
                 self._has_queued_before = True  # Mark that we've queued
-                logger.info(f"🧠 [Streamer] Queued fast first {engine_name} chunk: '{first_chunk['text'][:60]}...'")
+                logger.debug(f"🧠 [Streamer] Queued fast first {engine_name} chunk: '{first_chunk['text'][:60]}...'")
 
         else:
             # Standard behavior: use fast chunking for ALL subsequent chunks too
@@ -1189,16 +1695,16 @@ class TTSStreamer:
                 
                 if chunk_info:
                     chunk_text = chunk_info['text']
-                    logger.info(f"✅ [CHUNK LOGIC] Found fast chunk: '{chunk_text}'")
-                    logger.info(f"✅ [CHUNK LOGIC] Buffer before removal: '{self._text_buffer[:100]}...'")
+                    logger.debug(f"✅ [CHUNK LOGIC] Found fast chunk: '{chunk_text}'")
+                    logger.debug(f"✅ [CHUNK LOGIC] Buffer before removal: '{self._text_buffer[:100]}...'")
 
                     self._text_buffer = self._text_buffer[chunk_info['end_pos']:]
-                    logger.info(f"✅ [CHUNK LOGIC] Buffer after removal: '{self._text_buffer[:100]}...'")
+                    logger.debug(f"✅ [CHUNK LOGIC] Buffer after removal: '{self._text_buffer[:100]}...'")
 
                     if chunk_text.strip():
                         self._synthesis_queue.put_nowait(chunk_text.strip())
                         self._has_queued_before = True  # Mark that we've queued
-                        logger.info(f"🧠 [Streamer] Queued fast chunk for synthesis: '{chunk_text[:60]}...'")
+                        logger.debug(f"🧠 [Streamer] Queued fast chunk for synthesis: '{chunk_text[:60]}...'")
                 else:
                     break
 
@@ -1220,23 +1726,30 @@ class TTSStreamer:
                      self._clear_synthesis_queue()
                      break
 
-                logger.info(f"🎤 [Streamer] Synthesizing: '{sentence[:60]}...'")
+                logger.debug(f"🎤 [Streamer] Synthesizing: '{sentence[:60]}...'")
                 
                 start_time = time.perf_counter()
 
                 # Pass a check function? No, just rely on task cancellation or check after.
                 audio_bytes = await synthesize_speech(
-                    text=sentence, 
+                    text=sentence,
                     voice=self._tts_settings['voice'],
                     engine=self._tts_settings['engine'],
                     audio_prompt_path=self._tts_settings.get('audio_prompt_path'),
                     exaggeration=self._tts_settings.get('exaggeration', 0.5),
-                    cfg=self._tts_settings.get('cfg', 0.5)
+                    cfg=self._tts_settings.get('cfg', 0.5),
+                    speed=self._tts_settings.get('speed', 1.0),
+                    voxcpm_cfg_value=self._tts_settings.get('voxcpm_cfg_value', 2.0),
+                    voxcpm_inference_timesteps=self._tts_settings.get('voxcpm_inference_timesteps', 10),
+                    voxcpm_normalize=self._tts_settings.get('voxcpm_normalize', True),
+                    voxcpm_denoise=self._tts_settings.get('voxcpm_denoise', True),
+                    voxcpm_retry_badcase=self._tts_settings.get('voxcpm_retry_badcase', True),
+                    voxcpm_voice_design=self._tts_settings.get('voxcpm_voice_design'),
                 )
 
                 end_time = time.perf_counter()
                 duration_ms = (end_time - start_time) * 1000
-                logger.info(f"⏱️ [Streamer] Synthesis task took {duration_ms:.2f}ms")
+                logger.debug(f"⏱️ [Streamer] Synthesis task took {duration_ms:.2f}ms")
 
                 if audio_bytes:
                     # Check if WebSocket is still connected before sending
@@ -1328,22 +1841,16 @@ class TTSStreamer:
     def _extract_smart_chunk(self, text: str) -> dict:
         """
         Unified smart chunking logic:
-        1. Prioritize full sentences ([.!?]).
-        2. Fallback to commas ([,]) if buffer >= 16 words.
-        3. IGNORE periods if they follow common titles (Mr., Dr., etc).
+        Only split on sentence-ending punctuation (. ! ?).
+        Never split on commas — Kokoro is fast enough for full sentences.
+        Skip consecutive periods (ellipsis) and title abbreviations (Mr., Dr., etc).
         """
         if not text.strip():
             return None
             
         import re
-        words = text.split()
         
-        # Determine strictness based on buffer length
-        # Default: content-based (sentences)
-        pattern = r'[.!?]'
-        # Fallback: latency-based (commas) for long buffers
-        if len(words) >= 16:
-            pattern = r'[,.!?]'
+        pattern = r'(?<!\.)\.(?!\.)|[!?]'
             
         for match in re.finditer(pattern, text):
             # Exception Logic: Check for Title Abbreviations (Mr., Dr., etc.)
@@ -1395,7 +1902,7 @@ class TTSStreamer:
 
         import re
         target = max(1, int(sentence_count or 1))
-        pattern = re.compile(r'(?:(?<!\d)\.(?=\s|$)|[!?](?=\s|$))')
+        pattern = re.compile(r'(?:(?<!\d)(?<!\.)\.(?!\.)(?=\s|$)|[!?](?=\s|$))')
         matches = list(pattern.finditer(text))
         if len(matches) < target:
             return None
@@ -1407,13 +1914,13 @@ class TTSStreamer:
         return {'text': chunk_text, 'end_pos': chunk_end}
 
     def _get_stream_chunk_sentence_count(self) -> int:
-        """Read per-stream sentence grouping from settings payload (clamped)."""
+        """Read per-stream sentence grouping from settings payload (clamped to 3–12)."""
         try:
-            raw = self._tts_settings.get('stream_chunk_sentences', 2)
+            raw = self._tts_settings.get('stream_chunk_sentences', 3)
             value = int(raw)
         except Exception:
-            value = 2
-        return max(1, min(12, value))
+            value = 3
+        return max(3, min(12, value))
 
     def finish(self):
         # Check if there's any leftover text in the buffer and queue it
@@ -1453,9 +1960,9 @@ async def tts_stream_endpoint(websocket: WebSocket):
             try:
                 import json
                 tts_settings = json.loads(settings_data)
-                logger.info(f"🔧 [WebSocket] Received settings for new stream: {tts_settings}")
+                logger.info(f"📋 [WebSocket] stream_chunk_sentences={tts_settings.get('stream_chunk_sentences')}, engine={tts_settings.get('engine')}")
             except json.JSONDecodeError:
-                logger.warning(f"⚠️ [WebSocket] Expected settings JSON, but received other data. Awaiting new stream. Data: '{settings_data[:100]}'")
+                logger.warning("⚠️ [WebSocket] Expected settings JSON but received invalid data")
                 # If we don't get settings, we can't proceed with this stream.
                 # The loop will continue, waiting for the next valid settings message.
                 continue
@@ -1478,6 +1985,11 @@ async def tts_stream_endpoint(websocket: WebSocket):
                     # Wait for any queued synthesis to complete.
                     if streamer._synthesis_task:
                         await streamer._synthesis_task
+                    try:
+                        await websocket.send_text(json.dumps({"type": "tts_done"}))
+                        logger.info("✅ [WebSocket] Sent tts_done after all audio chunks.")
+                    except Exception:
+                        logger.warning("⚠️ [WebSocket] Failed to send tts_done.")
                     streamer = None # Clear the streamer.
                     break  # Exit the inner loop to await the next message stream's settings.
                 else:
@@ -1646,6 +2158,345 @@ async def reload_chatterbox_turbo():
         return {"status": "error", "message": str(e)}
 
 
+@router.post("/tts/unload-chatterbox-nano")
+async def unload_chatterbox_nano():
+    """Unload Chatterbox Nano model from VRAM"""
+    global chatterbox_nano_model, CHATTERBOX_NANO_VOICE_WARMED_UP
+    
+    try:
+        if chatterbox_nano_model is None:
+            return {"status": "success", "message": "Chatterbox Nano already unloaded"}
+        
+        del chatterbox_nano_model
+        chatterbox_nano_model = None
+        CHATTERBOX_NANO_VOICE_WARMED_UP = False
+        
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        logger.info("✅ [Chatterbox Nano] Model unloaded successfully")
+        return {"status": "success", "message": "Chatterbox Nano unloaded"}
+        
+    except Exception as e:
+        logger.error(f"❌ [Chatterbox Nano] Error unloading: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/tts/reload-chatterbox-nano")
+async def reload_chatterbox_nano():
+    """Reload Chatterbox Nano model"""
+    global chatterbox_nano_model
+    try:
+        if chatterbox_nano_model is not None:
+             return {"status": "success", "message": "Already loaded"}
+        
+        model = load_chatterbox_nano_model()
+        if model is None:
+            raise RuntimeError("Failed to load Chatterbox Nano")
+            
+        return {"status": "success", "message": "Chatterbox Nano loaded"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/tts/unload-voxcpm")
+async def unload_voxcpm():
+    """Unload VoxCPM2 model from VRAM to free up memory"""
+    global voxcpm_model, VOXCPM_VOICE_WARMED_UP
+
+    try:
+        if voxcpm_model is None:
+            return {"status": "success", "message": "VoxCPM2 already unloaded"}
+
+        logger.info("🔓 [VoxCPM2] Unloading model to free VRAM...")
+
+        del voxcpm_model
+        voxcpm_model = None
+        VOXCPM_VOICE_WARMED_UP = False
+
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("🔓 [VoxCPM2] CUDA cache cleared")
+
+        logger.info("✅ [VoxCPM2] Model unloaded successfully")
+        return {
+            "status": "success",
+            "message": "VoxCPM2 model unloaded successfully",
+            "vram_freed": "~8GB"
+        }
+
+    except Exception as e:
+        logger.error(f"❌ [VoxCPM2] Error unloading model: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/tts/reload-voxcpm")
+async def reload_voxcpm():
+    """Reload VoxCPM2 model for use"""
+    global voxcpm_model
+
+    try:
+        if voxcpm_model is not None:
+            return {"status": "success", "message": "VoxCPM2 already loaded", "already_loaded": True}
+
+        logger.info("🔄 [VoxCPM2] Reloading model...")
+        model = load_voxcpm_model()
+        if model is None:
+            raise RuntimeError("Failed to load VoxCPM2")
+
+        return {"status": "success", "message": "VoxCPM2 loaded", "already_loaded": False}
+    except Exception as e:
+        logger.error(f"❌ [VoxCPM2] Error reloading model: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def get_voxcpm_executor():
+    """Returns a dedicated ThreadPoolExecutor for VoxCPM2 (separate from Chatterbox)."""
+    global VOXCPM_EXECUTOR
+    if VOXCPM_EXECUTOR is None:
+        from concurrent.futures import ThreadPoolExecutor
+        VOXCPM_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+        logger.info("🧵 [VoxCPM2] Dedicated thread executor initialized")
+    return VOXCPM_EXECUTOR
+
+
+def load_voxcpm_model():
+    """Load the VoxCPM2 model with torch.compile optimization enabled."""
+    global voxcpm_model
+
+    if VoxCPM is None:
+        raise RuntimeError("voxcpm library is not installed or import failed.")
+
+    if voxcpm_model is None:
+        try:
+            target_device = get_tts_device()
+            # VoxCPM's optimize() method requires exact device string "cuda" (not "cuda:0")
+            voxcpm_device = "cuda" if target_device.startswith("cuda") else target_device
+            logger.info(f"Loading VoxCPM2 model onto device {voxcpm_device} (optimize=True)...")
+
+            voxcpm_model = VoxCPM.from_pretrained(
+                "openbmb/VoxCPM2",
+                load_denoiser=False,
+                optimize=True,
+                device=voxcpm_device,
+            )
+
+            logger.info("✅ VoxCPM2 model loaded successfully (optimize=True).")
+
+        except Exception as e:
+            logger.error(f"Failed to load VoxCPM2 model: {e}", exc_info=True)
+            voxcpm_model = None
+            raise RuntimeError(f"Failed to load VoxCPM2 model: {e}") from e
+
+    return voxcpm_model
+
+
+# --- VoxCPM2 GGUF Functions ---
+
+def _get_voxcpm_gguf_models_dir() -> Path:
+    """Get the directory for VoxCPM2 GGUF model files."""
+    from .runtime_paths import data_path
+
+    models_dir = data_path("models", "voxcpm_gguf")
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return models_dir
+
+
+def _get_voxcpm_cli_binary() -> Optional[str]:
+    """Find the voxcpm2-cli binary."""
+    backend_dir = Path(__file__).resolve().parent.parent
+    candidates = [
+        backend_dir / "llama.cpp-omni" / "build" / "tools" / "omni" / "voxcpm2-cli.exe",
+        backend_dir / "llama.cpp-omni" / "build" / "tools" / "omni" / "voxcpm2-cli",
+        backend_dir / "llama.cpp-omni" / "build" / "bin" / "voxcpm2-cli.exe",
+        backend_dir / "llama.cpp-omni" / "build" / "bin" / "voxcpm2-cli",
+        backend_dir / "voxcpm2-cli.exe",
+        backend_dir / "voxcpm2-cli",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    import shutil
+    system_cli = shutil.which("voxcpm2-cli")
+    if system_cli:
+        return system_cli
+    return None
+
+
+def is_voxcpm_gguf_available() -> bool:
+    """Check if voxcpm2-cli binary is available."""
+    return _get_voxcpm_cli_binary() is not None
+
+
+def list_voxcpm_gguf_downloaded_models() -> list:
+    """List downloaded VoxCPM2 GGUF model files."""
+    models_dir = _get_voxcpm_gguf_models_dir()
+    downloaded = []
+    for model_id, info in VOXCPM_GGUF_MODELS.items():
+        gguf_path = models_dir / info["filename"]
+        if gguf_path.exists():
+            downloaded.append({
+                "model_id": model_id,
+                "filename": info["filename"],
+                "size_mb": info["size_mb"],
+                "path": str(gguf_path),
+                "label": info["label"],
+                "component": info["component"],
+            })
+    return downloaded
+
+
+async def download_voxcpm_gguf_model(model_id: str, progress_callback=None) -> tuple:
+    """Download a VoxCPM2 GGUF model file from HuggingFace."""
+    model_id = model_id.strip()
+    if model_id not in VOXCPM_GGUF_MODELS:
+        return False, f"Unknown model: {model_id}"
+    
+    info = VOXCPM_GGUF_MODELS[model_id]
+    filename = info["filename"]
+    models_dir = _get_voxcpm_gguf_models_dir()
+    dest_path = models_dir / filename
+    
+    if dest_path.exists():
+        return True, f"Already downloaded: {filename}"
+
+    try:
+        from huggingface_hub import hf_hub_download
+        if progress_callback:
+            await progress_callback(f"Downloading {filename} ({info['size_mb']} MB)...")
+
+        def _download():
+            return hf_hub_download(
+                repo_id=VOXCPM_GGUF_HF_REPO,
+                filename=filename,
+                local_dir=str(models_dir),
+                local_dir_use_symlinks=False,
+            )
+
+        loop = asyncio.get_event_loop()
+        downloaded_path = await loop.run_in_executor(None, _download)
+        logger.info(f"Downloaded {filename} -> {downloaded_path}")
+        return True, f"Downloaded {filename} successfully"
+    except ImportError:
+        return False, "huggingface_hub not installed. Run: pip install huggingface_hub"
+    except Exception as e:
+        logger.error(f"Failed to download {filename}: {e}", exc_info=True)
+        return False, f"Download failed: {e}"
+
+
+async def delete_voxcpm_gguf_model(filename: str) -> tuple:
+    """Delete a downloaded VoxCPM2 GGUF model file."""
+    models_dir = _get_voxcpm_gguf_models_dir()
+    target = models_dir / filename
+    if not target.exists():
+        return False, f"File not found: {filename}"
+    try:
+        target.unlink()
+        logger.info(f"Deleted {filename}")
+        return True, f"Deleted {filename}"
+    except Exception as e:
+        return False, f"Delete failed: {e}"
+
+
+async def _synthesize_with_voxcpm_gguf(
+    text: str,
+    audio_prompt_path: str = None,
+    cfg_value: float = 2.0,
+    inference_timesteps: int = 10,
+    voice_design: str = None,
+) -> bytes:
+    """Synthesize speech using VoxCPM2 GGUF via voxcpm2-cli and return raw audio bytes."""
+    import time
+    import asyncio
+
+    cli_binary = _get_voxcpm_cli_binary()
+    if not cli_binary:
+        raise RuntimeError(
+            "voxcpm2-cli binary not found. Build llama.cpp-omni first: "
+            "git clone https://github.com/tc-mb/llama.cpp-omni && cd llama.cpp-omni && "
+            "cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --target voxcpm2-cli -j"
+        )
+
+    models_dir = _get_voxcpm_gguf_models_dir()
+    baselm_path = models_dir / "VoxCPM2-BaseLM-Q8_0.gguf"
+    acoustic_path = models_dir / "VoxCPM2-Acoustic-F16.gguf"
+    
+    if not baselm_path.exists():
+        raise RuntimeError(
+            f"BaseLM model not downloaded. Download VoxCPM2-BaseLM-Q8_0.gguf from Settings > TTS > VoxCPM2 GGUF Models."
+        )
+    if not acoustic_path.exists():
+        raise RuntimeError(
+            f"Acoustic model not downloaded. Download VoxCPM2-Acoustic-F16.gguf from Settings > TTS > VoxCPM2 GGUF Models."
+        )
+
+    if audio_prompt_path and not os.path.isabs(audio_prompt_path):
+        voices_dir = Path(__file__).parent / "static" / "voice_references"
+        full_path = voices_dir / audio_prompt_path
+        if full_path.exists():
+            audio_prompt_path = str(full_path)
+        else:
+            audio_prompt_path = None
+
+    if voice_design and voice_design.strip():
+        text = f"({voice_design.strip()}){text}"
+
+    temp_wav_path = None
+    try:
+        temp_wav_path = tempfile.mktemp(suffix=".wav")
+        
+        cmd = [
+            cli_binary,
+            "-t", text,
+            "-o", temp_wav_path,
+            "--cfg", str(cfg_value),
+            "--timesteps", str(inference_timesteps),
+        ]
+        
+        if audio_prompt_path and os.path.exists(audio_prompt_path):
+            cmd.extend(["-r", audio_prompt_path])
+        
+        cmd.extend([str(baselm_path), str(acoustic_path)])
+
+        logger.info(f"VoxCPM2 GGUF: synthesizing with cfg={cfg_value}, timesteps={inference_timesteps}")
+
+        loop = asyncio.get_event_loop()
+
+        def _run_cli():
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300,
+            )
+            return result
+
+        synthesis_start = time.perf_counter()
+        result = await loop.run_in_executor(None, _run_cli)
+        synthesis_time = time.perf_counter() - synthesis_start
+
+        if result.returncode != 0:
+            stderr_snippet = (result.stderr or "")[:500]
+            raise RuntimeError(f"voxcpm2-cli failed (exit {result.returncode}): {stderr_snippet}")
+
+        if not os.path.exists(temp_wav_path):
+            raise RuntimeError("voxcpm2-cli did not produce output file")
+
+        with open(temp_wav_path, 'rb') as f:
+            audio_bytes = f.read()
+
+        logger.info(f"✅ [VoxCPM2 GGUF] Synthesis completed in {synthesis_time:.2f}s, {len(audio_bytes)} bytes")
+        return audio_bytes
+
+    finally:
+        if temp_wav_path and os.path.exists(temp_wav_path):
+            try:
+                os.remove(temp_wav_path)
+            except OSError:
+                pass
+
+
 def comprehensive_model_warmup():
     """Warm up all models and compilation paths on startup using the persistent executor"""
     import time
@@ -1753,6 +2604,57 @@ def load_chatterbox_turbo_model():
             raise RuntimeError(f"Failed to load Chatterbox Turbo model: {e}") from e
 
     return chatterbox_turbo_model
+
+def load_chatterbox_nano_model():
+    """Load the vendored Chatterbox Nano model"""
+    global chatterbox_nano_model
+    
+    if ChatterboxNanoTTS is None:
+         raise RuntimeError("Chatterbox Nano library failed to import.")
+
+    if chatterbox_nano_model is None:
+        try:
+            target_device = get_tts_device()
+            logger.info(f"Loading Chatterbox NANO TTS model onto device {target_device}...")
+            
+            # Force CUDA context if applicable
+            if target_device.startswith('cuda:'):
+                import torch
+                device_id = int(target_device.split(':')[1])
+                torch.cuda.set_device(device_id)
+
+            chatterbox_nano_model = ChatterboxNanoTTS.from_pretrained(device=target_device)
+            
+            # Basic warmup
+            if not os.environ.get('CUDA_VISIBLE_DEVICES', ''):
+                 with torch.inference_mode():
+                     chatterbox_nano_model.generate("Nano model warmup.", temperature=0.8)
+            
+            logger.info("✅ Chatterbox NANO model loaded successfully.")
+
+            # Pre-cache voices from settings
+            settings = load_settings()
+            voice_cache = settings.get('voice_cache', [])
+            if voice_cache:
+                voices_dir = Path(__file__).parent / "static" / "voice_references"
+                for voice_entry in voice_cache:
+                    if voice_entry.get('engine') == 'chatterbox_nano':
+                        voice_id = voice_entry.get('voice_id')
+                        if voice_id and voice_id != 'default':
+                            voice_path = voices_dir / voice_id
+                            if voice_path.exists():
+                                try:
+                                    chatterbox_nano_model.prepare_conditionals(str(voice_path))
+                                    logger.info(f"🔥 [Nano] Cached voice: {voice_id}")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ [Nano] Failed to cache voice {voice_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"Failed to load Chatterbox Nano model: {e}", exc_info=True)
+            chatterbox_nano_model = None
+            raise RuntimeError(f"Failed to load Chatterbox Nano model: {e}") from e
+
+    return chatterbox_nano_model
 
 def load_chatterbox_model():
     """Enhanced model loading with comprehensive warm-up"""

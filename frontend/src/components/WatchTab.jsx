@@ -75,7 +75,7 @@ export default function WatchTab() {
     } catch (e) {
       setError(
         e.message ||
-          'Could not load playlist. CORS: the file server must allow this origin, or host the playlist JSON on the same host as Eloquent.'
+          'Could not load playlist. CORS: the file server must allow this origin, or host the playlist JSON on the same host as Mirid.'
       );
     } finally {
       setBusy(false);

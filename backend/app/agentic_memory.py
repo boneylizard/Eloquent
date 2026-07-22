@@ -42,7 +42,7 @@ def _normalize_user_placeholder(content: str) -> str:
     # Normalize any brace placeholder variants to {{user}}
     text = re.sub(r"\{+\s*user\s*\}+", "{{user}}", text, flags=re.IGNORECASE)
     # Replace common leading patterns: "User", "The user", "User's"
-    text = re.sub(r"^(the\s+)?user('s)?\b", "{{user}}\\2", text, flags=re.IGNORECASE)
+    text = re.sub(r"^(the\s+)?user('s)?\b", r"{{user}}\2", text, flags=re.IGNORECASE)
     # Ensure spacing after placeholder if needed
     text = re.sub(r"^\{\{user\}\}\s*", "{{user}} ", text, flags=re.IGNORECASE)
     return text
@@ -159,23 +159,27 @@ JSON ONLY (no markdown):"""
     if api_base_url and api_model_name:
         base = api_base_url.rstrip("/")
         url = f"{base}/generate"
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                url,
-                json={
-                    "prompt": prompt,
-                    "model_name": api_model_name,
-                    "max_tokens": 800,
-                    "temperature": 0.2,
-                    "repetition_penalty": 1.05,
-                    "stream": False,
-                    "gpu_id": gpu_id,
-                    "request_purpose": "agentic_memory_cleanup",
-                },
-            )
-            r.raise_for_status()
-            data = r.json()
-            text = (data.get("text") or data.get("response") or "").strip()
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(
+                    url,
+                    json={
+                        "prompt": prompt,
+                        "model_name": api_model_name,
+                        "max_tokens": 800,
+                        "temperature": 0.2,
+                        "repetition_penalty": 1.05,
+                        "stream": False,
+                        "gpu_id": gpu_id,
+                        "request_purpose": "agentic_memory_cleanup",
+                    },
+                )
+                r.raise_for_status()
+                data = r.json()
+                text = (data.get("text") or data.get("response") or "").strip()
+        except Exception as e:
+            logger.warning(f"[Agentic Memory] Cleanup agent API call failed: {e}; falling back to local model")
+            text = None
 
     if not text:
         model_name = await model_manager.find_suitable_model(gpu_id=gpu_id) if model_manager else None
@@ -294,6 +298,10 @@ def get_agentic_profile(user_id: str, character_id: str) -> Dict[str, Any]:
             data = json.load(f)
     except (json.JSONDecodeError, IOError) as e:
         logger.warning(f"agentic_memory: failed to read {path}: {e}")
+        return {"insights": [], "meta": {"updated_at": None}}
+
+    if not isinstance(data, dict):
+        logger.warning(f"agentic_memory: expected dict but got {type(data).__name__} in {path}")
         return {"insights": [], "meta": {"updated_at": None}}
 
     insights = data.get("insights")
@@ -686,23 +694,27 @@ NEW INSIGHTS (JSON array only):"""
             base = api_base_url.rstrip("/")
             url = f"{base}/generate"
             logger.info(f"[Agentic Memory] Using API {url!r} model={api_model_name!r}")
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                r = await client.post(
-                    url,
-                    json={
-                    "prompt": prompt,
-                    "model_name": api_model_name,
-                    "max_tokens": 1_000_000,
-                    "temperature": 0.2,
-                    "repetition_penalty": 1.05,
-                    "stream": False,
-                    "gpu_id": gpu_id,
-                    "request_purpose": "agentic_memory",
-                },
-                )
-                r.raise_for_status()
-                data = r.json()
-                text = (data.get("text") or data.get("response") or "").strip()
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    r = await client.post(
+                        url,
+                        json={
+                        "prompt": prompt,
+                        "model_name": api_model_name,
+                        "max_tokens": 2048,
+                        "temperature": 0.2,
+                        "repetition_penalty": 1.05,
+                        "stream": False,
+                        "gpu_id": gpu_id,
+                        "request_purpose": "agentic_memory",
+                    },
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    text = (data.get("text") or data.get("response") or "").strip()
+            except Exception as e:
+                logger.warning(f"[Agentic Memory] API call failed: {e}; falling back to local model")
+                text = None
         if not text:
             model_name = await model_manager.find_suitable_model(gpu_id=gpu_id) if model_manager else None
             if not model_name:
@@ -713,7 +725,7 @@ NEW INSIGHTS (JSON array only):"""
                 model_manager=model_manager,
                 model_name=model_name,
                 prompt=prompt,
-                max_tokens=1_000_000,
+                max_tokens=2048,
                 temperature=0.2,
                 repetition_penalty=1.05,
                 gpu_id=gpu_id,

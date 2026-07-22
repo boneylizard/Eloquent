@@ -4,11 +4,31 @@ import ReactDOM from 'react-dom/client';
 
 import App from './App';
 
+import BackendGate from './components/BackendGate';
+import DevDebugPanel from './components/DevDebugPanel';
+
+function DevDebugPanelControlled() {
+  const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    const onKey = (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault();
+        setOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  return <DevDebugPanel open={open} onClose={() => setOpen(false)} />;
+}
+
 
 
 import { BrowserRouter } from 'react-router-dom'; // Import
 
 import { setupFetchInterceptor } from './utils/auth-interceptor';
+import { installExternalLinkHandler } from './utils/externalLinks';
+import { installInterfaceZoom } from './utils/interfaceZoom';
 
 import './tv-performance.css';
 
@@ -25,10 +45,12 @@ syncTvPerformanceFromUrlAndStorage();
 // Initialize interceptor immediately
 
 setupFetchInterceptor();
+installExternalLinkHandler();
+installInterfaceZoom();
 
 
 
-function dismissEloquentSplash() {
+function dismissGEMMASplash() {
 
   const splash = document.getElementById('eloquent-splash');
 
@@ -62,11 +84,15 @@ root.render(
 
   <React.StrictMode>
 
-    <BrowserRouter>
+    <BackendGate>
+      <BrowserRouter>
 
-      <App />
+        <App />
 
-    </BrowserRouter>
+      </BrowserRouter>
+    </BackendGate>
+
+    <DevDebugPanelControlled />
 
   </React.StrictMode>
 
@@ -74,5 +100,11 @@ root.render(
 
 
 
-void scheduleEloquentSplashDismiss(dismissEloquentSplash);
+void scheduleEloquentSplashDismiss(() => {
+  const splash = document.getElementById('eloquent-splash');
+  if (splash) {
+    splash.classList.add('eloquent-splash--out');
+    setTimeout(() => splash.remove(), 450);
+  }
+});
 

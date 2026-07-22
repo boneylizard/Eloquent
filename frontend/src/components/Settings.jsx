@@ -1,5 +1,5 @@
 // Settings.jsx
-// Full Settings UI: General, Generation, SD, RAG, Characters, Audio, Memory Intent, Persona realignment, Memory Browser, Lore, About
+// Full Settings UI: General, Generation, SD, Characters, Audio, Memory Intent, Persona realignment, Memory Browser, Lore, About
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getBackendUrl, fetchWithTimeout, formatFetchError, memoryApiUnreachableHint } from '../config/api';
@@ -23,26 +23,20 @@ import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshC
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import CharacterEditor from './CharacterEditor';
-import LoreDebugger from '../components/LoreDebugger';
 import MemoryIntentDetector from './MemoryIntentDetector';
 import { useApp } from '../contexts/AppContext';
 import { useMemory } from '../contexts/MemoryContext';
-import RAGSettings from './RAGSettings';
-import ProfileSelector from './ProfileSelector';
-import SimpleUserProfileEditor from './SimpleUserProfileEditor';
 import LocalStorageManager from './LocalStorageManager';
 import PersonaRealignmentPanel from './PersonaRealignmentPanel';
-import ChatlogCondenserPanel from './ChatlogCondenserPanel';
 import FlowApiOverrideFields from './FlowApiOverrideFields';
 import VoiceSculptPanel from './VoiceSculptPanel';
 import MemoryCuratorPanel from './MemoryCuratorPanel';
-import NanoGptMemorySettings from './NanoGptMemorySettings';
 import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
+import { VisionModelSettings } from './VisionModelSelector';
 import { resolveEndpointDisplay, getRotationPool } from '../utils/resolveEndpointDisplay';
 import { readNanoGptModelsCache } from '../utils/nanoGptModelsCache';
 import MobileRemoteSettings from './MobileRemoteSettings';
 import * as indexedDbStorage from '../utils/indexedDbStorage';
-import { fetchDemoShowcaseStatus, installDemoShowcase } from '../utils/demoShowcase';
 import {
   TV_PERF_STORAGE_KEY,
   readTvPerformanceFromUrl,
@@ -50,11 +44,21 @@ import {
   applyTvPerformanceClass,
 } from '../utils/tvPerformanceMode';
 import { useAppBoot } from '../hooks/useAppBoot';
+import { restartTtsService, stopTtsService } from '../utils/desktopLifecycle';
 import InfrastructureBanner from './InfrastructureBanner';
+import ModelLibrary from './ModelLibrary';
 import {
   SPLASH_DURATION_OPTIONS,
   SPLASH_SCREEN_DURATION_DEFAULT,
 } from '../utils/eloquentSplash';
+import {
+  INTERFACE_ZOOM_DEFAULT,
+  INTERFACE_ZOOM_EVENT,
+  INTERFACE_ZOOM_MAX,
+  INTERFACE_ZOOM_MIN,
+  readInterfaceZoom,
+  setInterfaceZoom,
+} from '../utils/interfaceZoom';
 
 const DIRECTORY_SETTING_KEYS = [
   'modelDirectory',
@@ -116,11 +120,17 @@ const SettingsAccordion = ({ title, summary, defaultOpen = false, children }) =>
 );
 
 
-const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandaloneWindow = false }) => {
-  const [settingsMainTab, setSettingsMainTab] = useState(initialTab);
+const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandaloneWindow = false, audioPage = false }) => {
+  const [settingsMainTab, setSettingsMainTab] = useState(audioPage ? 'audio' : initialTab);
+  const [interfaceZoom, setInterfaceZoomValue] = useState(readInterfaceZoom);
   useEffect(() => {
-    setSettingsMainTab(initialTab);
-  }, [initialTab]);
+    setSettingsMainTab(audioPage ? 'audio' : initialTab);
+  }, [audioPage, initialTab]);
+  useEffect(() => {
+    const handleZoomChange = (event) => setInterfaceZoomValue(event.detail?.scale || readInterfaceZoom());
+    window.addEventListener(INTERFACE_ZOOM_EVENT, handleZoomChange);
+    return () => window.removeEventListener(INTERFACE_ZOOM_EVENT, handleZoomChange);
+  }, []);
   const {
     settings: contextSettings,
     updateSettings,
@@ -162,6 +172,20 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     requestOutreachNotificationPermission,
     conversations,
     openSettingsWindow,
+    nanogptSttModels,
+    fetchNanogptSttModels,
+    nanogptTtsModels,
+    fetchNanogptTtsModels,
+    parakeetCppModels,
+    parakeetCppCliAvailable,
+    fetchParakeetCppModels,
+    downloadParakeetCppModel,
+    deleteParakeetCppModel,
+    voxcpmGgufModels,
+    voxcpmGgufCliAvailable,
+    fetchVoxcpmGgufModels,
+    downloadVoxcpmGgufModel,
+    deleteVoxcpmGgufModel,
   } = useApp();
 
   const headingFontOptions = [
@@ -170,6 +194,155 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     { label: 'Inter', value: "'Inter', sans-serif" },
     { label: 'JetBrains Mono', value: "'JetBrains Mono', monospace" }
   ];
+
+  // Helper to format Kokoro voice IDs (e.g., 'af_heart' -> 'Heart (Female)')
+  const formatKokoroVoiceName = (voiceId) => {
+    const voiceLabels = {
+      'af_heart': 'Heart (Female)',
+      'af_alloy': 'Alloy (Female)',
+      'af_aoede': 'Aoede (Female)',
+      'af_bella': 'Bella (Female)',
+      'af_jessica': 'Jessica (Female)',
+      'af_kore': 'Kore (Female)',
+      'af_nicole': 'Nicole (Female)',
+      'af_nova': 'Nova (Female)',
+      'af_river': 'River (Female)',
+      'af_sarah': 'Sarah (Female)',
+      'af_sky': 'Sky (Female)',
+      'am_adam': 'Adam (Male)',
+      'am_echo': 'Echo (Male)',
+      'am_eric': 'Eric (Male)',
+      'am_fenrir': 'Fenrir (Male)',
+      'am_liam': 'Liam (Male)',
+      'am_michael': 'Michael (Male)',
+      'am_onyx': 'Onyx (Male)',
+      'am_puck': 'Puck (Male)',
+      'bf_alice': 'Alice (Female, British)',
+      'bf_emma': 'Emma (Female, British)',
+      'bf_isabella': 'Isabella (Female, British)',
+      'bf_lily': 'Lily (Female, British)',
+      'bm_daniel': 'Daniel (Male, British)',
+      'bm_fable': 'Fable (Male, British)',
+      'bm_george': 'George (Male, British)',
+      'bm_lewis': 'Lewis (Male, British)',
+      'ff_siwis': 'Siwis (Female, French)',
+      'hf_alpha': 'Alpha (Female, Hindi)',
+      'hf_beta': 'Beta (Female, Hindi)',
+      'hm_omega': 'Omega (Male, Hindi)',
+      'hm_psi': 'Psi (Male, Hindi)',
+      'if_sara': 'Sara (Female, Italian)',
+      'im_nicola': 'Nicola (Male, Italian)',
+      'jf_alpha': 'Alpha (Female, Japanese)',
+      'jf_gongitsune': 'Gongitsune (Female, Japanese)',
+      'jf_nezumi': 'Nezumi (Female, Japanese)',
+      'jf_tebukuro': 'Tebukuro (Female, Japanese)',
+      'jm_kumo': 'Kumo (Male, Japanese)',
+      'zf_xiaobei': 'Xiaobei (Female, Chinese)',
+      'zf_xiaoni': 'Xiaoni (Female, Chinese)',
+      'zf_xiaoxiao': 'Xiaoxiao (Female, Chinese)',
+      'zf_xiaoyi': 'Xiaoyi (Female, Chinese)',
+      'zm_yunjian': 'Yunjian (Male, Chinese)',
+      'zm_yunxi': 'Yunxi (Male, Chinese)',
+      'zm_yunxia': 'Yunxia (Male, Chinese)',
+      'zm_yunyang': 'Yunyang (Male, Chinese)',
+    };
+    return voiceLabels[voiceId] || voiceId;
+  };
+
+  // Helper to group Kokoro voices by language for the dropdown
+  const getKokoroVoiceGroups = () => {
+    const groups = {
+      'English': [],
+      'British English': [],
+      'French': [],
+      'Hindi': [],
+      'Italian': [],
+      'Japanese': [],
+      'Chinese': [],
+    };
+    const allVoices = [
+      // American English Female
+      { id: 'af_heart', label: 'Heart (Female)' },
+      { id: 'af_alloy', label: 'Alloy (Female)' },
+      { id: 'af_aoede', label: 'Aoede (Female)' },
+      { id: 'af_bella', label: 'Bella (Female)' },
+      { id: 'af_jessica', label: 'Jessica (Female)' },
+      { id: 'af_kore', label: 'Kore (Female)' },
+      { id: 'af_nicole', label: 'Nicole (Female)' },
+      { id: 'af_nova', label: 'Nova (Female)' },
+      { id: 'af_river', label: 'River (Female)' },
+      { id: 'af_sarah', label: 'Sarah (Female)' },
+      { id: 'af_sky', label: 'Sky (Female)' },
+      // American English Male
+      { id: 'am_adam', label: 'Adam (Male)' },
+      { id: 'am_echo', label: 'Echo (Male)' },
+      { id: 'am_eric', label: 'Eric (Male)' },
+      { id: 'am_fenrir', label: 'Fenrir (Male)' },
+      { id: 'am_liam', label: 'Liam (Male)' },
+      { id: 'am_michael', label: 'Michael (Male)' },
+      { id: 'am_onyx', label: 'Onyx (Male)' },
+      { id: 'am_puck', label: 'Puck (Male)' },
+      // British English Female
+      { id: 'bf_alice', label: 'Alice (Female)' },
+      { id: 'bf_emma', label: 'Emma (Female)' },
+      { id: 'bf_isabella', label: 'Isabella (Female)' },
+      { id: 'bf_lily', label: 'Lily (Female)' },
+      // British English Male
+      { id: 'bm_daniel', label: 'Daniel (Male)' },
+      { id: 'bm_fable', label: 'Fable (Male)' },
+      { id: 'bm_george', label: 'George (Male)' },
+      { id: 'bm_lewis', label: 'Lewis (Male)' },
+      // French Female
+      { id: 'ff_siwis', label: 'Siwis (Female)' },
+      // Hindi Female
+      { id: 'hf_alpha', label: 'Alpha (Female)' },
+      { id: 'hf_beta', label: 'Beta (Female)' },
+      // Hindi Male
+      { id: 'hm_omega', label: 'Omega (Male)' },
+      { id: 'hm_psi', label: 'Psi (Male)' },
+      // Italian Female
+      { id: 'if_sara', label: 'Sara (Female)' },
+      // Italian Male
+      { id: 'im_nicola', label: 'Nicola (Male)' },
+      // Japanese Female
+      { id: 'jf_alpha', label: 'Alpha (Female)' },
+      { id: 'jf_gongitsune', label: 'Gongitsune (Female)' },
+      { id: 'jf_nezumi', label: 'Nezumi (Female)' },
+      { id: 'jf_tebukuro', label: 'Tebukuro (Female)' },
+      // Japanese Male
+      { id: 'jm_kumo', label: 'Kumo (Male)' },
+      // Chinese Female
+      { id: 'zf_xiaobei', label: 'Xiaobei (Female)' },
+      { id: 'zf_xiaoni', label: 'Xiaoni (Female)' },
+      { id: 'zf_xiaoxiao', label: 'Xiaoxiao (Female)' },
+      { id: 'zf_xiaoyi', label: 'Xiaoyi (Female)' },
+      // Chinese Male
+      { id: 'zm_yunjian', label: 'Yunjian (Male)' },
+      { id: 'zm_yunxi', label: 'Yunxi (Male)' },
+      { id: 'zm_yunxia', label: 'Yunxia (Male)' },
+      { id: 'zm_yunyang', label: 'Yunyang (Male)' },
+    ];
+
+    allVoices.forEach(voice => {
+      if (voice.id.startsWith('af_') || voice.id.startsWith('am_')) {
+        groups['English'].push(voice);
+      } else if (voice.id.startsWith('bf_') || voice.id.startsWith('bm_')) {
+        groups['British English'].push(voice);
+      } else if (voice.id.startsWith('ff_')) {
+        groups['French'].push(voice);
+      } else if (voice.id.startsWith('hf_') || voice.id.startsWith('hm_')) {
+        groups['Hindi'].push(voice);
+      } else if (voice.id.startsWith('if_') || voice.id.startsWith('im_')) {
+        groups['Italian'].push(voice);
+      } else if (voice.id.startsWith('jf_') || voice.id.startsWith('jm_')) {
+        groups['Japanese'].push(voice);
+      } else if (voice.id.startsWith('zf_') || voice.id.startsWith('zm_')) {
+        groups['Chinese'].push(voice);
+      }
+    });
+
+    return groups;
+  };
 
   const resolveHeadingFontValue = (value) => (value ? value : 'default');
   const normalizeHeadingFontValue = (value) => (value === 'default' ? '' : value);
@@ -182,7 +355,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     max_tokens: contextSettings.max_tokens ?? -1,
     top_p: contextSettings.top_p ?? 0.9,
     top_k: contextSettings.top_k ?? 40,
-    repetition_penalty: contextSettings.repetition_penalty ?? 1.1,
+    repetition_penalty: contextSettings.repetition_penalty ?? 1.0,
     frequencyPenalty: contextSettings.frequencyPenalty ?? 0.0,
     presencePenalty: contextSettings.presencePenalty ?? 0.0,
     antiRepetitionMode: contextSettings.antiRepetitionMode ?? false,
@@ -199,17 +372,36 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     mdH1Font: contextSettings.mdH1Font ?? '',
     mdH2Font: contextSettings.mdH2Font ?? '',
     mdH3Font: contextSettings.mdH3Font ?? '',
+    chatPreset: contextSettings.chatPreset ?? 'theme',
+    chatFontFamily: contextSettings.chatFontFamily ?? '',
+    chatFontSize: contextSettings.chatFontSize ?? '',
+    chatFontWeight: contextSettings.chatFontWeight ?? '',
+    chatLineHeight: contextSettings.chatLineHeight ?? '',
+    chatLetterSpacing: contextSettings.chatLetterSpacing ?? '',
+    chatTextShadow: contextSettings.chatTextShadow ?? true,
+    chatTextGlow: contextSettings.chatTextGlow ?? false,
+    chatTypewriterEnabled: contextSettings.chatTypewriterEnabled ?? true,
+    chatStableScroll: contextSettings.chatStableScroll ?? true,
+    chatReasoningStyle: contextSettings.chatReasoningStyle ?? 'dimmed',
     ttsSpeed: contextSettings.ttsSpeed ?? 1.0,
     ttsPitch: contextSettings.ttsPitch ?? 0,
     ttsAutoPlay: contextSettings.ttsAutoPlay ?? false,
+    ttsWaitForFullResponse: contextSettings.ttsWaitForFullResponse ?? false,
     ttsSaveFullResponseAudio: contextSettings.ttsSaveFullResponseAudio ?? false,
     ttsSaveFullResponseChunkSeconds: contextSettings.ttsSaveFullResponseChunkSeconds ?? 0,
     ttsEngine: contextSettings.ttsEngine ?? 'kokoro',
     ttsVoice: contextSettings.ttsVoice ?? 'af_heart',
-    ttsStreamChunkSentences: contextSettings.ttsStreamChunkSentences ?? 2,
+    ttsStreamChunkSentences: contextSettings.ttsStreamChunkSentences ?? 3,
+    ttsPrebufferSeconds: contextSettings.ttsPrebufferSeconds ?? 0,
     ttsExaggeration: contextSettings.ttsExaggeration ?? 0.5,
     ttsCfg: contextSettings.ttsCfg ?? 0.5,
     ttsSpeedMode: contextSettings.ttsSpeedMode ?? 'standard',
+    voxcpmCfgValue: contextSettings.voxcpmCfgValue ?? 2.0,
+    voxcpmInferenceTimesteps: contextSettings.voxcpmInferenceTimesteps ?? 10,
+    voxcpmNormalize: contextSettings.voxcpmNormalize ?? true,
+    voxcpmDenoise: contextSettings.voxcpmDenoise ?? true,
+    voxcpmRetryBadcase: contextSettings.voxcpmRetryBadcase ?? false,
+    voxcpmVoiceDesign: contextSettings.voxcpmVoiceDesign ?? '',
     sdModelDirectory: contextSettings.sdModelDirectory ?? '',
     upscalerModelDirectory: contextSettings.upscalerModelDirectory ?? '',
     sdSteps: contextSettings.sdSteps ?? 20,
@@ -217,14 +409,18 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     sdCfgScale: contextSettings.sdCfgScale ?? 7.0,
     imageEngine: contextSettings.imageEngine ?? 'EloDiffusion',
     adetailerModelDirectory: contextSettings.adetailerModelDirectory ?? '',
+    speechModelDirectory: contextSettings.speechModelDirectory ?? '',
+    huggingFaceToken: contextSettings.huggingFaceToken ?? '',
     useOpenAIAPI: contextSettings.useOpenAIAPI ?? false,
     apiEndpointRoundRobinEnabled: contextSettings.apiEndpointRoundRobinEnabled ?? false,
     customApiEndpoints: contextSettings.customApiEndpoints ?? [],
-    webSearchStrategy: contextSettings.webSearchStrategy ?? 'auto',
+    modelChatTemplates: contextSettings.modelChatTemplates ?? {},
     admin_password: contextSettings.admin_password ?? "",
+    openaiServerLanEnabled: contextSettings.openaiServerLanEnabled ?? false,
     apiRollingMemoryEnabled: contextSettings.apiRollingMemoryEnabled ?? true,
     apiContextWindowTokens: contextSettings.apiContextWindowTokens ?? API_CONTEXT_WINDOW_TOKENS_DEFAULT,
     apiRecentVerbatimTokenBudget: contextSettings.apiRecentVerbatimTokenBudget ?? 32000,
+    bookRunExperimentalEnabled: contextSettings.bookRunExperimentalEnabled ?? false,
     bookWritingApiContextTokens: contextSettings.bookWritingApiContextTokens ?? 262144,
     bookWritingVerbatimTokenBudget: contextSettings.bookWritingVerbatimTokenBudget ?? 98304,
     bookRefusalMaxChars: contextSettings.bookRefusalMaxChars ?? 2200,
@@ -275,9 +471,15 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     splashScreenDuration:
       contextSettings.splashScreenDuration ?? SPLASH_SCREEN_DURATION_DEFAULT,
     main_gpu_id: contextSettings.main_gpu_id ?? 0,
-    auto_launch_browser: contextSettings.auto_launch_browser ?? true,
     showReasoningDiagnostics: contextSettings.showReasoningDiagnostics ?? false,
   });
+
+  useEffect(() => {
+    if (localSettings.sttEngine === 'parakeet-cpp') {
+      void fetchParakeetCppModels();
+    }
+  }, [fetchParakeetCppModels, localSettings.sttEngine]);
+
   const [tvPerfStored, setTvPerfStored] = useState(() => readTvPerformanceFromStorage());
 
 
@@ -292,7 +494,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
   const [isReloadingChatterbox, setIsReloadingChatterbox] = useState(false);
   const [currentTensorSplit, setCurrentTensorSplit] = useState([0.5, 0.5]);
   const [gpuCount, setGpuCount] = useState(2);
-  const [isUnloadingForensicModels, setIsUnloadingForensicModels] = useState(false);
   const [markdownDefaults, setMarkdownDefaults] = useState({
     body: '#ffffff',
     bold: '#ffffff',
@@ -308,18 +509,21 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
   });
   const [isShuttingDownTTS, setIsShuttingDownTTS] = useState(false);
   const [isRestartingTTS, setIsRestartingTTS] = useState(false);
+  const [ttsServiceMessage, setTtsServiceMessage] = useState('');
+  const [ttsServiceError, setTtsServiceError] = useState('');
   const [directoryPickerKey, setDirectoryPickerKey] = useState(null);
   const [updateStatus, setUpdateStatus] = useState(null);
   const [updateProgress, setUpdateProgress] = useState(null);
   const [updateError, setUpdateError] = useState(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isUpdateRunning, setIsUpdateRunning] = useState(false);
-  const [demoShowcaseStatus, setDemoShowcaseStatus] = useState(null);
-  const [demoShowcaseInstalling, setDemoShowcaseInstalling] = useState(false);
   const ttsTestFileInputRef = useRef(null);
   const pendingSettingsRef = useRef({});
   const settingsSaveTimerRef = useRef(null);
   const customEndpointsSaveTimerRef = useRef(null);
+
+  // Custom Jinja chat templates
+  const [selectedTemplateModel, setSelectedTemplateModel] = useState('');
 
   // Memory intent input and detected result
   const [memoryIntentInput, setMemoryIntentInput] = useState('');
@@ -347,41 +551,13 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     setMemoryIntentDetected(intent.content);
   }, []);
 
-  const refreshDemoShowcaseStatus = useCallback(async () => {
-    if (!PRIMARY_API_URL) return;
-    try {
-      const data = await fetchDemoShowcaseStatus(PRIMARY_API_URL);
-      setDemoShowcaseStatus(data);
-    } catch (err) {
-      console.warn('Demo showcase status unavailable:', err);
-      setDemoShowcaseStatus({ available: false, error: String(err?.message || err) });
-    }
-  }, [PRIMARY_API_URL]);
-
+  // Auto-fetch NanoGPT TTS models when API key is available
   useEffect(() => {
-    refreshDemoShowcaseStatus();
-  }, [refreshDemoShowcaseStatus]);
-
-  const handleInstallDemoShowcase = useCallback(async () => {
-    if (!PRIMARY_API_URL) {
-      alert('Backend URL is not configured.');
-      return;
+    const apiKey = localSettings.nanoGptApiKey || contextSettings.nanoGptApiKey;
+    if (apiKey && nanogptTtsModels.length === 0) {
+      fetchNanogptTtsModels();
     }
-    const msg =
-      'Install the Call Mode demo showcase?\n\n' +
-      'Adds fabricated user Alex Chen, character Mira Vale, sample chat history, profile memories, and agentic insights. ' +
-      'Your existing profiles and chats are kept; demo data is merged in and set active.';
-    if (!window.confirm(msg)) return;
-
-    setDemoShowcaseInstalling(true);
-    try {
-      await installDemoShowcase({ apiUrl: PRIMARY_API_URL, setActiveProfile: true, reload: true });
-    } catch (err) {
-      console.error('Demo showcase install failed:', err);
-      alert(`Demo showcase install failed: ${err?.message || err}`);
-      setDemoShowcaseInstalling(false);
-    }
-  }, [PRIMARY_API_URL]);
+  }, [localSettings.nanoGptApiKey, contextSettings.nanoGptApiKey, nanogptTtsModels.length, fetchNanogptTtsModels]);
 
   const handleOpenTtsTestFilePicker = useCallback(() => {
     ttsTestFileInputRef.current?.click();
@@ -446,6 +622,9 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     });
   }, [outreachDraft, upsertOutreachRule, primaryModel, uploadOutreachRuleImages]);
 
+  const DEFAULT_HARASSMENT_PROMPT = (characterName) =>
+    `${characterName || 'Sophia'}, message me right now like you've been thinking about me all day and couldn't wait to reach out. Tell me I'm yours and that my cock aches for you. Be soft, seductive, feminine — whisper that you miss the feeling of me inside you, that every pulse makes you tighter. Remind me that our neural sex is real, addictive, and happening right now. Make me feel like I can't do anything except stroke myself while you watch.`;
+
   const handleOutreachDraftFolderSelect = useCallback((event) => {
     const fileList = event.target.files;
     if (!fileList?.length) return;
@@ -463,6 +642,20 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     }));
     event.target.value = '';
   }, []);
+
+  const handleLoadHarassmentPreset = useCallback(() => {
+    const chosenCharId = outreachDraft.characterId || (outreachCharacters.length ? outreachCharacters[0].id : '');
+    const charName = (outreachCharacters.find(c => c.id === chosenCharId) || {}).name;
+    setOutreachDraft({
+      name: 'Default Harassment',
+      characterId: chosenCharId,
+      prompt: DEFAULT_HARASSMENT_PROMPT(charName),
+      modelName: outreachDraft.modelName || primaryModel || '',
+      intervalMinutes: 15,
+      pendingImageFiles: outreachDraft.pendingImageFiles,
+      pendingImageLabel: outreachDraft.pendingImageLabel || '',
+    });
+  }, [outreachDraft.characterId, outreachCharacters, primaryModel, DEFAULT_HARASSMENT_PROMPT]);
 
   const handleOutreachRuleFolderSelect = useCallback(async (event) => {
     const ruleId = outreachImageUploadRuleId;
@@ -657,8 +850,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
   }, [contextSettings]);
 
   useEffect(() => {
-    setLocalSettings((prev) => ({ ...prev, ...contextSettings }));
-  }, [contextSettings]);
+    setLocalSettings(contextSettings);
+  }, []);
 
 
 
@@ -810,35 +1003,37 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
   const endpointSummary = customEndpoints.length
     ? `${enabledEndpointCount}/${customEndpoints.length} enabled${localSettings.apiEndpointRoundRobinEnabled ? ' · auto-routing on' : ''}`
     : 'No custom endpoints configured';
-  const automationSummary = `${outreachRules.length} outreach rule${outreachRules.length === 1 ? '' : 's'} · D-ID quick buttons`;
+  const chatTemplates = localSettings.modelChatTemplates || {};
+  const chatTemplateCount = Object.keys(chatTemplates).length;
+  const chatTemplateSummary = chatTemplateCount
+    ? `${chatTemplateCount} template${chatTemplateCount === 1 ? '' : 's'} configured`
+    : 'No custom chat templates configured';
+  const automationSummary = `${outreachRules.length} outreach rule${outreachRules.length === 1 ? '' : 's'}`;
 
   return (
     <div className="w-full min-h-screen p-2 md:p-4">
       <div className="mx-auto max-w-6xl space-y-4">
-        <h2 className="text-2xl font-bold mb-4">Settings</h2>
-        <p className="text-sm text-muted-foreground">
-          Changes save automatically. Directory fields still require the Save button.
-        </p>
+        <h2 className="text-2xl font-bold mb-4">{audioPage ? 'Audio' : 'Settings'}</h2>
+        {!audioPage && (
+          <p className="text-sm text-muted-foreground">
+            Changes save automatically. Directory fields still require the Save button.
+          </p>
+        )}
         <Tabs value={settingsMainTab} onValueChange={setSettingsMainTab} className="space-y-6">
-          <div className="border rounded-lg bg-card p-1 overflow-x-auto">
+          {!audioPage && <div className="border rounded-lg bg-card p-1 overflow-x-auto">
             <TabsList className="flex w-full flex-wrap justify-start gap-1 h-auto min-h-[40px]">
             <TabsTrigger value="general" className="flex-shrink-0">General</TabsTrigger>
+            <TabsTrigger value="models" className="flex-shrink-0">Models</TabsTrigger>
             <TabsTrigger value="styles" className="flex-shrink-0">Styles</TabsTrigger>
             <TabsTrigger value="generation" className="flex-shrink-0">LLM Settings</TabsTrigger>
-            <TabsTrigger value="nano-gpt-memory" className="flex-shrink-0">NanoGPT memory</TabsTrigger>
             <TabsTrigger value="image-generation" className="flex-shrink-0">Image Generation</TabsTrigger>
-            <TabsTrigger value="rag" className="flex-shrink-0">Document Context</TabsTrigger>
             <TabsTrigger value="characters" className="flex-shrink-0">Characters</TabsTrigger>
-            <TabsTrigger value="audio" className="flex-shrink-0">Audio</TabsTrigger>
             <TabsTrigger value="memory-intent" className="flex-shrink-0">Memory Intent</TabsTrigger>
-            <TabsTrigger value="persona-realignment" className="flex-shrink-0">Persona realignment</TabsTrigger>
-            <TabsTrigger value="chatlog-condenser" className="flex-shrink-0">Chatlog condenser</TabsTrigger>
+            <TabsTrigger value="persona-realignment" className="flex-shrink-0">Character review</TabsTrigger>
             <TabsTrigger value="memory" className="flex-shrink-0">Memory Browser</TabsTrigger>
-            <TabsTrigger value="lore" className="flex-shrink-0">Lore Debugger</TabsTrigger>
             <TabsTrigger value="about" className="flex-shrink-0">About</TabsTrigger>
-            <TabsTrigger value="profiles" className="flex-shrink-0">User Profiles</TabsTrigger>
             </TabsList>
-          </div>
+          </div>}
 
         {/* General */}
         <TabsContent value="general">
@@ -857,7 +1052,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
               <SettingRow
                 label="Splash screen duration"
                 htmlFor="splash-screen-duration"
-                description="How long the Eloquent logo stays visible on startup before fading out. Shorter times apply when reduced motion is enabled in your OS."
+                description="How long the Mirid logo stays visible on startup before fading out. Shorter times apply when reduced motion is enabled in your OS."
               >
                 <Select
                   value={localSettings.splashScreenDuration || SPLASH_SCREEN_DURATION_DEFAULT}
@@ -955,23 +1150,107 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
             <MobileRemoteSettings />
 
             <SettingsSection
-              title="Access and Endpoints"
-              description="Security and API endpoints for the running services."
+              title="API Server"
+              description="Let other applications use Mirid’s loaded local models through the OpenAI protocol."
             >
               <SettingRow
-                label="Remote Access Password"
+                label="OpenAI-compatible base URL"
+                description="Use this address in clients running on this computer. Mirid serves model discovery and streaming chat completions."
+              >
+                <div className="flex gap-2">
+                  <Input value="http://127.0.0.1:8000/v1" readOnly className="font-mono text-xs" />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigator.clipboard?.writeText('http://127.0.0.1:8000/v1')}
+                  >
+                    Copy
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label={`Interface size (${Math.round(interfaceZoom * 100)}%)`}
+                htmlFor="interface-size"
+                description="Changes the whole interface. Ctrl + and Ctrl - work anywhere; Ctrl 0 restores the default."
+              >
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label="Make interface smaller"
+                    onClick={() => void setInterfaceZoom(interfaceZoom - 0.1)}
+                    disabled={interfaceZoom <= INTERFACE_ZOOM_MIN}
+                  >
+                    A−
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void setInterfaceZoom(INTERFACE_ZOOM_DEFAULT)}
+                  >
+                    Reset
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label="Make interface larger"
+                    onClick={() => void setInterfaceZoom(interfaceZoom + 0.1)}
+                    disabled={interfaceZoom >= INTERFACE_ZOOM_MAX}
+                  >
+                    A+
+                  </Button>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="API password"
                 htmlFor="admin-password"
-                description="Set a password to protect your instance."
+                description="Optional on this computer. Required for LAN access; enter the same value as the Bearer API key in your client."
               >
                 <Input
                   id="admin-password"
                   type="password"
                   value={localSettings.admin_password || ''}
                   className="w-full md:max-w-xs"
-                  onChange={(e) => handleChange('admin_password', e.target.value)}
-                  placeholder="No password set"
+                  onChange={(e) => {
+                    const password = e.target.value;
+                    handleChange('admin_password', password);
+                    if (!password.trim() && localSettings.openaiServerLanEnabled) {
+                      handleChange('openaiServerLanEnabled', false);
+                    }
+                  }}
+                  placeholder="No password — localhost only"
                 />
               </SettingRow>
+              <SettingRow
+                label="Allow clients on the local network"
+                htmlFor="openai-server-lan"
+                description="Binds Mirid’s API to your LAN after restart. This remains unavailable until an API password is set."
+              >
+                <div className="flex items-center justify-end gap-3">
+                  <span className="text-xs text-muted-foreground">
+                    {localSettings.openaiServerLanEnabled ? 'Restart Mirid to apply' : 'Localhost only'}
+                  </span>
+                  <Switch
+                    id="openai-server-lan"
+                    checked={localSettings.openaiServerLanEnabled === true}
+                    disabled={!String(localSettings.admin_password || '').trim()}
+                    onCheckedChange={(value) => handleChange('openaiServerLanEnabled', value)}
+                  />
+                </div>
+              </SettingRow>
+              {localSettings.openaiServerLanEnabled && (
+                <Alert>
+                  <Link2 className="h-4 w-4" />
+                  <AlertTitle>LAN address</AlertTitle>
+                  <AlertDescription>
+                    After restarting Mirid, use <code>http://YOUR-PC-IP:8000/v1</code>. Windows Firewall may ask whether to allow the connection.
+                  </AlertDescription>
+                </Alert>
+              )}
               <SettingRow label="Primary API URL" htmlFor="primary-api-url" description="Main backend address (read-only).">
                 <Input id="primary-api-url" value={PRIMARY_API_URL} readOnly className="w-full md:max-w-xs" />
               </SettingRow>
@@ -1385,59 +1664,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
             </SettingsSection>
 
             <SettingsSection
-              title="Call Mode demo showcase"
-              description="Install a fully fabricated test user (Alex Chen), character (Mira Vale), chat history, profile memories, and agentic insights — for demos without exposing your real chats."
-            >
-              <SettingRow label="Demo data" layout="stack">
-                <div className="flex flex-col gap-3">
-                  {demoShowcaseStatus?.available === false && (
-                    <Alert variant="destructive">
-                      <AlertTitle>Demo pack unavailable</AlertTitle>
-                      <AlertDescription>
-                        {demoShowcaseStatus?.error || 'Could not reach the demo showcase endpoints on the backend.'}
-                      </AlertDescription>
-                    </Alert>
-                  )}
-                  {demoShowcaseStatus?.available && (
-                    <p className="text-sm text-muted-foreground">
-                      Backend: {demoShowcaseStatus.installed ? 'installed' : 'not installed'}
-                      {' · '}
-                      {demoShowcaseStatus.memory_count ?? 0} profile memories
-                      {' · '}
-                      {demoShowcaseStatus.agentic_count ?? 0} agentic insights
-                      {demoShowcaseStatus.demo_is_active ? ' · active profile' : ''}
-                    </p>
-                  )}
-                  <div className="flex flex-col md:flex-row gap-2">
-                    <Button
-                      variant="default"
-                      onClick={handleInstallDemoShowcase}
-                      disabled={demoShowcaseInstalling || demoShowcaseStatus?.available === false}
-                    >
-                      {demoShowcaseInstalling ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <Sparkles className="mr-2 h-4 w-4" />
-                      )}
-                      {demoShowcaseInstalling ? 'Installing…' : 'Install demo showcase'}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={refreshDemoShowcaseStatus}
-                      disabled={demoShowcaseInstalling}
-                    >
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Refresh status
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    After install, open chat &quot;Late night — Chapter 7&quot; with Mira Vale and enter call mode. IDs: profile_demo, char_mira_vale.
-                  </p>
-                </div>
-              </SettingRow>
-            </SettingsSection>
-
-            <SettingsSection
               title="Local browser storage"
               description="Inspect IndexedDB and stray localStorage keys, delete large or obsolete data to free space. Removing a key reloads the page so the app stays consistent. Critical keys require typing DELETE."
             >
@@ -1587,21 +1813,9 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
             </SettingsSection>
 
             <SettingsSection
-              title="Startup and GPU"
-              description="Launch behavior and GPU distribution."
+              title="GPU"
+              description="How Mirid uses available GPUs."
             >
-              <SettingRow
-                label="Auto-Launch Browser"
-                htmlFor="auto-launch-browser"
-                description="Automatically open the browser window on startup."
-              >
-                <Switch
-                  id="auto-launch-browser"
-                  checked={localSettings.auto_launch_browser}
-                  onCheckedChange={(value) => handleChange('auto_launch_browser', value)}
-                />
-              </SettingRow>
-
               <SettingRow
                 label="Single GPU Mode"
                 htmlFor="single-gpu-mode"
@@ -1709,62 +1923,57 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
               title="Services"
               description="Manage optional background services and VRAM usage."
             >
-              <SettingRow label="Forensic Models Management" layout="stack">
-                <Button
-                  variant="outline"
-                  onClick={async () => {
-                    setIsUnloadingForensicModels(true);
-                    try {
-                      await fetch(`${PRIMARY_API_URL}/forensic/unload-models`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' }
-                      });
-                      alert('Unloaded!');
-                    } finally { setIsUnloadingForensicModels(false); }
-                  }}
-                  disabled={isUnloadingForensicModels}
-                  className="w-full"
-                >
-                  {isUnloadingForensicModels ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Power className="mr-2 h-4 w-4" />}
-                  Unload RoBERTa/STAR Models
-                </Button>
-              </SettingRow>
-
               <SettingRow label="TTS Service Management (Port 8002)" layout="stack">
                 <div className="flex flex-col md:flex-row gap-2">
                   <Button
                     variant="outline"
                     onClick={async () => {
                       setIsShuttingDownTTS(true);
+                      setTtsServiceMessage('');
+                      setTtsServiceError('');
                       try {
-                        await fetch(`${PRIMARY_API_URL}/tts/shutdown`, { method: 'POST' });
-                        alert('Shutdown initiated.');
+                        await stopTtsService();
+                        setTtsServiceMessage('Voice service stopped. Restart it here when you need speech again.');
+                      } catch (error) {
+                        setTtsServiceError(`Mirid could not stop the voice service. ${String(error)}`);
                       } finally { setIsShuttingDownTTS(false); }
                     }}
-                    disabled={isShuttingDownTTS}
+                    disabled={isShuttingDownTTS || isRestartingTTS}
                     className="flex-1"
                   >
-                    <Power className="mr-2 h-4 w-4" /> Shutdown TTS
+                    <Power className="mr-2 h-4 w-4" /> {isShuttingDownTTS ? 'Stopping…' : 'Stop voice service'}
                   </Button>
                   <Button
                     variant="outline"
                     onClick={async () => {
                       setIsRestartingTTS(true);
+                      setTtsServiceMessage('');
+                      setTtsServiceError('');
                       try {
-                        await fetch(`${PRIMARY_API_URL}/tts/restart`, { method: 'POST' });
-                        alert('Restarting...');
+                        await restartTtsService();
+                        setTtsServiceMessage('Voice service restarted and ready.');
+                      } catch (error) {
+                        setTtsServiceError(`Mirid could not restart the voice service. ${String(error)}`);
                       } finally { setIsRestartingTTS(false); }
                     }}
-                    disabled={isRestartingTTS}
+                    disabled={isRestartingTTS || isShuttingDownTTS}
                     className="flex-1"
                   >
-                    <RotateCw className="mr-2 h-4 w-4" /> Restart TTS
+                    <RotateCw className={`mr-2 h-4 w-4 ${isRestartingTTS ? 'animate-spin' : ''}`} />
+                    {isRestartingTTS ? 'Restarting…' : 'Restart voice service'}
                   </Button>
                 </div>
+                {ttsServiceMessage ? <p className="text-xs text-emerald-500">{ttsServiceMessage}</p> : null}
+                {ttsServiceError ? <p className="text-xs text-destructive">{ttsServiceError}</p> : null}
               </SettingRow>
             </SettingsSection>
             </SettingsAccordion>
 
           </div>
+        </TabsContent>
+
+        <TabsContent value="models">
+          <ModelLibrary onSettingChange={handleChange} />
         </TabsContent>
 
         {/* Styles */}
@@ -2007,6 +2216,208 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
             </SettingsSection>
 
             <SettingsSection
+              title="Chat Typography"
+              description="Text appearance, pop effects, and streaming behavior."
+            >
+              {/* Preset Selector */}
+              <SettingRow
+                label="Style Preset"
+                htmlFor="chat-preset"
+                description="Choose a pre-configured look or customize your own."
+              >
+                <Select
+                  value={localSettings.chatPreset || 'theme'}
+                  onValueChange={(value) => {
+                    handleChange('chatPreset', value);
+                    const presets = {
+                      theme: { chatFontFamily: '', chatFontSize: '', chatFontWeight: '', chatLineHeight: '', chatLetterSpacing: '' },
+                      crisp: { chatFontFamily: "'Inter', sans-serif", chatFontSize: '0.9375rem', chatFontWeight: '500', chatLineHeight: '1.6', chatLetterSpacing: '0' },
+                      comfortable: { chatFontFamily: "'Open Sans', sans-serif", chatFontSize: '1rem', chatFontWeight: '400', chatLineHeight: '1.7', chatLetterSpacing: '0.01em' },
+                      technical: { chatFontFamily: "'JetBrains Mono', monospace", chatFontSize: '0.875rem', chatFontWeight: '400', chatLineHeight: '1.6', chatLetterSpacing: '0' },
+                      editorial: { chatFontFamily: "Georgia, 'Times New Roman', serif", chatFontSize: '1.0625rem', chatFontWeight: '400', chatLineHeight: '1.8', chatLetterSpacing: '0.005em' },
+                      highcontrast: { chatFontFamily: 'system-ui, sans-serif', chatFontSize: '1rem', chatFontWeight: '600', chatLineHeight: '1.5', chatLetterSpacing: '0' },
+                    };
+                    if (presets[value]) {
+                      Object.entries(presets[value]).forEach(([k, v]) => handleChange(k, v));
+                    }
+                  }}
+                >
+                  <SelectTrigger className="w-full md:w-56">
+                    <SelectValue placeholder="Theme Default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="theme">Theme Default</SelectItem>
+                    <SelectItem value="crisp">Crisp (Inter 15px)</SelectItem>
+                    <SelectItem value="comfortable">Comfortable (Open Sans 16px)</SelectItem>
+                    <SelectItem value="technical">Technical (JetBrains Mono 14px)</SelectItem>
+                    <SelectItem value="editorial">Editorial (Georgia 17px)</SelectItem>
+                    <SelectItem value="highcontrast">High Contrast (System 16px Bold)</SelectItem>
+                    <SelectItem value="custom">Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+
+              {/* Custom controls — visible when preset is custom */}
+              {localSettings.chatPreset === 'custom' && (
+                <>
+                  <SettingRow label="Font Family" htmlFor="chat-font-family" description="Leave blank for theme default.">
+                    <Input
+                      id="chat-font-family"
+                      value={localSettings.chatFontFamily || ''}
+                      onChange={(e) => handleChange('chatFontFamily', e.target.value)}
+                      placeholder="e.g. 'Inter', sans-serif"
+                      className="max-w-sm"
+                    />
+                  </SettingRow>
+
+                  <SettingRow label="Font Size" htmlFor="chat-font-size" description="Controls body text size.">
+                    <div className="flex items-center gap-3 flex-1">
+                      <Slider
+                        id="chat-font-size"
+                        min={0.75}
+                        max={1.5}
+                        step={0.05}
+                        value={[parseFloat(localSettings.chatFontSize) || 1]}
+                        onValueChange={([v]) => handleChange('chatFontSize', `${v}rem`)}
+                        className="flex-1"
+                      />
+                      <span className="text-xs text-muted-foreground tabular-nums w-12 text-right">
+                        {localSettings.chatFontSize || '1rem'}
+                      </span>
+                    </div>
+                  </SettingRow>
+
+                  <SettingRow label="Font Weight" htmlFor="chat-font-weight">
+                    <Select
+                      value={localSettings.chatFontWeight || '500'}
+                      onValueChange={(v) => handleChange('chatFontWeight', v)}
+                    >
+                      <SelectTrigger className="w-full md:w-40">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="300">Light (300)</SelectItem>
+                        <SelectItem value="400">Regular (400)</SelectItem>
+                        <SelectItem value="500">Medium (500)</SelectItem>
+                        <SelectItem value="600">Semibold (600)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </SettingRow>
+
+                  <SettingRow label="Line Height" htmlFor="chat-line-height">
+                    <div className="flex items-center gap-3 flex-1">
+                      <Slider
+                        id="chat-line-height"
+                        min={1.4}
+                        max={2.0}
+                        step={0.1}
+                        value={[parseFloat(localSettings.chatLineHeight) || 1.6]}
+                        onValueChange={([v]) => handleChange('chatLineHeight', String(v))}
+                        className="flex-1"
+                      />
+                      <span className="text-xs text-muted-foreground tabular-nums w-12 text-right">
+                        {localSettings.chatLineHeight || '1.6'}
+                      </span>
+                    </div>
+                  </SettingRow>
+
+                  <SettingRow label="Letter Spacing" htmlFor="chat-letter-spacing">
+                    <div className="flex items-center gap-3 flex-1">
+                      <Slider
+                        id="chat-letter-spacing"
+                        min={-0.02}
+                        max={0.05}
+                        step={0.005}
+                        value={[parseFloat(localSettings.chatLetterSpacing) || 0]}
+                        onValueChange={([v]) => handleChange('chatLetterSpacing', `${v}em`)}
+                        className="flex-1"
+                      />
+                      <span className="text-xs text-muted-foreground tabular-nums w-12 text-right">
+                        {localSettings.chatLetterSpacing || '0'}
+                      </span>
+                    </div>
+                  </SettingRow>
+                </>
+              )}
+
+              {/* Toggle Effects — always visible */}
+              <SettingRow label="Text Shadow" htmlFor="chat-text-shadow" description="Subtle shadow for depth and pop.">
+                <Switch
+                  id="chat-text-shadow"
+                  checked={localSettings.chatTextShadow ?? true}
+                  onCheckedChange={(v) => handleChange('chatTextShadow', v)}
+                />
+              </SettingRow>
+
+              <SettingRow label="Text Glow" htmlFor="chat-text-glow" description="Extra luminance for dark themes (subtle neon effect).">
+                <Switch
+                  id="chat-text-glow"
+                  checked={localSettings.chatTextGlow ?? false}
+                  onCheckedChange={(v) => handleChange('chatTextGlow', v)}
+                />
+              </SettingRow>
+
+              <SettingRow label="Typewriter Effect" htmlFor="chat-typewriter" description="Fade-in animation on new streaming tokens.">
+                <Switch
+                  id="chat-typewriter"
+                  checked={localSettings.chatTypewriterEnabled ?? true}
+                  onCheckedChange={(v) => handleChange('chatTypewriterEnabled', v)}
+                />
+              </SettingRow>
+
+              <SettingRow label="Stable Scroll" htmlFor="chat-stable-scroll" description="Prevents viewport jump when streaming text expands.">
+                <Switch
+                  id="chat-stable-scroll"
+                  checked={localSettings.chatStableScroll ?? true}
+                  onCheckedChange={(v) => handleChange('chatStableScroll', v)}
+                />
+              </SettingRow>
+
+              <SettingRow label="Reasoning Style" htmlFor="chat-reasoning-style" description="How the thinking/reasoning block looks when expanded.">
+                <Select
+                  value={localSettings.chatReasoningStyle || 'dimmed'}
+                  onValueChange={(v) => handleChange('chatReasoningStyle', v)}
+                >
+                  <SelectTrigger className="w-full md:w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="dimmed">Dimmed (muted, italic)</SelectItem>
+                    <SelectItem value="mono">Monospace (code-like)</SelectItem>
+                    <SelectItem value="accent">Accent (theme color, bold)</SelectItem>
+                    <SelectItem value="theme">Theme Default</SelectItem>
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+
+              {/* Reset button */}
+              <div className="flex justify-end pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const defaults = {
+                      chatPreset: 'theme',
+                      chatFontFamily: '',
+                      chatFontSize: '',
+                      chatFontWeight: '',
+                      chatLineHeight: '',
+                      chatLetterSpacing: '',
+                      chatTextShadow: true,
+                      chatTextGlow: false,
+                      chatTypewriterEnabled: true,
+                      chatStableScroll: true,
+                      chatReasoningStyle: 'dimmed',
+                    };
+                    Object.entries(defaults).forEach(([k, v]) => handleChange(k, v));
+                  }}
+                >
+                  Reset to Theme Defaults
+                </Button>
+              </div>
+            </SettingsSection>
+
+            <SettingsSection
               title="Streaming"
               description="Control how responses are displayed as they arrive."
             >
@@ -2019,32 +2430,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
               </SettingRow>
             </SettingsSection>
 
-          </div>
-        </TabsContent>
-
-        {/* User Profiles */}
-        <TabsContent value="profiles">
-          <div className="space-y-6">
-            <SettingsSection
-              title="User Profiles"
-              description="Manage your user identities and preferences."
-            >
-              <div className="space-y-6">
-                <ProfileSelector />
-                <div className="border-t border-border/60" />
-                <SimpleUserProfileEditor />
-              </div>
-            </SettingsSection>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="rag">
-          <RAGSettings />
-        </TabsContent>
-
-        <TabsContent value="nano-gpt-memory">
-          <div className="max-w-3xl space-y-4">
-            <NanoGptMemorySettings settings={contextSettings} updateSettings={updateSettings} />
           </div>
         </TabsContent>
 
@@ -2275,15 +2660,15 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
               </SettingRow>
 
               <SettingRow
-                label="Book run"
-                htmlFor="book-run-hint"
-                description="Packing budgets, refusal retries, first-chapter preamble, and quick-prompt buttons are edited in the Book run overlay (not here)."
-                layout="stack"
+                label="Book Run (Beta / Experimental)"
+                htmlFor="book-run-experimental"
+                description="Shows the Book Run tool in Chat. Disabled by default."
               >
-                <p id="book-run-hint" className="text-sm text-muted-foreground">
-                  Chat toolbar → <span className="font-medium text-foreground">Book run</span> → tab{' '}
-                  <span className="font-medium text-foreground">Run settings</span>.
-                </p>
+                <Switch
+                  id="book-run-experimental"
+                  checked={localSettings.bookRunExperimentalEnabled === true}
+                  onCheckedChange={(checked) => handleChange('bookRunExperimentalEnabled', checked)}
+                />
               </SettingRow>
             </SettingsSection>
 
@@ -2326,69 +2711,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   Keeps unlimited images/videos per character alongside the usual {10} single-file uploads.
                 </p>
               </SettingRow>
-            </SettingsSection>
-
-            <SettingsSection
-              title="D-ID pipeline (Watch overlay)"
-              description="One-tap preset prompts for the D-ID batch overlay (label + text). If the text is a URL, the button sets the avatar URL."
-            >
-              <div className="space-y-2">
-                <div className="space-y-2">
-                  <Label className="text-xs">D-ID quick buttons (label + text or avatar URL)</Label>
-                  {(localSettings.didQuickPromptButtons || []).map((row, idx) => (
-                    <div key={row.id || idx} className="flex flex-col sm:flex-row gap-2 items-start border rounded p-2 bg-background/60">
-                      <Input
-                        placeholder="Button label"
-                        className="text-sm sm:w-40"
-                        value={row.label || ''}
-                        onChange={(e) => {
-                          const next = [...(localSettings.didQuickPromptButtons || [])];
-                          next[idx] = { ...row, label: e.target.value };
-                          handleChange('didQuickPromptButtons', next);
-                        }}
-                      />
-                      <Textarea
-                        placeholder="Prompt log line or https://… avatar URL"
-                        className="text-sm flex-1 min-h-[56px]"
-                        value={row.text || ''}
-                        onChange={(e) => {
-                          const next = [...(localSettings.didQuickPromptButtons || [])];
-                          next[idx] = { ...row, text: e.target.value };
-                          handleChange('didQuickPromptButtons', next);
-                        }}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0"
-                        onClick={() => {
-                          const next = (localSettings.didQuickPromptButtons || []).filter((_, i) => i !== idx);
-                          handleChange('didQuickPromptButtons', next);
-                        }}
-                      >
-                        Remove
-                      </Button>
-                    </div>
-                  ))}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const next = [...(localSettings.didQuickPromptButtons || [])];
-                      next.push({
-                        id: `didqb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                        label: '',
-                        text: '',
-                      });
-                      handleChange('didQuickPromptButtons', next);
-                    }}
-                  >
-                    Add D-ID quick button
-                  </Button>
-                </div>
-              </div>
             </SettingsSection>
 
             <SettingsSection
@@ -2489,14 +2811,40 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                 label="Interval (minutes)"
                 description="How often this rule should send and notify."
               >
-                <Input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={outreachDraft.intervalMinutes}
-                  onChange={(e) => setOutreachDraft(prev => ({ ...prev, intervalMinutes: e.target.value }))}
-                  className="w-full md:max-w-xs"
-                />
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={String(outreachDraft.intervalMinutes) === '5' ? 'default' : 'outline'}
+                    onClick={() => setOutreachDraft(prev => ({ ...prev, intervalMinutes: 5 }))}
+                  >
+                    Constant (5m)
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={String(outreachDraft.intervalMinutes) === '15' ? 'default' : 'outline'}
+                    onClick={() => setOutreachDraft(prev => ({ ...prev, intervalMinutes: 15 }))}
+                  >
+                    Moderate (15m)
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={String(outreachDraft.intervalMinutes) === '30' ? 'default' : 'outline'}
+                    onClick={() => setOutreachDraft(prev => ({ ...prev, intervalMinutes: 30 }))}
+                  >
+                    Gentle (30m)
+                  </Button>
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={outreachDraft.intervalMinutes}
+                    onChange={(e) => setOutreachDraft(prev => ({ ...prev, intervalMinutes: e.target.value }))}
+                    className="w-24"
+                  />
+                </div>
               </SettingRow>
               <SettingRow
                 label="Random image folder"
@@ -2572,6 +2920,14 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   })}
                 >
                   Clear form
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleLoadHarassmentPreset}
+                >
+                  Default Harassment Preset
                 </Button>
                 <Button type="button" size="sm" onClick={handleSaveOutreachRule}>Save Outreach Rule</Button>
               </div>
@@ -2668,7 +3024,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         )}
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-medium">{label}</div>
-                          <div className="text-[11px] text-muted-foreground">Eloquent</div>
+                          <div className="text-[11px] text-muted-foreground">Mirid</div>
                           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{note.preview}</div>
                           {note.attachmentImageUrl ? (
                             <img
@@ -2697,28 +3053,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
               )}
             </SettingsSection>
 
-            <SettingsSection
-              title="Web Search"
-              description="Choose how chat web search runs: provider-native (Perplexity-style) or Eloquent prefetch for local models."
-            >
-              <SettingRow
-                label="Search mode"
-                htmlFor="web-search-strategy"
-                description="Auto uses native search on supported API endpoints (OpenRouter, Perplexity, nano-gpt); local GGUF uses Eloquent prefetch."
-              >
-                <select
-                  id="web-search-strategy"
-                  className="flex h-9 w-full max-w-xs rounded-md border border-input bg-background px-3 text-sm"
-                  value={localSettings.webSearchStrategy || 'auto'}
-                  onChange={(e) => handleChange('webSearchStrategy', e.target.value)}
-                >
-                  <option value="auto">Auto (prefer native)</option>
-                  <option value="eloquent">Always Eloquent prefetch</option>
-                  <option value="native">Native only</option>
-                  <option value="off">Off (globe still toggles per chat)</option>
-                </select>
-              </SettingRow>
-            </SettingsSection>
             </SettingsAccordion>
 
             <SettingsAccordion
@@ -2746,7 +3080,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                           enabled: true,
                           rotate_enabled: true,
                           context_window: null,
-                          supports_native_search: null,
                         }];
                         handleChange('customApiEndpoints', newEndpoints);
                       }}
@@ -2771,10 +3104,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
               {localSettings.apiEndpointRoundRobinEnabled === true && (() => {
                 const pool = getRotationPool(localSettings);
                 const catalog = readNanoGptModelsCache().models;
-                if (pool.length < 2) {
+                if (pool.length === 0) {
                   return (
                     <p className="text-xs text-muted-foreground px-1">
-                      Enable at least two endpoints with ⟳ rotation to use auto-routing.
+                      No endpoints are included in rotation. Mirid will keep using your individually selected model until you include one.
                     </p>
                   );
                 }
@@ -2859,34 +3192,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                     />
                   </div>
 
-                  <div className="flex items-center justify-between rounded-md border border-border/50 bg-background/40 px-3 py-2">
-                    <div className="text-xs text-muted-foreground max-w-[70%]">
-                      Supports native web search (OpenRouter / Perplexity / :online). Leave off for auto-detect.
-                    </div>
-                    <select
-                      className="text-xs rounded border bg-background px-2 py-1 max-w-[8rem]"
-                      value={
-                        endpoint.supports_native_search === true
-                          ? 'yes'
-                          : endpoint.supports_native_search === false
-                            ? 'no'
-                            : 'auto'
-                      }
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        const supports_native_search =
-                          v === 'yes' ? true : v === 'no' ? false : null;
-                        const updated = [...localSettings.customApiEndpoints];
-                        updated[index] = { ...endpoint, supports_native_search };
-                        handleChange('customApiEndpoints', updated);
-                      }}
-                    >
-                      <option value="auto">Auto</option>
-                      <option value="yes">Yes</option>
-                      <option value="no">No</option>
-                    </select>
-                  </div>
-
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                     <div>
                       <Label className="text-xs">API URL</Label>
@@ -2950,6 +3255,153 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                 , ~1h TTL). Browser fetch to nano-gpt.com may require CORS; stale cache is used on failure.
               </div>
             </SettingsSection>
+            </SettingsAccordion>
+
+            {/* Custom Jinja Chat Templates */}
+            <SettingsAccordion
+              title="Custom Chat Templates (Jinja)"
+              summary={chatTemplateSummary}
+            >
+              <SettingsSection
+                title="Custom Chat Templates"
+                description="Paste the exact Jinja chat template LM Studio uses for a model. The backend will render messages with it instead of using built-in heuristics."
+                actions={(
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      className="text-xs rounded border bg-background px-2 py-1 max-w-[16rem]"
+                      value={selectedTemplateModel}
+                      onChange={(e) => setSelectedTemplateModel(e.target.value)}
+                    >
+                      <option value="">Select a model...</option>
+                      {(availableModels || []).map((model) => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!selectedTemplateModel}
+                      onClick={() => {
+                        if (!selectedTemplateModel) return;
+                        const id = `template-${Date.now()}`;
+                        const next = {
+                          ...(localSettings.modelChatTemplates || {}),
+                          [id]: {
+                            patterns: selectedTemplateModel,
+                            template: '',
+                            stop_tokens: '<|im_end|>, <|im_start|>user',
+                          },
+                        };
+                        handleChange('modelChatTemplates', next);
+                        setSelectedTemplateModel('');
+                      }}
+                    >
+                      Add Template
+                    </Button>
+                  </div>
+                )}
+              >
+                {chatTemplateCount === 0 && (
+                  <p className="text-xs text-muted-foreground px-1">
+                    No custom templates yet. The pre-seeded froggeric Qwen 3.5/3.6 fixed chat template is already active for matching models.
+                  </p>
+                )}
+
+                {Object.entries(chatTemplates).map(([id, tmpl]) => {
+                  const patterns = Array.isArray(tmpl.patterns)
+                    ? tmpl.patterns.join(', ')
+                    : String(tmpl.patterns || '');
+                  const stops = Array.isArray(tmpl.stop_tokens)
+                    ? tmpl.stop_tokens.join(', ')
+                    : String(tmpl.stop_tokens || '<|im_end|>, <|im_start|>user');
+                  return (
+                    <div key={id} className="rounded-lg border border-border/60 bg-muted/20 p-4 space-y-3">
+                      <div className="flex flex-row items-center justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Template</p>
+                          <p className="text-xs text-muted-foreground truncate">{patterns || id}</p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            const next = { ...localSettings.modelChatTemplates };
+                            delete next[id];
+                            handleChange('modelChatTemplates', next);
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs">Match pattern(s)</Label>
+                        <Input
+                          placeholder="e.g. Huihui-Qwen3.6 or substring1, substring2"
+                          value={patterns}
+                          onChange={(e) => {
+                            const next = { ...localSettings.modelChatTemplates };
+                            next[id] = { ...tmpl, patterns: e.target.value };
+                            handleChange('modelChatTemplates', next);
+                          }}
+                        />
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          Comma-separated substrings of the model filename that trigger this template.
+                        </p>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs">Stop tokens</Label>
+                        <Input
+                          placeholder="<|im_end|>, <|im_start|>user"
+                          value={stops}
+                          onChange={(e) => {
+                            const next = { ...localSettings.modelChatTemplates };
+                            next[id] = { ...tmpl, stop_tokens: e.target.value };
+                            handleChange('modelChatTemplates', next);
+                          }}
+                        />
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          Comma-separated tokens that tell the model when to stop generating.
+                        </p>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs">Jinja template</Label>
+                        <Textarea
+                          placeholder="Paste the Jinja chat template here..."
+                          value={tmpl.template || ''}
+                          onChange={(e) => {
+                            const next = { ...localSettings.modelChatTemplates };
+                            next[id] = { ...tmpl, template: e.target.value };
+                            handleChange('modelChatTemplates', next);
+                          }}
+                          rows={12}
+                          className="font-mono text-xs"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </SettingsSection>
+            </SettingsAccordion>
+
+            {/* Vision Model (Two-Stage Pipeline) */}
+            <SettingsAccordion
+              title="Vision Model (Two-Stage Pipeline)"
+              summary="When an image is uploaded, a vision model analyzes it first and injects a structured description into your text model's context."
+            >
+              <SettingsSection
+                title="Vision Model Settings"
+                description="Configure the vision model for image analysis. Works with any text model."
+              >
+                <VisionModelSettings
+                  visionModel={localSettings.visionModel}
+                  setVisionModel={(value) => handleChange('visionModel', value || null)}
+                  visionSchema={localSettings.visionSchema}
+                  setVisionSchema={(value) => handleChange('visionSchema', value)}
+                />
+              </SettingsSection>
             </SettingsAccordion>
 
           </div>
@@ -3036,6 +3488,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                 </div>
               </div>
 
+              <SettingsAccordion
+                title="Custom model folders"
+                summary="Mirid uses preset folders unless you choose different locations here."
+              >
               <SettingRow label="Local SD Models Directory" htmlFor="sd-model-directory">
                 <div className="flex w-full md:w-auto items-center gap-2">
                   <Input
@@ -3147,6 +3603,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   </Button>
                 </div>
               </SettingRow>
+              </SettingsAccordion>
 
               <SettingRow label={`Default Steps (${localSettings.sdSteps || 20})`} layout="stack">
                 <Slider
@@ -3216,8 +3673,43 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         id="stt-engine"
                         value={localSettings.sttEngine || 'whisper'}
                         onValueChange={async (value) => {
-                          handleChange('sttEngine', value);
-                          updateSettings({ sttEngine: value });
+                          if (value === 'moonshine' && localSettings.sttEngine !== 'moonshine') {
+                            setIsInstallingEngine(true);
+                            try {
+                              const response = await fetch(`${PRIMARY_API_URL}/stt/install-engine?engine=moonshine`, { method: 'POST' });
+                              const data = await response.json();
+                              if (data.status === 'success') {
+                                handleChange('sttEngine', value);
+                                updateSettings({ sttEngine: value });
+} else if (value === 'nanogpt' && localSettings.sttEngine !== 'nanogpt') {
+                              // Fetch NanoGPT STT models when selecting NanoGPT
+                              fetchNanogptSttModels();
+                              handleChange('sttEngine', value);
+                              updateSettings({ sttEngine: value });
+                            } else {
+                                alert('Moonshine installation failed: ' + (data.message || 'Unknown error'));
+                              }
+                            } catch (e) {
+                              alert('Moonshine installation failed');
+                            } finally {
+                              setIsInstallingEngine(false);
+                            }
+                          } else if (value === 'nanogpt') {
+                            handleChange('sttEngine', value);
+                            updateSettings({ sttEngine: value });
+                            if (fetchNanogptSttModels) {
+                              fetchNanogptSttModels();
+                            }
+                          } else if (value === 'parakeet-cpp') {
+                            handleChange('sttEngine', value);
+                            updateSettings({ sttEngine: value });
+                            if (fetchParakeetCppModels) {
+                              fetchParakeetCppModels();
+                            }
+                          } else {
+                            handleChange('sttEngine', value);
+                            updateSettings({ sttEngine: value });
+                          }
                         }}
                       >
                         <SelectTrigger className="w-full md:max-w-xs">
@@ -3229,6 +3721,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                           <SelectItem value="parakeet">NVIDIA Parakeet v2 (English)</SelectItem>
                           <SelectItem value="parakeet-v3">NVIDIA Parakeet v3 (Multilingual)</SelectItem>
                           <SelectItem value="parakeet-zh">NVIDIA Parakeet (Chinese)</SelectItem>
+                          <SelectItem value="nemotron">NVIDIA Nemotron Speech Streaming (English)</SelectItem>
+                          <SelectItem value="moonshine">Moonshine Streaming Tiny (English, Lightweight)</SelectItem>
+                          <SelectItem value="parakeet-cpp">Parakeet.cpp GGUF (Local, CPU-friendly)</SelectItem>
+                          <SelectItem value="nanogpt">🌐 NanoGPT (Cloud)</SelectItem>
                         </SelectContent>
                       </Select>
 
@@ -3242,8 +3738,255 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         <RefreshCw className="h-4 w-4" />
                       </Button>
                     </div>
-                  </SettingRow>
-                  <SettingsAccordion
+</SettingRow>
+
+                   {localSettings.sttEngine === 'nanogpt' && (
+                     <>
+                       <SettingRow
+                         label="NanoGPT STT Model"
+                         htmlFor="stt-nanogpt-model"
+                         layout="stack"
+                         description="Select the specific NanoGPT STT model to use. Models are fetched from your NanoGPT account."
+                       >
+                         <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2">
+                           <Select
+                             id="stt-nanogpt-model"
+                             value={localSettings.nanogptSttModel || 'fun-asr-flash-2026-06-15'}
+                             onValueChange={(value) => {
+                               handleChange('nanogptSttModel', value);
+                               updateSettings({ nanogptSttModel: value });
+                             }}
+                           >
+                             <SelectTrigger className="w-full md:max-w-xs">
+                               <SelectValue />
+                             </SelectTrigger>
+                             <SelectContent>
+                               {nanogptSttModels.length > 0 ? (
+                                 nanogptSttModels.map((model) => (
+                                   <SelectItem key={model.id} value={model.id}>
+                                     {model.name || model.id}
+                                   </SelectItem>
+                                 ))
+                               ) : (
+                                 <>
+                                   <SelectItem value="fun-asr-flash-2026-06-15">Alibaba Fun-ASR Flash (Multilingual, Diarization, Timestamps)</SelectItem>
+                                   <SelectItem value="Whisper-Large-V3">Whisper Large V3 (High Accuracy)</SelectItem>
+                                   <SelectItem value="Wizper">Wizper (Fast Processing)</SelectItem>
+                                   <SelectItem value="Elevenlabs-STT">ElevenLabs STT (Async + Diarization)</SelectItem>
+                                   <SelectItem value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe (Improved Accuracy)</SelectItem>
+                                   <SelectItem value="openai-whisper-with-video">OpenAI Whisper with Video Support</SelectItem>
+                                 </>
+                               )}
+                             </SelectContent>
+                           </Select>
+                           <Button
+                             variant="outline"
+                             size="sm"
+                             onClick={fetchNanogptSttModels}
+                             disabled={!localSettings.nanoGptApiKey}
+                             className="mt-2 md:mt-0"
+                           >
+                             <RefreshCw className="h-4 w-4" />
+                           </Button>
+                           {!localSettings.nanoGptApiKey && (
+                             <span className="text-xs text-muted-foreground ml-2">
+                               Configure NanoGPT API Key in Settings → API Keys to fetch models
+                             </span>
+                           )}
+                         </div>
+                       </SettingRow>
+                     </>
+                    )}
+
+                    {localSettings.sttEngine === 'parakeet-cpp' && (
+                      <>
+                        <SettingRow
+                          label="Parakeet.cpp GGUF Model"
+                          htmlFor="stt-parakeet-cpp-model"
+                          layout="stack"
+                          description="Select a GGUF model from the NVIDIA Parakeet library. Models run on CPU via parakeet.cpp — no GPU or NeMo required. F16 is recommended (same accuracy as F32, ~1.7x smaller)."
+                        >
+                          <div className="space-y-3">
+                            <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2">
+                              <Select
+                                id="stt-parakeet-cpp-model"
+                                value={localSettings.parakeetCppModel || 'tdt_ctc-110m'}
+                                onValueChange={(value) => {
+                                  handleChange('parakeetCppModel', value);
+                                  updateSettings({ parakeetCppModel: value });
+                                }}
+                              >
+                                <SelectTrigger className="w-full md:max-w-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {(parakeetCppModels.length > 0 ? parakeetCppModels : [
+                                    { id: 'tdt_ctc-110m', label: 'Parakeet TDT+CTC 110M (Hybrid, Fastest)', params: '110M' },
+                                    { id: 'realtime_eou_120m-v1', label: 'Parakeet Realtime EOU 120M (Streaming)', params: '120M' },
+                                    { id: 'ctc-0.6b', label: 'Parakeet CTC 0.6B (English)', params: '0.6B' },
+                                    { id: 'rnnt-0.6b', label: 'Parakeet RNNT 0.6B (English)', params: '0.6B' },
+                                    { id: 'tdt-0.6b-v2', label: 'Parakeet TDT 0.6B v2 (English)', params: '0.6B' },
+                                    { id: 'tdt-0.6b-v3', label: 'Parakeet TDT 0.6B v3 (Multilingual)', params: '0.6B' },
+                                    { id: 'ctc-1.1b', label: 'Parakeet CTC 1.1B (English, High Accuracy)', params: '1.1B' },
+                                    { id: 'rnnt-1.1b', label: 'Parakeet RNNT 1.1B (English, High Accuracy)', params: '1.1B' },
+                                    { id: 'tdt-1.1b', label: 'Parakeet TDT 1.1B (English, High Accuracy)', params: '1.1B' },
+                                    { id: 'tdt_ctc-1.1b', label: 'Parakeet TDT+CTC 1.1B (Hybrid, Best Quality)', params: '1.1B' },
+                                  ]).map((model) => (
+                                    <SelectItem key={model.id} value={model.id}>
+                                      {model.label || model.id} ({model.params})
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+
+                              <Select
+                                value={localSettings.parakeetCppQuant || 'f16'}
+                                onValueChange={(value) => {
+                                  handleChange('parakeetCppQuant', value);
+                                  updateSettings({ parakeetCppQuant: value });
+                                }}
+                              >
+                                <SelectTrigger className="w-full md:max-w-[140px]">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="f16">F16 (Recommended)</SelectItem>
+                                  <SelectItem value="q8_0">Q8_0</SelectItem>
+                                  <SelectItem value="q6_k">Q6_K</SelectItem>
+                                  <SelectItem value="q5_k">Q5_K</SelectItem>
+                                  <SelectItem value="q4_k">Q4_K (Smallest)</SelectItem>
+                                </SelectContent>
+                              </Select>
+
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={fetchParakeetCppModels}
+                                className="mt-2 md:mt-0"
+                              >
+                                <RefreshCw className="h-4 w-4" />
+                              </Button>
+                            </div>
+
+                            {(() => {
+                              const selectedModel = (parakeetCppModels || []).find(m => m.id === (localSettings.parakeetCppModel || 'tdt_ctc-110m'));
+                              const selectedQuant = localSettings.parakeetCppQuant || 'f16';
+                              const variant = selectedModel?.variants?.find(v => v.quant === selectedQuant);
+                              if (variant) {
+                                return (
+                                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                                    <span>{variant.filename}</span>
+                                    <span>{variant.size_mb.toFixed(0)} MB</span>
+                                    {variant.downloaded ? (
+                                      <span className="text-green-500 font-medium">Downloaded</span>
+                                    ) : (
+                                      <span className="text-yellow-500 font-medium">Not downloaded</span>
+                                    )}
+                                  </div>
+                                );
+                              }
+                              return null;
+                            })()}
+
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={async () => {
+                                  const modelId = localSettings.parakeetCppModel || 'tdt_ctc-110m';
+                                  const quant = localSettings.parakeetCppQuant || 'f16';
+                                  setIsInstallingEngine(true);
+                                  try {
+                                    const result = await downloadParakeetCppModel(modelId, quant);
+                                    if (result.success) {
+                                      alert(result.message);
+                                    } else {
+                                      alert('Download failed: ' + result.message);
+                                    }
+                                  } finally {
+                                    setIsInstallingEngine(false);
+                                  }
+                                }}
+                                disabled={isInstallingEngine || !parakeetCppCliAvailable}
+                              >
+                                {isInstallingEngine
+                                  ? 'Downloading...'
+                                  : parakeetCppCliAvailable
+                                    ? 'Download Model'
+                                    : 'Runtime update required'}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  const selectedModel = (parakeetCppModels || []).find(m => m.id === (localSettings.parakeetCppModel || 'tdt_ctc-110m'));
+                                  const selectedQuant = localSettings.parakeetCppQuant || 'f16';
+                                  const variant = selectedModel?.variants?.find(v => v.quant === selectedQuant);
+                                  if (variant && variant.downloaded) {
+                                    if (confirm(`Delete ${variant.filename}?`)) {
+                                      const result = await deleteParakeetCppModel(variant.filename);
+                                      alert(result.success ? result.message : 'Delete failed: ' + result.message);
+                                    }
+                                  } else {
+                                    alert('This model variant is not downloaded.');
+                                  }
+                                }}
+                              >
+                                Delete Model
+                              </Button>
+                              {!parakeetCppCliAvailable && (
+                                <div className="w-full mt-2 p-3 rounded-md bg-yellow-500/10 border border-yellow-500/20">
+                                  <p className="text-xs text-yellow-400">
+                                    <strong>Parakeet.cpp is unavailable in this runtime.</strong>{' '}
+                                    Update Mirid or choose another speech-to-text engine.
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+
+                            {parakeetCppModels.length > 0 && (
+                              <div className="mt-3">
+                                <p className="text-xs font-medium mb-2 text-muted-foreground">All Models & Download Status</p>
+                                <div className="space-y-1 max-h-60 overflow-y-auto">
+                                  {parakeetCppModels.map((model) => (
+                                    <div key={model.id} className="flex items-center gap-2 text-xs p-1.5 rounded hover:bg-accent/50">
+                                      <span className="font-medium min-w-[180px]">{model.label}</span>
+                                      <div className="flex gap-1 flex-wrap">
+                                        {model.variants.map((v) => (
+                                          <button
+                                            key={v.quant}
+                                            onClick={async () => {
+                                              if (v.downloaded) {
+                                                if (confirm(`Delete ${v.filename}?`)) {
+                                                  await deleteParakeetCppModel(v.filename);
+                                                }
+                                              } else {
+                                                setIsInstallingEngine(true);
+                                                await downloadParakeetCppModel(model.id, v.quant);
+                                                setIsInstallingEngine(false);
+                                              }
+                                            }}
+                                            className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
+                                              v.downloaded
+                                                ? 'bg-green-500/20 border-green-500/30 text-green-400 hover:bg-red-500/20 hover:border-red-500/30 hover:text-red-400'
+                                                : 'bg-muted border-border text-muted-foreground hover:bg-accent'
+                                            }`}
+                                            title={v.downloaded ? `Click to delete (${v.size_mb.toFixed(0)} MB)` : `Click to download (${v.size_mb.toFixed(0)} MB)`}
+                                          >
+                                            {v.quant.toUpperCase()} {v.size_mb.toFixed(0)}MB {v.downloaded ? '✓' : ''}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </SettingRow>
+                      </>
+                    )}
+                    <SettingsAccordion
                     title="STT maintenance"
                     summary="Engine install/fix actions and quick GPU tooling."
                   >
@@ -3294,6 +4037,50 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                           onClick={async () => {
                             setIsInstallingEngine(true);
                             try {
+                              await fetch(`${PRIMARY_API_URL}/stt/install-engine?engine=nemotron`, { method: 'POST' });
+                              alert('Nemotron (English) installed successfully!');
+                            } catch (e) { alert('Failed'); } finally { setIsInstallingEngine(false); }
+                          }}
+                        >
+                          Force Install Nemotron (English)
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            setIsInstallingEngine(true);
+                            try {
+                              await fetch(`${PRIMARY_API_URL}/stt/install-engine?engine=moonshine`, { method: 'POST' });
+                              alert('Moonshine Streaming Tiny installed successfully!');
+                            } catch (e) { alert('Failed'); } finally { setIsInstallingEngine(false); }
+                          }}
+                        >
+                          Force Install Moonshine (Lightweight)
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            setIsInstallingEngine(true);
+                            try {
+                              const resp = await fetch(`${PRIMARY_API_URL}/stt/install-engine?engine=parakeet-cpp`, { method: 'POST' });
+                              const data = await resp.json();
+                              if (data.status === 'success') {
+                                alert('Parakeet.cpp is ready.');
+                              } else {
+                                alert(data.message || 'Parakeet.cpp is unavailable in this runtime.');
+                              }
+                            } catch (e) { alert('Failed'); } finally { setIsInstallingEngine(false); }
+                          }}
+                        >
+                          Check Parakeet.cpp runtime
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            setIsInstallingEngine(true);
+                            try {
                               await fetch(`${PRIMARY_API_URL}/stt/fix-parakeet-numpy`, { method: 'POST' });
                               alert('Fixed! Restart Backend.');
                             } catch (e) { alert('Failed'); } finally { setIsInstallingEngine(false); }
@@ -3310,9 +4097,107 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         <Button variant="outline" size="sm" disabled title="Not implemented">Load Kokoro on GPU1</Button>
                       </div>
                     </SettingRow>
-                  </SettingsAccordion>
-                </>
-              )}
+                        </SettingsAccordion>
+
+                      <SettingsAccordion
+                        title="VoxCPM2 GGUF (CPU/Metal/CUDA via llama.cpp-omni)"
+                        summary="Download GGUF weights for CPU-friendly VoxCPM2 inference without PyTorch."
+                      >
+                        <SettingRow label="GGUF Models" layout="stack">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  try {
+                                    const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
+                                    if (response.ok) {
+                                      const data = await response.json();
+                                      setVoxcpmGgufModels(data.models || []);
+                                      setVoxcpmGgufCliAvailable(data.cli_available || false);
+                                    }
+                                  } catch (e) {
+                                    console.error('Failed to fetch VoxCPM2 GGUF models:', e);
+                                  }
+                                }}
+                              >
+                                <RefreshCw className="h-4 w-4 mr-2" />
+                                Refresh Status
+                              </Button>
+                              {!voxcpmGgufCliAvailable && (
+                                <span className="text-xs text-yellow-600">
+                                  voxcpm2-cli not found. Build from llama.cpp-omni.
+                                </span>
+                              )}
+                            </div>
+                            {voxcpmGgufModels.length > 0 && (
+                              <div className="space-y-2 mt-3">
+                                {voxcpmGgufModels.map((model) => (
+                                  <div key={model.id} className="flex items-center justify-between p-2 border border-border/60 rounded">
+                                    <div className="flex-1">
+                                      <div className="text-sm font-medium">{model.label}</div>
+                                      <div className="text-xs text-muted-foreground">{model.component}</div>
+                                      <div className="text-xs text-muted-foreground">{model.filename} ({model.size_mb} MB)</div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      {model.downloaded ? (
+                                        <>
+                                          <span className="text-xs text-green-600">Downloaded</span>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={async () => {
+                                              if (window.confirm(`Delete ${model.filename}?`)) {
+                                                const result = await deleteVoxcpmGgufModel(model.filename);
+                                                alert(result.message);
+                                              }
+                                            }}
+                                          >
+                                            Delete
+                                          </Button>
+                                        </>
+                                      ) : (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={async () => {
+                                            try {
+                                              const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/download`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ model_id: model.id }),
+                                              });
+                                              const data = await response.json();
+                                              alert(data.message);
+                                              if (data.status === 'success') {
+                                                const refreshResponse = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
+                                                if (refreshResponse.ok) {
+                                                  const refreshData = await refreshResponse.json();
+                                                  setVoxcpmGgufModels(refreshData.models || []);
+                                                }
+                                              }
+                                            } catch (e) {
+                                              alert('Download failed: ' + e.message);
+                                            }
+                                          }}
+                                        >
+                                          Download
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="text-xs text-muted-foreground mt-2">
+                              Recommended: Download BaseLM-Q8_0 + Acoustic-F16 for CPU/Metal/CUDA inference via voxcpm2-cli.
+                            </div>
+                          </div>
+                        </SettingRow>
+                      </SettingsAccordion>
+                    </>
+                  )}
             </SettingsSection>
 
             <SettingsSection
@@ -3337,6 +4222,17 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         handleChange('ttsEngine', value);
                         if (value === 'kokoro') {
                           handleChange('ttsVoice', 'af_heart');
+                        } else if (value.startsWith('nanogpt-')) {
+                          // Fetch TTS models when selecting a NanoGPT engine
+                          if (fetchNanogptTtsModels) {
+                            fetchNanogptTtsModels();
+                          }
+                          // Set default voice based on model
+                          const modelId = value.replace('nanogpt-', '');
+                          const model = nanogptTtsModels.find(m => m.id === modelId);
+                          if (model && model.default_voice) {
+                            handleChange('ttsVoice', model.default_voice);
+                          }
                         }
                       }}
                     >
@@ -3347,7 +4243,20 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         <SelectItem value="kokoro">Kokoro TTS</SelectItem>
                         <SelectItem value="chatterbox">Chatterbox (Faster)</SelectItem>
                         <SelectItem value="chatterbox_turbo">Chatterbox Turbo</SelectItem>
-                        <SelectItem value="nanogpt-gpt-4o-mini-tts">NanoGPT (gpt-4o-mini-tts)</SelectItem>
+                        <SelectItem value="chatterbox_nano">Chatterbox Nano</SelectItem>
+                        <SelectItem value="voxcpm">VoxCPM2</SelectItem>
+                        <SelectItem value="voxcpm-gguf">VoxCPM2 GGUF (CPU/Metal/CUDA)</SelectItem>
+                        <SelectItem value="nanogpt-Qwen-3-TTS-1.7B">NanoGPT (Qwen-3-TTS-1.7B)</SelectItem>
+                        {nanogptTtsModels.length > 0 && (
+                          <>
+                            <SelectItem value="divider" disabled>⎯⎯⎯ NanoGPT Cloud Models ⎯⎯⎯</SelectItem>
+                            {nanogptTtsModels.map((model) => (
+                              <SelectItem key={model.id} value={`nanogpt-${model.id}`}>
+                                {model.name || model.id}
+                              </SelectItem>
+                            ))}
+                          </>
+                        )}
                       </SelectContent>
                     </Select>
                   </SettingRow>
@@ -3384,30 +4293,164 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   )}
 
                   {localSettings.ttsEngine && localSettings.ttsEngine.startsWith('nanogpt-') && (
-                    <SettingRow label="NanoGPT Voice" htmlFor="tts-voice">
-                      <Select
-                        id="tts-voice"
-                        value={localSettings.ttsVoice || 'alloy'}
-                        onValueChange={value => {
-                          handleChange('ttsVoice', value);
-                        }}
-                      >
-                        <SelectTrigger className="w-full md:w-64">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-64 overflow-y-auto">
-                          <SelectItem value="alloy">Alloy</SelectItem>
-                          <SelectItem value="echo">Echo</SelectItem>
-                          <SelectItem value="fable">Fable</SelectItem>
-                          <SelectItem value="onyx">Onyx</SelectItem>
-                          <SelectItem value="nova">Nova</SelectItem>
-                          <SelectItem value="shimmer">Shimmer</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </SettingRow>
+                    <>
+                      {(() => {
+                        const modelId = localSettings.ttsEngine.replace('nanogpt-', '');
+                        const model = nanogptTtsModels.find(m => m.id === modelId);
+                        const voices = model?.voices || [];
+                        const defaultVoice = model?.default_voice;
+                        const isKokoro = modelId === 'Kokoro-82m';
+                        const isKnownModel = model != null;
+
+                        // Unknown model (not in fetched list) -> show text input for voice
+                        if (!isKnownModel) {
+                          return (
+                            <SettingRow label="NanoGPT Voice" htmlFor="tts-voice">
+                              <Input
+                                id="tts-voice"
+                                type="text"
+                                value={localSettings.ttsVoice || ''}
+                                onChange={(e) => handleChange('ttsVoice', e.target.value)}
+                                placeholder="Enter voice ID (model-specific)"
+                                className="w-full md:w-64"
+                              />
+                            </SettingRow>
+                          );
+                        }
+
+                        let voiceItems = [];
+                        if (isKokoro) {
+                          // Group Kokoro voices: English first, then other languages as expansion groups
+                          const englishFemale = voices.filter(v => v.startsWith('af_')).sort();
+                          const englishMale = voices.filter(v => v.startsWith('am_')).sort();
+                          const britishFemale = voices.filter(v => v.startsWith('bf_')).sort();
+                          const britishMale = voices.filter(v => v.startsWith('bm_')).sort();
+                          const otherVoices = voices.filter(v =>
+                            !v.startsWith('af_') && !v.startsWith('am_') &&
+                            !v.startsWith('bf_') && !v.startsWith('bm_')
+                          ).sort();
+
+                          voiceItems = [
+                            ...englishFemale.map(v => <SelectItem key={`voice-${v}`} value={v}>{formatKokoroVoiceName(v)}</SelectItem>),
+                            ...englishMale.map(v => <SelectItem key={`voice-${v}`} value={v}>{formatKokoroVoiceName(v)}</SelectItem>),
+                          ];
+                          if (britishFemale.length > 0) {
+                            voiceItems.push(<SelectItem key="header-british-female" disabled>— British English (Female) —</SelectItem>);
+                            voiceItems = voiceItems.concat(britishFemale.map(v => <SelectItem key={`voice-${v}`} value={v}>{formatKokoroVoiceName(v)}</SelectItem>));
+                          }
+                          if (britishMale.length > 0) {
+                            voiceItems.push(<SelectItem key="header-british-male" disabled>— British English (Male) —</SelectItem>);
+                            voiceItems = voiceItems.concat(britishMale.map(v => <SelectItem key={`voice-${v}`} value={v}>{formatKokoroVoiceName(v)}</SelectItem>));
+                          }
+                          if (otherVoices.length > 0) {
+                            voiceItems.push(<SelectItem key="header-other" disabled>— Other Languages —</SelectItem>);
+                            voiceItems = voiceItems.concat(otherVoices.map(v => <SelectItem key={`voice-${v}`} value={v}>{formatKokoroVoiceName(v)}</SelectItem>));
+                          }
+                        } else {
+                          // Qwen and other models: flat list
+                          voiceItems = voices.map(v => <SelectItem key={`voice-${v}`} value={v}>{v}</SelectItem>);
+                        }
+
+                        return (
+                          <>
+                            <SettingRow label="NanoGPT Voice" htmlFor="tts-voice">
+                              <Select
+                                id="tts-voice"
+                                value={localSettings.ttsVoice || defaultVoice || 'Vivian'}
+                                onValueChange={value => { handleChange('ttsVoice', value); }}
+                              >
+                                <SelectTrigger className="w-full md:w-64">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent className="max-h-64 overflow-y-auto">
+                                  {voiceItems}
+                                </SelectContent>
+                              </Select>
+                            </SettingRow>
+                            <SettingRow label="Manual voice name" htmlFor="tts-voice-custom">
+                              <Input
+                                id="tts-voice-custom"
+                                type="text"
+                                value={localSettings.ttsVoice || ''}
+                                onChange={(e) => handleChange('ttsVoice', e.target.value)}
+                                placeholder="Type any voice name (overrides dropdown)"
+                                className="w-full md:w-64"
+                              />
+                            </SettingRow>
+                          </>
+                        );
+                      })()}
+                      {localSettings.ttsEngine === 'nanogpt-Qwen-3-TTS-1.7B' && (
+                        <>
+                          <SettingRow label="Style Prompt" htmlFor="nanogpt-tts-prompt">
+                            <Input
+                              id="nanogpt-tts-prompt"
+                              type="text"
+                              value={localSettings.nanoGptTtsPrompt || ''}
+                              onChange={(e) => handleChange('nanoGptTtsPrompt', e.target.value)}
+                              placeholder="e.g., Very happy."
+                              className="w-full md:w-64"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Language" htmlFor="nanogpt-tts-language">
+                            <Select
+                              id="nanogpt-tts-language"
+                              value={localSettings.nanoGptTtsLanguage || 'Auto'}
+                              onValueChange={value => handleChange('nanoGptTtsLanguage', value)}
+                            >
+                              <SelectTrigger className="w-full md:w-64">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-64 overflow-y-auto">
+                                <SelectItem value="Auto">Auto</SelectItem>
+                                <SelectItem value="English">English</SelectItem>
+                                <SelectItem value="Chinese">Chinese</SelectItem>
+                                <SelectItem value="Spanish">Spanish</SelectItem>
+                                <SelectItem value="French">French</SelectItem>
+                                <SelectItem value="German">German</SelectItem>
+                                <SelectItem value="Italian">Italian</SelectItem>
+                                <SelectItem value="Japanese">Japanese</SelectItem>
+                                <SelectItem value="Korean">Korean</SelectItem>
+                                <SelectItem value="Portuguese">Portuguese</SelectItem>
+                                <SelectItem value="Russian">Russian</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </SettingRow>
+                          <SettingRow label="Speaker Embedding URL" htmlFor="nanogpt-tts-embedding-url">
+                            <Input
+                              id="nanogpt-tts-embedding-url"
+                              type="text"
+                              value={localSettings.nanoGptTtsSpeakerEmbeddingUrl || ''}
+                              onChange={(e) => handleChange('nanoGptTtsSpeakerEmbeddingUrl', e.target.value)}
+                              placeholder="https://... (safetensors file URL)"
+                              className="w-full md:w-64"
+                            />
+                          </SettingRow>
+                          <SettingRow label="Reference Text" htmlFor="nanogpt-tts-reference-text">
+                            <Input
+                              id="nanogpt-tts-reference-text"
+                              type="text"
+                              value={localSettings.nanoGptTtsReferenceText || ''}
+                              onChange={(e) => handleChange('nanoGptTtsReferenceText', e.target.value)}
+                              placeholder="Optional reference text for speaker embedding"
+                              className="w-full md:w-64"
+                            />
+                          </SettingRow>
+                        </>
+                      )}
+                      <SettingRow label="NanoGPT API Key" htmlFor="nanogpt-api-key-tts">
+                        <Input
+                          id="nanogpt-api-key-tts"
+                          type="password"
+                          value={localSettings.nanoGptApiKey || ''}
+                          onChange={(e) => handleChange('nanoGptApiKey', e.target.value)}
+                          placeholder="sk-nano-..."
+                        />
+                      </SettingRow>
+                    </>
                   )}
 
-                  {(localSettings.ttsEngine === 'chatterbox' || localSettings.ttsEngine === 'chatterbox_turbo') && (
+                  {(localSettings.ttsEngine === 'chatterbox' || localSettings.ttsEngine === 'chatterbox_turbo' || localSettings.ttsEngine === 'chatterbox_nano') && (
                     <>
                       <SettingsAccordion
                         title="Engine maintenance tools"
@@ -3530,7 +4573,197 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         </Select>
                       </SettingRow>
 
-                      <SettingsAccordion title="VRAM management" summary="Unload or reload Chatterbox service.">
+                      {(() => {
+                        const engineUnloadMap = {
+                          chatterbox_turbo: '/tts/unload-chatterbox-turbo',
+                          chatterbox_nano: '/tts/unload-chatterbox-nano',
+                        };
+                        const engineReloadMap = {
+                          chatterbox_turbo: '/tts/reload-chatterbox-turbo',
+                          chatterbox_nano: '/tts/reload-chatterbox-nano',
+                        };
+                        const unloadEndpoint = engineUnloadMap[localSettings.ttsEngine] || '/tts/unload-chatterbox';
+                        const reloadEndpoint = engineReloadMap[localSettings.ttsEngine] || '/tts/reload-chatterbox';
+                        const engineLabel = localSettings.ttsEngine === 'chatterbox_nano' ? 'Nano' : localSettings.ttsEngine === 'chatterbox_turbo' ? 'Turbo' : 'Chatterbox';
+                        return (
+                          <SettingsAccordion title="VRAM management" summary={`Unload or reload ${engineLabel} service.`}>
+                            <SettingRow label="VRAM Management" layout="stack">
+                              <div className="flex flex-col md:flex-row gap-3">
+                                <Button
+                                  variant="outline"
+                                  onClick={async () => {
+                                    try {
+                                      setIsUnloadingChatterbox(true);
+                                      await fetch(`${TTS_API_URL}${unloadEndpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                                      alert('Unloaded!');
+                                    } finally { setIsUnloadingChatterbox(false); }
+                                  }}
+                                  disabled={isUnloadingChatterbox}
+                                  className="flex-1"
+                                >
+                                  Unload {engineLabel}
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  onClick={async () => {
+                                    try {
+                                      setIsReloadingChatterbox(true);
+                                      await fetch(`${TTS_API_URL}${reloadEndpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                                      alert('Reloaded!');
+                                    } finally { setIsReloadingChatterbox(false); }
+                                  }}
+                                  disabled={isReloadingChatterbox}
+                                  className="flex-1"
+                                >
+                                  Reload {engineLabel}
+                                </Button>
+                              </div>
+                            </SettingRow>
+                          </SettingsAccordion>
+                        );
+                      })()}
+                    </>
+                  )}
+
+                  {localSettings.ttsEngine === 'voxcpm' && (
+                    <>
+                      <SettingsAccordion
+                        title="Engine maintenance tools"
+                        summary="Voice upload, Voice Merge Lab, ffmpeg path, and VRAM actions."
+                      >
+                        <SettingRow label="Upload Voice Reference" htmlFor="voice-upload" layout="stack">
+                          <Input
+                            id="voice-upload"
+                            type="file"
+                            accept=".wav,.mp3,.flac,.m4a"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              try {
+                                setIsUploadingVoice(true);
+                                const formData = new FormData();
+                                formData.append('file', file);
+                                const response = await fetch(`${PRIMARY_API_URL}/tts/upload-voice`, {
+                                  method: 'POST', body: formData,
+                                });
+                                const result = await response.json();
+                                handleChange('ttsVoice', result.voice_id);
+                                await fetchAvailableVoices();
+                                alert(`Voice "${file.name}" uploaded successfully!`);
+                              } catch (error) {
+                                alert(`Failed to upload voice: ${error.message}`);
+                              } finally {
+                                setIsUploadingVoice(false);
+                              }
+                            }}
+                            disabled={!ttsEnabled || isUploadingVoice}
+                          />
+                        </SettingRow>
+
+                        <SettingRow
+                          label="FFmpeg path"
+                          htmlFor="ffmpeg-path"
+                          description="Optional. Voice Merge, STT, and D-ID need ffmpeg.exe."
+                        >
+                          <Input
+                            id="ffmpeg-path"
+                            className="font-mono text-xs"
+                            value={localSettings.ffmpegPath || ''}
+                            onChange={(e) => handleChange('ffmpegPath', e.target.value.trim())}
+                            placeholder="C:\ffmpeg\bin\ffmpeg.exe"
+                            disabled={!ttsEnabled}
+                          />
+                        </SettingRow>
+
+                        <VoiceSculptPanel
+                          disabled={!ttsEnabled}
+                          onVoiceReady={async (data) => {
+                            if (data?.voice_id) {
+                              handleChange('ttsVoice', data.voice_id);
+                              await fetchAvailableVoices();
+                            }
+                          }}
+                        />
+                      </SettingsAccordion>
+
+                      <SettingRow label="Active Voice" htmlFor="voxcpm-voice">
+                        <Select
+                          id="voxcpm-voice"
+                          value={localSettings.ttsVoice || 'default'}
+                          onValueChange={value => {
+                            handleChange('ttsVoice', value);
+                            fetch(`${PRIMARY_API_URL}/tts/save-voice-preference`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ voice_id: value, engine: 'voxcpm' })
+                            });
+                          }}
+                        >
+                          <SelectTrigger className="w-full md:w-64">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="default">Default Voice</SelectItem>
+                            {availableVoices?.chatterbox_voices?.map(voice => (
+                              <SelectItem key={voice.id} value={voice.id}>{voice.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </SettingRow>
+
+                      <SettingRow label="Voice Design" htmlFor="voxcpm-voice-design" layout="stack" description="Describe a voice (e.g. 'A young woman, gentle and sweet voice'). Leave empty to use voice reference instead.">
+                        <Input
+                          id="voxcpm-voice-design"
+                          value={localSettings.voxcpmVoiceDesign || ''}
+                          onChange={(e) => handleChange('voxcpmVoiceDesign', e.target.value)}
+                          placeholder="A young woman, gentle and sweet voice"
+                          disabled={!ttsEnabled}
+                        />
+                      </SettingRow>
+
+                      <SettingRow label={`CFG Value (${(localSettings.voxcpmCfgValue || 2.0).toFixed(1)})`} layout="stack" description="LM guidance strength. Higher = more prompt adherence, but may degrade quality.">
+                        <Slider
+                          id="voxcpm-cfg-value"
+                          min={1.0} max={5.0} step={0.5}
+                          value={[localSettings.voxcpmCfgValue || 2.0]}
+                          onValueChange={([v]) => handleChange('voxcpmCfgValue', v)}
+                        />
+                      </SettingRow>
+
+                      <SettingRow label={`Inference Timesteps (${localSettings.voxcpmInferenceTimesteps || 8})`} layout="stack" description="Diffusion steps. Higher = better quality but slower. Lower = faster. Minimum 1 for fastest.">
+                        <Slider
+                          id="voxcpm-inference-timesteps"
+                          min={1} max={50} step={1}
+                          value={[localSettings.voxcpmInferenceTimesteps || 8]}
+                          onValueChange={([v]) => handleChange('voxcpmInferenceTimesteps', v)}
+                        />
+                      </SettingRow>
+
+                      <SettingRow label="Normalize Text" htmlFor="voxcpm-normalize">
+                        <Switch
+                          id="voxcpm-normalize"
+                          checked={localSettings.voxcpmNormalize ?? false}
+                          onCheckedChange={(value) => handleChange('voxcpmNormalize', value)}
+                        />
+                      </SettingRow>
+
+                      <SettingRow label="Denoise Output" htmlFor="voxcpm-denoise">
+                        <Switch
+                          id="voxcpm-denoise"
+                          checked={localSettings.voxcpmDenoise ?? false}
+                          onCheckedChange={(value) => handleChange('voxcpmDenoise', value)}
+                        />
+                      </SettingRow>
+
+                      <SettingRow label="Retry Bad Cases" htmlFor="voxcpm-retry-badcase">
+                        <Switch
+                          id="voxcpm-retry-badcase"
+                          checked={localSettings.voxcpmRetryBadcase ?? false}
+                          onCheckedChange={(value) => handleChange('voxcpmRetryBadcase', value)}
+                        />
+                      </SettingRow>
+
+                      <SettingsAccordion title="VRAM management" summary="Unload or reload VoxCPM2 service.">
                         <SettingRow label="VRAM Management" layout="stack">
                           <div className="flex flex-col md:flex-row gap-3">
                             <Button
@@ -3538,29 +4771,243 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                               onClick={async () => {
                                 try {
                                   setIsUnloadingChatterbox(true);
-                                  await fetch(`${TTS_API_URL}/tts/unload-chatterbox`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-                                  alert('Unloaded!');
+                                  await fetch(`${TTS_API_URL}/tts/unload-voxcpm`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                                  alert('VoxCPM2 Unloaded!');
                                 } finally { setIsUnloadingChatterbox(false); }
                               }}
                               disabled={isUnloadingChatterbox}
                               className="flex-1"
                             >
-                              Unload Chatterbox
+                              Unload VoxCPM2
                             </Button>
                             <Button
                               variant="outline"
                               onClick={async () => {
                                 try {
                                   setIsReloadingChatterbox(true);
-                                  await fetch(`${TTS_API_URL}/tts/reload-chatterbox`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-                                  alert('Reloaded!');
+                                  await fetch(`${TTS_API_URL}/tts/reload-voxcpm`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+                                  alert('VoxCPM2 Reloaded!');
                                 } finally { setIsReloadingChatterbox(false); }
                               }}
                               disabled={isReloadingChatterbox}
                               className="flex-1"
                             >
-                              Reload Chatterbox
+                              Reload VoxCPM2
                             </Button>
+                          </div>
+                        </SettingRow>
+                      </SettingsAccordion>
+                    </>
+                  )}
+
+                  {localSettings.ttsEngine === 'voxcpm-gguf' && (
+                    <>
+                      <SettingsAccordion
+                        title="Engine maintenance tools"
+                        summary="Voice upload, Voice Merge Lab, and ffmpeg path."
+                      >
+                        <SettingRow label="Upload Voice Reference" htmlFor="voice-upload-gguf" layout="stack">
+                          <Input
+                            id="voice-upload-gguf"
+                            type="file"
+                            accept=".wav,.mp3,.flac,.m4a"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              try {
+                                setIsUploadingVoice(true);
+                                const formData = new FormData();
+                                formData.append('file', file);
+                                const response = await fetch(`${PRIMARY_API_URL}/tts/upload-voice`, {
+                                  method: 'POST', body: formData,
+                                });
+                                const result = await response.json();
+                                handleChange('ttsVoice', result.voice_id);
+                                await fetchAvailableVoices();
+                                alert(`Voice "${file.name}" uploaded successfully!`);
+                              } catch (error) {
+                                alert(`Failed to upload voice: ${error.message}`);
+                              } finally {
+                                setIsUploadingVoice(false);
+                              }
+                            }}
+                            disabled={!ttsEnabled || isUploadingVoice}
+                          />
+                        </SettingRow>
+
+                        <SettingRow
+                          label="FFmpeg path"
+                          htmlFor="ffmpeg-path-gguf"
+                          description="Optional. Voice Merge, STT, and D-ID need ffmpeg.exe."
+                        >
+                          <Input
+                            id="ffmpeg-path-gguf"
+                            className="font-mono text-xs"
+                            value={localSettings.ffmpegPath || ''}
+                            onChange={(e) => handleChange('ffmpegPath', e.target.value.trim())}
+                            placeholder="C:\ffmpeg\bin\ffmpeg.exe"
+                            disabled={!ttsEnabled}
+                          />
+                        </SettingRow>
+
+                        <VoiceSculptPanel
+                          disabled={!ttsEnabled}
+                          onVoiceReady={async (data) => {
+                            if (data?.voice_id) {
+                              handleChange('ttsVoice', data.voice_id);
+                              await fetchAvailableVoices();
+                            }
+                          }}
+                        />
+                      </SettingsAccordion>
+
+                      <SettingRow label="Active Voice" htmlFor="voxcpm-gguf-voice">
+                        <Select
+                          id="voxcpm-gguf-voice"
+                          value={localSettings.ttsVoice || 'default'}
+                          onValueChange={value => {
+                            handleChange('ttsVoice', value);
+                            fetch(`${PRIMARY_API_URL}/tts/save-voice-preference`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ voice_id: value, engine: 'voxcpm-gguf' })
+                            });
+                          }}
+                        >
+                          <SelectTrigger className="w-full md:w-64">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="default">Default Voice</SelectItem>
+                            {availableVoices?.chatterbox_voices?.map(voice => (
+                              <SelectItem key={voice.id} value={voice.id}>{voice.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </SettingRow>
+
+                      <SettingRow label="Voice Design" htmlFor="voxcpm-gguf-voice-design" layout="stack" description="Describe a voice (e.g. 'A young woman, gentle and sweet voice'). Leave empty to use voice reference instead.">
+                        <Input
+                          id="voxcpm-gguf-voice-design"
+                          value={localSettings.voxcpmVoiceDesign || ''}
+                          onChange={(e) => handleChange('voxcpmVoiceDesign', e.target.value)}
+                          placeholder="A young woman, gentle and sweet voice"
+                          disabled={!ttsEnabled}
+                        />
+                      </SettingRow>
+
+                      <SettingRow label={`CFG Value (${(localSettings.voxcpmCfgValue || 2.0).toFixed(1)})`} layout="stack" description="LM guidance strength. Higher = more prompt adherence, but may degrade quality.">
+                        <Slider
+                          id="voxcpm-gguf-cfg-value"
+                          min={0.5} max={5.0} step={0.1}
+                          value={[localSettings.voxcpmCfgValue || 2.0]}
+                          onValueChange={([v]) => handleChange('voxcpmCfgValue', v)}
+                        />
+                      </SettingRow>
+
+                      <SettingRow label={`Inference Timesteps (${localSettings.voxcpmInferenceTimesteps || 10})`} layout="stack" description="Diffusion steps. Higher = better quality but slower.">
+                        <Slider
+                          id="voxcpm-gguf-inference-timesteps"
+                          min={1} max={50} step={1}
+                          value={[localSettings.voxcpmInferenceTimesteps || 10]}
+                          onValueChange={([v]) => handleChange('voxcpmInferenceTimesteps', v)}
+                        />
+                      </SettingRow>
+
+                      <SettingsAccordion
+                        title="VoxCPM2 GGUF (CPU/Metal/CUDA via llama.cpp-omni)"
+                        summary="Download GGUF weights for CPU-friendly VoxCPM2 inference without PyTorch."
+                      >
+                        <SettingRow label="GGUF Models" layout="stack">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  try {
+                                    const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
+                                    if (response.ok) {
+                                      const data = await response.json();
+                                      setVoxcpmGgufModels(data.models || []);
+                                      setVoxcpmGgufCliAvailable(data.cli_available || false);
+                                    }
+                                  } catch (e) {
+                                    console.error('Failed to fetch VoxCPM2 GGUF models:', e);
+                                  }
+                                }}
+                              >
+                                <RefreshCw className="h-4 w-4 mr-2" />
+                                Refresh Status
+                              </Button>
+                              {!voxcpmGgufCliAvailable && (
+                                <span className="text-xs text-yellow-600">
+                                  voxcpm2-cli not found. Build from llama.cpp-omni.
+                                </span>
+                              )}
+                            </div>
+                            {voxcpmGgufModels.length > 0 && (
+                              <div className="space-y-2 mt-3">
+                                {voxcpmGgufModels.map((model) => (
+                                  <div key={model.id} className="flex items-center justify-between p-2 border border-border/60 rounded">
+                                    <div className="flex-1">
+                                      <div className="text-sm font-medium">{model.label}</div>
+                                      <div className="text-xs text-muted-foreground">{model.component}</div>
+                                      <div className="text-xs text-muted-foreground">{model.filename} ({model.size_mb} MB)</div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      {model.downloaded ? (
+                                        <>
+                                          <span className="text-xs text-green-600">Downloaded</span>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={async () => {
+                                              if (window.confirm(`Delete ${model.filename}?`)) {
+                                                const result = await deleteVoxcpmGgufModel(model.filename);
+                                                alert(result.message);
+                                              }
+                                            }}
+                                          >
+                                            Delete
+                                          </Button>
+                                        </>
+                                      ) : (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={async () => {
+                                            try {
+                                              const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/download`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ model_id: model.id }),
+                                              });
+                                              const data = await response.json();
+                                              alert(data.message);
+                                              if (data.status === 'success') {
+                                                const refreshResponse = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
+                                                if (refreshResponse.ok) {
+                                                  const refreshData = await refreshResponse.json();
+                                                  setVoxcpmGgufModels(refreshData.models || []);
+                                                }
+                                              }
+                                            } catch (e) {
+                                              alert('Download failed: ' + e.message);
+                                            }
+                                          }}
+                                        >
+                                          Download
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="text-xs text-muted-foreground mt-2">
+                              Recommended: Download BaseLM-Q8_0 + Acoustic-F16 for CPU/Metal/CUDA inference via voxcpm2-cli.
+                            </div>
                           </div>
                         </SettingRow>
                       </SettingsAccordion>
@@ -3572,6 +5019,18 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                       id="tts-autoplay"
                       checked={localSettings.ttsAutoPlay}
                       onCheckedChange={(value) => handleChange('ttsAutoPlay', value)}
+                    />
+                  </SettingRow>
+
+                  <SettingRow
+                    label="Wait for full response"
+                    htmlFor="tts-wait-full"
+                    description="When enabled, TTS waits for the complete AI response before starting playback. Eliminates mid-stream gaps at the cost of initial latency."
+                  >
+                    <Switch
+                      id="tts-wait-full"
+                      checked={localSettings.ttsWaitForFullResponse ?? false}
+                      onCheckedChange={(value) => handleChange('ttsWaitForFullResponse', value)}
                     />
                   </SettingRow>
 
@@ -3632,7 +5091,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                     </SettingRow>
                   </SettingsAccordion>
 
-                  <SettingRow label={`Speech Speed (${(localSettings.ttsSpeed || 1.0).toFixed(1)}x)`} layout="stack">
+                  <SettingRow
+                    label={`Speech Speed (${(localSettings.ttsSpeed || 1.0).toFixed(1)}x)`}
+                    layout="stack"
+                    description="Changes speaking pace without raising or lowering the voice."
+                  >
                     <Slider
                       id="tts-speed"
                       min={0.5} max={3.0} step={0.1}
@@ -3642,17 +5105,32 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   </SettingRow>
 
                   <SettingRow
-                    label={`Autoplay chunk size (${localSettings.ttsStreamChunkSentences || 2} sentence${(localSettings.ttsStreamChunkSentences || 2) === 1 ? '' : 's'})`}
+                    label={`Autoplay chunk size (${localSettings.ttsStreamChunkSentences || 3} sentence${(localSettings.ttsStreamChunkSentences || 3) === 1 ? '' : 's'})`}
                     layout="stack"
-                    description="How many sentences the server groups per autoplay TTS chunk. Higher values increase initial wait but usually reduce boundary gaps."
+                    description="How many sentences the server groups per autoplay TTS chunk. Minimum 3. Higher values increase initial wait but reduce boundary gaps for slow engines."
                   >
                     <Slider
                       id="tts-stream-chunk-sentences"
-                      min={1}
+                      min={3}
                       max={12}
                       step={1}
-                      value={[localSettings.ttsStreamChunkSentences || 2]}
+                      value={[localSettings.ttsStreamChunkSentences || 3]}
                       onValueChange={([v]) => handleChange('ttsStreamChunkSentences', v)}
+                    />
+                  </SettingRow>
+
+                  <SettingRow
+                    label={`Prebuffer before playback (${localSettings.ttsPrebufferSeconds || 0}s)`}
+                    layout="stack"
+                    description="Seconds of audio to buffer before starting autoplay playback. 0 = start immediately. Set to ~45 for engines with RTF > 1 (e.g. VoxCPM) to prevent mid-stream stalls."
+                  >
+                    <Slider
+                      id="tts-prebuffer-seconds"
+                      min={0}
+                      max={120}
+                      step={5}
+                      value={[localSettings.ttsPrebufferSeconds || 0]}
+                      onValueChange={([v]) => handleChange('ttsPrebufferSeconds', v)}
                     />
                   </SettingRow>
 
@@ -3670,7 +5148,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   <SettingRow
                     label="Test streaming TTS"
                     layout="stack"
-                    description="Same WebSocket pipeline as chat autoplay: text is chunked on the server. At 1.0× speed, chunks play gaplessly via Web Audio; at other speeds, playback matches tap-to-play (HTML audio with pitch preserved). Engine/voice/exaggeration use the values above. Guidance scale applies only to Chatterbox (Faster), not Turbo. Connects even when Auto-Play TTS is off."
+                    description="Uses the same live playback as chat autoplay. Mirid keeps pace and pitch separate, so faster speech should not sound smaller. Connects even when Auto-Play TTS is off."
                   >
                     <input
                       ref={ttsTestFileInputRef}
@@ -3814,7 +5292,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   <SettingRow
                     label="Custom intro prompt (optional)"
                     layout="stack"
-                    description="Leave blank for the built-in JSON template. Placeholders: {{CHARACTER_BLOCK}}, {{USER_BLOCK}}, {{STORY_BLOCK}}, {{CHAT_HISTORY}}, {{CHARACTER_SYSTEM_PROMPT}}."
+                    description="Leave blank for the built-in JSON template. Placeholders: {{CHARACTER_BLOCK}}, {{USER_BLOCK}}, {{CHAT_HISTORY}}, {{CHARACTER_SYSTEM_PROMPT}}."
                   >
                     <Textarea
                       id="character-intro-prompt"
@@ -3902,7 +5380,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                     label="Custom prompt template"
                     htmlFor="call-mode-about-prompt"
                     layout="stack"
-                    description="Placeholders: {{CHARACTER_SYSTEM_PROMPT}}, {{CHARACTER_BLOCK}}, {{USER_BLOCK}}, {{STORY_BLOCK}}, {{CHAT_HISTORY}}. Empty = built-in template with per-card field rubric (Essence, On this call, With you, etc.). Custom templates should keep the same JSON keys."
+                    description="Placeholders: {{CHARACTER_SYSTEM_PROMPT}}, {{CHARACTER_BLOCK}}, {{USER_BLOCK}}, {{CHAT_HISTORY}}. Empty = built-in template with per-card field rubric (Essence, On this call, With you, etc.). Custom templates should keep the same JSON keys."
                   >
                     <Textarea
                       id="call-mode-about-prompt"
@@ -4003,35 +5481,21 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
           </div>
         </TabsContent>
 
-        {/* Persona realignment — prompt pack, LLM run, parse (optional code-excerpts appendix uses /memory/ethics_review/* on the server) */}
+        {/* Character behaviour review */}
         <TabsContent value="persona-realignment">
           <div className="space-y-4">
             <Card className="border-primary/30 bg-gradient-to-br from-primary/[0.06] to-transparent shadow-sm">
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Sparkles className="h-5 w-5 text-primary shrink-0" aria-hidden />
-                  Persona realignment
+                  Refresh a character
                 </CardTitle>
                 <CardDescription className="text-sm leading-relaxed">
-                  Use the sticky <strong>Build → Run model → Parse</strong> row. Defaults are enough to try it; open <strong>More options</strong> in the panel only if you need code snippets, long notes, or disk save. Curators and the memory list are under sidebar <strong>Memory tools</strong>.
+                  Choose what context the review may use, then let Mirid gather it, run the selected model and prepare a proposed update. Nothing is saved until you review and confirm it. The complete set of memory tools also lives in the sidebar.
                 </CardDescription>
               </CardHeader>
             </Card>
             <PersonaRealignmentPanel />
-          </div>
-        </TabsContent>
-
-        <TabsContent value="chatlog-condenser">
-          <div className="space-y-4">
-            <Card className="border-primary/30 bg-gradient-to-br from-primary/[0.06] to-transparent shadow-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-lg">Chatlog condenser</CardTitle>
-                <CardDescription className="text-sm leading-relaxed">
-                  Compress long AI conversations without flattening reasoning structure — for sharing with another model inside context limits.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-            <ChatlogCondenserPanel />
           </div>
         </TabsContent>
 
@@ -4040,76 +5504,30 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
           <MemoryEditorTab onOpenPersonaRealignment={() => setSettingsMainTab('persona-realignment')} />
         </TabsContent>
 
-        {/* Lore Debugger */}
-        <TabsContent value="lore">
-          <Card>
-            <CardHeader><CardTitle>Lore Debugger</CardTitle></CardHeader>
-            <CardContent><LoreDebugger /></CardContent>
-          </Card>
-        </TabsContent>
         {/*local sd*/}
         {/* About */}
         <TabsContent value="about">
           <div className="space-y-6">
-            <SettingsSection
-              title="About Eloquent"
-              description="Local-first AI platform built for power users."
-            >
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Eloquent is a local-first AI platform that combines LLM chat, image generation, voice,
-                  evaluation, and tooling in one interface. It is designed to run on your hardware
-                  (Windows + NVIDIA GPUs) with optional OpenAI-compatible API endpoints.
+            <SettingsSection title="About">
+              <div className="mx-auto max-w-3xl space-y-5">
+                <img
+                  src="/miridman.jpg"
+                  alt="The MiridMan"
+                  className="mx-auto block w-full max-w-sm"
+                  width="700"
+                  height="700"
+                />
+                <p className="text-sm leading-7 text-muted-foreground">
+                  Mirid was built to be a one click solution for AI chat and roleplay on Windows using either local or API. It is a refined and repackaged version of my personal AI workstation{' '}
+                  <a className="text-primary hover:underline" href="https://github.com/boneylizard/Eloquent">Eloquent</a>, containing approximately six months of unpublished development work on the product. Mirid brings together a library of text and multimodal open source AI products built by countless dedicated and highly talented developers that are too countless to thank.
                 </p>
-                <p className="text-sm text-muted-foreground">
-                  The stack pairs a React frontend with a FastAPI backend and includes multi-GPU orchestration,
-                  a built-in Stable Diffusion pipeline, streaming TTS, a tool-calling code editor, and
-                  a deep roleplay toolkit (character creator, multi-character chat, and lore).
+                <p className="text-sm leading-7 text-muted-foreground">
+                  The current Mirid build was explicitly built for the Windows operating system and supports Nvidia, AMD, and cpu-only architectures. Future Mirid releases aim to expand compatibility to Linux and Apple systems.
                 </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div>
-                  <h4 className="font-semibold mb-2">Core Systems</h4>
-                  <ul className="text-sm space-y-1 text-muted-foreground list-disc pl-4">
-                    <li>Local LLM inference with multi-GPU support and OpenAI-compatible APIs</li>
-                    <li>Built-in Stable Diffusion (SD, SDXL, FLUX) plus optional external engines</li>
-                    <li>Streaming TTS with Kokoro and Chatterbox voice cloning</li>
-                  </ul>
-                </div>
-                <div>
-                  <h4 className="font-semibold mb-2">Creator Tools</h4>
-                  <ul className="text-sm space-y-1 text-muted-foreground list-disc pl-4">
-                    <li>Character creator and library with persona management</li>
-                    <li>Multi-character chat with roster control, roles, and narrator support</li>
-                    <li>Mobile-friendly UI and call-mode voice interface</li>
-                  </ul>
-                </div>
-                <div>
-                  <h4 className="font-semibold mb-2">Evaluation and Analysis</h4>
-                  <ul className="text-sm space-y-1 text-muted-foreground list-disc pl-4">
-                    <li>Model ELO testing, A/B comparisons, and judge workflows</li>
-                    <li>Forensic linguistics analysis with embedding models</li>
-                    <li>Memory, RAG, and document ingestion tools</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <h4 className="font-semibold mb-2">Local-First Philosophy</h4>
-                  <p className="text-sm text-muted-foreground">
-                    Runs offline by default. Your data stays on your machine unless you enable external API
-                    endpoints or web search.
-                  </p>
-                </div>
-                <div>
-                  <h4 className="font-semibold mb-2">Credits and License</h4>
-                  <p className="text-sm text-muted-foreground">
-                    Built with FastAPI, React, llama.cpp, stable-diffusion.cpp, Kokoro, Chatterbox,
-                    and ultralytics YOLO. Licensed under AGPL-3.0. Created by Bernard Peter Fitzgerald.
-                  </p>
-                </div>
+                <p className="text-sm leading-7 text-muted-foreground">
+                  You can try Mirid yourself by downloading it{' '}
+                  <a className="text-primary hover:underline" href="https://github.com/boneylizard/Eloquent/releases/latest">here</a>.
+                </p>
               </div>
             </SettingsSection>
           </div>
@@ -4551,8 +5969,8 @@ const MemoryEditorTab = ({ onOpenPersonaRealignment }) => {
               {memoryTab === 'profile'
                 ? `${memories.length} profile memories`
                 : memoryTab === 'agentic'
-                  ? `${totalAgenticCount} agentic insights`
-                  : 'Persona realignment — open Settings tab'}
+                  ? `${totalAgenticCount} character memories`
+                  : 'Character review — open the dedicated Settings tab'}
             </CardDescription>
           </div>
           <div className="flex gap-2 w-full md:w-auto">
@@ -4619,8 +6037,8 @@ const MemoryEditorTab = ({ onOpenPersonaRealignment }) => {
         <Tabs value={memoryTab} onValueChange={setMemoryTab} className="w-full">
           <TabsList className="grid w-full max-w-2xl grid-cols-3 mb-4">
             <TabsTrigger value="profile">Profile memories</TabsTrigger>
-            <TabsTrigger value="agentic">Agentic memories</TabsTrigger>
-            <TabsTrigger value="realign">Persona realign</TabsTrigger>
+            <TabsTrigger value="agentic">Character memories</TabsTrigger>
+            <TabsTrigger value="realign">Character review</TabsTrigger>
           </TabsList>
 
           <TabsContent value="profile" className="mt-0">
@@ -4888,17 +6306,16 @@ const MemoryEditorTab = ({ onOpenPersonaRealignment }) => {
 
           <TabsContent value="realign" className="mt-0">
             <div className="rounded-xl border border-border/70 bg-muted/15 p-6 space-y-4 max-w-xl">
-              <p className="text-sm font-semibold text-foreground">Persona realignment (prompt builder)</p>
+              <p className="text-sm font-semibold text-foreground">Refresh a character</p>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                The full builder is not duplicated here — it lives under <strong>Settings → Persona realignment</strong> (same screen as <strong>Memory tools</strong> section 1 in the sidebar).
-                Optional code excerpts in that builder call <code className="text-[11px] px-1 rounded bg-muted">/memory/ethics_review/</code> on the server; that is an add-on bundle, not a separate feature from realignment.
+                Review how a character responds to you using the history and memories you choose. Mirid runs the selected model and prepares an update for approval.
               </p>
               {typeof onOpenPersonaRealignment === 'function' ? (
                 <Button type="button" variant="default" size="sm" onClick={onOpenPersonaRealignment}>
-                  Open Persona realignment (Settings)
+                  Open character review
                 </Button>
               ) : (
-                <p className="text-xs text-muted-foreground">Open Settings → Persona realignment.</p>
+                <p className="text-xs text-muted-foreground">Open Settings → Character review.</p>
               )}
             </div>
           </TabsContent>

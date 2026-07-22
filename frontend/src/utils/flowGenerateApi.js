@@ -10,7 +10,7 @@
 
 
 
-import { formatApiError, normalizeEndpointModelId } from './chatlogCondenserUtils';
+import { formatApiError, normalizeEndpointModelId } from './chatlogCondenserUtils.js';
 
 
 

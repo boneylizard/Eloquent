@@ -11,7 +11,7 @@ import datetime
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 PROFILE_JSON_SPEC = """
 Return ONE JSON object only (no markdown fences, no commentary):
@@ -124,7 +124,7 @@ def build_profile_curator_prompt(
     curator_character_card: Optional[Dict[str, Any]],
     curator_character_name: str,
     extra_notes: Optional[str],
-) -> Tuple[str, Dict[str, Any]]:
+) -> Dict[str, Any]:
     indexed = []
     for i, m in enumerate(memories or []):
         if not isinstance(m, dict):
@@ -179,7 +179,7 @@ Produce valid JSON only."""
         "indexed_rows": len(indexed),
         "bundle_chars": len(combined),
     }
-    return combined, stats
+    return {"combined": combined, "stats": stats, "output_spec": PROFILE_JSON_SPEC}
 
 
 def build_agentic_curator_prompt(
@@ -192,7 +192,7 @@ def build_agentic_curator_prompt(
     curator_character_card: Optional[Dict[str, Any]],
     curator_character_name: str,
     extra_notes: Optional[str],
-) -> Tuple[str, Dict[str, Any]]:
+) -> Dict[str, Any]:
     indexed = []
     for ins in insights or []:
         if not isinstance(ins, dict):
@@ -245,7 +245,69 @@ Produce valid JSON only."""
         "bundle_chars": len(combined),
         "target_character_id": target_character_id,
     }
-    return combined, stats
+    return {"combined": combined, "stats": stats, "output_spec": AGENTIC_JSON_SPEC}
+
+
+def build_curator_prompt(
+    *,
+    user_id: Optional[str] = None,
+    user_display_name: Optional[str] = None,
+    user_profile_summary: Optional[str] = None,
+    curator_character_name: Optional[str] = None,
+    curator_character_card: Optional[Dict[str, Any]] = None,
+    extra_notes: Optional[str] = None,
+    target_character_id: Optional[str] = None,
+    target_character_name: Optional[str] = None,
+    mode: str = "profile",
+) -> Dict[str, Any]:
+    """Unified switchboard that routes to the correct prompt builder based on *mode*.
+
+    The route handler passes only request-body fields; memories / insights are
+    loaded lazily here so the caller stays thin.
+    """
+    uid = user_id or ""
+    cname = curator_character_name or "Curator"
+
+    if mode == "agentic":
+        if not target_character_id:
+            raise ValueError("target_character_id is required for agentic mode")
+        # Load agentic insights for this character if a user_id is available.
+        insights: List[Dict[str, Any]] = []
+        if uid:
+            try:
+                from . import agentic_memory as _am
+                profile = _am.get_agentic_profile(uid, target_character_id)
+                insights = profile.get("insights") or []
+            except Exception:
+                pass
+        return build_agentic_curator_prompt(
+            user_id=uid,
+            target_character_id=target_character_id,
+            target_character_name=target_character_name or "",
+            user_display_name=user_display_name,
+            insights=insights,
+            curator_character_card=curator_character_card,
+            curator_character_name=cname,
+            extra_notes=extra_notes,
+        )
+    else:
+        # Load profile memories for this user if available.
+        memories: List[Dict[str, Any]] = []
+        if uid:
+            try:
+                from . import memory_intelligence as _mi
+                memories = _mi.get_all_memories_for_user(uid)
+            except Exception:
+                pass
+        return build_profile_curator_prompt(
+            user_id=uid,
+            user_display_name=user_display_name,
+            user_profile_summary=user_profile_summary,
+            memories=memories,
+            curator_character_card=curator_character_card,
+            curator_character_name=cname,
+            extra_notes=extra_notes,
+        )
 
 
 def normalize_profile_memories_for_save(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

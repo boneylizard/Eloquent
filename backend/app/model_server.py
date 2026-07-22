@@ -23,6 +23,15 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - MODEL_SERVER - %(message)s')
 
+# Suppress llama.cpp CUDA Graph spam
+class CudaGraphFilter:
+    def filter(self, record):
+        msg = record.getMessage()
+        return "CUDA Graph" not in msg
+
+for name in ["llama_cpp", "llama.cpp", ""]:
+    logging.getLogger(name).addFilter(CudaGraphFilter())
+
 # Load model
 model_params = json.loads(args.model_params)
 logging.info(f"Loading model on GPU {args.gpu}")

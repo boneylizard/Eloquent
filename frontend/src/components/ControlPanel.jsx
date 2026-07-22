@@ -1,7 +1,5 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
 import {
     Loader2,
     Plus,
@@ -16,8 +14,6 @@ import {
     Save,
     Users,
     BookOpen,
-    Copy,
-    Layers,
     Phone,
     PhoneOff,
     ChevronRight,
@@ -36,16 +32,12 @@ const ControlPanel = ({
     isPlayingAudio,
     sttEnabled,
     ttsEnabled,
-    settings,
     showModelSelector,
     isSummarizing,
     isGeneratingCharacter,
     isAnalyzingCharacter,
     showAuthorNote,
-    showStoryTracker,
-    showChoiceGenerator,
     isCallModeActive,
-    stopCallMode,
     // Handlers
     setShowModelSelector,
     createNewConversation,
@@ -57,17 +49,13 @@ const ControlPanel = ({
     stopTTS,
     handleAutoPlayToggle,
     isFocusModeActive,
-    setIsFocusModeActive,
-    handleDualOverlayChange,
+    handleFocusModeToggle,
     handleCallModeToggle,
-    updateSettings,
     handleCreateSummary,
     availableSummaries = [],
     handleAppendToSummary,
     handleGenerateCharacter,
     setShowAuthorNote,
-    setShowStoryTracker,
-    setShowChoiceGenerator,
     getCharacterButtonState,
     // New props for identifying active audio
     skippedMessageIds,
@@ -252,107 +240,40 @@ const ControlPanel = ({
                                 {isGeneratingCharacter ? <Loader2 className="animate-spin" size={20} /> : isAnalyzingCharacter ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Users size={20} />}
                             </Button>
 
+                            <div className="flex flex-col gap-1 border-t border-border/30 pt-2 mt-2">
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    className={cn(
+                                        "h-auto min-h-10 w-full flex-col gap-0.5 px-1 py-1.5 transition-colors",
+                                        isFocusModeActive
+                                            ? "bg-purple-500/15 text-purple-300 hover:bg-purple-500/20 hover:text-purple-200"
+                                            : "text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                                    )}
+                                    onClick={handleFocusModeToggle}
+                                    aria-pressed={isFocusModeActive}
+                                    title={isFocusModeActive ? "Exit Focus Mode" : "Enter Focus Mode"}
+                                >
+                                    {isFocusModeActive ? <X size={15} /> : <Focus size={15} />}
+                                    <span className="text-[9px] font-medium">Focus</span>
+                                </Button>
 
-
-                            <Button
-                                variant={showStoryTracker ? "secondary" : "ghost"}
-                                size="icon"
-                                className="h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors"
-                                onClick={() => setShowStoryTracker(!showStoryTracker)}
-                                title="Story Tracker"
-                            >
-                                <Copy size={20} />
-                            </Button>
-
-                            <Button
-                                variant={showChoiceGenerator ? "secondary" : "ghost"}
-                                size="icon"
-                                className="h-10 w-full hover:bg-primary/10 hover:text-primary transition-colors"
-                                onClick={() => setShowChoiceGenerator(!showChoiceGenerator)}
-                                title="Choice Generator"
-                            >
-                                <Layers size={20} />
-                            </Button>
-
-                            {/* Roles Toggle */}
-                            <div className="flex flex-col items-center justify-center pt-1" title="Toggle Roles">
-                                <Switch
-                                    id="panel-roles"
-                                    checked={settings.multiRoleMode || false}
-                                    onCheckedChange={(checked) => {
-                                        updateSettings({
-                                            multiRoleMode: checked,
-                                            autoSelectSpeaker: checked ? settings.autoSelectSpeaker : false
-                                        });
-                                    }}
-                                    className="scale-75 data-[state=checked]:bg-primary"
-                                />
-                                <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Roles</span>
-                            </div>
-                            {settings.multiRoleMode && (
-                                <div className="flex flex-col items-center justify-center pt-1" title="Toggle Auto Speaker">
-                                    <Switch
-                                        id="panel-autospeak"
-                                        checked={settings.autoSelectSpeaker || false}
-                                        onCheckedChange={(checked) => updateSettings({ autoSelectSpeaker: checked })}
-                                        className="scale-75 data-[state=checked]:bg-primary"
-                                    />
-                                    <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Auto</span>
-                                </div>
-                            )}
-
-                            <div className="flex flex-col items-center justify-center pt-1" title="Performance Mode (reduce typing lag)">
-                                <Switch
-                                    id="panel-perf"
-                                    checked={settings.performanceMode || false}
-                                    onCheckedChange={(checked) => updateSettings({ performanceMode: checked })}
-                                    className="scale-75 data-[state=checked]:bg-primary"
-                                />
-                                <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Perf</span>
-                            </div>
-
-                            {/* Dual Overlay Mode Controls */}
-                            <div className="flex flex-col items-center justify-center pt-2 border-t border-border/30 mt-2" title="Dual Overlay Mode (open call mode in a second window)">
-                                <Switch
-                                    id="dual-overlay"
-                                    checked={settings?.allowDualOverlay || false}
-                                    onCheckedChange={handleDualOverlayChange}
-                                    className="scale-75 data-[state=checked]:bg-purple-500"
-                                />
-                                <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Dual Overlay</span>
-                            </div>
-
-                            {/* Independent mode toggles - always visible */}
-                            <div className={`flex flex-col items-center justify-center pt-1 ${isFocusModeActive ? '' : 'opacity-40'}`} title={isFocusModeActive ? "Exit Focus Mode" : "Toggle Focus Mode"} onClick={() => setIsFocusModeActive(!isFocusModeActive)}>
-                                {isFocusModeActive ? (
-                                    <>
-                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-purple-400 hover:text-purple-300 hover:bg-purple-500/20" onClick={() => setIsFocusModeActive(false)} title="Exit Focus Mode">
-                                            <X size={14} />
-                                        </Button>
-                                        <span className="text-[8px] text-purple-400 mt-0.5">Focus</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <Focus size={14} className="text-muted-foreground" />
-                                        <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Focus</span>
-                                    </>
-                                )}
-                            </div>
-
-                            <div className={`flex flex-col items-center justify-center pt-1 ${isCallModeActive ? '' : 'opacity-40'}`} title={isCallModeActive ? "Exit Call Mode" : "Toggle Call Mode"} onClick={handleCallModeToggle}>
-                                {isCallModeActive ? (
-                                    <>
-                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/20" onClick={stopCallMode} title="Exit Call Mode">
-                                            <X size={14} />
-                                        </Button>
-                                        <span className="text-[8px] text-cyan-400 mt-0.5">Call</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <PhoneOff size={14} className="text-muted-foreground" />
-                                        <span className="text-[9px] font-medium text-muted-foreground mt-0.5">Call</span>
-                                    </>
-                                )}
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    className={cn(
+                                        "h-auto min-h-10 w-full flex-col gap-0.5 px-1 py-1.5 transition-colors",
+                                        isCallModeActive
+                                            ? "bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/20 hover:text-cyan-200"
+                                            : "text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                                    )}
+                                    onClick={handleCallModeToggle}
+                                    aria-pressed={isCallModeActive}
+                                    title={isCallModeActive ? "Exit Call Mode" : "Start Call Mode"}
+                                >
+                                    {isCallModeActive ? <PhoneOff size={15} /> : <Phone size={15} />}
+                                    <span className="text-[9px] font-medium">Call</span>
+                                </Button>
                             </div>
                         </div>
                     </>
