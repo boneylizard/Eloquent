@@ -18,7 +18,7 @@ This repository hosts the frozen local-inference runtime used by the Mirid deskt
 
 On first launch, Mirid downloads the runtime archive, verifies its exact size and SHA-256 hash, then installs it in the user's application-data directory. Later Mirid releases can update this runtime independently of the desktop installer.
 
-The current stable package is runtime v6. The default Windows x64 package includes:
+The current stable package is runtime v8. The default Windows x64 package includes:
 
 - the Mirid backend and voice service, including the official Parakeet.cpp CPU transcription runtime;
 - current `llama.cpp` runners for CPU, Vulkan, and CUDA 12;

@@ -1,20 +1,20 @@
 {
   "product": "Mirid",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "platform": "windows-x86_64",
-  "published": "2026-07-22",
+  "published": "2026-07-23",
   "runtime": {
-    "version": "v6",
-    "downloadBytes": 3138939068,
-    "sha256": "f542df734c36790789245dd536558b4a026e5f175c23d95ff426308a5b96d537"
+    "version": "v8",
+    "downloadBytes": 3138920925,
+    "sha256": "6350519911f9d9872332e5919718576a3d29d19b7552fda0e5024e35e08a3e2c"
   },
   "installers": [
     {
       "format": "exe",
-      "filename": "Mirid_1.0.7_x64-setup.exe",
-      "bytes": 31659017,
-      "sha256": "2dc8e67bf8c0de57d2af6308ef0d8e4db82b5884647da5c50914eff2c5aaadc4",
-      "url": "https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/main/releases/v1.0.7/Mirid_1.0.7_x64-setup.exe?download=true"
+      "filename": "Mirid_1.0.8_x64-setup.exe",
+      "bytes": 32022171,
+      "sha256": "514c60246807dab493df25a854b15c2231979d6eeaf33aed2e99339220c537ea",
+      "url": "https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/main/releases/v1.0.8/Mirid_1.0.8_x64-setup.exe?download=true"
     }
   ]
 }

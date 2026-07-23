@@ -1,1 +1,1 @@
-2dc8e67bf8c0de57d2af6308ef0d8e4db82b5884647da5c50914eff2c5aaadc4  Mirid_1.0.7_x64-setup.exe
+514c60246807dab493df25a854b15c2231979d6eeaf33aed2e99339220c537ea  Mirid_1.0.8_x64-setup.exe
