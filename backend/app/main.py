@@ -149,6 +149,14 @@ from .character_datasets import router as character_datasets_router
 from .provider_catalog import router as provider_catalog_router
 from .sillytavern_bridge import router as sillytavern_bridge_router
 from .mirid_docs import router as mirid_docs_router
+from .avatar_store import (
+    AVATAR_EXTENSIONS,
+    avatar_storage_directory,
+    contained_regular_file,
+    migrate_legacy_avatar_files,
+    persistent_avatar_path,
+    resolve_stored_avatar_file,
+)
 from .settings_store import (
     SettingsStoreError,
     create_settings_backup,
@@ -806,17 +814,45 @@ base_dir = Path(__file__).parent
 static_dir = base_dir / "static"
 generated_images_dir = static_dir / "generated_images" # Define the subdirectory path
 summaries_dir = static_dir / "summaries"
+avatars_dir = avatar_storage_directory()
 
 # Ensure both directories exist
 try:
     static_dir.mkdir(parents=True, exist_ok=True)
     generated_images_dir.mkdir(parents=True, exist_ok=True)
     summaries_dir.mkdir(parents=True, exist_ok=True)
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    migrated_avatars = migrate_legacy_avatar_files(static_dir, avatars_dir)
     logger.info(f"Static directory ensured: {static_dir.resolve()}")
     logger.info(f"Generated images directory ensured: {generated_images_dir.resolve()}")
+    logger.info(
+        "Persistent avatar directory ensured: %s (migrated %s legacy files)",
+        avatars_dir.resolve(),
+        len(migrated_avatars),
+    )
 except OSError as e:
     logger.error(f"FATAL: Failed to create static directories: {e}", exc_info=True)
     # Depending on severity, you might want to exit here or raise an exception
+
+
+@app.get("/static/{filename}", include_in_schema=False)
+async def serve_root_static_file(filename: str):
+    """Serve packaged root assets and persistent uploaded avatars."""
+    if Path(filename).name != filename:
+        raise HTTPException(status_code=404, detail="Static file not found")
+
+    legacy_file = contained_regular_file(static_dir / filename, static_dir)
+    if legacy_file is not None:
+        return FileResponse(legacy_file)
+
+    avatar_file = persistent_avatar_path(filename)
+    if avatar_file is not None:
+        avatar_file = contained_regular_file(avatar_file, avatars_dir)
+        if avatar_file is not None:
+            return FileResponse(avatar_file)
+
+    raise HTTPException(status_code=404, detail="Static file not found")
+
 
 # Mount the base static directory
 if not static_dir.is_dir():
@@ -2216,51 +2252,19 @@ async def export_character_png(character_data: dict):
         if avatar_url:
             try:
                 logger.info(f"Attempting to load avatar: {avatar_url}")
-                
-                if avatar_url.startswith('http'):
-                    parsed = urlparse(avatar_url)
-                    if parsed.path.startswith('/static/'):
-                        filename = parsed.path.split('/static/')[-1]
-                        static_path = Path(__file__).parent / "static" / filename
-                        logger.info(f"Loading local avatar from direct path: {static_path}")
-                        if static_path.exists():
-                            img = Image.open(static_path)
-                            logger.info(f"Loaded avatar from local static path: {static_path}")
-                        else:
-                            logger.warning(f"Avatar file not found at: {static_path}")
-                            raise FileNotFoundError(f"Avatar not found: {static_path}")
-                    else:
-                        # External URL - use HTTP request
-                        response = requests.get(avatar_url, timeout=10)
-                        response.raise_for_status()
-                        img = Image.open(BytesIO(response.content))
-                        logger.info(f"Loaded avatar from external URL: {avatar_url}")
-                
-                elif avatar_url.startswith('/static/'):
-                    # Path like /static/filename.png
-                    filename = avatar_url.replace('/static/', '')
-                    static_path = Path(__file__).parent / "static" / filename
-                    logger.info(f"Looking for avatar at: {static_path}")
-                    
-                    if static_path.exists():
-                        img = Image.open(static_path)
-                        logger.info(f"Loaded avatar from static path: {static_path}")
-                    else:
-                        logger.warning(f"Avatar file not found at: {static_path}")
-                        raise FileNotFoundError(f"Avatar not found: {static_path}")
-                        
+
+                local_avatar = resolve_stored_avatar_file(avatar_url, static_dir)
+                if local_avatar is not None:
+                    img = Image.open(local_avatar)
+                    logger.info(f"Loaded avatar from local path: {local_avatar}")
+                elif avatar_url.startswith('http'):
+                    response = requests.get(avatar_url, timeout=10)
+                    response.raise_for_status()
+                    img = Image.open(BytesIO(response.content))
+                    logger.info(f"Loaded avatar from external URL: {avatar_url}")
                 else:
-                    # Try as direct filename in static folder
-                    static_path = Path(__file__).parent / "static" / avatar_url
-                    logger.info(f"Trying direct filename at: {static_path}")
-                    
-                    if static_path.exists():
-                        img = Image.open(static_path)
-                        logger.info(f"Loaded avatar from direct path: {static_path}")
-                    else:
-                        logger.warning(f"Avatar file not found at: {static_path}")
-                        raise FileNotFoundError(f"Avatar not found: {static_path}")
-                        
+                    raise FileNotFoundError(f"Avatar not found: {avatar_url}")
+
             except Exception as e:
                 logger.warning(f"Failed to load avatar {avatar_url}: {e}")
                 # Create default image
@@ -3945,22 +3949,18 @@ async def model_memory_estimate_endpoint(
 
 @router.post("/upload_avatar", status_code=201)
 async def upload_avatar_image(request: Request, file: UploadFile = File(...)):
-    # Define the global static directory path - ensure this matches your app.mount location
-    # Make sure you're using only ONE static_dir definition in your entire codebase
-    static_dir = Path(__file__).parent / "static"  # Use the same path as in your app.mount()
-    
-    allowed_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".webm", ".mov", ".m4v"}
     file_extension = Path(file.filename).suffix.lower()
-    if file_extension not in allowed_extensions:
-        raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed types: {allowed_extensions}")
+    if file_extension not in AVATAR_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed types: {AVATAR_EXTENSIONS}")
     
     try:
         unique_filename = f"{uuid.uuid4()}{file_extension}"
-        save_path = static_dir / unique_filename
+        avatar_directory = avatar_storage_directory()
+        save_path = avatar_directory / unique_filename
         logger.info(f"Attempting to save avatar to: {save_path}")
         
         # Ensure the directory exists
-        static_dir.mkdir(parents=True, exist_ok=True)
+        avatar_directory.mkdir(parents=True, exist_ok=True)
         
         # Save the file
         with save_path.open("wb") as buffer:

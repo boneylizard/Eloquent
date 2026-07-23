@@ -1,6 +1,6 @@
 [package]
 name = "mirid"
-version = "1.0.8"
+version = "1.0.9"
 description = "Mirid desktop app"
 authors = ["Mirid"]
 license = ""

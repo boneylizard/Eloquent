@@ -13,7 +13,7 @@ disable_incompatible_torchao()
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("backend", "tts"))
+    parser.add_argument("mode", choices=("backend", "tts", "probe-image-runtime"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
@@ -24,6 +24,19 @@ def main() -> None:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
         os.environ.setdefault("RAG_EMBEDDING_DEVICE", "cpu")
     os.environ.setdefault("GPU_ID", "0")
+
+    if args.mode == "probe-image-runtime":
+        from backend.app.windows_dll_paths import stable_diffusion_import_environment
+
+        with stable_diffusion_import_environment() as dependency_directories:
+            import stable_diffusion_cpp
+
+        print(
+            "Mirid image runtime ready:",
+            stable_diffusion_cpp.__version__,
+            ",".join(str(path) for path in dependency_directories),
+        )
+        return
 
     import uvicorn
 

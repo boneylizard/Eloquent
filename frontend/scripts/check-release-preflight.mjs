@@ -74,6 +74,16 @@ if (tauriConfig.identifier !== 'ai.mirid.desktop') failures.push('Tauri identifi
 if (tauriConfig.build?.beforeBuildCommand?.script !== 'npm run release:build') {
   failures.push('Tauri beforeBuildCommand must run npm run release:build');
 }
+const csp = tauriConfig.app?.security?.csp || '';
+const imageDirective = csp
+  .split(';')
+  .map((directive) => directive.trim())
+  .find((directive) => directive.startsWith('img-src '));
+for (const loopbackImageSource of ['http://127.0.0.1:*', 'http://localhost:*']) {
+  if (!imageDirective?.split(/\s+/).includes(loopbackImageSource)) {
+    failures.push(`Tauri img-src must allow Mirid's local avatar source ${loopbackImageSource}`);
+  }
+}
 
 const cargoVersion = capture(cargoSource, /^version\s*=\s*"([^"]+)"/m, 'Cargo package version');
 for (const [label, version] of [

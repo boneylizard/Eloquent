@@ -70,15 +70,35 @@ if (-not $SkipParakeetCppStage) {
     if (-not $?) { throw "Parakeet.cpp staging failed" }
 }
 
-& $python (Join-Path $PSScriptRoot "assert_runtime_stage_safe.py") (Join-Path $builtDir "_internal")
-if (-not $?) { throw "Frozen runtime safety check failed" }
-
 if (Test-Path -LiteralPath (Join-Path $modelRunnerDirectory "manifest.json") -PathType Leaf) {
     $frozenRunnerDirectory = Join-Path $builtDir "_internal\runners"
     New-Item -ItemType Directory -Force -Path $frozenRunnerDirectory | Out-Null
     Copy-Item -Path (Join-Path $modelRunnerDirectory "*") -Destination $frozenRunnerDirectory -Recurse -Force
 } elseif (-not $SkipModelRunnerStage) {
     throw "Model runner manifest was not staged."
+}
+
+$internalDirectory = Join-Path $builtDir "_internal"
+& $python (Join-Path $PSScriptRoot "assert_runtime_stage_safe.py") $internalDirectory
+if (-not $?) { throw "Frozen runtime safety check failed" }
+
+& $python (Join-Path $PSScriptRoot "assert_image_runtime_bundle.py") $internalDirectory
+if (-not $?) { throw "Frozen image runtime dependency check failed" }
+
+$savedCudaPath = $env:CUDA_PATH
+$savedProcessPath = $env:PATH
+try {
+    Remove-Item Env:CUDA_PATH -ErrorAction SilentlyContinue
+    $env:PATH = (($savedProcessPath -split ';') | Where-Object {
+        $_ -and $_ -notmatch '(?i)CUDA|NVIDIA GPU Computing Toolkit'
+    }) -join ';'
+    & (Join-Path $builtDir "mirid-sidecar-x86_64-pc-windows-msvc.exe") "probe-image-runtime"
+    if (-not $?) {
+        throw "Frozen NVIDIA image runtime could not load without a system CUDA toolkit"
+    }
+} finally {
+    $env:CUDA_PATH = $savedCudaPath
+    $env:PATH = $savedProcessPath
 }
 
 # Tauri externalBin expects the binary in src-tauri/binaries with the target triple suffix.

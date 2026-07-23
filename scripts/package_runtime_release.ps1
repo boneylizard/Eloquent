@@ -44,6 +44,27 @@ if (-not (Test-Path -LiteralPath $sidecarPath -PathType Leaf)) {
 
 & (Join-Path $root "venv\Scripts\python.exe") (Join-Path $PSScriptRoot "assert_runtime_stage_safe.py") $internalDirectory
 if (-not $?) { throw "Runtime stage safety check failed" }
+& (Join-Path $root "venv\Scripts\python.exe") (Join-Path $PSScriptRoot "assert_image_runtime_bundle.py") $internalDirectory
+if (-not $?) { throw "Image runtime dependency check failed" }
+
+$savedCudaPath = $env:CUDA_PATH
+$savedProcessPath = $env:PATH
+try {
+    Remove-Item Env:CUDA_PATH -ErrorAction SilentlyContinue
+    $env:PATH = (($savedProcessPath -split ';') | Where-Object {
+        $_ -and $_ -notmatch '(?i)CUDA|NVIDIA GPU Computing Toolkit'
+    }) -join ';'
+    & $sidecarPath "probe-image-runtime"
+    if (-not $?) {
+        throw "Frozen NVIDIA image runtime could not load without a system CUDA toolkit"
+    }
+} finally {
+    $env:CUDA_PATH = $savedCudaPath
+    $env:PATH = $savedProcessPath
+}
+
+& (Join-Path $PSScriptRoot "test_frozen_sidecar.ps1") -Executable $sidecarPath
+if (-not $?) { throw "Frozen sidecar smoke test failed" }
 
 if (-not $SevenZip) {
     $sevenZipCommand = Get-Command "7z.exe" -ErrorAction SilentlyContinue

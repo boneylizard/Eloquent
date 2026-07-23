@@ -2,19 +2,19 @@
     "schemaVersion":  1,
     "modelRunnerContractVersion":  1,
     "channel":  "stable",
-    "runtimeVersion":  "v8",
-    "installedSize":  9524058199,
-    "baseUrl":  "https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/runtime-v8",
+    "runtimeVersion":  "v9",
+    "installedSize":  9524065657,
+    "baseUrl":  "https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/runtime-v9",
     "assets":  {
                    "runtimeArchive":  {
                                           "filename":  "mirid-runtime-windows-x64.7z",
-                                          "size":  3138920925,
-                                          "sha256":  "6350519911f9d9872332e5919718576a3d29d19b7552fda0e5024e35e08a3e2c"
+                                          "size":  3138914529,
+                                          "sha256":  "ca016e5a2db5854a1fc6513fc74bf27f82bb528ee54955e7bfb80ad2f7f69046"
                                       },
                    "sidecarExecutable":  {
                                              "filename":  "mirid-sidecar-x86_64-pc-windows-msvc.exe",
-                                             "size":  168435047,
-                                             "sha256":  "3a98847abcf6ceef68e7d088b0ddcb81b05e51413050547c26ca8ea3eeeab742"
+                                             "size":  168442505,
+                                             "sha256":  "b823c685c3a576bda625cd594385ef1c91c34de868853fed92cb899f51bb685b"
                                          }
                }
 }

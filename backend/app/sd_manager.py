@@ -7,7 +7,11 @@ import inspect
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 import asyncio
-from stable_diffusion_cpp import StableDiffusion
+
+from .windows_dll_paths import stable_diffusion_import_environment
+
+with stable_diffusion_import_environment():
+    from stable_diffusion_cpp import StableDiffusion
 import io
 import random
 import tempfile

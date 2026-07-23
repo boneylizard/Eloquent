@@ -6,6 +6,18 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 1.0.9 — 24 July 2026
+
+This hotfix restores two capabilities that regressed in the 1.0.8 Windows release.
+
+### Fixed
+
+* **Built-in image generation** now loads Mirid's bundled CUDA 12 runtime directly instead of depending on a separately installed CUDA Toolkit. Release builds verify the native dependency set and start the real frozen image worker before packaging.
+* **Character avatars** display again after fresh imports in the desktop app. Mirid now permits avatar images from its own loopback backend while keeping the content security policy restricted to the local machine.
+* **Avatar persistence across runtime updates** now stores imported image and video avatars outside the versioned runtime. The updater recovers compatible avatar files from prior installed runtimes without overwriting newer persistent copies or restoring unrelated old data.
+
+---
+
 ## 1.0.8 — 23 July 2026
 
 This is the cumulative release candidate following Mirid 1.0.5.

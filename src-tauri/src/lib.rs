@@ -331,17 +331,58 @@ fn copy_dir_contents(source: &Path, destination: &Path, overwrite: bool) -> Resu
     Ok(())
 }
 
-fn migrate_runtime_user_data(app: &tauri::AppHandle) -> Result<(), String> {
-    let runtime = runtime_dir(app)?;
-    let destination = user_data_dir(app)?;
-    fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
-    for internal in [
-        legacy_runtime_internal_dir(&runtime),
-        versioned_runtime_internal_dir(&runtime),
-    ] {
-        if !internal.is_dir() {
+fn is_managed_avatar_filename(filename: &str) -> bool {
+    let Some((stem, extension)) = filename.rsplit_once('.') else {
+        return false;
+    };
+    if !matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "mp4" | "webm" | "mov" | "m4v"
+    ) {
+        return false;
+    }
+    if stem.len() != 36 {
+        return false;
+    }
+    stem.as_bytes().iter().enumerate().all(|(index, value)| {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            *value == b'-'
+        } else {
+            value.is_ascii_hexdigit()
+        }
+    })
+}
+
+fn copy_runtime_avatar_files(source: &Path, destination: &Path) -> Result<(), String> {
+    if !source.is_dir() {
+        return Ok(());
+    }
+    fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if !file_type.is_file() || file_type.is_symlink() {
             continue;
         }
+        let filename = entry.file_name();
+        let Some(filename_text) = filename.to_str() else {
+            continue;
+        };
+        if !is_managed_avatar_filename(filename_text) {
+            continue;
+        }
+        let target = destination.join(filename);
+        if !target.exists() {
+            fs::copy(entry.path(), target).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_runtime_user_data_from_paths(runtime: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
+    let installed = installed_runtime_internal_dirs(runtime);
+    if let Some(internal) = installed.last() {
         for source in [
             internal.join("backend").join("data"),
             internal.join("backend").join("app").join("data"),
@@ -364,7 +405,19 @@ fn migrate_runtime_user_data(app: &tauri::AppHandle) -> Result<(), String> {
         )?;
         copy_dir_contents(&internal.join("logs"), &destination.join("logs"), false)?;
     }
+    for internal in installed.into_iter().rev() {
+        copy_runtime_avatar_files(
+            &internal.join("backend").join("app").join("static"),
+            &destination.join("avatars"),
+        )?;
+    }
     Ok(())
+}
+
+fn migrate_runtime_user_data(app: &tauri::AppHandle) -> Result<(), String> {
+    let runtime = runtime_dir(app)?;
+    let destination = user_data_dir(app)?;
+    migrate_runtime_user_data_from_paths(&runtime, &destination)
 }
 
 fn preserve_runtime_static_data(current: &Path, staging: &Path) -> Result<(), String> {
@@ -473,7 +526,7 @@ fn runtime_internal_is_complete(internal: &Path) -> bool {
     true
 }
 
-fn existing_runtime_internal_dir(runtime: &Path) -> Option<PathBuf> {
+fn installed_runtime_internal_dirs(runtime: &Path) -> Vec<PathBuf> {
     let releases = runtime.join("releases");
     let mut candidates = fs::read_dir(releases)
         .ok()
@@ -484,11 +537,32 @@ fn existing_runtime_internal_dir(runtime: &Path) -> Option<PathBuf> {
         .map(|entry| entry.path().join("_internal"))
         .filter(|internal| runtime_internal_is_complete(internal))
         .collect::<Vec<_>>();
-    candidates.sort();
-    candidates.pop().or_else(|| {
-        let legacy = legacy_runtime_internal_dir(runtime);
-        runtime_internal_is_complete(&legacy).then_some(legacy)
-    })
+    let legacy = legacy_runtime_internal_dir(runtime);
+    if runtime_internal_is_complete(&legacy) {
+        candidates.push(legacy);
+    }
+    candidates.sort_by(|left, right| {
+        runtime_internal_generation(left)
+            .cmp(&runtime_internal_generation(right))
+            .then_with(|| left.cmp(right))
+    });
+    candidates.dedup();
+    candidates
+}
+
+fn runtime_internal_generation(internal: &Path) -> u64 {
+    internal
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix('v'))
+        .and_then(|name| name.split('-').next())
+        .and_then(|generation| generation.parse().ok())
+        .unwrap_or(0)
+}
+
+fn existing_runtime_internal_dir(runtime: &Path) -> Option<PathBuf> {
+    installed_runtime_internal_dirs(runtime).pop()
 }
 
 fn active_runtime_layout(runtime: &Path) -> Option<RuntimeLayout> {
@@ -2091,6 +2165,98 @@ mod tests {
             b"new"
         );
         let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn migrates_uploaded_avatars_but_not_packaged_static_assets() {
+        let source = temporary_directory("avatar-source");
+        let destination = temporary_directory("avatar-destination");
+        let avatar = "0f9e8d7c-6b5a-4321-9fed-cba987654321.png";
+        fs::write(source.join(avatar), b"portrait").expect("avatar should be writable");
+        fs::write(source.join("packaged-logo.png"), b"logo")
+            .expect("packaged asset should be writable");
+        fs::create_dir_all(source.join("generated_images"))
+            .expect("generated image directory should be writable");
+        fs::write(
+            source
+                .join("generated_images")
+                .join("11111111-2222-3333-4444-555555555555.png"),
+            b"generated",
+        )
+        .expect("generated image should be writable");
+        fs::create_dir_all(&destination).expect("destination should be writable");
+        fs::write(destination.join(avatar), b"newer portrait")
+            .expect("existing avatar should be writable");
+
+        copy_runtime_avatar_files(&source, &destination).expect("avatar migration should succeed");
+
+        assert_eq!(
+            fs::read(destination.join(avatar)).expect("avatar should remain readable"),
+            b"newer portrait"
+        );
+        assert!(!destination.join("packaged-logo.png").exists());
+        assert!(!destination.join("generated_images").exists());
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn finds_prior_versioned_runtime_for_user_data_migration() {
+        let runtime = temporary_directory("prior-runtime-candidate");
+        let prior_internal = runtime
+            .join("releases")
+            .join("v8-prior-archive-prior-sidecar")
+            .join("_internal");
+        create_complete_runtime_internal(&prior_internal);
+
+        assert!(installed_runtime_internal_dirs(&runtime)
+            .iter()
+            .any(|candidate| candidate == &prior_internal));
+        let _ = fs::remove_dir_all(runtime);
+    }
+
+    #[test]
+    fn migrates_newest_runtime_avatar_without_overwriting_persistent_data() {
+        let runtime = temporary_directory("avatar-runtime-migration");
+        let destination = temporary_directory("avatar-data-migration");
+        let avatar = "0f9e8d7c-6b5a-4321-9fed-cba987654321.png";
+        let older_internal = runtime.join("releases").join("v8-old").join("_internal");
+        let newer_internal = runtime.join("releases").join("v10-new").join("_internal");
+        create_complete_runtime_internal(&older_internal);
+        create_complete_runtime_internal(&newer_internal);
+        let older_static = older_internal.join("backend").join("app").join("static");
+        let newer_static = newer_internal.join("backend").join("app").join("static");
+        fs::create_dir_all(&older_static).expect("older static directory should be writable");
+        fs::create_dir_all(&newer_static).expect("newer static directory should be writable");
+        fs::write(older_static.join(avatar), b"older").expect("older avatar should be writable");
+        fs::write(newer_static.join(avatar), b"newer").expect("newer avatar should be writable");
+        let older_data = older_internal.join("backend").join("app").join("data");
+        fs::create_dir_all(&older_data).expect("older data directory should be writable");
+        fs::write(older_data.join("stale.json"), b"stale").expect("older data should be writable");
+
+        migrate_runtime_user_data_from_paths(&runtime, &destination)
+            .expect("runtime migration should succeed");
+        assert_eq!(
+            fs::read(destination.join("avatars").join(avatar))
+                .expect("migrated avatar should be readable"),
+            b"newer"
+        );
+        assert!(
+            !destination.join("stale.json").exists(),
+            "avatar recovery must not restore unrelated data from older runtimes"
+        );
+
+        fs::write(destination.join("avatars").join(avatar), b"persistent")
+            .expect("persistent avatar should be writable");
+        migrate_runtime_user_data_from_paths(&runtime, &destination)
+            .expect("repeated migration should succeed");
+        assert_eq!(
+            fs::read(destination.join("avatars").join(avatar))
+                .expect("persistent avatar should remain readable"),
+            b"persistent"
+        );
+        let _ = fs::remove_dir_all(runtime);
         let _ = fs::remove_dir_all(destination);
     }
 

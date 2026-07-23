@@ -72,13 +72,17 @@ for package in (
     "starlette",
     "pydantic",
     "llama_cpp",
-    "stable_diffusion_cpp",
     "transformers",
     "sentence_transformers",
     "tiktoken",
     "triton",
 ):
     collect_optional(package)
+
+if sys.platform == "win32":
+    collect_required("stable_diffusion_cpp")
+else:
+    collect_optional("stable_diffusion_cpp")
 
 machine = platform.machine().lower()
 profile = os.environ.get("MIRID_SIDECAR_PROFILE", "default").strip().lower()
