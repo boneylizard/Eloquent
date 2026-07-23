@@ -6,7 +6,7 @@ on:
       version:
         description: Version already set in package.json, Cargo.toml, and tauri.conf.json
         required: true
-        default: 1.0.7
+        default: 1.0.8
         type: string
       prerelease:
         description: Mark this GitHub release as a pre-release
@@ -69,8 +69,34 @@ jobs:
         working-directory: frontend
         run: npm run release:check
 
+      - name: Fetch verified desktop sidecar
+        shell: powershell
+        run: |
+          $manifest = Get-Content runtime/runtime-release.json -Raw | ConvertFrom-Json
+          $asset = $manifest.assets.sidecarExecutable
+          $destination = Join-Path $PWD "src-tauri/binaries/$($asset.filename)"
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+          Invoke-WebRequest "$($manifest.baseUrl)/$($asset.filename)?download=true" -OutFile $destination
+          $file = Get-Item -LiteralPath $destination
+          $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($file.Length -ne [int64]$asset.size -or $hash -ne [string]$asset.sha256) {
+            throw "Downloaded sidecar does not match runtime/runtime-release.json."
+          }
+
+      - name: Verify updater signing key
+        shell: powershell
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY is not configured in this repository."
+          }
+
       - name: Build Windows installer
         working-directory: frontend
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build
 
       - name: Prepare release files
@@ -83,10 +109,47 @@ jobs:
           if (-not (Test-Path $installer)) {
             throw "Installer not found at $installer"
           }
+          $installerSignature = "$installer.sig"
+          if (-not (Test-Path $installerSignature)) {
+            throw "Updater signature not found at $installerSignature"
+          }
+          $signature = (Get-Content -LiteralPath $installerSignature -Raw).Trim()
+          $assetUrl = "https://github.com/boneylizard/Eloquent/releases/download/v$($env:RELEASE_VERSION)/$([IO.Path]::GetFileName($installer))"
+          $latest = [ordered]@{
+            version = $env:RELEASE_VERSION
+            notes = "Mirid $($env:RELEASE_VERSION) is ready. See the GitHub release for details."
+            pub_date = (Get-Date).ToUniversalTime().ToString("o")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url = $assetUrl
+              }
+            }
+          }
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD 'latest.json'),
+            ($latest | ConvertTo-Json -Depth 6),
+            [Text.UTF8Encoding]::new($false)
+          )
           $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
           "$hash  $([IO.Path]::GetFileName($installer))" | Set-Content -Encoding ascii SHA256SUMS.txt
+          $changelog = Get-Content CHANGELOG.md -Raw
+          $versionPattern = [Regex]::Escape($env:RELEASE_VERSION)
+          $match = [Regex]::Match(
+            $changelog,
+            "(?ms)^##\s+$versionPattern[^\r\n]*\r?\n(?<body>.*?)(?=^##\s+|\z)"
+          )
+          if (-not $match.Success) {
+            throw "CHANGELOG.md does not contain a section for $env:RELEASE_VERSION."
+          }
+          $releaseNotes = "# Mirid $env:RELEASE_VERSION`r`n`r`n$($match.Groups['body'].Value.Trim())`r`n"
+          [IO.File]::WriteAllText(
+            (Join-Path $PWD 'release-notes.md'),
+            $releaseNotes,
+            [Text.UTF8Encoding]::new($false)
+          )
           "installer=$installer" >> $env:GITHUB_OUTPUT
-          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "installer_signature=$installerSignature" >> $env:GITHUB_OUTPUT
 
       - name: Upload workflow artefacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -94,7 +157,10 @@ jobs:
           name: Mirid-${{ inputs.version }}-Windows
           path: |
             ${{ steps.release_files.outputs.installer }}
+            ${{ steps.release_files.outputs.installer_signature }}
+            latest.json
             SHA256SUMS.txt
+            release-notes.md
           if-no-files-found: error
           retention-days: 30
 
@@ -104,14 +170,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
           INSTALLER_PATH: ${{ steps.release_files.outputs.installer }}
+          INSTALLER_SIGNATURE_PATH: ${{ steps.release_files.outputs.installer_signature }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           $arguments = @(
             'release', 'create', "v$env:RELEASE_VERSION",
-            $env:INSTALLER_PATH, 'SHA256SUMS.txt',
+            $env:INSTALLER_PATH, $env:INSTALLER_SIGNATURE_PATH,
+            'latest.json', 'SHA256SUMS.txt',
             '--target', $env:GITHUB_SHA,
             '--title', "Mirid $env:RELEASE_VERSION",
-            '--generate-notes'
+            '--notes-file', 'release-notes.md'
           )
           if ($env:PRERELEASE -eq 'true') {
             $arguments += '--prerelease'

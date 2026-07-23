@@ -44,7 +44,6 @@ const settingsTabs = [
   'Styles',
   'LLM Settings',
   'Image Generation',
-  'Characters',
   'Memory Intent',
   'Character review',
   'Memory Browser',
@@ -99,11 +98,22 @@ test('primary navigation and Settings tabs render', async ({ page }, testInfo) =
   await page.getByRole('button', { name: 'Open in new window', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
 
+  const backupSettingsButton = page.getByRole('button', {
+    name: 'Backup current settings to file',
+    exact: true,
+  });
+  const restoreSettingsButton = page.getByRole('button', {
+    name: 'Restore settings from file',
+    exact: true,
+  });
+
   for (const name of settingsTabs) {
     const tab = page.getByRole('tab', { name, exact: true });
     await expect(tab).toHaveCount(1);
     await tab.click();
     await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await expect(backupSettingsButton).toBeVisible();
+    await expect(restoreSettingsButton).toBeVisible();
   }
 
   await testInfo.attach('control-inventory', {
@@ -116,6 +126,28 @@ test('primary navigation and Settings tabs render', async ({ page }, testInfo) =
   });
 
   expect(reactErrors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+test('legacy anti-repetition setting cannot blank Settings', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    localStorage.setItem('Eloquent-settings', JSON.stringify({
+      providerSetupCompleted: true,
+      modelSetupRequired: false,
+      antiRepetitionMode: true,
+      detectRepeatedPhrases: true,
+    }));
+  });
+
+  await page.goto('/');
+  await page.getByTitle('Settings', { exact: true }).click();
+  await page.getByRole('tab', { name: 'LLM Settings', exact: true }).click();
+
+  await expect(page.getByText('Anti-Repetition', { exact: true })).toHaveCount(0);
+  await page.locator('summary').filter({ hasText: 'Output behavior' }).click();
+  await expect(page.getByText('Max Tokens', { exact: true })).toBeVisible();
   expect(pageErrors).toEqual([]);
 });
 
@@ -475,7 +507,8 @@ test('Character Studio opens from the library', async ({ page }) => {
   await page.goto('/');
   await dismissProviderSetup(page);
   await page.getByTitle('Characters', { exact: true }).click();
-  await page.getByRole('button', { name: 'Import Dataset', exact: true }).click();
+  await page.locator('summary[aria-label="More library actions"]').click();
+  await page.getByRole('button', { name: 'Import dataset', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Bring a character collection into focus.' })).toBeVisible();
   await page.getByRole('button', { name: 'Character Library', exact: true }).click();
   await page.getByRole('button', { name: /Build with Mirid/ }).click();
@@ -492,11 +525,12 @@ test('Character Library makes manual creation primary and explains card fields',
   await dismissProviderSetup(page);
   await page.getByTitle('Characters', { exact: true }).click();
 
-  await expect(page.getByText('Import supports TavernAI and SillyTavern V1 or V2 character cards in JSON or PNG format.', { exact: false })).toBeVisible();
+  await expect(page.getByTitle('Import TavernAI or SillyTavern V1/V2 JSON and PNG cards', { exact: true })).toBeVisible();
+  await expect(page.getByTitle('Import every TavernAI or SillyTavern JSON and PNG card in a folder', { exact: true })).toBeVisible();
   await expect(page.getByText('Assistant', { exact: true })).toBeVisible();
-  await expect(page.getByText('Plain chat. No character card or roleplay instructions.', { exact: true })).toBeVisible();
+  await expect(page.getByText('No character card or roleplay instructions.', { exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'New Character', exact: true }).click();
+  await page.getByRole('button', { name: 'New character', exact: true }).click();
   await expect(page.getByText('Create New Character', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Description', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Personality', { exact: true })).toBeVisible();
@@ -550,7 +584,7 @@ test('manual character writing help is opt-in and never overwrites a draft autom
 
   await page.goto('/');
   await page.getByTitle('Characters', { exact: true }).click();
-  await page.getByRole('button', { name: 'New Character', exact: true }).click();
+  await page.getByRole('button', { name: 'New character', exact: true }).click();
   await page.getByLabel('Description', { exact: true }).fill('A cartographer.');
 
   expect(refinementPayload).toBeUndefined();
@@ -785,6 +819,60 @@ test('saving a Character Studio draft selects it visibly in chat', async ({ page
   await page.locator('button[role="combobox"]').filter({ hasText: 'Rhys Test Character' }).click();
   await page.getByRole('option', { name: 'Assistant · plain chat', exact: true }).click();
   await expect(page.locator('button[role="combobox"]').filter({ hasText: 'Assistant · plain chat' })).toBeVisible();
+});
+
+test('character cards expose alternate greetings without opening another panel', async ({ page }) => {
+  const endpoint = {
+    id: 'endpoint-greeting-test',
+    name: 'Greeting test',
+    url: 'https://example.test/v1',
+    apiKey: 'test-key',
+    model: 'provider/greeting-test',
+    enabled: true,
+    rotate_enabled: false,
+  };
+  const character = {
+    id: 'character-greeting-test',
+    name: 'Mara',
+    chat_role: 'npc',
+    description: 'An archivist.',
+    first_message: 'The archive is open, {{user}}.',
+    alternate_greetings: [
+      '{{char}} locks the door behind you.',
+      'A map moves beneath the glass.',
+    ],
+  };
+
+  await page.addInitScript(({ selectedEndpoint, savedCharacter }) => {
+    const settings = JSON.parse(localStorage.getItem('Eloquent-settings') || '{}');
+    localStorage.setItem('Eloquent-settings', JSON.stringify({
+      ...settings,
+      providerSetupCompleted: true,
+      modelSetupRequired: false,
+      customApiEndpoints: [selectedEndpoint],
+    }));
+    localStorage.setItem('Eloquent-last-primary-api-model', selectedEndpoint.id);
+    localStorage.setItem('llm-characters', JSON.stringify([savedCharacter]));
+    localStorage.setItem('user-profiles', JSON.stringify({
+      profiles: [{ id: 'greeting-user', name: 'Alex', preferences: {} }],
+      activeProfileId: 'greeting-user',
+    }));
+  }, { selectedEndpoint: endpoint, savedCharacter: character });
+
+  await page.goto('/');
+  await dismissProviderSetup(page);
+  await page.locator('button[role="combobox"]').filter({ hasText: 'Assistant · plain chat' }).click();
+  await page.getByRole('option', { name: 'Mara', exact: true }).click();
+
+  await expect(page.getByText('The archive is open, Alex.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Greeting 1 of 3', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Next opening message', exact: true }).click();
+  await expect(page.getByText('Mara locks the door behind you.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Greeting 2 of 3', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Previous opening message', exact: true }).click();
+  await expect(page.getByText('The archive is open, Alex.', { exact: true })).toBeVisible();
 });
 
 test('empty auto-routing pool falls back to the selected API model', async ({ page }) => {

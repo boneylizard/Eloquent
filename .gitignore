@@ -208,6 +208,7 @@ frontend/vite.config.js.timestamp-*.mjs
 *.timestamp-*.mjs
 frontend/test-results/
 frontend/playwright-report/
+frontend/artifacts/
 artifacts/first-run/
 
 # Local IDE state and release-review artefacts

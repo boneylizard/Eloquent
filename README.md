@@ -354,6 +354,7 @@ Licensed under **GNU Affero General Public License v3.0**.
 - [ultralytics YOLO](https://github.com/ultralytics/ultralytics)
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [React](https://react.dev/)
+- [Front Porch AI](https://github.com/linux4life1/front-porch-AI) for Character Library design inspiration
 
 ---
 

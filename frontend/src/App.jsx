@@ -15,6 +15,7 @@ import { MemoryProvider } from './contexts/MemoryContext';
 import MemoryPage from './pages/MemoryPage';
 import DocsPage from './pages/DocsPage';
 import UserProfilesPage from './pages/UserProfilesPage';
+import SillyTavernSetupPage from './pages/SillyTavernSetupPage';
 import { useApp, AppProvider } from './contexts/AppContext';
 
 // Import components
@@ -30,6 +31,7 @@ import SettingsStandaloneLayout from './components/SettingsStandaloneLayout';
 import RoomImageGalleryModal from './components/RoomImageGalleryModal';
 import ProviderSetupDialog from './components/ProviderSetupDialog';
 import RoleplayWelcomeDialog from './components/RoleplayWelcomeDialog';
+import AppUpdatePrompt from './components/AppUpdatePrompt';
 import { TRIGGER_LOGIN_EVENT } from './utils/auth-interceptor';
 
 const ElectionTracker = __MIRID_INCLUDE_ELECTIONS__
@@ -91,6 +93,19 @@ function AppContent() {
     && settings?.roleplayIntroCompleted !== true
     && primaryModel,
   );
+
+  const sillyTavernRedirectHandledRef = useRef(false);
+  useEffect(() => {
+    if (
+      !storageHydrated
+      || sillyTavernRedirectHandledRef.current
+      || settings?.providerSetupCompleted !== true
+      || settings?.primaryUse !== 'sillytavern'
+      || settings?.sillyTavernSetupCompleted === true
+    ) return;
+    sillyTavernRedirectHandledRef.current = true;
+    setActiveTab('sillytavern');
+  }, [setActiveTab, settings?.primaryUse, settings?.providerSetupCompleted, settings?.sillyTavernSetupCompleted, storageHydrated]);
 
   useEffect(() => {
     if (roleplayWelcomeOpen) setTheme('faraday');
@@ -214,6 +229,8 @@ function AppContent() {
         return <MemoryPage />;
       case 'docs':
         return <DocsPage onLeave={() => selectTab('chat')} onOpenModelLibrary={openModelLibrary} />;
+      case 'sillytavern':
+        return <SillyTavernSetupPage />;
       case 'modeltester':
         return <ModelTester />;
       case 'pool':
@@ -305,6 +322,10 @@ function AppContent() {
       <RoleplayWelcomeDialog
         open={roleplayWelcomeOpen}
         onOpenCharacters={() => selectTab('characters')}
+      />
+
+      <AppUpdatePrompt
+        enabled={Boolean(storageHydrated)}
       />
 
       <LoginOverlay isOpen={showLogin} onLogin={handleLogin} />

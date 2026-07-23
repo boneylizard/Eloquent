@@ -4,44 +4,38 @@ export const ROLEPLAY_THEME = 'faraday';
 export const FIRST_RUN_PURPOSES = Object.freeze([
   {
     id: 'roleplay',
-    label: 'Roleplay & characters',
-    description: 'Build, import and speak with persistent characters in their own worlds.',
+    label: 'Roleplay & storytelling',
+    description: 'Characters, interactive stories and long-running fictional worlds.',
   },
   {
-    id: 'conversation',
-    label: 'Everyday conversation',
-    description: 'A capable private workspace for questions, thinking and ordinary chat.',
+    id: 'sillytavern',
+    label: 'Use Mirid with SillyTavern',
+    description: 'Run text, speech, transcription and images behind SillyTavern.',
   },
   {
-    id: 'writing',
-    label: 'Writing & research',
-    description: 'Long-form drafting, documents, memory and careful source work.',
-  },
-  {
-    id: 'voice-media',
-    label: 'Voice & media',
-    description: 'Speech, transcription, images and more expressive conversations.',
-  },
-  {
-    id: 'developer',
-    label: 'Models & developer tools',
-    description: 'Local inference, APIs, model testing and the machinery underneath.',
-  },
-  {
-    id: 'everything',
-    label: 'A bit of everything',
-    description: 'Keep the full workspace visible and decide as you go.',
+    id: 'classic',
+    label: 'Mirid Classic',
+    description: 'The complete workspace for chat, models, documents, voice and images.',
   },
 ]);
 
 const PURPOSE_IDS = new Set(FIRST_RUN_PURPOSES.map((purpose) => purpose.id));
+const LEGACY_PURPOSES = new Map([
+  ['conversation', 'classic'],
+  ['writing', 'classic'],
+  ['voice-media', 'classic'],
+  ['developer', 'classic'],
+  ['everything', 'classic'],
+]);
 
 export function normaliseFirstRunIntent(value) {
-  if (!value || typeof value !== 'object' || !PURPOSE_IDS.has(value.purpose)) return null;
+  if (!value || typeof value !== 'object') return null;
+  const purpose = LEGACY_PURPOSES.get(value.purpose) || value.purpose;
+  if (!PURPOSE_IDS.has(purpose)) return null;
   const zoom = Number(value.interfaceZoom);
   return {
-    version: 1,
-    purpose: value.purpose,
+    version: 2,
+    purpose,
     interfaceZoom: Number.isFinite(zoom) ? Math.min(2, Math.max(0.75, zoom)) : 1.1,
     chosenAt: typeof value.chosenAt === 'string' ? value.chosenAt : null,
   };

@@ -21,6 +21,7 @@ from typing import Optional
 # --- FastAPI and WebSocket Imports ---
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
 from backend.app.cors_policy import configure_cors
+from backend.app.settings_store import update_settings as update_settings_file
 
 
 # --- Initialize FastAPI App and CORS Middleware ---
@@ -2014,22 +2015,7 @@ async def save_speed_mode(request: dict):
     """Save TTS speed mode to settings"""
     try:
         speed_mode = request.get('tts_speed_mode', 'ultra_fast')
-        
-        # Load current settings
-        settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        settings = {}
-        
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        
-        # Update speed mode
-        settings['tts_speed_mode'] = speed_mode
-        
-        # Save settings
-        settings_path.parent.mkdir(exist_ok=True)
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=2)
+        update_settings_file({"tts_speed_mode": speed_mode})
         
         logger.info(f"🔧 [Settings] TTS speed mode saved: {speed_mode}")
         return {"status": "success", "tts_speed_mode": speed_mode}

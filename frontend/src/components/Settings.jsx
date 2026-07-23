@@ -1,5 +1,5 @@
 // Settings.jsx
-// Full Settings UI: General, Generation, SD, Characters, Audio, Memory Intent, Persona realignment, Memory Browser, Lore, About
+// Full Settings UI: General, Generation, SD, Audio, Memory Intent, Persona realignment, Memory Browser, Lore, About
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getBackendUrl, fetchWithTimeout, formatFetchError, memoryApiUnreachableHint } from '../config/api';
@@ -22,7 +22,6 @@ import { Slider } from './ui/slider';
 import { Save, Sun, Moon, DownloadCloud, Trash2, ExternalLink, Loader2, RefreshCw, X, Power, RotateCw, FolderOpen, Pencil, Monitor, Sparkles, ChevronRight, Link2 } from 'lucide-react';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
-import CharacterEditor from './CharacterEditor';
 import MemoryIntentDetector from './MemoryIntentDetector';
 import { useApp } from '../contexts/AppContext';
 import { useMemory } from '../contexts/MemoryContext';
@@ -47,6 +46,8 @@ import { useAppBoot } from '../hooks/useAppBoot';
 import { restartTtsService, stopTtsService } from '../utils/desktopLifecycle';
 import InfrastructureBanner from './InfrastructureBanner';
 import ModelLibrary from './ModelLibrary';
+import AppUpdateControls from './AppUpdateControls';
+import { replaceSettingsBlob } from '../utils/settingsPersistence';
 import {
   SPLASH_DURATION_OPTIONS,
   SPLASH_SCREEN_DURATION_DEFAULT,
@@ -120,11 +121,16 @@ const SettingsAccordion = ({ title, summary, defaultOpen = false, children }) =>
 );
 
 
+const resolveSettingsTab = (tab, audioPage) => {
+  if (audioPage) return 'audio';
+  return tab === 'characters' ? 'general' : tab;
+};
+
 const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandaloneWindow = false, audioPage = false }) => {
-  const [settingsMainTab, setSettingsMainTab] = useState(audioPage ? 'audio' : initialTab);
+  const [settingsMainTab, setSettingsMainTab] = useState(() => resolveSettingsTab(initialTab, audioPage));
   const [interfaceZoom, setInterfaceZoomValue] = useState(readInterfaceZoom);
   useEffect(() => {
-    setSettingsMainTab(audioPage ? 'audio' : initialTab);
+    setSettingsMainTab(resolveSettingsTab(initialTab, audioPage));
   }, [audioPage, initialTab]);
   useEffect(() => {
     const handleZoomChange = (event) => setInterfaceZoomValue(event.detail?.scale || readInterfaceZoom());
@@ -512,15 +518,13 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
   const [ttsServiceMessage, setTtsServiceMessage] = useState('');
   const [ttsServiceError, setTtsServiceError] = useState('');
   const [directoryPickerKey, setDirectoryPickerKey] = useState(null);
-  const [updateStatus, setUpdateStatus] = useState(null);
-  const [updateProgress, setUpdateProgress] = useState(null);
-  const [updateError, setUpdateError] = useState(null);
-  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const [isUpdateRunning, setIsUpdateRunning] = useState(false);
   const ttsTestFileInputRef = useRef(null);
   const pendingSettingsRef = useRef({});
   const settingsSaveTimerRef = useRef(null);
   const customEndpointsSaveTimerRef = useRef(null);
+  const settingsRestoreInputRef = useRef(null);
+  const [settingsFileAction, setSettingsFileAction] = useState('');
+  const [settingsFileStatus, setSettingsFileStatus] = useState(null);
 
   // Custom Jinja chat templates
   const [selectedTemplateModel, setSelectedTemplateModel] = useState('');
@@ -836,6 +840,85 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     });
   }, [contextSettings, queueCustomEndpointsSave, queueSettingsSave]);
 
+  const handleBackupSettingsToFile = useCallback(async () => {
+    setSettingsFileAction('backup');
+    setSettingsFileStatus(null);
+    try {
+      const response = await fetch(`${PRIMARY_API_URL}/models/backup-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: { ...contextSettings, ...localSettings },
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.status !== 'success') {
+        throw new Error(data.detail || `Backup failed with status ${response.status}.`);
+      }
+      setSettingsFileStatus({
+        type: 'success',
+        message: `Protected backup created: ${data.path}`,
+      });
+    } catch (error) {
+      setSettingsFileStatus({
+        type: 'error',
+        message: `Mirid could not back up your settings. ${error.message}`,
+      });
+    } finally {
+      setSettingsFileAction('');
+    }
+  }, [PRIMARY_API_URL, contextSettings, localSettings]);
+
+  const handleRestoreSettingsFromFile = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const confirmed = window.confirm(
+      `Restore settings from "${file.name}"? Your current settings will be replaced.`,
+    );
+    if (!confirmed) return;
+
+    if (settingsSaveTimerRef.current) {
+      clearTimeout(settingsSaveTimerRef.current);
+      settingsSaveTimerRef.current = null;
+    }
+    if (customEndpointsSaveTimerRef.current) {
+      clearTimeout(customEndpointsSaveTimerRef.current);
+      customEndpointsSaveTimerRef.current = null;
+    }
+    pendingSettingsRef.current = {};
+
+    setSettingsFileAction('restore');
+    setSettingsFileStatus(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await fetch(`${PRIMARY_API_URL}/models/restore-settings`, {
+        method: 'POST',
+        body: form,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.status !== 'success' || !data.settings) {
+        throw new Error(data.detail || `Restore failed with status ${response.status}.`);
+      }
+      const replaced = await replaceSettingsBlob(data.settings);
+      if (!replaced) {
+        throw new Error('The selected file did not contain usable settings.');
+      }
+      setSettingsFileStatus({
+        type: 'success',
+        message: 'Settings restored. Mirid is reloading them now.',
+      });
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (error) {
+      setSettingsFileStatus({
+        type: 'error',
+        message: `Mirid could not restore that file. ${error.message}`,
+      });
+      setSettingsFileAction('');
+    }
+  }, [PRIMARY_API_URL]);
+
   useEffect(() => () => {
     if (settingsSaveTimerRef.current) {
       clearTimeout(settingsSaveTimerRef.current);
@@ -892,76 +975,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     }
   }, [PRIMARY_API_URL]);
 
-  const handleCheckUpdates = useCallback(async () => {
-    setIsCheckingUpdate(true);
-    setUpdateError(null);
-    try {
-      const response = await fetch(`${PRIMARY_API_URL}/system/update-status?fetch=1`);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.detail || data.message || `Status ${response.status}`);
-      }
-      setUpdateStatus(data);
-    } catch (error) {
-      setUpdateError(error.message || 'Failed to check updates.');
-    } finally {
-      setIsCheckingUpdate(false);
-    }
-  }, [PRIMARY_API_URL]);
-
-  const fetchUpdateProgress = useCallback(async () => {
-    try {
-      const response = await fetch(`${PRIMARY_API_URL}/system/update-progress`);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.detail || data.message || `Update failed (${response.status})`);
-      }
-      setUpdateProgress(data);
-      if (data.status !== 'running') {
-        setIsUpdateRunning(false);
-        if (data.status === 'failed') {
-          setUpdateError(data.error || 'Update failed.');
-        }
-        if (data.status === 'success' && data.restart_recommended) {
-          alert('Update complete. Please restart the app to apply changes.');
-        }
-      }
-    } catch (error) {
-      setUpdateError(error.message || 'Failed to fetch update progress.');
-      setIsUpdateRunning(false);
-    }
-  }, [PRIMARY_API_URL]);
-
-  const handleRunUpdate = useCallback(async () => {
-    if (!confirm("Update to the latest git version? This will discard local changes in the app folder. A restart may be required.")) {
-      return;
-    }
-    setUpdateError(null);
-    setUpdateProgress(null);
-    try {
-      const response = await fetch(`${PRIMARY_API_URL}/system/update`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok && response.status !== 409) {
-        throw new Error(data.detail || data.message || `Update failed (${response.status})`);
-      }
-      setIsUpdateRunning(true);
-      fetchUpdateProgress();
-    } catch (error) {
-      setUpdateError(error.message || 'Failed to start update.');
-      setIsUpdateRunning(false);
-    }
-  }, [PRIMARY_API_URL, fetchUpdateProgress]);
-
-  useEffect(() => {
-    if (!isUpdateRunning) return;
-    const timer = setInterval(fetchUpdateProgress, 1000);
-    return () => clearInterval(timer);
-  }, [isUpdateRunning, fetchUpdateProgress]);
-
   const handleDirectoryBrowse = useCallback(async (settingKey, title) => {
     const baseUrl = PRIMARY_API_URL || getBackendUrl();
     setDirectoryPickerKey(settingKey);
@@ -994,10 +1007,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     }
   }, [PRIMARY_API_URL, handleChange, localSettings]);
 
-  const updateLogLines = updateProgress?.logs || [];
-  const updateLogText = updateLogLines
-    .map((entry) => `[${entry.ts}] ${String(entry.level).toUpperCase()}: ${entry.message}`)
-    .join('\n');
   const customEndpoints = localSettings.customApiEndpoints || [];
   const enabledEndpointCount = customEndpoints.filter((endpoint) => endpoint?.enabled).length;
   const endpointSummary = customEndpoints.length
@@ -1014,6 +1023,58 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     <div className="w-full min-h-screen p-2 md:p-4">
       <div className="mx-auto max-w-6xl space-y-4">
         <h2 className="text-2xl font-bold mb-4">{audioPage ? 'Audio' : 'Settings'}</h2>
+        <div className="sticky top-2 z-30 rounded-xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">Settings backup</p>
+              <p className="text-xs text-muted-foreground">
+                Backups are checksummed, saved as read-only JSON files, and include stored API keys.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleBackupSettingsToFile}
+                disabled={Boolean(settingsFileAction)}
+              >
+                {settingsFileAction === 'backup'
+                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  : <Save className="mr-2 h-4 w-4" />}
+                Backup current settings to file
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => settingsRestoreInputRef.current?.click()}
+                disabled={Boolean(settingsFileAction)}
+              >
+                {settingsFileAction === 'restore'
+                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  : <FolderOpen className="mr-2 h-4 w-4" />}
+                Restore settings from file
+              </Button>
+              <input
+                ref={settingsRestoreInputRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={handleRestoreSettingsFromFile}
+              />
+            </div>
+          </div>
+          {settingsFileStatus ? (
+            <p
+              className={[
+                'mt-2 break-all text-xs',
+                settingsFileStatus.type === 'error' ? 'text-destructive' : 'text-emerald-500',
+              ].join(' ')}
+              role="status"
+            >
+              {settingsFileStatus.message}
+            </p>
+          ) : null}
+        </div>
         {!audioPage && (
           <p className="text-sm text-muted-foreground">
             Changes save automatically. Directory fields still require the Save button.
@@ -1027,7 +1088,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
             <TabsTrigger value="styles" className="flex-shrink-0">Styles</TabsTrigger>
             <TabsTrigger value="generation" className="flex-shrink-0">LLM Settings</TabsTrigger>
             <TabsTrigger value="image-generation" className="flex-shrink-0">Image Generation</TabsTrigger>
-            <TabsTrigger value="characters" className="flex-shrink-0">Characters</TabsTrigger>
             <TabsTrigger value="memory-intent" className="flex-shrink-0">Memory Intent</TabsTrigger>
             <TabsTrigger value="persona-realignment" className="flex-shrink-0">Character review</TabsTrigger>
             <TabsTrigger value="memory" className="flex-shrink-0">Memory Browser</TabsTrigger>
@@ -1308,7 +1368,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                         }
 
                         // 3) Force-include critical keys so backup always has profiles/settings/endpoints.
-                        for (const key of ['user-profiles', 'llm-characters', 'Eloquent-settings', 'LiangLocal-settings']) {
+                        for (const key of ['user-profiles', 'llm-characters', 'llm-character-groups', 'Eloquent-settings', 'LiangLocal-settings']) {
                           try {
                             const value = await indexedDbStorage.getItem(key);
                             if (value != null && value !== '') config[key] = value;
@@ -1348,9 +1408,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                     onClick={async () => {
                       try {
                         const chars = await indexedDbStorage.getItem('llm-characters');
+                        const groups = await indexedDbStorage.getItem('llm-character-groups');
                         const profiles = await indexedDbStorage.getItem('user-profiles');
-                        if (!chars && !profiles) {
-                          alert('No characters or user profiles found in this browser storage.');
+                        if (!chars && !groups && !profiles) {
+                          alert('No characters, groups or user profiles found in this browser storage.');
                           return;
                         }
                         const payload = {
@@ -1360,6 +1421,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                             subset: 'characters_and_profiles',
                           },
                           ...(chars ? { 'llm-characters': chars } : {}),
+                          ...(groups ? { 'llm-character-groups': groups } : {}),
                           ...(profiles ? { 'user-profiles': profiles } : {}),
                         };
                         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1460,6 +1522,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                                       key.startsWith('adetailer-') ||
                                       key.startsWith('remote-') ||
                                       key === 'llm-characters' ||
+                                      key === 'llm-character-groups' ||
                                       key === 'user-profiles' ||
                                       key === 'conversations' ||
                                       key === 'preferredContextLength' ||
@@ -1676,95 +1739,15 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
             </SettingsSection>
 
             <SettingsSection
-              title="App Updates"
-              description="Force update to the latest git version. Local changes will be discarded."
+              title="Mirid updates"
+              description="Mirid checks for signed releases automatically. You can also check now."
             >
-              <SettingRow label="Update Controls" layout="stack" description="Live progress and logs are shown while updating.">
-                <div className="flex flex-col md:flex-row gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={handleCheckUpdates}
-                    disabled={isCheckingUpdate || isUpdateRunning}
-                  >
-                    {isCheckingUpdate ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                    )}
-                    Check for Updates
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleRunUpdate}
-                    disabled={isUpdateRunning || isCheckingUpdate}
-                  >
-                    {isUpdateRunning ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RotateCw className="mr-2 h-4 w-4" />
-                    )}
-                    Update Now
-                  </Button>
-                </div>
-
-                {updateStatus && (
-                  <div className="text-xs text-muted-foreground space-y-1">
-                    <div>
-                      Branch: {updateStatus.branch || 'unknown'} (
-                      {updateStatus.current_commit ? updateStatus.current_commit.slice(0, 7) : 'unknown'})
-                    </div>
-                    {updateStatus.upstream ? (
-                      <div>
-                        Tracking: {updateStatus.upstream} - Ahead {updateStatus.ahead ?? 'n/a'} - Behind {updateStatus.behind ?? 'n/a'}
-                      </div>
-                    ) : (
-                      <div>No upstream configured for this branch.</div>
-                    )}
-                    <div>Working tree: {updateStatus.dirty ? `dirty (${updateStatus.dirty_count})` : 'clean'}</div>
-                  </div>
-                )}
-
-                {updateProgress && (
-                  <div className="rounded-lg border border-border/60 bg-muted/30 p-3 space-y-2">
-                    <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Update Status</div>
-                    <div className="text-sm text-foreground">
-                      {updateProgress.status === 'running' ? 'Running' : updateProgress.status}
-                      {updateProgress.step ? ` - ${updateProgress.step}` : ''}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {updateProgress.before ? `Before: ${updateProgress.before.slice(0, 7)}` : ''}
-                      {updateProgress.after ? ` | After: ${updateProgress.after.slice(0, 7)}` : ''}
-                    </div>
-                    {updateProgress.error && (
-                      <Alert variant="destructive">
-                        <AlertTitle>Update failed</AlertTitle>
-                        <AlertDescription>{updateProgress.error}</AlertDescription>
-                      </Alert>
-                    )}
-                    {updateLogLines.length > 0 && (
-                      <div className="space-y-2">
-                        <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Update Log</div>
-                        <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md bg-background/80 p-3 text-xs text-foreground">
-{updateLogText}
-                        </pre>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {typeof updateStatus?.behind === 'number' && updateStatus.behind > 0 && (
-                  <Alert>
-                    <AlertTitle>Update available</AlertTitle>
-                    <AlertDescription>Behind by {updateStatus.behind} commit(s).</AlertDescription>
-                  </Alert>
-                )}
-
-                {updateError && (
-                  <Alert variant="destructive">
-                    <AlertTitle>Update failed</AlertTitle>
-                    <AlertDescription>{updateError}</AlertDescription>
-                  </Alert>
-                )}
+              <SettingRow
+                label="Application"
+                layout="stack"
+                description="Updates replace Mirid itself without deleting your settings, conversations, models or local runtime."
+              >
+                <AppUpdateControls />
               </SettingRow>
             </SettingsSection>
 
@@ -2480,52 +2463,8 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
 
             <SettingsAccordion
               title="Output behavior"
-              summary="Anti-repetition and output length limits."
+              summary="Output length limits."
             >
-
-            <SettingsSection
-              title="Anti-Repetition"
-              description="Reduce loops and repeated phrases."
-            >
-              <SettingRow label="Anti-Repetition Mode" htmlFor="anti-repetition" description="Enable extra controls to reduce repetition.">
-                <Switch
-                  id="anti-repetition"
-                  checked={localSettings.antiRepetitionMode}
-                  onCheckedChange={(checked) => handleChange('antiRepetitionMode', checked)}
-                />
-              </SettingRow>
-
-              {localSettings.antiRepetitionMode && (
-                <>
-                  <SettingRow label={`Frequency Penalty (${localSettings.frequencyPenalty.toFixed(2)})`} layout="stack">
-                    <Slider
-                      value={[localSettings.frequencyPenalty]}
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      onValueChange={([v]) => handleChange('frequencyPenalty', v)}
-                    />
-                  </SettingRow>
-                  <SettingRow label={`Presence Penalty (${localSettings.presencePenalty.toFixed(2)})`} layout="stack">
-                    <Slider
-                      value={[localSettings.presencePenalty]}
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      onValueChange={([v]) => handleChange('presencePenalty', v)}
-                    />
-                  </SettingRow>
-                  <SettingRow label="Detect and Remove Repeated Phrases" htmlFor="detect-phrases">
-                    <Switch
-                      id="detect-phrases"
-                      checked={localSettings.detectRepeatedPhrases}
-                      onCheckedChange={(checked) => handleChange('detectRepeatedPhrases', checked)}
-                    />
-                  </SettingRow>
-                </>
-              )}
-            </SettingsSection>
-
             <SettingsSection
               title="Limits and Streaming"
               description="Control output size and streaming behavior."
@@ -3633,11 +3572,6 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
           </div>
         </TabsContent>
 
-        {/* Characters */}
-        <TabsContent value="characters" className="w-full max-w-none">
-          <CharacterEditor />
-        </TabsContent>
-
         {/* Audio - RESTORED FULL CONTENT */}
         <TabsContent value="audio">
           <div className="space-y-6">
@@ -4111,12 +4045,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                                 size="sm"
                                 onClick={async () => {
                                   try {
-                                    const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
-                                    if (response.ok) {
-                                      const data = await response.json();
-                                      setVoxcpmGgufModels(data.models || []);
-                                      setVoxcpmGgufCliAvailable(data.cli_available || false);
-                                    }
+                                    await fetchVoxcpmGgufModels();
                                   } catch (e) {
                                     console.error('Failed to fetch VoxCPM2 GGUF models:', e);
                                   }
@@ -4158,31 +4087,15 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                                           </Button>
                                         </>
                                       ) : (
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={async () => {
-                                            try {
-                                              const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/download`, {
-                                                method: 'POST',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ model_id: model.id }),
-                                              });
-                                              const data = await response.json();
-                                              alert(data.message);
-                                              if (data.status === 'success') {
-                                                const refreshResponse = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
-                                                if (refreshResponse.ok) {
-                                                  const refreshData = await refreshResponse.json();
-                                                  setVoxcpmGgufModels(refreshData.models || []);
-                                                }
-                                              }
-                                            } catch (e) {
-                                              alert('Download failed: ' + e.message);
-                                            }
-                                          }}
-                                        >
-                                          Download
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={async () => {
+                                              const result = await downloadVoxcpmGgufModel(model.id);
+                                              alert(result.message);
+                                            }}
+                                          >
+                                            Download
                                         </Button>
                                       )}
                                     </div>
@@ -4926,12 +4839,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                                 size="sm"
                                 onClick={async () => {
                                   try {
-                                    const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
-                                    if (response.ok) {
-                                      const data = await response.json();
-                                      setVoxcpmGgufModels(data.models || []);
-                                      setVoxcpmGgufCliAvailable(data.cli_available || false);
-                                    }
+                                    await fetchVoxcpmGgufModels();
                                   } catch (e) {
                                     console.error('Failed to fetch VoxCPM2 GGUF models:', e);
                                   }
@@ -4973,31 +4881,15 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                                           </Button>
                                         </>
                                       ) : (
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={async () => {
-                                            try {
-                                              const response = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/download`, {
-                                                method: 'POST',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ model_id: model.id }),
-                                              });
-                                              const data = await response.json();
-                                              alert(data.message);
-                                              if (data.status === 'success') {
-                                                const refreshResponse = await fetch(`${PRIMARY_API_URL}/tts/voxcpm-gguf/models`);
-                                                if (refreshResponse.ok) {
-                                                  const refreshData = await refreshResponse.json();
-                                                  setVoxcpmGgufModels(refreshData.models || []);
-                                                }
-                                              }
-                                            } catch (e) {
-                                              alert('Download failed: ' + e.message);
-                                            }
-                                          }}
-                                        >
-                                          Download
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={async () => {
+                                              const result = await downloadVoxcpmGgufModel(model.id);
+                                              alert(result.message);
+                                            }}
+                                          >
+                                            Download
                                         </Button>
                                       )}
                                     </div>

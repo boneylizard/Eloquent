@@ -97,18 +97,51 @@ test('local first launch opens model setup without locking navigation', async ({
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Select model/ })).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Choose a model to start', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'What would you like to set up?', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Choose a chat model/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Find and download models/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Generate an image/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Characters and prompts/ })).toBeVisible();
+  await expect(page.getByLabel('Chat template')).toHaveCount(0);
+
+  await page.getByRole('button', { name: /Generate an image/ }).click();
+  await expect(page.getByRole('heading', { name: 'Image generation', exact: true })).toBeVisible();
 });
 
-test('first launch exposes persistent interface zoom', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Make interface larger', exact: true }).click();
+test('local chat template control stays compact after a model is loaded', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('Eloquent-settings', JSON.stringify({
+      providerSetupCompleted: true,
+      modelSetupRequired: false,
+      primaryUse: 'classic',
+      characterIntroEnabled: false,
+    }));
+  });
+  await page.route('**/models/loaded', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        loaded_models: [{ name: 'test-model.Q4_K_M.gguf', gpu_id: 0 }],
+      }),
+    });
+  });
 
+  await page.goto('/');
+
+  const templateControl = page.getByLabel('Chat template');
+  await expect(templateControl).toBeVisible();
+  await expect(templateControl).toHaveCSS('width', '150px');
+  await expect(page.getByRole('heading', { name: 'What would you like to set up?', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+});
+
+test('interface zoom shortcuts persist from first launch', async ({ page }) => {
+  await page.goto('/');
+  await page.keyboard.press('Control+=');
   await expect.poll(() => page.evaluate(() => localStorage.getItem('mirid-interface-zoom'))).toBe('1.2');
   await expect.poll(() => page.evaluate(() => document.documentElement.style.zoom)).toBe('1.2');
 
-  await page.keyboard.press('Control+=');
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('mirid-interface-zoom'))).toBe('1.3');
-
   await page.reload();
-  await expect.poll(() => page.evaluate(() => document.documentElement.style.zoom)).toBe('1.3');
+  await expect.poll(() => page.evaluate(() => document.documentElement.style.zoom)).toBe('1.2');
 });

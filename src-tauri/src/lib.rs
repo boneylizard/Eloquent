@@ -473,13 +473,29 @@ fn runtime_internal_is_complete(internal: &Path) -> bool {
     true
 }
 
+fn existing_runtime_internal_dir(runtime: &Path) -> Option<PathBuf> {
+    let releases = runtime.join("releases");
+    let mut candidates = fs::read_dir(releases)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .map(|entry| entry.path().join("_internal"))
+        .filter(|internal| runtime_internal_is_complete(internal))
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.pop().or_else(|| {
+        let legacy = legacy_runtime_internal_dir(runtime);
+        runtime_internal_is_complete(&legacy).then_some(legacy)
+    })
+}
+
 fn active_runtime_layout(runtime: &Path) -> Option<RuntimeLayout> {
-    let versioned = RuntimeLayout {
-        internal: versioned_runtime_internal_dir(runtime),
-        sidecar: versioned_sidecar_exe_path(runtime),
-    };
-    if runtime_internal_is_complete(&versioned.internal) && versioned.sidecar.is_file() {
-        return Some(versioned);
+    let internal = versioned_runtime_internal_dir(runtime);
+    let sidecar = versioned_sidecar_exe_path(runtime);
+    if runtime_internal_is_complete(&internal) && sidecar.is_file() {
+        return Some(RuntimeLayout { internal, sidecar });
     }
     let legacy = RuntimeLayout {
         internal: legacy_runtime_internal_dir(runtime),
@@ -1338,7 +1354,7 @@ fn ensure_runtime(app: &tauri::AppHandle) -> Result<(), String> {
 
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let previous_internal = active_runtime_layout(&dir).map(|layout| layout.internal);
+    let previous_internal = existing_runtime_internal_dir(&dir);
     let internal = versioned_runtime_internal_dir(&dir);
     let _ = fs::remove_file(ready_marker(app)?);
 
@@ -1365,13 +1381,6 @@ fn ensure_runtime(app: &tauri::AppHandle) -> Result<(), String> {
     )?;
     make_executable(&exe_dest)?;
 
-    if runtime_internal_is_complete(&internal) {
-        cleanup_download_artifacts(&dir);
-        fs::write(ready_marker(app)?, RUNTIME_VERSION).map_err(|e| e.to_string())?;
-        emit(app, "ready", "Runtime repaired.", 100);
-        return Ok(());
-    }
-
     // 2) Runtime archive.
     let archive_dest = dir.join(RUNTIME_ARCHIVE);
     download_file(
@@ -1396,14 +1405,103 @@ fn ensure_runtime(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct DevelopmentVenv {
+    project_root: PathBuf,
+    python: PathBuf,
+    entry_point: PathBuf,
+    runner_root: PathBuf,
+    runner_manifest: PathBuf,
+}
+
+fn development_venv_enabled() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("MIRID_DEV_USE_VENV")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+}
+
+fn development_venv() -> Result<Option<DevelopmentVenv>, String> {
+    if !development_venv_enabled() {
+        return Ok(None);
+    }
+
+    let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Mirid's project root could not be resolved".to_string())?;
+    let python = if cfg!(target_os = "windows") {
+        project_root.join("venv").join("Scripts").join("python.exe")
+    } else {
+        project_root.join("venv").join("bin").join("python")
+    };
+    let entry_point = project_root.join("sidecar_entry.py");
+    if !python.is_file() {
+        return Err(format!(
+            "Mirid's development virtual environment is missing: {}",
+            python.display()
+        ));
+    }
+    if !entry_point.is_file() {
+        return Err(format!(
+            "Mirid's development service entry point is missing: {}",
+            entry_point.display()
+        ));
+    }
+
+    let runner_root = project_root.join("build").join("model-runners");
+    let staged_manifest = runner_root.join("manifest.json");
+    let runner_manifest = if staged_manifest.is_file() {
+        staged_manifest
+    } else {
+        project_root.join("runtime").join("model-runners.json")
+    };
+
+    Ok(Some(DevelopmentVenv {
+        project_root,
+        python,
+        entry_point,
+        runner_root,
+        runner_manifest,
+    }))
+}
+
 fn spawn_sidecar(app: &tauri::AppHandle, mode: &str, port: u16) -> Result<CommandChild, String> {
-    let runtime = runtime_dir(app)?;
-    let layout = active_runtime_layout(&runtime)
-        .ok_or_else(|| "Mirid's local engine is not installed correctly".to_string())?;
-    let exe = layout.sidecar;
-    let internal = layout.internal;
-    let runners = internal.join("runners");
-    let runner_manifest = runners.join("manifest.json");
+    let development = development_venv()?;
+    let (exe, working_directory, runners, runner_manifest, mut arguments, development_root) =
+        if let Some(development) = development {
+            log::info!(
+                "Starting {mode} from Mirid's development venv: {}",
+                development.python.display()
+            );
+            (
+                development.python,
+                Some(development.project_root.clone()),
+                development.runner_root,
+                development.runner_manifest,
+                vec![development.entry_point.to_string_lossy().to_string()],
+                Some(development.project_root),
+            )
+        } else {
+            let runtime = runtime_dir(app)?;
+            let layout = active_runtime_layout(&runtime)
+                .ok_or_else(|| "Mirid's local engine is not installed correctly".to_string())?;
+            let runners = layout.internal.join("runners");
+            let runner_manifest = runners.join("manifest.json");
+            (
+                layout.sidecar,
+                None,
+                runners,
+                runner_manifest,
+                Vec::new(),
+                None,
+            )
+        };
     let user_data = user_data_dir(app)?;
     let log_dir = user_data.join("logs");
     fs::create_dir_all(&user_data).map_err(|error| error.to_string())?;
@@ -1414,7 +1512,14 @@ fn spawn_sidecar(app: &tauri::AppHandle, mode: &str, port: u16) -> Result<Comman
         "127.0.0.1"
     };
     log::info!("Starting {mode} sidecar on {host}:{port}");
-    let command = app
+    arguments.extend([
+        mode.to_string(),
+        "--host".to_string(),
+        host.to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ]);
+    let mut command = app
         .shell()
         .command(exe.to_string_lossy().to_string())
         .env("MIRID_DATA_DIR", user_data.to_string_lossy().to_string())
@@ -1424,8 +1529,17 @@ fn spawn_sidecar(app: &tauri::AppHandle, mode: &str, port: u16) -> Result<Comman
         .env(
             "MIRID_RUNNER_MANIFEST",
             runner_manifest.to_string_lossy().to_string(),
-        )
-        .args([mode, "--host", host, "--port", &port.to_string()]);
+        );
+    if let Some(working_directory) = working_directory {
+        command = command.current_dir(working_directory);
+    }
+    if let Some(development_root) = development_root {
+        command = command
+            .env("PYTHONPATH", development_root.to_string_lossy().to_string())
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8");
+    }
+    let command = command.args(arguments);
 
     let (mut events, child) = command.spawn().map_err(|error| error.to_string())?;
     let child_pid = child.pid();
@@ -1804,14 +1918,21 @@ fn get_app_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
         .app_log_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let runtime_dir = runtime_dir(&app)
-        .map(|p| p.to_string_lossy().to_string())
+    let runtime_path = runtime_dir(&app).ok();
+    let runtime_download_size = runtime_path
+        .as_deref()
+        .map(versioned_runtime_internal_dir)
+        .filter(|internal| runtime_internal_is_complete(internal))
+        .map(|_| SIDECAR_EXE_SIZE)
+        .unwrap_or(RUNTIME_ARCHIVE_SIZE + SIDECAR_EXE_SIZE);
+    let runtime_dir = runtime_path
+        .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
     Ok(serde_json::json!({
       "log_dir": log_dir,
       "runtime_dir": runtime_dir,
       "runtime_version": RUNTIME_VERSION,
-      "runtime_download_size": RUNTIME_ARCHIVE_SIZE + SIDECAR_EXE_SIZE,
+      "runtime_download_size": runtime_download_size,
       "runtime_installed_size": RUNTIME_INSTALLED_SIZE,
       "model_runner_contract_version": MODEL_RUNNER_CONTRACT_VERSION,
       "runtime_ready": runtime_is_ready(&app),
@@ -2010,6 +2131,49 @@ mod tests {
                 sidecar: legacy_sidecar,
             })
         );
+        let _ = fs::remove_dir_all(runtime);
+    }
+
+    #[test]
+    fn rejects_a_sidecar_paired_with_another_release_dependencies() {
+        let runtime = temporary_directory("sidecar-only-runtime");
+        let prior_release = runtime.join("releases").join(format!(
+            "prior-runtime-{}-prior-sidecar",
+            &RUNTIME_ARCHIVE_SHA256[..12]
+        ));
+        let prior_internal = prior_release.join("_internal");
+        let current_sidecar = versioned_sidecar_exe_path(&runtime);
+        create_complete_runtime_internal(&prior_internal);
+        fs::create_dir_all(
+            current_sidecar
+                .parent()
+                .expect("sidecar should have a parent"),
+        )
+        .expect("current release directory should be writable");
+        fs::write(&current_sidecar, b"new sidecar").expect("current sidecar should be writable");
+
+        assert_eq!(active_runtime_layout(&runtime), None);
+        let _ = fs::remove_dir_all(runtime);
+    }
+
+    #[test]
+    fn rejects_installed_dependencies_from_another_archive() {
+        let runtime = temporary_directory("different-archive-runtime");
+        let incompatible_internal = runtime
+            .join("releases")
+            .join(format!("{RUNTIME_VERSION}-000000000000-prior-sidecar"))
+            .join("_internal");
+        let current_sidecar = versioned_sidecar_exe_path(&runtime);
+        create_complete_runtime_internal(&incompatible_internal);
+        fs::create_dir_all(
+            current_sidecar
+                .parent()
+                .expect("sidecar should have a parent"),
+        )
+        .expect("current release directory should be writable");
+        fs::write(current_sidecar, b"new sidecar").expect("current sidecar should be writable");
+
+        assert_eq!(active_runtime_layout(&runtime), None);
         let _ = fs::remove_dir_all(runtime);
     }
 
@@ -2246,7 +2410,9 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecars::default())
         .manage(RuntimeBootState::default())
         .manage(RuntimeSetupGate::default())
@@ -2275,20 +2441,29 @@ pub fn run() {
             // Run runtime provisioning + sidecar startup off the main thread so the
             // window paints and can show download progress.
             std::thread::spawn(move || {
-                if let Err(err) = wait_for_runtime_setup(&handle) {
+                if development_venv_enabled() {
                     emit(
                         &handle,
-                        "error",
-                        &format!("Setup could not begin: {err}"),
-                        0,
+                        "starting",
+                        "Starting Mirid from the local development environment.",
+                        5,
                     );
-                    log::error!("runtime setup gate failed: {err}");
-                    return;
-                }
-                if let Err(err) = ensure_runtime(&handle) {
-                    emit(&handle, "error", &format!("Runtime setup failed: {err}"), 0);
-                    log::error!("runtime setup failed: {err}");
-                    return;
+                } else {
+                    if let Err(err) = wait_for_runtime_setup(&handle) {
+                        emit(
+                            &handle,
+                            "error",
+                            &format!("Setup could not begin: {err}"),
+                            0,
+                        );
+                        log::error!("runtime setup gate failed: {err}");
+                        return;
+                    }
+                    if let Err(err) = ensure_runtime(&handle) {
+                        emit(&handle, "error", &format!("Runtime setup failed: {err}"), 0);
+                        log::error!("runtime setup failed: {err}");
+                        return;
+                    }
                 }
                 if let Err(err) = start_sidecars(&handle) {
                     emit(

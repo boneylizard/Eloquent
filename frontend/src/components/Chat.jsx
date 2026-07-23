@@ -4,7 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Code, ArrowLeft, Eye, BookOpen, Save, Plus, FastForward, Languages, Brain, Clock, AudioLines, Replace, ScrollText, MoreVertical, Heart, ShieldAlert, History } from 'lucide-react';
+import { Loader2, Send, Users, Mic, MicOff, Copy, Check, PlayCircle as PlayIcon, X, Cpu, RotateCcw, Globe, Code, ArrowLeft, ArrowRight, Eye, BookOpen, Save, Plus, FastForward, Languages, Brain, Clock, AudioLines, Replace, ScrollText, MoreVertical, Heart, ShieldAlert, History, MessageSquare, Download, Image as ImageIcon } from 'lucide-react';
 import { getSummaries, deleteSummary } from '../utils/summaryUtils';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
@@ -56,11 +56,17 @@ import { getBackendUrl } from '../config/api';
 import { webSearchPathLabel } from '../utils/webSearchResearch';
 import { useMemory } from '../contexts/MemoryContext';
 import * as indexedDbStorage from '../utils/indexedDbStorage';
+import { saveConversationCatalog } from '../utils/conversationStorage';
+import {
+  MODEL_DEFAULT_CHAT_TEMPLATE_ID,
+  normaliseChatTemplateId,
+} from '../utils/chatTemplateSelection';
 import {
   getActiveCharacterAvatar,
   getCharacterAvatarList,
   resolveAvatarDisplayUrl,
 } from '../utils/characterAvatars';
+import { cycleCharacterGreetingMessage } from '../utils/characterCardRuntime';
 import CharacterAvatarMedia from './CharacterAvatarMedia';
 import CharacterIntroExperience from './CharacterIntroExperience';
 import {
@@ -205,6 +211,94 @@ const TimestampControl = ({ injectTimestamp, setInjectTimestamp, isGenerating, i
   </div>
 );
 
+const ChatQuickStart = ({
+  onChooseModel,
+  onBrowseModels,
+  onOpenImageGenerator,
+  onOpenCharacters,
+}) => {
+  const actions = [
+    {
+      title: 'Choose a chat model',
+      description: 'Use something already installed or select a connected API model.',
+      icon: MessageSquare,
+      onClick: onChooseModel,
+      surface: 'border-sky-500/30 bg-gradient-to-br from-sky-500/15 via-sky-500/5 to-card hover:border-sky-400/70 hover:from-sky-500/20',
+      iconStyle: 'bg-sky-500/15 text-sky-300 ring-sky-500/25',
+    },
+    {
+      title: 'Find and download models',
+      description: 'Browse local and hosted options, including recommended GGUF models.',
+      icon: Download,
+      onClick: onBrowseModels,
+      surface: 'border-emerald-500/30 bg-gradient-to-br from-emerald-500/15 via-emerald-500/5 to-card hover:border-emerald-400/70 hover:from-emerald-500/20',
+      iconStyle: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/25',
+    },
+    {
+      title: 'Generate an image',
+      description: 'Open image generation. For local use, find a checkpoint or use an existing folder.',
+      icon: ImageIcon,
+      onClick: onOpenImageGenerator,
+      surface: 'border-violet-500/30 bg-gradient-to-br from-violet-500/15 via-violet-500/5 to-card hover:border-violet-400/70 hover:from-violet-500/20',
+      iconStyle: 'bg-violet-500/15 text-violet-300 ring-violet-500/25',
+    },
+    {
+      title: 'Characters and prompts',
+      description: 'Create or import a character card, or edit its model instructions.',
+      icon: Users,
+      onClick: onOpenCharacters,
+      surface: 'border-amber-500/30 bg-gradient-to-br from-amber-500/15 via-amber-500/5 to-card hover:border-amber-400/70 hover:from-amber-500/20',
+      iconStyle: 'bg-amber-500/15 text-amber-300 ring-amber-500/25',
+    },
+  ];
+
+  return (
+    <section
+      aria-labelledby="chat-quick-start-title"
+      className="relative isolate mx-auto mt-4 w-full max-w-5xl overflow-hidden rounded-[28px] border border-border/70 bg-card/75 p-5 shadow-[0_24px_80px_-48px_rgba(56,189,248,0.65)] backdrop-blur-sm md:mt-10 md:p-8"
+    >
+      <div className="pointer-events-none absolute -left-20 -top-24 h-56 w-56 rounded-full bg-sky-500/10 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-28 -right-16 h-64 w-64 rounded-full bg-violet-500/10 blur-3xl" />
+      <div className="relative">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-sky-300">Quick start</p>
+        <h2 id="chat-quick-start-title" className="mt-2 text-2xl font-semibold tracking-tight text-foreground md:text-3xl">
+          What would you like to set up?
+        </h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+          Chat needs a model. Images and characters can be prepared separately.
+        </p>
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+          {actions.map(({ title, description, icon: Icon, onClick, surface, iconStyle }) => (
+            <button
+              key={title}
+              type="button"
+              onClick={onClick}
+              className={cn(
+                'group min-h-32 rounded-2xl border p-4 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background md:p-5',
+                surface,
+              )}
+            >
+              <div className="flex h-full items-start gap-4">
+                <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1', iconStyle)}>
+                  <Icon size={21} aria-hidden="true" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center justify-between gap-3 text-base font-semibold text-foreground">
+                    {title}
+                    <ArrowRight size={17} className="shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-foreground" aria-hidden="true" />
+                  </span>
+                  <span className="mt-2 block text-sm leading-5 text-muted-foreground">{description}</span>
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
+
 // Main Chat Component
 const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
   // Get state and functions from useApp context
@@ -237,7 +331,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     // User profile
     userProfile,
     // Settings
-    settings, updateSettings, setIsGenerating, setActiveTab, activeConversation, isCallModeActive, startCallMode, stopCallMode,
+    settings, updateSettings, setIsGenerating, setActiveTab, openSettingsTab, activeConversation, isCallModeActive, startCallMode, stopCallMode,
     backgroundImage, // Add backgroundImage from context
     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, // Summarizer logic
     capturePromptSubmissionTime, // Latency monitoring
@@ -272,6 +366,39 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     () => (activeConversation ? conversations.find((c) => c.id === activeConversation) : null),
     [activeConversation, conversations]
   );
+  const storedChatTemplateId = normaliseChatTemplateId(activeConvMeta?.chatTemplateId);
+  const storedCustomTemplate = storedChatTemplateId.startsWith('custom:')
+    ? settings?.modelChatTemplates?.[storedChatTemplateId.slice('custom:'.length)]
+    : null;
+  const activeChatTemplateId = storedChatTemplateId.startsWith('custom:')
+    && !(typeof storedCustomTemplate?.template === 'string' && storedCustomTemplate.template.trim())
+    ? MODEL_DEFAULT_CHAT_TEMPLATE_ID
+    : storedChatTemplateId;
+  const customChatTemplateOptions = useMemo(
+    () => Object.entries(settings?.modelChatTemplates || {})
+      .filter(([, template]) => typeof template?.template === 'string' && template.template.trim())
+      .map(([id, template]) => {
+        const patterns = Array.isArray(template.patterns)
+          ? template.patterns
+          : String(template.patterns || '').split(',');
+        const label = patterns.map((part) => String(part).trim()).find(Boolean) || id;
+        return { id: `custom:${id}`, label };
+      }),
+    [settings?.modelChatTemplates]
+  );
+  const handleChatTemplateChange = useCallback((nextValue) => {
+    if (!activeConversation || isGenerating) return;
+    const chatTemplateId = normaliseChatTemplateId(nextValue);
+    setConversations((previous) => {
+      const next = previous.map((conversation) => (
+        conversation.id === activeConversation
+          ? { ...conversation, chatTemplateId }
+          : conversation
+      ));
+      void saveConversationCatalog(next, activeConversation);
+      return next;
+    });
+  }, [activeConversation, isGenerating, setConversations]);
   const systemPersonaCharacter = useMemo(
     () => resolveSystemPersonaCharacter(characters, settings, activeConvMeta),
     [characters, settings, activeConvMeta]
@@ -560,6 +687,18 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [nanoGptCatalog, setNanoGptCatalog] = useState(() => readNanoGptModelsCache().models);
+
+  const openModelLibrary = useCallback(() => {
+    openSettingsTab('models', { forceWindow: false });
+  }, [openSettingsTab]);
+
+  const openImageGenerator = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('eloquent-open-chat-image'));
+  }, []);
+
+  const openCharacterLibrary = useCallback(() => {
+    setActiveTab('characters');
+  }, [setActiveTab]);
 
   useEffect(() => subscribeNanoGptModelsCache(({ models }) => setNanoGptCatalog(models)), []);
   const [showFloatingControls, setShowFloatingControls] = useState(true);
@@ -2222,6 +2361,15 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     }
   }, [messageVariants, currentVariantIndex, setMessages]);
 
+  const navigateCharacterGreeting = useCallback((messageId, direction) => {
+    if (isGenerating) return;
+    setMessages((previous) => previous.map((message) => (
+      message.id === messageId
+        ? cycleCharacterGreetingMessage(message, direction)
+        : message
+    )));
+  }, [isGenerating, setMessages]);
+
   // SD Models fetch
   useEffect(() => {
     if (showCharacterPreview) { /* fetch SD models logic */ }
@@ -2621,15 +2769,12 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     if (showAnyIntro) {
       if (!effectiveIntroModel) {
         return (
-          <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground pt-10">
-            <h3 className="text-lg font-medium mb-2">Load a model</h3>
-            <p className="max-w-md mb-4">
-              {showSystemIntro
-                ? 'A model must be loaded before the system overview can generate.'
-                : 'A model must be loaded before the character introduction can generate.'}
-            </p>
-            <Button variant="outline" onClick={() => setModelPickerOpen(true)}>Load Model</Button>
-          </div>
+          <ChatQuickStart
+            onChooseModel={() => setModelPickerOpen(true)}
+            onBrowseModels={openModelLibrary}
+            onOpenImageGenerator={openImageGenerator}
+            onOpenCharacters={openCharacterLibrary}
+          />
         );
       }
       return (
@@ -2649,7 +2794,15 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     }
 
     if (messages.length === 0) {
-      return null;
+      if (effectiveIntroModel) return null;
+      return (
+        <ChatQuickStart
+          onChooseModel={() => setModelPickerOpen(true)}
+          onBrowseModels={openModelLibrary}
+          onOpenImageGenerator={openImageGenerator}
+          onOpenCharacters={openCharacterLibrary}
+        />
+      );
     }
 
     const visibleMessages = performanceMode && !showAllMessages
@@ -2720,6 +2873,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
             onGenerateVariantWithModel={handleGenerateVariantWithModel}
             onContinueGeneration={handleContinueGeneration}
             onNavigateVariant={navigateVariant}
+            onNavigateGreeting={navigateCharacterGreeting}
             onSpeakerClick={handleSpeakerClick}
             onChunkedSpeakerClick={handleChunkedSpeakerClick}
             onRegenerateImage={handleRegenerateImage}
@@ -2793,10 +2947,15 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     handleGenerateVariantWithModel,
     handleContinueGeneration,
     navigateVariant,
+    navigateCharacterGreeting,
     handleSpeakerClick,
     handleChunkedSpeakerClick,
     handleRegenerateImage,
-    setShowAllMessages
+    setShowAllMessages,
+    effectiveIntroModel,
+    openModelLibrary,
+    openImageGenerator,
+    openCharacterLibrary,
   ]);
 
   // --- Component Render ---
@@ -2943,7 +3102,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
         {/* Row 2+: Collapsible controls */}
         {showFloatingControls && (
           <>
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0 no-scrollbar w-full mask-linear-fade">
+        <div className="flex w-full flex-wrap items-center gap-2">
           <NanoGptModelSelectorPopover
             className="flex-shrink-0"
             compact
@@ -2975,6 +3134,35 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
               </button>
             )}
           />
+
+          {primaryModel && !primaryIsAPI && (
+            <div className="w-[150px] min-w-[150px] max-w-[150px] flex-none">
+              <Select
+                value={activeChatTemplateId}
+                onValueChange={handleChatTemplateChange}
+                disabled={!activeConversation || isGenerating}
+              >
+                <SelectTrigger
+                  className="h-7 !w-[150px] min-w-0 rounded-full border-[rgba(120,170,220,0.35)] bg-muted/40 px-2.5 text-xs"
+                  title="Change how this chat is formatted on its next reply. Messages are not rewritten."
+                  aria-label="Chat template"
+                >
+                  <Code size={13} className="mr-1.5 flex-shrink-0" />
+                  <SelectValue placeholder="Model default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={MODEL_DEFAULT_CHAT_TEMPLATE_ID}>Model default</SelectItem>
+                  <SelectItem value="generic">Generic</SelectItem>
+                  <SelectItem value="chatml">ChatML</SelectItem>
+                  {customChatTemplateOptions.map((template) => (
+                    <SelectItem key={template.id} value={template.id}>
+                      {template.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="flex-shrink-0">
             <RAGIndicator className="ml-2" />

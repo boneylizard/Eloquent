@@ -342,6 +342,9 @@ export async function importCharacterCard(file, apiUrl = null) {
     
     // Convert to GingerGUI format
     const gingerCharacter = convertTavernToGinger(characterData);
+    if (!gingerCharacter.name.trim()) {
+      throw new Error('The file does not contain a named TavernAI character card.');
+    }
     
     // If we have a PNG file, upload it as the avatar
     if (avatarFile) {
@@ -376,6 +379,53 @@ export async function importCharacterCard(file, apiUrl = null) {
     console.error('Import error:', error);
     throw new Error(`Failed to import character: ${error.message}`);
   }
+}
+
+export function isSupportedCharacterCardFile(file) {
+  const fileName = String(file?.name || '').toLowerCase();
+  return fileName.endsWith('.json') || fileName.endsWith('.png');
+}
+
+export async function importCharacterCardFiles(
+  files,
+  apiUrl = null,
+  { importer = importCharacterCard, onProgress = null } = {},
+) {
+  const selectedFiles = Array.from(files || []);
+  const supportedFiles = selectedFiles.filter(isSupportedCharacterCardFile);
+  const skippedFiles = selectedFiles.filter((file) => !isSupportedCharacterCardFile(file));
+  const imported = [];
+  const failed = [];
+
+  for (let index = 0; index < supportedFiles.length; index += 1) {
+    const file = supportedFiles[index];
+    onProgress?.({
+      current: index + 1,
+      total: supportedFiles.length,
+      fileName: file.webkitRelativePath || file.name,
+    });
+
+    try {
+      const character = await importer(file, apiUrl);
+      imported.push({
+        fileName: file.webkitRelativePath || file.name,
+        character,
+      });
+    } catch (error) {
+      failed.push({
+        fileName: file.webkitRelativePath || file.name,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    selectedCount: selectedFiles.length,
+    supportedCount: supportedFiles.length,
+    imported,
+    failed,
+    skipped: skippedFiles.map((file) => file.webkitRelativePath || file.name),
+  };
 }
 
 // Export as JSON
@@ -455,6 +505,8 @@ export async function exportAsPNG(gingerCharacter, apiUrl = null) {
 // Integration code for CharacterEditor component
 export const CharacterCardIntegration = {
   importCharacterCard,
+  importCharacterCardFiles,
+  isSupportedCharacterCardFile,
   exportAsJSON,
   exportAsPNG,
   convertTavernToGinger,

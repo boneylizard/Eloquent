@@ -108,9 +108,10 @@ export function getTemplateForModel(modelName) {
  * @param {Array} messages - Array of message objects with role and content
  * @param {string} modelName - Name of the model to format for
  * @param {string|null} systemMessage - Optional custom system message
+ * @param {string|null} postHistoryInstructions - Optional final card instruction
  * @returns {string} Formatted prompt ready for the model
  */
-export function formatPrompt(messages, modelName, systemMessage = null) {
+export function formatPrompt(messages, modelName, systemMessage = null, postHistoryInstructions = null) {
   const template = getTemplateForModel(modelName);
   const normalizedModelName = String(modelName || '').toLowerCase();
   let prompt = '';
@@ -145,6 +146,16 @@ export function formatPrompt(messages, modelName, systemMessage = null) {
       } else {
         prompt += template.assistant_start + message.content + template.assistant_end;
       }
+    }
+  }
+
+  const finalInstructions = String(postHistoryInstructions || '').trim();
+  if (finalInstructions) {
+    const instructionBlock = `[POST-HISTORY INSTRUCTIONS]\n${finalInstructions}`;
+    if (template === TEMPLATES.chatml || template === TEMPLATES.gemma) {
+      prompt += template.system_start + instructionBlock + template.system_end;
+    } else {
+      prompt += template.user_start + instructionBlock + template.user_end;
     }
   }
 

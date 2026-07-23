@@ -44,7 +44,7 @@ def get_device():
         import torch
         force_cpu = os.environ.get("MIRID_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}
         if torch.cuda.is_available() and not force_cpu:
-            # Since launch.py isolates the process to a single GPU,
+            # Since the desktop host isolates the process to a single GPU,
             # that GPU will always be seen as 'cuda:0' by this process.
             device = "cuda:0"
             logger.info(f"✅ STT service will use the visible GPU: {device}")

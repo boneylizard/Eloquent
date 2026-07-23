@@ -42,6 +42,7 @@ import {
   HelpCircle,
   AudioLines,
   Contact,
+  Cable,
 } from 'lucide-react';
 
 import { useApp } from '../contexts/AppContext';
@@ -511,7 +512,7 @@ const Sidebar = ({
   setHistoryPanelOpen,
 }) => {
 
-  const { conversations, activeConversation, createNewConversation, goToHome, handleConversationClick, setAvailableModels, availableModels, deleteConversation, deleteAllConversations, autoDeleteChats, setAutoDeleteChats, openSettingsTab, conversationSaveStatus, selectMode, selectedConversationIds, toggleSelectMode, toggleConversationSelection, selectAllConversations, clearSelection, deleteSelectedConversations, setSearchHighlightId, setRoomGalleryOpen } = useApp();
+  const { conversations, activeConversation, createNewConversation, goToHome, handleConversationClick, setAvailableModels, availableModels, deleteConversation, deleteAllConversations, autoDeleteChats, setAutoDeleteChats, openSettingsTab, conversationSaveStatus, selectMode, selectedConversationIds, toggleSelectMode, toggleConversationSelection, selectAllConversations, clearSelection, deleteSelectedConversations, setSearchHighlightId, setRoomGalleryOpen, settings } = useApp();
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
@@ -714,6 +715,10 @@ const Sidebar = ({
     { id: 'user-profiles', label: 'User Profiles', icon: <Contact className="w-5 h-5" /> },
 
     { id: 'audio', label: 'Audio', icon: <AudioLines className="w-5 h-5" /> },
+
+    ...(settings?.primaryUse === 'sillytavern' || activeTab === 'sillytavern'
+      ? [{ id: 'sillytavern', label: 'SillyTavern setup', icon: <Cable className="w-5 h-5" /> }]
+      : []),
 
     ...(isModuleEnabled('pool') ? [{ id: 'pool', label: 'Pool', icon: <Heart className="w-5 h-5" /> }] : []),
 

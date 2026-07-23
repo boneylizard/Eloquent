@@ -1,6 +1,14 @@
-# Mirid Bridge for SillyTavern
+# Mirid AI Backend for SillyTavern
 
-Mirid Bridge lets SillyTavern use a running Mirid desktop installation without a SillyTavern server plugin.
+[Mirid](https://mirid.ai) is a Windows desktop app for downloading, running and talking to AI models. It can run GGUF models on your computer or connect to hosted AI providers, with built-in tools for voices, speech recognition and image generation.
+
+This extension connects SillyTavern to a running Mirid installation. It does not install Mirid or download models by itself.
+
+## Before you begin
+
+1. [Download and install the current Mirid release](https://github.com/boneylizard/Eloquent/releases/latest).
+2. Open Mirid and complete its first-run setup.
+3. Install this extension in SillyTavern.
 
 ## What works
 
@@ -10,24 +18,22 @@ Mirid Bridge lets SillyTavern use a running Mirid desktop installation without a
 - SillyTavern Image Generation through Mirid's local stable-diffusion.cpp engine
 - OpenAI-compatible speech, transcription, and image endpoints for other clients
 
-## Install during development
+## Install
 
-Copy this folder to:
+1. In SillyTavern, open **Extensions** and choose **Install extension**.
+2. Paste `https://github.com/boneylizard/mirid-sillytavern-bridge`.
+3. Restart SillyTavern, then expand **Mirid AI Backend** under Extensions.
 
-```text
-SillyTavern/public/scripts/extensions/third-party/mirid-bridge
-```
-
-Restart SillyTavern, open **Extensions**, then expand **Mirid Bridge**.
-
-Once this folder is published as its own Git repository, users can install it from SillyTavern's **Install extension** dialog by pasting that repository URL.
+For local development, copy this folder to `SillyTavern/public/scripts/extensions/third-party/mirid-bridge`.
 
 ## Connect
 
-1. Start Mirid and leave its address as `http://127.0.0.1:8000` unless Mirid shows a different port.
-2. If Mirid remote access has a password, enter it in Mirid Bridge too.
-3. Select **Test connection**.
-4. Select **Find voices** to load Mirid's installed voice catalogue.
+1. Close SillyTavern. Mirid and SillyTavern both use port `8000` by default.
+2. Open SillyTavern's `config.yaml`, set `port: 8001`, then restart SillyTavern.
+3. Start Mirid and leave its address as `http://127.0.0.1:8000` unless Mirid shows a different port.
+4. If Mirid remote access has a password, enter it in Mirid Bridge too.
+5. Select **Test connection**.
+6. Select **Find voices** to load Mirid's installed voice catalogue.
 
 The extension panel contains the current text and image setup instructions for SillyTavern.
 

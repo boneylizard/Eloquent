@@ -7,8 +7,8 @@
  * and optionally clear localStorage for those keys to free space.
  */
 
-import { coalesceSettingsWrite, isSettingsStorageKey } from './settingsPersistence';
-import { coerceProfilesWrite, pickBestProfilesSource } from './userProfilesStorage';
+import { coalesceSettingsWrite, isSettingsStorageKey } from './settingsPersistence.js';
+import { coerceProfilesWrite, pickBestProfilesSource } from './userProfilesStorage.js';
 
 const DB_NAME = 'LiangLocal';
 const DB_VERSION = 1;
@@ -17,6 +17,7 @@ const STORE_NAME = 'keyvalue';
 // Keys we store in IndexedDB (exact match)
 const IDB_KEYS = new Set([
   'llm-characters',
+  'llm-character-groups',
   'Eloquent-conversations',
   'Eloquent-conversations-index',
   'Eloquent-conversations-storage-v',
@@ -162,16 +163,22 @@ export async function getItem(key, options = {}) {
 /**
  * @param {string} key
  * @param {string} value
+ * @param {{ coalesceSettings?: boolean }} [options]
  * @returns {Promise<void>}
  */
-export async function setItem(key, value) {
-  if (isSettingsStorageKey(key)) {
+export async function setItem(key, value, options = {}) {
+  if (isSettingsStorageKey(key) && options.coalesceSettings !== false) {
     const coalesced = coalesceSettingsWrite(key, value);
     if (coalesced == null) {
       console.warn('[indexedDbStorage] Refusing settings write (empty or would clobber existing data):', key);
       return;
     }
     value = coalesced;
+  }
+  if (KEEP_IN_LOCAL_STORAGE.has(key)) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (_) { /* IndexedDB remains available if the mirror is full */ }
   }
   if (key === 'user-profiles') {
     const coalesced = coerceProfilesWrite(value);
@@ -182,10 +189,12 @@ export async function setItem(key, value) {
     value = coalesced;
   }
   if (!useIdb(key)) {
-    try {
-      localStorage.setItem(key, value);
-    } catch (e) {
-      console.warn('[indexedDbStorage] localStorage setItem failed:', key, e);
+    if (!KEEP_IN_LOCAL_STORAGE.has(key)) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (e) {
+        console.warn('[indexedDbStorage] localStorage setItem failed:', key, e);
+      }
     }
     return;
   }
@@ -293,6 +302,7 @@ export function ensureStorageMigrated(options = {}) {
 const KEEP_IN_LOCAL_STORAGE = new Set([
   'user-profiles',
   'llm-characters',
+  'llm-character-groups',
   'LiangLocal-settings',
   'Eloquent-settings',
   'Eloquent-active-conversation',
@@ -375,7 +385,7 @@ export async function migrateFromLocalStorage(options = {}) {
       continue;
     }
     try {
-      const roundTrip = await getItem(result.key);
+      const roundTrip = await getItem(result.key, { skipMigration: true });
       if (roundTrip === result.value) {
         verifiedClear.push(result.key);
       } else {
@@ -428,7 +438,7 @@ export function categorizeStorageKey(key) {
   if (key === 'Eloquent-conversations' || key === 'Eloquent-conversations-index') {
     return { kind: 'conversations-index' };
   }
-  if (key === 'llm-characters') return { kind: 'characters' };
+  if (key === 'llm-characters' || key === 'llm-character-groups') return { kind: 'characters' };
   if (key === 'user-profiles') return { kind: 'profiles' };
   if (key === 'Eloquent-settings' || key === 'LiangLocal-settings') return { kind: 'settings' };
   if (key.includes('memory') || key === 'eloquent-story-tracker') return { kind: 'memory' };

@@ -228,6 +228,22 @@ function settingRow(label, control, description) {
     return `<label class="mirid-bridge-row"><span>${label}</span>${control}<small>${description}</small></label>`;
 }
 
+function updateConnectionAddresses(panel) {
+    panel.querySelector('#mirid_bridge_text_url').textContent = `${baseUrl()}/v1`;
+    panel.querySelector('#mirid_bridge_image_url').textContent = baseUrl();
+}
+
+function applySettingsToPanel(panel) {
+    const current = settings();
+    panel.querySelector('#mirid_bridge_url').value = current.baseUrl;
+    panel.querySelector('#mirid_bridge_password').value = current.password;
+    panel.querySelector('#mirid_bridge_engine').value = current.ttsEngine;
+    panel.querySelector('#mirid_bridge_voice').value = `${current.ttsEngine}::${current.ttsVoice}`;
+    panel.querySelector('#mirid_bridge_auto_speak').checked = current.autoSpeak;
+    panel.querySelector('#mirid_bridge_stt').value = current.sttEngine;
+    updateConnectionAddresses(panel);
+}
+
 function renderSettings() {
     const panel = document.createElement('div');
     panel.id = 'mirid_bridge_settings';
@@ -235,11 +251,13 @@ function renderSettings() {
     panel.innerHTML = `
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>Mirid Bridge</b>
+                <b>Mirid AI Backend</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <p>Let SillyTavern use Mirid's local models, voices, microphone transcription, and image engine.</p>
+                <p><a href="https://mirid.ai" target="_blank" rel="noopener noreferrer">Mirid</a> is a Windows desktop app for downloading, running, and talking to AI models. It can run GGUF models locally or connect to hosted AI providers.</p>
+                <p>This extension lets SillyTavern use a running Mirid app for chat, character voices, speech recognition, and image generation. It does not install Mirid or models.</p>
+                <p><a href="https://github.com/boneylizard/Eloquent/releases/latest" target="_blank" rel="noopener noreferrer">Download Mirid for Windows</a>, open it, then connect below.</p>
                 ${settingRow('Mirid address', '<input id="mirid_bridge_url" class="text_pole" type="url">', 'Use the address shown by Mirid. Local installs usually use port 8000.')}
                 ${settingRow('Remote-access password', '<input id="mirid_bridge_password" class="text_pole" type="password" autocomplete="off">', 'Leave blank on localhost unless Mirid has a password.')}
                 <div class="mirid-bridge-actions">
@@ -261,23 +279,17 @@ function renderSettings() {
         </div>`;
     document.querySelector('#extensions_settings')?.append(panel);
 
-    const current = settings();
-    panel.querySelector('#mirid_bridge_url').value = current.baseUrl;
-    panel.querySelector('#mirid_bridge_password').value = current.password;
-    panel.querySelector('#mirid_bridge_engine').value = current.ttsEngine;
-    panel.querySelector('#mirid_bridge_voice').value = `${current.ttsEngine}::${current.ttsVoice}`;
-    panel.querySelector('#mirid_bridge_auto_speak').checked = current.autoSpeak;
-    panel.querySelector('#mirid_bridge_stt').value = current.sttEngine;
+    applySettingsToPanel(panel);
 
     const save = () => {
+        const current = settings();
         current.baseUrl = panel.querySelector('#mirid_bridge_url').value.trim();
         current.password = panel.querySelector('#mirid_bridge_password').value;
         current.ttsEngine = panel.querySelector('#mirid_bridge_engine').value.trim() || 'kokoro';
         current.ttsVoice = panel.querySelector('#mirid_bridge_voice').selectedOptions[0]?.dataset.voice || 'af_heart';
         current.autoSpeak = panel.querySelector('#mirid_bridge_auto_speak').checked;
         current.sttEngine = panel.querySelector('#mirid_bridge_stt').value.trim() || 'whisper';
-        panel.querySelector('#mirid_bridge_text_url').textContent = `${baseUrl()}/v1`;
-        panel.querySelector('#mirid_bridge_image_url').textContent = baseUrl();
+        updateConnectionAddresses(panel);
         saveSettingsDebounced();
     };
     panel.querySelectorAll('input, select').forEach((control) => control.addEventListener('change', save));
@@ -289,7 +301,7 @@ function renderSettings() {
         if (engine) panel.querySelector('#mirid_bridge_engine').value = engine;
         save();
     });
-    save();
+    eventSource.on(event_types.EXTENSION_SETTINGS_LOADED, () => applySettingsToPanel(panel));
 }
 
 jQuery(async () => {

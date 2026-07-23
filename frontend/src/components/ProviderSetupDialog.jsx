@@ -5,14 +5,6 @@ import { useApp } from '../contexts/AppContext';
 import { FRONTIER_PROVIDERS } from '../config/frontierProviders';
 import { syncHostedProviderEndpointKey, upsertHostedModelEndpoint } from '../utils/hostedModelProviders';
 import { readFirstRunIntent } from '../utils/firstRunIntent';
-import {
-  INTERFACE_ZOOM_DEFAULT,
-  INTERFACE_ZOOM_EVENT,
-  INTERFACE_ZOOM_MAX,
-  INTERFACE_ZOOM_MIN,
-  readInterfaceZoom,
-  setInterfaceZoom,
-} from '../utils/interfaceZoom';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import {
@@ -36,6 +28,7 @@ const ProviderSetupDialog = () => {
     storageHydrated,
     updateSettings,
     openSettingsTab,
+    setActiveTab,
   } = useApp();
   const [step, setStep] = useState('choice');
   const [nanoGptKey, setNanoGptKey] = useState('');
@@ -43,17 +36,18 @@ const ProviderSetupDialog = () => {
   const [frontierKeys, setFrontierKeys] = useState({});
   const [keysInitialised, setKeysInitialised] = useState(false);
   const [runtimeInfo, setRuntimeInfo] = useState(null);
-  const [interfaceZoom, setInterfaceZoomValue] = useState(readInterfaceZoom);
   const [firstRunIntent] = useState(readFirstRunIntent);
   const roleplayOnboarding = firstRunIntent?.purpose === 'roleplay';
+  const sillyTavernOnboarding = firstRunIntent?.purpose === 'sillytavern';
 
   useEffect(() => {
     if (!storageHydrated || !firstRunIntent?.purpose || settings.primaryUse === firstRunIntent.purpose) return;
     updateSettings({
       primaryUse: firstRunIntent.purpose,
       roleplayIntroCompleted: firstRunIntent.purpose === 'roleplay' ? false : settings.roleplayIntroCompleted,
+      sillyTavernSetupCompleted: firstRunIntent.purpose === 'sillytavern' ? false : settings.sillyTavernSetupCompleted,
     });
-  }, [firstRunIntent, settings.primaryUse, settings.roleplayIntroCompleted, storageHydrated, updateSettings]);
+  }, [firstRunIntent, settings.primaryUse, settings.roleplayIntroCompleted, settings.sillyTavernSetupCompleted, storageHydrated, updateSettings]);
 
   useEffect(() => {
     if (!storageHydrated || keysInitialised) return;
@@ -64,12 +58,6 @@ const ProviderSetupDialog = () => {
     ));
     setKeysInitialised(true);
   }, [keysInitialised, settings, storageHydrated]);
-
-  useEffect(() => {
-    const handleZoomChange = (event) => setInterfaceZoomValue(event.detail?.scale || readInterfaceZoom());
-    window.addEventListener(INTERFACE_ZOOM_EVENT, handleZoomChange);
-    return () => window.removeEventListener(INTERFACE_ZOOM_EVENT, handleZoomChange);
-  }, []);
 
   useEffect(() => {
     if (!window.__TAURI_INTERNALS__) return;
@@ -83,11 +71,13 @@ const ProviderSetupDialog = () => {
       providerSetupCompleted: true,
       modelSetupRequired: true,
       modelSetupSource: source,
-      primaryUse: firstRunIntent?.purpose || settings.primaryUse || 'everything',
+      primaryUse: firstRunIntent?.purpose || settings.primaryUse || 'classic',
       roleplayIntroCompleted: roleplayOnboarding ? false : settings.roleplayIntroCompleted,
+      sillyTavernSetupCompleted: sillyTavernOnboarding ? false : settings.sillyTavernSetupCompleted,
     });
-    openSettingsTab('models', { forceWindow: false });
-  }, [firstRunIntent?.purpose, openSettingsTab, roleplayOnboarding, settings.primaryUse, settings.roleplayIntroCompleted, updateSettings]);
+    if (sillyTavernOnboarding) setActiveTab('sillytavern');
+    else openSettingsTab('models', { forceWindow: false });
+  }, [firstRunIntent?.purpose, openSettingsTab, roleplayOnboarding, setActiveTab, settings.primaryUse, settings.roleplayIntroCompleted, settings.sillyTavernSetupCompleted, sillyTavernOnboarding, updateSettings]);
 
   const connect = () => {
     const trimmedNanoKey = nanoGptKey.trim();
@@ -96,8 +86,9 @@ const ProviderSetupDialog = () => {
       nanoGptApiKey: trimmedNanoKey,
       openRouterApiKey: trimmedOpenRouterKey,
       providerSetupCompleted: true,
-      primaryUse: firstRunIntent?.purpose || settings.primaryUse || 'everything',
+      primaryUse: firstRunIntent?.purpose || settings.primaryUse || 'classic',
       roleplayIntroCompleted: roleplayOnboarding ? false : settings.roleplayIntroCompleted,
+      sillyTavernSetupCompleted: sillyTavernOnboarding ? false : settings.sillyTavernSetupCompleted,
     };
     for (const provider of FRONTIER_PROVIDERS) {
       patch[provider.keySetting] = (frontierKeys[provider.keySetting] || '').trim();
@@ -134,7 +125,8 @@ const ProviderSetupDialog = () => {
       modelSetupRequired: true,
       modelSetupSource: source,
     });
-    openSettingsTab('models', { forceWindow: false });
+    if (sillyTavernOnboarding) setActiveTab('sillytavern');
+    else openSettingsTab('models', { forceWindow: false });
   };
 
   const hasRemoteKey = nanoGptKey.trim()
@@ -147,11 +139,13 @@ const ProviderSetupDialog = () => {
         {step === 'choice' ? (
           <>
             <DialogHeader>
-              <DialogTitle>{roleplayOnboarding ? 'Choose the mind behind your characters' : 'You need a model to start'}</DialogTitle>
+              <DialogTitle>{roleplayOnboarding ? 'Choose the mind behind your characters' : sillyTavernOnboarding ? 'Choose what Mirid will serve' : 'You need a model to start'}</DialogTitle>
               <DialogDescription className="leading-relaxed">
                 {roleplayOnboarding
                   ? 'A character supplies the identity; a model supplies the voice. Run one on this computer, or connect a provider online.'
-                  : 'Mirid is a Windows app for AI chat and roleplay. Run a model on this computer, or connect a model provider online.'}
+                  : sillyTavernOnboarding
+                    ? 'SillyTavern remains your interface. Mirid needs a local model or online provider to answer through it.'
+                    : 'Mirid is a Windows app for AI chat and roleplay. Run a model on this computer, or connect a model provider online.'}
               </DialogDescription>
             </DialogHeader>
 
@@ -198,14 +192,6 @@ const ProviderSetupDialog = () => {
               {runtimeInfo?.runtime_dir && <p className="mt-2 break-all font-mono text-[10px]">{runtimeInfo.runtime_dir}</p>}
             </div>
 
-            <DialogFooter className="items-center justify-between gap-3 sm:justify-between">
-              <div className="flex items-center gap-1" aria-label="Interface size">
-                <Button type="button" variant="ghost" size="sm" aria-label="Make interface smaller" onClick={() => void setInterfaceZoom(interfaceZoom - 0.1)} disabled={interfaceZoom <= INTERFACE_ZOOM_MIN}>A−</Button>
-                <Button type="button" variant="ghost" size="sm" onClick={() => void setInterfaceZoom(INTERFACE_ZOOM_DEFAULT)}>{Math.round(interfaceZoom * 100)}%</Button>
-                <Button type="button" variant="ghost" size="sm" aria-label="Make interface larger" onClick={() => void setInterfaceZoom(interfaceZoom + 0.1)} disabled={interfaceZoom >= INTERFACE_ZOOM_MAX}>A+</Button>
-              </div>
-              <span className="text-[11px] text-muted-foreground">Ctrl + and Ctrl - also work.</span>
-            </DialogFooter>
           </>
         ) : (
           <>

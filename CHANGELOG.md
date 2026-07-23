@@ -1,8 +1,80 @@
-# Eloquent – Change Log
+# Mirid — Changelog
 
 All notable changes to this project will be documented in this file.
 
 This log is intentionally simple, human-readable, and focused on real user-facing progress.
+
+---
+
+## 1.0.8 — 23 July 2026
+
+This is the cumulative release candidate following Mirid 1.0.5.
+
+### Highlights
+
+* **Clearer first run**: Mirid now asks whether it will be used mainly for **roleplay and storytelling**, as a **SillyTavern backend**, or in **Mirid Classic** mode. The choice changes the initial guidance without locking the rest of the app.
+* **Rebuilt Character Library**: The library now fits more cards on screen, provides practical search and sorting controls, supports saved groups, and keeps a permanent plain assistant available for character-free chat.
+* **Safer settings**: Settings writes are now atomic and protected against competing processes. Mirid can recover from its internal backup instead of silently replacing damaged settings with an empty file.
+* **Automatic updates**: Mirid can check for a signed update, show download progress, install it, and relaunch while leaving user data, models, and the installed inference runtime in place.
+
+### Added
+
+* **SillyTavern setup guide** with the required port configuration, copyable endpoint addresses, bridge installation guidance, and checks for text, image, speech-to-text, and text-to-speech connections.
+* **Settings backup and restore** controls throughout Settings. Exported backups include a checksum and are made read-only after creation.
+* **Direct sidebar access** to the Character Library, User Profiles, and Audio controls.
+* **Recent Chat History** access from the main chat header.
+* **Per-conversation chat templates**, including model-default, Generic, ChatML, and saved custom templates.
+* **Saved character groups** with chosen members and optional shared instructions. Opening a group starts a chat with only those characters enabled.
+* **Alternate greeting controls** for character cards that provide more than one opening message.
+* **Batch character import** for any number of mixed TavernAI or SillyTavern `.json` and `.png` cards.
+* **Folder character import**, including supported cards found within selected subfolders.
+* **Partial import reporting**, so one invalid card no longer prevents valid cards in the same batch from being added.
+
+### Improved
+
+* **Character Library layout** with denser cards, search, tag filtering, alphabetical and recent sorting, and adjustable card size.
+* **Character card compatibility** for TavernAI and SillyTavern V1/V2 JSON and PNG cards. Alternate greetings, post-history instructions, lorebooks, extensions, and unrecognised future fields are preserved when possible.
+* **Blank chat availability** through the permanent **Assistant · plain chat** entry.
+* **Chat controls** with an explicit Group Chat control, group-only roster controls, optional user-profile selection, and less-used tools placed under **More…**.
+* **Audio defaults** so speech-to-text and text-to-speech begin enabled for a new installation and can be configured from the dedicated Audio page.
+* **TTS speed handling** by validating and safely limiting the speed sent to the speech backend.
+* **Character prompts** so normal chat and image-assisted chat use the same card instructions and post-history instructions.
+* **Automatic chat names** generated from the first exchange, with a concise local fallback when title generation is unavailable.
+* **Interface scaling** with a more readable first-run default, visible size controls, and working `Ctrl +`, `Ctrl -`, and `Ctrl 0` shortcuts.
+* **Model routing feedback** when automatic routing is enabled without any included endpoints, while still allowing a directly selected model to be used.
+* **Web search controls** reduced to one on/off control using Mirid's automatic search path.
+* **Book Run visibility** moved behind an experimental setting instead of occupying the default chat controls.
+* **Release automation** that builds the Windows installer, signed updater bundle, update manifest, signatures, and checksums as GitHub Release assets.
+* **Clean-install testing** and release checks for the hosted runtime and first-run desktop flow.
+
+### Fixed
+
+* Settings could be lost when Mirid was restarted after a crash, loop, or interrupted write.
+* An empty browser settings snapshot could overwrite valid persisted settings.
+* An empty conversation catalogue could wipe the recent-chat list.
+* Character generation could fail because it still imported the retired chatlog condenser.
+* The VoxCPM2 GGUF model refresh control called a missing frontend setter.
+* Character groups could enable characters that were not selected as members.
+* Imported character cards could lose alternate greetings, system-prompt overrides, post-history instructions, lorebook data, or extension fields.
+* Alternative character greetings were imported but had no visible way to cycle between them.
+* Batch character import performed repeated library writes instead of one merged save.
+* Custom chat templates were not consistently applied to all generation paths.
+
+### Retired or hidden
+
+* Removed the duplicate, incomplete Characters page from Settings. Character management now lives in the Character Library.
+* Retired Chess, Market Simulator, Watch, Forensic Linguistics, the Code Editor, and the Cognitive Looking Glass from the active frontend.
+* Kept Lattice unavailable while its source remains in the repository for possible future revision.
+* Kept the chatlog condenser source but disabled the feature.
+* Removed the broken anti-repetition mode and cleared its legacy settings on load.
+* Removed the redundant Single Mode, Choice Generator, Story Tracker, Roles, Performance, and Dual Overlay controls from the normal chat interface.
+* Removed the legacy batch-file and `launch.py` startup paths. Mirid is launched and managed by the desktop application.
+
+### Distribution
+
+* Mirid remains a Windows 10/11 release for NVIDIA, AMD, and CPU-only systems.
+* Linux and macOS builds remain planned; they are not part of this release.
+* Front Porch AI is credited for Character Library design inspiration.
 
 ---
 

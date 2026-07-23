@@ -30,6 +30,11 @@ test('roleplay intent selects the Faraday-inspired theme', () => {
 
 test('interface zoom is bounded before persistence', () => {
   const storage = memoryStorage();
-  const saved = writeFirstRunIntent({ purpose: 'writing', interfaceZoom: 9 }, storage);
+  const saved = writeFirstRunIntent({ purpose: 'classic', interfaceZoom: 9 }, storage);
   assert.equal(saved.interfaceZoom, 2);
+});
+
+test('legacy general-purpose choices migrate to Mirid Classic', () => {
+  assert.equal(normaliseFirstRunIntent({ purpose: 'writing' }).purpose, 'classic');
+  assert.equal(normaliseFirstRunIntent({ purpose: 'everything' }).purpose, 'classic');
 });

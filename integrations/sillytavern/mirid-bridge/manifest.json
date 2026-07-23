@@ -1,11 +1,11 @@
 {
-  "display_name": "Mirid Bridge",
+  "display_name": "Mirid AI Backend",
   "loading_order": 20,
   "requires": [],
   "optional": [],
   "js": "index.js",
   "css": "style.css",
   "author": "Mirid",
-  "version": "0.1.0",
-  "homePage": "https://mirid.ai"
+  "version": "0.1.1",
+  "homePage": "https://github.com/boneylizard/mirid-sillytavern-bridge"
 }

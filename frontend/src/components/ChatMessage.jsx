@@ -102,6 +102,7 @@ const ChatMessage = memo(({
     onGenerateVariantWithModel,
     onContinueGeneration,
     onNavigateVariant,
+    onNavigateGreeting,
     onSpeakerClick,
     onChunkedSpeakerClick,
     onRegenerateImage,
@@ -179,6 +180,17 @@ const ChatMessage = memo(({
     const textColClass = 'min-w-0 flex-1 basis-0';
     const textColStyle = { maxWidth: CHAT_READING_MEASURE, width: '100%' };
     const rowLayoutClass = 'flex items-start gap-1.5 md:gap-3 max-w-full';
+    const greetingOptions = Array.isArray(msg?.characterGreeting?.options)
+        ? msg.characterGreeting.options
+        : [];
+    const greetingIndex = Number.isInteger(msg?.characterGreeting?.index)
+        ? msg.characterGreeting.index
+        : 0;
+    const canCycleGreeting =
+        msg.role === 'bot'
+        && greetingOptions.length > 1
+        && variantCount <= 1
+        && typeof onNavigateGreeting === 'function';
 
     if (msg.type === 'image' || msg.type === 'video') {
         return (
@@ -387,6 +399,38 @@ const ChatMessage = memo(({
               <MessageEditField initialValue={content} messageId={msg.id} onSave={onSaveBotMessage} onCancel={onCancelBotEdit} rows={6} saveLabel="Save Edit" className="mb-2" textareaClassName="min-h-[120px]" />
             ) : (
               <>
+                {canCycleGreeting && (
+                  <div
+                    className="mb-2 flex items-center justify-between rounded-full border border-border/50 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground"
+                    role="group"
+                    aria-label="Opening message choices"
+                    title="This character card includes alternate opening messages."
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onNavigateGreeting(msg.id, 'previous')}
+                      disabled={isGenerating}
+                      className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                      aria-label="Previous opening message"
+                    >
+                      <ChevronRight size={12} className="rotate-180" />
+                      <span className="hidden sm:inline">Previous</span>
+                    </button>
+                    <span className="tabular-nums font-medium">
+                      Greeting {greetingIndex + 1} of {greetingOptions.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onNavigateGreeting(msg.id, 'next')}
+                      disabled={isGenerating}
+                      className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                      aria-label="Next opening message"
+                    >
+                      <span className="hidden sm:inline">Next</span>
+                      <ChevronRight size={12} />
+                    </button>
+                  </div>
+                )}
                 {msg.role === 'bot' && variantCount > 1 && (
                   <div className="mb-2 flex items-center justify-between rounded-full bg-muted/60 px-3 py-1.5 text-xs text-muted-foreground border border-border/50">
                     <button type="button" onClick={() => onNavigateVariant(msg.id, 'prev')} className="hover:text-foreground transition-colors flex items-center gap-1"><ChevronRight size={12} className="rotate-180" /> Previous</button>

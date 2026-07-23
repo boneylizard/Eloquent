@@ -1,6 +1,6 @@
 /**
  * Central API configuration
- * Reads ports from /ports.json (written by launch.py) or uses defaults
+ * Reads ports from /ports.json when supplied by the host, or uses defaults.
  */
 
 let portConfig = null;

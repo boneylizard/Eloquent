@@ -29,16 +29,7 @@
 .mirid-first-run__roleplay-note { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; padding: 13px 15px; border: 1px solid rgba(105, 192, 212, .28); border-radius: 12px; background: rgba(32, 72, 82, .24); color: #b9c9ce; }
 .mirid-first-run__roleplay-note svg { width: 18px; height: 18px; flex: 0 0 auto; color: #76c6d9; }
 .mirid-first-run__roleplay-note p { margin: 0; font-size: 12px; line-height: 1.55; }
-.mirid-first-run__advanced-toggle { display: inline-flex; align-items: center; gap: 8px; margin-top: 22px; padding: 0; border: 0; color: #a8b6bb; background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
-.mirid-first-run__advanced-toggle svg { width: 16px; height: 16px; transition: transform .18s ease; }
-.mirid-first-run__advanced-toggle svg.is-open { transform: rotate(180deg); }
-.mirid-first-run__advanced { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 12px; padding: 16px; border: 1px solid #283237; border-radius: 12px; background: rgba(19, 25, 28, .86); }
-.mirid-first-run__advanced strong { font-size: 13px; }
-.mirid-first-run__advanced p { margin: 4px 0 0; color: #829197; font-size: 11px; }
-.mirid-first-run__zoom { display: flex; gap: 5px; }
-.mirid-first-run__zoom button { min-width: 44px; height: 34px; border: 1px solid #344247; border-radius: 8px; color: #dfe8eb; background: #1b2427; cursor: pointer; }
-.mirid-first-run__zoom button:disabled { opacity: .4; cursor: default; }
-.mirid-first-run__runtime-note { margin-top: 16px; color: #738288; font-size: 11px; line-height: 1.55; }
+.mirid-first-run__runtime-note { margin-top: 22px; color: #738288; font-size: 11px; line-height: 1.55; }
 .mirid-first-run__error { margin-top: 14px; padding: 10px 12px; border-radius: 9px; color: #ffd0d4; background: rgba(180, 49, 64, .16); font-size: 12px; }
 .mirid-first-run__footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 24px; padding-top: 20px; border-top: 1px solid #253035; }
 .mirid-first-run__footer span { color: #819096; font-size: 12px; }
@@ -50,6 +41,6 @@
   .mirid-first-run { padding: 24px 16px; }
   .mirid-first-run__choices { grid-template-columns: 1fr; }
   .mirid-first-run__choice { min-height: auto; }
-  .mirid-first-run__advanced, .mirid-first-run__footer { align-items: stretch; flex-direction: column; }
+  .mirid-first-run__footer { align-items: stretch; flex-direction: column; }
   .mirid-first-run__continue { width: 100%; }
 }

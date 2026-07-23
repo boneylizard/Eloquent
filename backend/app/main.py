@@ -149,6 +149,13 @@ from .character_datasets import router as character_datasets_router
 from .provider_catalog import router as provider_catalog_router
 from .sillytavern_bridge import router as sillytavern_bridge_router
 from .mirid_docs import router as mirid_docs_router
+from .settings_store import (
+    SettingsStoreError,
+    create_settings_backup,
+    load_settings as load_settings_file,
+    restore_settings_backup,
+    update_settings as update_settings_file,
+)
 
 # --- Update status tracking ---
 UPDATE_LOCK = threading.Lock()
@@ -600,6 +607,8 @@ class GenerateRequest(BaseModel):
     userProfile: Optional[Dict[str, Any]] = None
     is_dual_chat: bool = False # Added for dual chat support
     messages: Optional[List[Dict[str, Any]]] = None  # To support the frontend's messages array
+    chat_template_id: Optional[str] = None
+    chat_template_messages: Optional[List[Dict[str, Any]]] = None
     echo: bool = False # Added for echo functionality
     active_character: Optional[Dict[str, Any]] = None  # Add this field
     request_purpose: Optional[str] = None # <<< ADD THIS LINE
@@ -1401,48 +1410,12 @@ async def update_gpu_mode(
         if gpu_mode not in ["split_services", "unified_model"]:
             raise HTTPException(status_code=400, detail="Invalid GPU usage mode")
 
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        # Create a unique temporary file path to prevent conflicts
-        temp_path = settings_path.with_suffix(f".{uuid.uuid4()}.tmp")
-
-        os.makedirs(settings_dir, exist_ok=True)
-
-        settings = {}
-        # --- Safer Read Logic ---
-        if settings_path.exists():
-            try:
-                with open(settings_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    # Handle case where file might be empty
-                    if content.strip():
-                        settings = json.loads(content)
-            except json.JSONDecodeError:
-                logger.warning(f"Could not decode JSON from {settings_path}. The file might be corrupted. A new one will be created.")
-                settings = {}
-            except Exception as e:
-                logger.error(f"Error reading settings file {settings_path}: {e}. Proceeding with empty settings.")
-                settings = {}
-        
-        # Update the setting in the dictionary
-        settings['gpuUsageMode'] = gpu_mode
-        logger.info(f"Attempting to save 'gpuUsageMode': '{gpu_mode}' to {settings_path}")
-
-        # --- Atomic Write Logic ---
-        # 1. Write to a temporary file first
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=4)
-        
-        # 2. Atomically replace the original file with the new one
-        os.replace(temp_path, settings_path)
-        logger.info(f"Successfully saved settings to {settings_path}")
+        update_settings_file({"gpuUsageMode": gpu_mode})
+        logger.info("Successfully saved gpuUsageMode=%s", gpu_mode)
         
         return {"status": "success", "message": "GPU usage mode updated"}
         
     except Exception as e:
-        # Clean up temp file on error if it exists
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
         logger.error(f"Failed to update GPU mode setting: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 # Add this endpoint with your other router endpoints
@@ -2651,7 +2624,7 @@ async def get_analysis_progress(task_id: str, forensic_service: ForensicLinguist
 async def lifespan(app: FastAPI):
     logger.info("Application lifespan startup...")
     global SINGLE_GPU_MODE
-    # Read environment variables set by launch.py or batch script
+    # Read environment variables set by the desktop host.
     # Ensure these env vars are correctly set by your launch mechanism
     default_gpu = int(os.environ.get("GPU_ID", 0))
     port = int(os.environ.get("PORT", 8000 if default_gpu == 0 else 8001))
@@ -4122,14 +4095,10 @@ async def save_voice_preference(request: dict):
         settings['voice_cache'] = settings['voice_cache'][-5:]
         print(f"🔧 [Voice Preference] Final voice_cache: {settings['voice_cache']}")
         
-        # Save settings
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=2)
+        settings = update_settings_file({"voice_cache": settings["voice_cache"]})
         print(f"✅ [Voice Preference] Settings saved successfully to {settings_path.absolute()}")
-        
-        # Verify it was written
-        with open(settings_path, 'r') as f:
-            verify = json.load(f)
+
+        verify = settings
         print(f"✅ [Voice Preference] Verification - voice_cache in file: {verify.get('voice_cache', [])}")
         
         return {"status": "success", "message": "Voice preference saved"}
@@ -6291,24 +6260,30 @@ Vary your sentence structure and word choices naturally."""
 
     # --- Custom Jinja chat template override (LM Studio-style) ---
     custom_template_stops = None
-    custom_template_entry = chat_template_engine.lookup(effective_model_name)
-    if custom_template_entry and body.messages and body.request_purpose != "continuation":
+    template_messages = body.chat_template_messages or body.messages
+    custom_template_entry = chat_template_engine.lookup(
+        effective_model_name,
+        body.chat_template_id,
+    )
+    if custom_template_entry and template_messages and body.request_purpose != "continuation":
         try:
             messages_for_template = chat_template_engine.merge_backend_context(
-                body.messages,
+                template_messages,
                 system_block_for_llm,
                 final_interaction_block,
             )
             rendered_prompt, custom_template_stops = chat_template_engine.render_with_stops(
                 messages_for_template,
                 effective_model_name,
+                template_id=body.chat_template_id,
                 add_generation_prompt=True,
                 enable_thinking=False,
                 preserve_thinking=True,
             )
             llm_prompt = rendered_prompt
             logger.info(
-                f"[generate] Using custom Jinja chat template for {effective_model_name} "
+                f"[generate] Using chat template {body.chat_template_id or 'model-default'} "
+                f"for {effective_model_name} "
                 f"({len(llm_prompt)} chars, stops={custom_template_stops})"
             )
         except Exception as tmpl_exc:
@@ -7607,19 +7582,7 @@ async def set_openai_api_mode(data: dict = Body(...)):
     try:
         use_openai_api = data.get("useOpenAIAPI", False)
         
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        os.makedirs(settings_dir, exist_ok=True)
-        
-        settings = {}
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        
-        settings['useOpenAIAPI'] = use_openai_api
-        
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+        update_settings_file({"useOpenAIAPI": use_openai_api})
         
         return {"status": "success"}
     except Exception as e:
@@ -7631,19 +7594,7 @@ async def set_direct_profile_injection(data: dict = Body(...)):
     try:
         direct_profile_injection = data.get("directProfileInjection", False)
         
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        os.makedirs(settings_dir, exist_ok=True)
-        
-        settings = {}
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        
-        settings['directProfileInjection'] = direct_profile_injection
-        
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+        update_settings_file({"directProfileInjection": direct_profile_injection})
         
         logger.info(f"✅ Direct Profile Injection setting saved: {direct_profile_injection}")
         return {"status": "success", "directProfileInjection": direct_profile_injection}
@@ -7657,23 +7608,13 @@ async def save_custom_endpoints(data: dict = Body(...)):
     try:
         endpoints = data.get("customApiEndpoints", [])
         
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        os.makedirs(settings_dir, exist_ok=True)
-        
-        settings = {}
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        
-        settings['customApiEndpoints'] = endpoints
+        settings = load_settings_file()
+        patch = {"customApiEndpoints": endpoints}
         # Preserve existing explicit auto-router choice when endpoint list changes.
         # This prevents silent fallback to manual mode on subsequent /generate calls.
         if 'apiEndpointRoundRobinEnabled' not in settings:
-            settings['apiEndpointRoundRobinEnabled'] = False
-        
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+            patch['apiEndpointRoundRobinEnabled'] = False
+        update_settings_file(patch)
         
         return {"status": "success", "message": "Endpoints saved"}
     except Exception as e:
@@ -7687,24 +7628,7 @@ async def set_api_endpoint(data: dict = Body(...)):
         if not url:
             raise HTTPException(status_code=400, detail="URL is required")
         
-        # Save to settings file (same pattern as model directory)
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        
-        os.makedirs(settings_dir, exist_ok=True)
-        
-        settings = {}
-        if settings_path.exists():
-            try:
-                with open(settings_path, 'r') as f:
-                    settings = json.load(f)
-            except:
-                pass
-        
-        settings['apiEndpointUrl'] = url
-        
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+        update_settings_file({"apiEndpointUrl": url})
         
         return {"status": "success", "message": "API endpoint updated"}
     except Exception as e:
@@ -7746,20 +7670,7 @@ async def set_adetailer_directory(request: Request, data: dict = Body(...)):
         if not directory or not os.path.isdir(directory):
             raise HTTPException(status_code=400, detail="Invalid directory path")
         
-        # Save to settings
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        settings_dir.mkdir(exist_ok=True)
-        
-        settings = {}
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        
-        settings['adetailerModelDirectory'] = directory
-        
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+        update_settings_file({"adetailerModelDirectory": directory})
         
         # Update manager
         sd_manager = getattr(request.app.state, 'sd_manager', None)
@@ -7912,28 +7823,7 @@ async def refresh_model_directory(
         if not new_directory or not os.path.isdir(new_directory):
             raise HTTPException(status_code=400, detail="Invalid directory path")
         
-        # Save to settings file
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        
-        # Create directory if it doesn't exist
-        os.makedirs(settings_dir, exist_ok=True)
-        
-        # Read existing settings or create new
-        settings = {}
-        if settings_path.exists():
-            try:
-                with open(settings_path, 'r') as f:
-                    settings = json.load(f)
-            except:
-                pass
-        
-        # Update settings
-        settings['modelDirectory'] = new_directory
-        
-        # Write settings
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+        update_settings_file({"modelDirectory": new_directory})
         
         # Update model manager
         model_manager.models_dir = Path(new_directory)
@@ -7955,24 +7845,7 @@ async def refresh_sd_model_directory(
         if not new_directory or not os.path.isdir(new_directory):
             raise HTTPException(status_code=400, detail="Invalid directory path")
         
-        # Save to settings file (same pattern as your existing code)
-        settings_dir = Path.home() / ".LiangLocal"
-        settings_path = settings_dir / "settings.json"
-        
-        os.makedirs(settings_dir, exist_ok=True)
-        
-        settings = {}
-        if settings_path.exists():
-            try:
-                with open(settings_path, 'r') as f:
-                    settings = json.load(f)
-            except:
-                pass
-        
-        settings['sdModelDirectory'] = new_directory
-        
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f)
+        update_settings_file({"sdModelDirectory": new_directory})
 
         request.app.state.sd_model_directory = str(Path(new_directory).resolve())
         
@@ -8883,21 +8756,7 @@ async def update_upscaler_dir(body: dict):
         if not directory:
             raise HTTPException(status_code=400, detail="Directory path required")
             
-        settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        
-        # Load existing
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        else:
-            settings = {}
-            
-        # Update
-        settings["upscaler_model_directory"] = directory
-        
-        # Save
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=2)
+        update_settings_file({"upscaler_model_directory": directory})
             
         return {"status": "success", "message": f"Upscaler directory updated to {directory}"}
         
@@ -9587,21 +9446,7 @@ async def set_base_directory(path: str):
         
         # Save to settings
         try:
-            settings_path = Path.home() / ".LiangLocal" / "settings.json"
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            settings = {}
-            if settings_path.exists():
-                try:
-                    with open(settings_path, 'r', encoding='utf-8') as f:
-                        settings = json.load(f)
-                except Exception:
-                    pass
-            
-            settings["code_editor_base_dir"] = CODE_EDITOR_BASE_DIR
-            
-            with open(settings_path, 'w', encoding='utf-8') as f:
-                json.dump(settings, f, indent=4)
+            update_settings_file({"code_editor_base_dir": CODE_EDITOR_BASE_DIR})
                 
         except Exception as e:
             logger.error(f"Failed to save code editor directory setting: {e}")
@@ -10096,22 +9941,7 @@ async def update_tensor_split(data: dict = Body(...)):
         
         normalized_split = [val / total for val in tensor_split]
         
-        # Load existing settings
-        settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        else:
-            settings = {}
-        
-        # Update tensor split
-        settings["tensor_split"] = normalized_split
-        
-        # Save back to file
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=2)
+        update_settings_file({"tensor_split": normalized_split})
         
         logger.info(f"✅ Updated tensor_split to {normalized_split}")
         
@@ -10160,23 +9990,13 @@ async def get_tensor_split():
 async def get_settings():
     """Get all settings from settings.json"""
     try:
-        settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-                return {
-                    "status": "success",
-                    "settings": settings
-                }
-        
-        # Return empty settings if file doesn't exist
+        settings = load_settings_file()
         return {
             "status": "success",
-            "settings": {}
+            "settings": settings
         }
-        
-    except Exception as e:
+
+    except SettingsStoreError as e:
         logger.error(f"❌ Error getting settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -10184,19 +10004,7 @@ async def get_settings():
 async def update_settings(data: dict = Body(...)):
     """Update general settings in settings.json"""
     try:
-        settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        
-        # Load existing
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-        else:
-            settings = {}
-            
-        # Merge new settings
-        # We only update keys that are present in the request
-        for key, value in data.items():
-            settings[key] = value
+        settings = update_settings_file(data)
 
         # Apply single GPU mode immediately if provided
         if "singleGpuMode" in data:
@@ -10247,12 +10055,7 @@ async def update_settings(data: dict = Body(...)):
         # Handle useLocalVision setting
         if "useLocalVision" in data:
             use_local_vision = data.get("useLocalVision")
-            settings["useLocalVision"] = use_local_vision
             logger.info(f"🔧 useLocalVision set to: {use_local_vision}")
-            
-        # Save back
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=2)
 
         if "ffmpegPath" in data:
             try:
@@ -10270,10 +10073,49 @@ async def update_settings(data: dict = Body(...)):
             "settings": settings
         }
         
-    except Exception as e:
+    except SettingsStoreError as e:
         logger.error(f"❌ Error updating settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
+@router.post("/models/backup-settings")
+async def backup_settings(data: Optional[dict] = Body(default=None)):
+    """Create a protected, checksummed settings backup on disk."""
+    try:
+        overlay = (data or {}).get("settings")
+        backup_path, document = create_settings_backup(overlay)
+        return {
+            "status": "success",
+            "filename": backup_path.name,
+            "path": str(backup_path),
+            "directory": str(backup_path.parent),
+            "readOnly": True,
+            "settingsSha256": document["settingsSha256"],
+            "includesApiKeys": True,
+        }
+    except SettingsStoreError as e:
+        logger.error("Could not back up settings: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/models/restore-settings")
+async def restore_settings(file: UploadFile = File(...)):
+    """Validate and restore a Mirid settings backup."""
+    try:
+        raw = await file.read(10 * 1024 * 1024 + 1)
+        if len(raw) > 10 * 1024 * 1024:
+            raise SettingsStoreError("The selected settings file is larger than 10 MB.")
+        settings = restore_settings_backup(raw)
+        return {
+            "status": "success",
+            "message": "Settings restored",
+            "settings": settings,
+        }
+    except SettingsStoreError as e:
+        logger.warning("Settings restore rejected for %s: %s", file.filename, e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # These endpoints are now handled in document_routes.py
 
 # --- Election Tracker Endpoints ---

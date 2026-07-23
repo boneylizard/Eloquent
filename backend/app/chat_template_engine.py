@@ -353,6 +353,36 @@ Reminder:
     {%- endif %}
 {%- endif %}"""
 
+_GENERIC_CHAT_TEMPLATE = """{%- for message in messages %}
+{%- if message.role in ['system', 'developer'] %}
+{{- 'System: ' + message.content + '\n\n' }}
+{%- elif message.role == 'user' %}
+{{- 'User: ' + message.content + '\n' }}
+{%- elif message.role == 'assistant' %}
+{{- 'Assistant: ' + message.content + '\n\n' }}
+{%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}{{- 'Assistant: ' }}{%- endif %}"""
+
+_CHATML_CHAT_TEMPLATE = """{%- for message in messages %}
+{{- '<|im_start|>' + (message.role if message.role != 'developer' else 'system') + '\n' }}
+{{- message.content + '<|im_end|>\n' }}
+{%- endfor %}
+{%- if add_generation_prompt %}{{- '<|im_start|>assistant\n' }}{%- endif %}"""
+
+SELECTABLE_CHAT_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "generic": {
+        "patterns": ["__manual_generic__"],
+        "template": _GENERIC_CHAT_TEMPLATE,
+        "stop_tokens": ["\nUser:", "\nSystem:"],
+    },
+    "chatml": {
+        "patterns": ["__manual_chatml__"],
+        "template": _CHATML_CHAT_TEMPLATE,
+        "stop_tokens": ["<|im_end|>", "<|im_start|>user"],
+    },
+}
+
 DEFAULT_CHAT_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "qwen3-froggeric-v21": {
         "patterns": [
@@ -475,16 +505,26 @@ def _normalize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def lookup(model_name: Optional[str]) -> Optional[Dict[str, Any]]:
+def lookup(model_name: Optional[str], template_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    Find a custom chat template for *model_name* using substring matching.
+    Find a chat template by an explicit selectable id or by model-name matching.
     User-defined templates take precedence over built-in defaults.
     Returns the compiled registry entry, or None if no match.
     """
+    selected = (template_id or "").strip()
+    user_registry = _compile_registry(_load_user_templates())
+
+    if selected and selected != "model-default":
+        if selected.startswith("custom:"):
+            selected = selected.split(":", 1)[1]
+        if selected in user_registry:
+            return user_registry[selected]
+        selectable_registry = _compile_registry(SELECTABLE_CHAT_TEMPLATES)
+        return selectable_registry.get(selected)
+
     if not model_name:
         return None
     lower = model_name.lower()
-    user_registry = _compile_registry(_load_user_templates())
     default_registry = _compile_registry(DEFAULT_CHAT_TEMPLATES)
     for registry in (user_registry, default_registry):
         for entry in registry.values():
@@ -495,6 +535,7 @@ def lookup(model_name: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 def render(messages: List[Dict[str, Any]], model_name: Optional[str] = None, *,
+           template_id: Optional[str] = None,
            add_generation_prompt: bool = True,
            enable_thinking: bool = False,
            add_vision_id: bool = False,
@@ -506,7 +547,7 @@ def render(messages: List[Dict[str, Any]], model_name: Optional[str] = None, *,
     Raises TemplateError if the template itself fails.  Callers should catch
     this and fall back to the legacy prompt path.
     """
-    entry = lookup(model_name)
+    entry = lookup(model_name, template_id)
     if entry is None:
         raise TemplateError(f"No custom chat template registered for model {model_name!r}")
 
@@ -523,15 +564,16 @@ def render(messages: List[Dict[str, Any]], model_name: Optional[str] = None, *,
 
 
 def render_with_stops(messages: List[Dict[str, Any]], model_name: Optional[str] = None,
+                      *, template_id: Optional[str] = None,
                       **kwargs) -> Tuple[str, List[str]]:
     """
     Convenience: render and also return the configured stop tokens.
     If the template is not found, raises TemplateError.
     """
-    entry = lookup(model_name)
+    entry = lookup(model_name, template_id)
     if entry is None:
         raise TemplateError(f"No custom chat template registered for model {model_name!r}")
-    return render(messages, model_name, **kwargs), list(entry.get("stop_tokens") or DEFAULT_STOP_TOKENS)
+    return render(messages, model_name, template_id=template_id, **kwargs), list(entry.get("stop_tokens") or DEFAULT_STOP_TOKENS)
 
 
 def merge_backend_context(messages: List[Dict[str, Any]],

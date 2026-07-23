@@ -1,6 +1,6 @@
 [package]
 name = "mirid"
-version = "1.0.7"
+version = "1.0.8"
 description = "Mirid desktop app"
 authors = ["Mirid"]
 license = ""
@@ -23,7 +23,9 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-process = "2.3.1"
 tauri-plugin-shell = "2"
+tauri-plugin-updater = "2.10.1"
 reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"], default-features = false }
 sevenz-rust = { version = "0.6.1", default-features = false }
 sha2 = "0.10"

@@ -1,5 +1,5 @@
-import * as indexedDbStorage from './indexedDbStorage';
-import { SETTINGS_STORAGE_KEY } from './settingsCrossWindowSync';
+import * as indexedDbStorage from './indexedDbStorage.js';
+import { SETTINGS_STORAGE_KEY } from './settingsCrossWindowSync.js';
 
 export const SETTINGS_STORAGE_KEYS = [
   SETTINGS_STORAGE_KEY,
@@ -46,6 +46,25 @@ export function isTrivialSettingsObject(obj) {
   return countMeaningfulSettingsKeys(obj) === 0;
 }
 
+const RETIRED_ANTI_REPETITION_KEYS = [
+  'antiRepetitionMode',
+  'detectRepeatedPhrases',
+  'frequencyPenalty',
+  'presencePenalty',
+];
+
+export function disableRetiredAntiRepetition(settings) {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return settings;
+  if (!RETIRED_ANTI_REPETITION_KEYS.some((key) => key in settings)) return settings;
+  return {
+    ...settings,
+    antiRepetitionMode: false,
+    detectRepeatedPhrases: false,
+    frequencyPenalty: 0,
+    presencePenalty: 0,
+  };
+}
+
 /**
  * Shallow merge: patch keys overlay base. Refuses empty patch when base already has data.
  * @param {Record<string, unknown>} base
@@ -54,11 +73,15 @@ export function isTrivialSettingsObject(obj) {
  */
 export function mergeSettingsObjects(base, patch, opts = {}) {
   const safeBase = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
-  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return { ...safeBase };
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    return disableRetiredAntiRepetition({ ...safeBase });
+  }
   const patchKeys = countMeaningfulSettingsKeys(patch);
   const baseKeys = countMeaningfulSettingsKeys(safeBase);
-  if (!opts.allowEmptyPatch && patchKeys === 0 && baseKeys > 0) return { ...safeBase };
-  return { ...safeBase, ...patch };
+  if (!opts.allowEmptyPatch && patchKeys === 0 && baseKeys > 0) {
+    return disableRetiredAntiRepetition({ ...safeBase });
+  }
+  return disableRetiredAntiRepetition({ ...safeBase, ...patch });
 }
 
 /**
@@ -156,6 +179,38 @@ export async function persistSettingsBlob(nextFullState) {
 
   const str = JSON.stringify(merged);
   await safeSetSettingsRaw(str);
+  return true;
+}
+
+/**
+ * Deliberately replace the complete settings snapshot after a user-confirmed restore.
+ * Unlike normal autosave, this does not merge stale keys back into the restored file.
+ * @param {Record<string, unknown>} nextFullState
+ * @returns {Promise<boolean>}
+ */
+export async function replaceSettingsBlob(nextFullState) {
+  if (
+    !nextFullState
+    || typeof nextFullState !== 'object'
+    || Array.isArray(nextFullState)
+    || isTrivialSettingsObject(nextFullState)
+  ) {
+    return false;
+  }
+
+  const serialized = JSON.stringify(nextFullState);
+  for (const key of SETTINGS_STORAGE_KEYS) {
+    try {
+      localStorage.setItem(key, serialized);
+    } catch {
+      /* IndexedDB write below remains available */
+    }
+  }
+  await Promise.all(
+    SETTINGS_STORAGE_KEYS.map((key) => (
+      indexedDbStorage.setItem(key, serialized, { coalesceSettings: false })
+    )),
+  );
   return true;
 }
 

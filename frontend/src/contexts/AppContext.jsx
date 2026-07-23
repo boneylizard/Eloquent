@@ -103,6 +103,12 @@ import {
   resolveSystemPersonaCharacter,
 } from '../utils/systemPersona';
 import {
+  buildCharacterGreetingOptions,
+  createCharacterGreetingState,
+  resolveCharacterPostHistoryInstructions,
+  resolveCharacterPromptOverride,
+} from '../utils/characterCardRuntime';
+import {
   attachApiBotSpeakerMeta,
   getRotationPool,
   resolveEndpointDisplay,
@@ -124,6 +130,10 @@ import {
   findNanoGptModel,
 } from '../utils/nanoGptModelsCache';
 import { formatApiError } from '../utils/chatlogCondenserUtils';
+import {
+  MODEL_DEFAULT_CHAT_TEMPLATE_ID,
+  getChatTemplateRequestFields,
+} from '../utils/chatTemplateSelection';
 
 /** Estimate the duration (ms) of a queued TTS audio chunk without fully
  *  decoding it.  Uses the backend-provided subtitle cue when available,
@@ -410,7 +420,14 @@ const _buildSystemPrompt = (character, userProfile = null, summaryContextOverrid
   const speechStyle = character.speech_style ? replaceTags(character.speech_style) : '';
   const background = character.background ? replaceTags(character.background) : '';
   const ethics = character.ethics_justification ? replaceTags(character.ethics_justification).trim() : '';
-  const modelInstructions = character.model_instructions ? replaceTags(character.model_instructions).trim() : '';
+  const defaultBehaviorInstructions =
+    `Stay in character at all times. Respond as ${charName} would, maintaining the defined personality and speech patterns.`;
+  const behaviorInstructions = resolveCharacterPromptOverride(
+    character.model_instructions,
+    defaultBehaviorInstructions,
+    charName,
+    userName,
+  );
 
   const prefixParts = [];
   if (ethics) {
@@ -419,9 +436,6 @@ const _buildSystemPrompt = (character, userProfile = null, summaryContextOverrid
       charName +
       ' below.)';
     prefixParts.push(`[ETHICS JUSTIFICATION]\n${ethicsScopeNote}\n\n${ethics}`);
-  }
-  if (modelInstructions) {
-    prefixParts.push(`[MODEL INSTRUCTIONS]\n${modelInstructions}`);
   }
   const eloquentPrefix = prefixParts.length ? `${prefixParts.join('\n\n')}\n\n` : '';
 
@@ -439,7 +453,8 @@ ${scenario ? `SCENARIO: ${scenario}` : ''}
 
 SPEAKING STYLE: ${speechStyle}
 
-IMPORTANT: Stay in character at all times. Respond as ${charName} would, maintaining the defined personality and speech patterns.${ethicsTail}
+[CHARACTER SYSTEM PROMPT]
+${behaviorInstructions}${ethicsTail}
 ${character.example_dialogue && character.example_dialogue.length > 0
       ? `EXAMPLE DIALOGUE:
 ${character.example_dialogue.map(msg =>
@@ -1468,6 +1483,7 @@ const AppProvider = ({ children }) => {
     modelSetupSource: 'huggingface',
     primaryUse: null,
     roleplayIntroCompleted: false,
+    sillyTavernSetupCompleted: false,
     customApiEndpoints: [],
     speechModelDirectory: '',
 
@@ -1620,7 +1636,7 @@ const AppProvider = ({ children }) => {
   // Backend detects single_gpu_mode, frontend stores as singleGpuMode
   const isSingleGpuMode = settings?.singleGpuMode === true;
 
-  // Port configuration - loaded from /ports.json (written by launch.py)
+  // Port configuration - loaded from /ports.json when a host provides overrides.
   const [portConfig, setPortConfig] = useState({
     backend: "http://localhost:8000",
     secondary: "http://localhost:8001",
@@ -3930,14 +3946,6 @@ const AppProvider = ({ children }) => {
   const createNewConversation = useCallback((opts = {}) => {
     console.log('🔍 [DEBUG] Creating new conversation');
     const id = generateUniqueId();
-    // Helper to replace tags
-    const replaceTags = (text, charName, userName) => {
-      if (!text) return '';
-      return text
-        .replace(/{{char}}/gi, charName)
-        .replace(/{{user}}/gi, userName);
-    };
-
     const systemPersonaOn = isSystemPersonaModeActive(settingsRef.current);
     const systemPersonaChar = systemPersonaOn
       ? resolveSystemPersonaCharacter(characters, settingsRef.current)
@@ -3958,9 +3966,11 @@ const AppProvider = ({ children }) => {
       && settingsRef.current?.characterIntroEnabled === true
       && !!primaryCharacter?.id;
 
-    const firstMessage = !forceEmpty && !useCharacterIntro && !useSystemIntro && primaryCharacter?.first_message
-      ? replaceTags(primaryCharacter.first_message, charName, userName)
-      : null;
+    const greetingOptions = !forceEmpty && !useCharacterIntro && !useSystemIntro
+      ? buildCharacterGreetingOptions(primaryCharacter, userName)
+      : [];
+    const firstMessage = greetingOptions[0] || null;
+    const characterGreeting = createCharacterGreetingState(greetingOptions);
 
     const defaultUserCharacter = userCharacter || null;
 
@@ -3972,7 +3982,8 @@ const AppProvider = ({ children }) => {
         modelId: 'primary',
         characterName: charName,
         characterId: primaryCharacter?.id,
-        avatar: getActiveCharacterAvatar(primaryCharacter)
+        avatar: getActiveCharacterAvatar(primaryCharacter),
+        ...(characterGreeting ? { characterGreeting } : {}),
       }]
       : [];
 
@@ -4003,6 +4014,7 @@ const AppProvider = ({ children }) => {
       rollingMemoryFoldCount: 0,
       introPending: forceEmpty ? false : (useSystemIntro || useCharacterIntro),
       characterIntro: null,
+      chatTemplateId: MODEL_DEFAULT_CHAT_TEMPLATE_ID,
     };
     console.log('🔍 [DEBUG] New conversation has requiresTitle flag:', conv.requiresTitle);
     const next = [...conversationsRef.current, conv];
@@ -4033,14 +4045,18 @@ const AppProvider = ({ children }) => {
    */
   const startCharacterConversation = useCallback((character, opts = {}) => {
     const id = generateUniqueId();
-    const firstMsg = opts.firstMessage || character.first_message || '';
     const charName = character.name || 'Character';
     const userName = (settings.multiRoleMode && userCharacter?.name)
       ? userCharacter.name
       : (userProfile?.name || userProfile?.username || 'User');
-    const resolvedFirstMsg = firstMsg
-      .replace(/{{char}}/gi, charName)
-      .replace(/{{user}}/gi, userName);
+    const greetingOptions = opts.firstMessage
+      ? [String(opts.firstMessage)
+        .replace(/{{char}}/gi, charName)
+        .replace(/{{user}}/gi, userName)
+        .trim()]
+      : buildCharacterGreetingOptions(character, userName);
+    const resolvedFirstMsg = greetingOptions[0] || '';
+    const characterGreeting = createCharacterGreetingState(greetingOptions);
 
     const initial = resolvedFirstMsg ? [{
       id: generateUniqueId(),
@@ -4050,13 +4066,38 @@ const AppProvider = ({ children }) => {
       characterName: charName,
       characterId: character.id,
       avatar: getActiveCharacterAvatar(character),
+      ...(characterGreeting ? { characterGreeting } : {}),
     }] : [];
 
-    const defaultActiveIds = characters
+    const availableActiveIds = characters
       .map(normalizeCharacter)
       .filter(c => normalizeChatRole(c.chat_role) !== 'user')
       .map(c => c.id);
-    const defaultActiveWeights = buildDefaultCharacterWeights(characters);
+    const availableActiveIdSet = new Set(availableActiveIds);
+    const requestedActiveIds = Array.isArray(opts.activeCharacterIds)
+      ? [...new Set(opts.activeCharacterIds)]
+        .map((candidateId) => String(candidateId || '').trim())
+        .filter((candidateId) => candidateId && availableActiveIdSet.has(candidateId))
+      : [];
+    const defaultActiveIds = requestedActiveIds.length > 0
+      ? requestedActiveIds
+      : availableActiveIds;
+    const allDefaultWeights = buildDefaultCharacterWeights(characters);
+    const requestedWeights =
+      opts.activeCharacterWeights && typeof opts.activeCharacterWeights === 'object'
+        ? opts.activeCharacterWeights
+        : {};
+    const defaultActiveWeights = Object.fromEntries(
+      defaultActiveIds.map((characterId) => [
+        characterId,
+        Number.isFinite(Number(requestedWeights[characterId]))
+          ? Number(requestedWeights[characterId])
+          : (allDefaultWeights[characterId] ?? 50),
+      ])
+    );
+    const nextMultiRoleContext = typeof opts.multiRoleContext === 'string'
+      ? opts.multiRoleContext.trim()
+      : '';
 
     // Save current conversation before switching
     const prevId = activeConversationRef.current;
@@ -4085,7 +4126,7 @@ const AppProvider = ({ children }) => {
       systemPersonaCharacterId: null,
       activeCharacterIds: defaultActiveIds,
       activeCharacterWeights: defaultActiveWeights,
-      multiRoleContext: '',
+      multiRoleContext: nextMultiRoleContext,
       created: new Date().toISOString(),
       requiresTitle: false,
       agenticMemoryEnabled: true,
@@ -4094,6 +4135,7 @@ const AppProvider = ({ children }) => {
       rollingMemoryFoldCount: 0,
       introPending: false,
       characterIntro: null,
+      chatTemplateId: MODEL_DEFAULT_CHAT_TEMPLATE_ID,
       mirrorContinuity: opts.mirrorContinuity || null,
       mirrorDateType: opts.dateType || null,
     };
@@ -4112,7 +4154,7 @@ const AppProvider = ({ children }) => {
     setUserCharacterId(userCharacter?.id || null);
     setActiveCharacterIds(defaultActiveIds);
     setActiveCharacterWeights(defaultActiveWeights);
-    setMultiRoleContext('');
+    setMultiRoleContext(nextMultiRoleContext);
 
     if (initial.length > 0) {
       void saveConversationCatalog(next, id);
@@ -4154,7 +4196,9 @@ const AppProvider = ({ children }) => {
     const list = (conversationsRef.current || []).filter(
       (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
     );
-    void saveConversationCatalog(list, null);
+    if (list.length > 0) {
+      void saveConversationCatalog(list, null);
+    }
     void indexedDbStorage.removeItem('Eloquent-active-conversation');
   }, [setConversations, setActiveConversation, setMessages]);
 
@@ -4344,7 +4388,10 @@ const AppProvider = ({ children }) => {
   // ----------------------------------
   const loadCharacters = useCallback(async () => {
     try {
-      let saved = await indexedDbStorage.getItem('llm-characters');
+      let saved = await indexedDbStorage.getItem('llm-characters', {
+        preferLocalStorage: true,
+        skipMigration: true,
+      });
       if (!saved && typeof localStorage !== 'undefined') {
         try {
           saved = localStorage.getItem('llm-characters');
@@ -4425,6 +4472,56 @@ const AppProvider = ({ children }) => {
     });
 
     return savedCharacter; // Return the character with its final ID
+  }, [storageHydrated]);
+
+  const saveCharacters = useCallback((items) => {
+    const inputCharacters = Array.isArray(items) ? items : [];
+    if (inputCharacters.length === 0) return [];
+    if (!storageHydrated) {
+      console.warn('[saveCharacters] blocked until browser storage has finished loading');
+      alert('Your character library is still loading. Wait a moment and try again.');
+      return [];
+    }
+
+    const importTimestamp = Date.now();
+    const importedCharacters = inputCharacters.map((data, index) => omitPersistedLocalAvatarFolder({
+      ...data,
+      id: data?.id || `char_${importTimestamp}_${index}_${Math.random().toString(36).substring(2, 9)}`,
+      chat_role: normalizeChatRole(data?.chat_role),
+      created_at: data?.created_at || new Date().toISOString().split('T')[0],
+    }));
+
+    setCharacters((previousCharacters) => {
+      const mergedCharacters = [...previousCharacters];
+      importedCharacters.forEach((character) => {
+        const existingIndex = mergedCharacters.findIndex((item) => item.id === character.id);
+        if (existingIndex >= 0) {
+          mergedCharacters[existingIndex] = character;
+        } else {
+          mergedCharacters.push(character);
+        }
+      });
+
+      let normalizedList = mergedCharacters.map(normalizeCharacter);
+      const importedUserCharacter = [...importedCharacters]
+        .reverse()
+        .find((character) => character.chat_role === 'user');
+      if (importedUserCharacter) {
+        normalizedList = normalizedList.map((character) => ({
+          ...character,
+          chat_role: character.id === importedUserCharacter.id ? 'user' : 'npc',
+        }));
+      }
+
+      const serialized = JSON.stringify(normalizedList);
+      indexedDbStorage.setItem('llm-characters', serialized);
+      try {
+        localStorage.setItem('llm-characters', serialized);
+      } catch (_) { /* mirror for legacy readers */ }
+      return normalizedList;
+    });
+
+    return importedCharacters;
   }, [storageHydrated]);
 
   const setCharacterAvatarIndex = useCallback((characterId, index) => {
@@ -4599,17 +4696,31 @@ const AppProvider = ({ children }) => {
           : c
       )));
     }
-    if (char?.first_message && messages.length === 0) {
+    const userName = settings.multiRoleMode && userCharacter?.name
+      ? userCharacter.name
+      : (userProfile?.name || userProfile?.username || 'User');
+    const greetingOptions = buildCharacterGreetingOptions(char, userName);
+    const characterGreeting = createCharacterGreetingState(greetingOptions);
+    if (greetingOptions.length > 0 && messages.length === 0) {
       setMessages([{
         id: generateUniqueId(),
         role: 'bot',
-        content: char.first_message,
+        content: greetingOptions[0],
         avatar: getActiveCharacterAvatar(char),
         characterName: char.name,
-        characterId: char.id
+        characterId: char.id,
+        ...(characterGreeting ? { characterGreeting } : {}),
       }]);
     }
-  }, [characters, activeConversation, messages, setConversations, settings.multiRoleMode]);
+  }, [
+    characters,
+    activeConversation,
+    messages,
+    setConversations,
+    settings.multiRoleMode,
+    userCharacter,
+    userProfile,
+  ]);
 
   // ----------------------------------
   // Dual-Mode Logic
@@ -4677,6 +4788,13 @@ const AppProvider = ({ children }) => {
               {
                 model_name: primaryModel,
                 messages: buildHistory('primary', 'secondary', primaryCharacter, secondaryModel),
+                ...getChatTemplateRequestFields({
+                  conversations: conversationsRef.current,
+                  conversationId: activeConversation,
+                  history: buildHistory('primary', 'secondary', primaryCharacter, secondaryModel),
+                  isApi: primaryIsAPI,
+                  customTemplates: settings.modelChatTemplates,
+                }),
                 gpu_id: 0,
                 userProfile,
                 authorNote:
@@ -4699,6 +4817,13 @@ const AppProvider = ({ children }) => {
               {
                 model_name: secondaryModel,
                 messages: buildHistory('secondary', 'primary', secondaryCharacter, primaryModel),
+                ...getChatTemplateRequestFields({
+                  conversations: conversationsRef.current,
+                  conversationId: activeConversation,
+                  history: buildHistory('secondary', 'primary', secondaryCharacter, primaryModel),
+                  isApi: secondaryIsAPI,
+                  customTemplates: settings.modelChatTemplates,
+                }),
                 gpu_id: 1,
                 userProfile,
                 authorNote:
@@ -5479,7 +5604,12 @@ Return ONLY valid JSON:
       const payload = mergeNanoGptMemoryIntoPayload(
         {
           directProfileInjection: settings.directProfileInjection,
-          prompt: formatPrompt(selectedHistory, promptModelName || effectivePrimaryModel, systemMsg),
+          prompt: formatPrompt(
+            selectedHistory,
+            promptModelName || effectivePrimaryModel,
+            systemMsg,
+            resolveCharacterPostHistoryInstructions(speakerCharacter, getRoleplayUserName()),
+          ),
           model_name: requestModelName,
           max_tokens: effectiveMaxTokens,
           temperature,
@@ -5508,6 +5638,13 @@ Return ONLY valid JSON:
           request_purpose: requestPurpose || undefined,
           selected_model: route.selectedModel || undefined,
           round_robin_enabled: route.autoEnabled,
+          ...getChatTemplateRequestFields({
+            conversations: conversationsRef.current,
+            conversationId: activeConversationRef.current || activeConversation,
+            history: selectedHistory,
+            isApi: primaryIsAPI,
+            customTemplates: settings.modelChatTemplates,
+          }),
           ...getSystemPersonaGenerateExtras(activeConversationRef.current || activeConversation),
         },
         settings
@@ -5786,7 +5923,7 @@ colours: The dominant colours`;
     const apiUrl = PRIMARY_API_URL;
     const targetGpuId = 0;
 
-    const convertToOpenAIMessages = (messages, systemPrompt) => {
+    const convertToOpenAIMessages = (messages, systemPrompt, postHistoryInstructions = '') => {
       const effectiveMaxTokens = (settings.max_tokens != null && settings.max_tokens > 0) ? settings.max_tokens : 1_000_000;
       const contextWindowTokens = clampApiContextWindowTokens(settings.apiContextWindowTokens);
       const sliced = selectApiHistoryWithinContext({
@@ -5802,7 +5939,14 @@ colours: The dominant colours`;
         content: msg.content
       }));
 
-      return [{ role: 'system', content: systemPrompt }, ...openAiMsgs];
+      const finalMessages = [{ role: 'system', content: systemPrompt }, ...openAiMsgs];
+      if (postHistoryInstructions.trim()) {
+        finalMessages.push({
+          role: 'system',
+          content: `[POST-HISTORY INSTRUCTIONS]\n${postHistoryInstructions.trim()}`,
+        });
+      }
+      return finalMessages;
     };
 
     const agentMem = settings.directProfileInjection ? [] : await fetchMemoriesFromAgent(text);
@@ -5834,7 +5978,11 @@ colours: The dominant colours`;
       systemMsg += `\n\nUSER CONTEXT:\n${memoryContext}`;
     }
 
-    const finalMessages = convertToOpenAIMessages(recentMessages, systemMsg);
+    const finalMessages = convertToOpenAIMessages(
+      recentMessages,
+      systemMsg,
+      resolveCharacterPostHistoryInstructions(activeCharacter, getRoleplayUserName()),
+    );
 
     if (settings.streamResponses) {
       console.error('🔍 REASONING-DEBUG: Starting OpenAI streaming for model:', primaryModel);
@@ -6079,7 +6227,12 @@ colours: The dominant colours`;
           const payload = mergeNanoGptMemoryIntoPayload(
             {
               directProfileInjection: s.directProfileInjection,
-              prompt: formatPrompt(selectedHistory, primaryModel, systemMsg),
+              prompt: formatPrompt(
+                selectedHistory,
+                primaryModel,
+                systemMsg,
+                resolveCharacterPostHistoryInstructions(speakerCharacter, getRoleplayUserName()),
+              ),
               model_name: primaryModel,
               max_tokens: effectiveMaxTokens,
               temperature: s.temperature,
@@ -6285,7 +6438,12 @@ colours: The dominant colours`;
           const payload = mergeNanoGptMemoryIntoPayload(
             {
               directProfileInjection: s.directProfileInjection,
-              prompt: formatPrompt(prep.selectedHistory, primaryModel, prep.systemMsg),
+              prompt: formatPrompt(
+                prep.selectedHistory,
+                primaryModel,
+                prep.systemMsg,
+                resolveCharacterPostHistoryInstructions(speakerCharacter, getRoleplayUserName()),
+              ),
               model_name: primaryModel,
               max_tokens: effectiveMaxTokens,
               temperature: s.temperature,
@@ -6460,7 +6618,12 @@ colours: The dominant colours`;
         const payload = mergeNanoGptMemoryIntoPayload(
           {
             directProfileInjection: s.directProfileInjection,
-            prompt: formatPrompt(prep.selectedHistory, primaryModel, prep.systemMsg),
+            prompt: formatPrompt(
+              prep.selectedHistory,
+              primaryModel,
+              prep.systemMsg,
+              resolveCharacterPostHistoryInstructions(speakerCharacter, getRoleplayUserName()),
+            ),
             model_name: primaryModel,
             max_tokens: effectiveMaxTokens,
             temperature: s.temperature,
@@ -6727,7 +6890,12 @@ colours: The dominant colours`;
       const payload = mergeNanoGptMemoryIntoPayload(
         {
           directProfileInjection: settings.directProfileInjection,
-          prompt: formatPrompt(selectedHistory, promptModelName || primaryModel, systemMsg),
+          prompt: formatPrompt(
+            selectedHistory,
+            promptModelName || primaryModel,
+            systemMsg,
+            resolveCharacterPostHistoryInstructions(speakerCharacter, getRoleplayUserName()),
+          ),
           model_name: requestModelName,
           max_tokens: effectiveMaxTokens,
           temperature,
@@ -6754,6 +6922,13 @@ colours: The dominant colours`;
           request_purpose: effectiveRequestPurpose || undefined,
           selected_model: selectedModelForTrace !== 'none' ? selectedModelForTrace : undefined,
           round_robin_enabled: route.autoEnabled,
+          ...getChatTemplateRequestFields({
+            conversations: conversationsRef.current,
+            conversationId: currentConversation,
+            history: selectedHistory,
+            isApi: primaryIsAPI,
+            customTemplates: settingsSnapshot.modelChatTemplates,
+          }),
           ...getSystemPersonaGenerateExtras(currentConversation),
         },
         settings
@@ -8932,6 +9107,7 @@ UPDATED SUMMARY:`;
     updateMultiRoleContext,
     loadCharacters,
     saveCharacter,
+    saveCharacters,
     cycleCharacterAvatar,
     setCharacterAvatarIndex,
     deleteCharacter,
@@ -8990,7 +9166,7 @@ UPDATED SUMMARY:`;
     setLastRequestRouteMeta,
     stopStreamingTTS,
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, portsReady, storageHydrated, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, startCharacterConversation, goToHome, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, ttsPlaybackState, isTranscribing, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, secondaryModel, audioError, startRecording, stopRecording, playTTS, playTestStreamingTTS, playStreamingTtsScript, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, beginBookAutomationPacking, endBookAutomationPacking, runBookAutomationChapter, runBookAutomationQuickPrompt, generateBookChapterJsonOutline, buildBookAutomationExport, generateCallModeFollowUp, updateSettings, upsertOutreachRule, deleteOutreachRule, runOutreachRuleNow, outreachNotifications, clearOutreachNotifications, dismissOutreachToast, openOutreachNotification, discardOutreachNotification, requestOutreachNotificationPermission, outreachScrollToMessageId, dismissOutreachScrollTarget, pendingDMThreadId, setPendingDMThreadId, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, nanogptSttModels, fetchNanogptSttModels, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue, ttsFullResponseSaveStatus, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL,     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext, injectTimestamp, setInjectTimestamp,
+    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, portsReady, storageHydrated, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, startCharacterConversation, goToHome, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, ttsPlaybackState, isTranscribing, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, secondaryModel, audioError, startRecording, stopRecording, playTTS, playTestStreamingTTS, playStreamingTtsScript, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, beginBookAutomationPacking, endBookAutomationPacking, runBookAutomationChapter, runBookAutomationQuickPrompt, generateBookChapterJsonOutline, buildBookAutomationExport, generateCallModeFollowUp, updateSettings, upsertOutreachRule, deleteOutreachRule, runOutreachRuleNow, outreachNotifications, clearOutreachNotifications, dismissOutreachToast, openOutreachNotification, discardOutreachNotification, requestOutreachNotificationPermission, outreachScrollToMessageId, dismissOutreachScrollTarget, pendingDMThreadId, setPendingDMThreadId, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, nanogptSttModels, fetchNanogptSttModels, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue, ttsFullResponseSaveStatus, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, saveCharacters, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL,     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext, injectTimestamp, setInjectTimestamp,
     roomGalleryOpen, saveToGallery,
   ]);
 

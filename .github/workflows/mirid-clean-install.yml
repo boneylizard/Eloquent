@@ -14,7 +14,7 @@ on:
       expected_version:
         description: Expected installed Mirid version
         required: true
-        default: 1.0.7
+        default: 1.0.8
         type: string
 
 permissions:

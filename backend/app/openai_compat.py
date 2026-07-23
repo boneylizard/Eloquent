@@ -23,6 +23,7 @@ except ImportError:
     pass
 from .model_manager import ModelManager
 from . import inference
+from .settings_store import update_settings as update_settings_file
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -361,8 +362,12 @@ def get_configured_endpoint(
 
         def _persist_round_robin_cursor(updated_settings: dict):
             try:
-                with open(settings_path, 'w') as wf:
-                    json.dump(updated_settings, wf, indent=2)
+                update_settings_file({
+                    "apiEndpointRoundRobinCursor": updated_settings.get(
+                        "apiEndpointRoundRobinCursor",
+                        {},
+                    )
+                })
             except Exception as write_err:
                 logger.warning(f"Failed to persist API round-robin cursor: {write_err}")
 

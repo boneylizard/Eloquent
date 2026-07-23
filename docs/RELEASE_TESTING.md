@@ -1,5 +1,17 @@
 # Mirid release testing
 
+## Test current source in the proven venv
+
+Before freezing the backend or rebuilding the runtime, run the current Tauri interface against the repository's existing Python environment:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_mirid_from_venv.ps1
+```
+
+This launches the real Mirid desktop window. Tauri starts `sidecar_entry.py` twice from `venv\Scripts\python.exe`: the backend on port 8000 and voice service on port 8002. It does not download, extract or use the packaged runtime. Closing the Tauri window stops both services.
+
+Use `-ForceCpu` to exercise the CPU-only backend path. The command refuses to start if an installed copy of Mirid already owns either service port.
+
 ## Manual clean-install test
 
 Use a disposable Windows account. From that account, preview the exact state that will be removed:

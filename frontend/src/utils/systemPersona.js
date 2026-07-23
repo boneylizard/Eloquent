@@ -16,6 +16,7 @@ import {
   buildCharacterIntroRepairPrompt,
 } from './characterIntro.js';
 import { buildFlowGenerateRequestBody, readFlowGenerateError, resolveFlowGenerateConfig } from './flowGenerateApi.js';
+import { resolveCharacterPromptOverride } from './characterCardRuntime.js';
 
 export const SYSTEM_INTRO_REQUEST_PURPOSE = 'system_intro';
 
@@ -137,18 +138,23 @@ export function buildCharacterAsSystemPrompt(
     );
   }
 
-  const modelInstructions = character.model_instructions ? replaceTags(character.model_instructions).trim() : '';
-  if (modelInstructions) {
-    blocks.push(modelInstructions);
-  } else {
-    const description = replaceTags(character.description);
-    const personality = replaceTags(character.personality);
-    if (description || personality) {
-      blocks.push(
-        [description, personality ? `Personality: ${personality}` : ''].filter(Boolean).join('\n\n')
-      );
-    }
+  const description = replaceTags(character.description);
+  const personality = replaceTags(character.personality);
+  if (description || personality) {
+    blocks.push(
+      [description, personality ? `Personality: ${personality}` : ''].filter(Boolean).join('\n\n')
+    );
   }
+
+  const defaultBehaviorInstructions =
+    `Maintain the identity, purpose and voice defined for ${personaName}.`;
+  const behaviorInstructions = resolveCharacterPromptOverride(
+    character.model_instructions,
+    defaultBehaviorInstructions,
+    personaName,
+    userName,
+  );
+  if (behaviorInstructions) blocks.push(behaviorInstructions);
 
   const optional = [
     ['Background', character.background],

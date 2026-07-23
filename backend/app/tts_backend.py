@@ -172,6 +172,11 @@ async def synthesize_endpoint(request: Request):
         text = body.get("text", "")
         engine = body.get("engine", "chatterbox")
         voice = body.get("voice", "default")
+        try:
+            speed = float(body.get("speed", 1.0))
+        except (TypeError, ValueError):
+            speed = 1.0
+        speed = max(0.5, min(2.0, speed))
         audio_prompt_path = body.get("audio_prompt_path")
         exaggeration = body.get("exaggeration", 0.5)
         cfg = body.get("cfg", 0.5)
@@ -198,6 +203,7 @@ async def synthesize_endpoint(request: Request):
             audio_prompt_path=audio_prompt_path,
             exaggeration=exaggeration,
             cfg=cfg,
+            speed=speed,
             voxcpm_cfg_value=voxcpm_cfg_value,
             voxcpm_inference_timesteps=voxcpm_inference_timesteps,
             voxcpm_normalize=voxcpm_normalize,

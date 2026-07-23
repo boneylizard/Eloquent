@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import ImageCropEditor from './ImageCropEditor';
 import { CROP_PRESETS, cropImageToBlob } from '../utils/imageCrop';
 import { createRouteTraceId, logRouteTrace, resolveUnifiedRequestRoute } from '../utils/requestRouting';
+import { resolveCharacterPostHistoryInstructions } from '../utils/characterCardRuntime';
 
 const ChatImageUploadButton = () => {
   const {
@@ -24,6 +25,7 @@ const ChatImageUploadButton = () => {
     activeCharacter,
     settings,
     userCharacter,
+    buildSystemPrompt,
   } = useApp();
 
   // Component state: selectedImages is always an array (1 = single, many = batch)
@@ -513,9 +515,19 @@ const ChatImageUploadButton = () => {
         });
         const firstImage = imagesToSend[0];
         const systemPrompt = activeCharacter
-          ? `System: You are ${activeCharacter.name}. ${activeCharacter.description}\n\n${activeCharacter.model_instructions}`
+          ? buildSystemPrompt(activeCharacter)
           : 'System: You are a helpful AI assistant.';
-        const fullPrompt = `${systemPrompt}\n\nHuman: ${messageText.trim()}`;
+        const postHistoryInstructions = resolveCharacterPostHistoryInstructions(
+          activeCharacter,
+          userCharacter?.name || userProfile?.name || userProfile?.username || 'User',
+        );
+        const fullPrompt = [
+          systemPrompt,
+          `Human: ${messageText.trim()}`,
+          postHistoryInstructions
+            ? `[POST-HISTORY INSTRUCTIONS]\n${postHistoryInstructions}`
+            : '',
+        ].filter(Boolean).join('\n\n');
         // Include vision model from settings for two-stage pipeline
         const visionModel = settings?.visionModel || null;
         const visionSchema = settings?.visionSchema || null;

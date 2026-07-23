@@ -2,6 +2,7 @@
 import { getTemplateForModel } from './chat_templates';
 import { retrieveRelevantMemories, formatMemoriesForPrompt } from './memoryUtils';
 import { getBackendUrl, getSecondaryUrl, getTtsUrl, fetchWithTimeout } from '../config/api';
+import { resolveCharacterLoreEntries } from './characterCardRuntime';
 
 function getUserProfile() {
   try {
@@ -576,11 +577,6 @@ export async function fetchTriggeredLore(message, activeCharacter) {
     lore: activeCharacter?.lore
   });
 
-  if (!message) {
-    console.warn('🌍 [LORE] Missing message parameter');
-    return [];
-  }
-
   if (!activeCharacter) {
     console.warn('🌍 [LORE] Missing activeCharacter parameter');
     return [];
@@ -588,39 +584,22 @@ export async function fetchTriggeredLore(message, activeCharacter) {
 
   // First try local keyword detection based on character structure
   try {
+    if (Array.isArray(activeCharacter.loreEntries)) {
+      const triggeredLore = resolveCharacterLoreEntries(activeCharacter, message);
+      console.log(`🌍 [LORE] Local card lore found ${triggeredLore.length} matches`);
+      return triggeredLore;
+    }
+
+    if (!message) {
+      console.warn('🌍 [LORE] Missing message parameter');
+      return [];
+    }
+
     const normalizedMessage = message.toLowerCase();
     const triggeredLore = [];
 
     // APPROACH 1: Try standard loreEntries array (Python backend expects this)
-    if (Array.isArray(activeCharacter.loreEntries) && activeCharacter.loreEntries.length > 0) {
-      console.log(`🌍 [LORE] Found ${activeCharacter.loreEntries.length} loreEntries to check`);
-
-      for (const entry of activeCharacter.loreEntries) {
-        // Skip invalid entries
-        if (!entry || typeof entry !== 'object' || !entry.content) continue;
-
-        // Get keywords array
-        const keywords = Array.isArray(entry.keywords) ? entry.keywords : [];
-
-        // Check if any keyword matches
-        for (const keyword of keywords) {
-          if (!keyword || typeof keyword !== 'string') continue;
-
-          if (normalizedMessage.includes(keyword.toLowerCase())) {
-            console.log(`🌍 [LORE] Matched keyword "${keyword}" from loreEntries`);
-            triggeredLore.push({
-              keyword: keyword,
-              content: entry.content,
-              importance: entry.importance || 0.8,
-              source: 'loreEntries'
-            });
-            break; // Only match once per entry
-          }
-        }
-      }
-    }
-    // APPROACH 2: Try loreKeywords object (new format)
-    else if (activeCharacter.loreKeywords && typeof activeCharacter.loreKeywords === 'object') {
+    if (activeCharacter.loreKeywords && typeof activeCharacter.loreKeywords === 'object') {
       console.log(`🌍 [LORE] Found loreKeywords object with ${Object.keys(activeCharacter.loreKeywords).length} entries`);
 
       for (const [keyword, content] of Object.entries(activeCharacter.loreKeywords)) {

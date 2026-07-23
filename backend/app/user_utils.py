@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from .settings_store import update_settings as update_settings_file
+
 logger = logging.getLogger("user_utils")
 
 _MEMORY_STORE_SUFFIX = "_memory_store.json"
@@ -157,16 +159,8 @@ def ensure_memory_directory():
 def clear_active_profile_id() -> bool:
     """Remove activeProfileId from settings (no memory file reads)."""
     try:
-        settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        if not settings_path.exists():
-            return True
-        with open(settings_path, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-        if "activeProfileId" in settings:
-            settings.pop("activeProfileId", None)
-            with open(settings_path, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2)
-            logger.info("Cleared activeProfileId from settings")
+        update_settings_file({"activeProfileId": None})
+        logger.info("Cleared activeProfileId from settings")
         return True
     except Exception as e:
         logger.error(f"Error clearing active profile ID: {e}")
@@ -231,32 +225,8 @@ def save_active_profile_id(profile_id):
     """Save active profile ID to settings file."""
     try:
         settings_path = Path.home() / ".LiangLocal" / "settings.json"
-        settings_dir = settings_path.parent
-        
         logger.info(f"📝 Saving active profile ID: {profile_id} to {settings_path}")
-        
-        settings_dir.mkdir(exist_ok=True)
-        
-        # Read existing settings
-        settings = {}
-        if settings_path.exists():
-            logger.info(f"📖 Reading existing settings from {settings_path}")
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-                logger.info("Existing settings loaded for profile update")
-        else:
-            logger.info(f"📝 Settings file doesn't exist, creating new one")
-        
-        # Update with new profile ID
-        previous_id = settings.get('activeProfileId')
-        settings['activeProfileId'] = profile_id
-        
-        logger.info(f"🔄 Updating activeProfileId: {previous_id} -> {profile_id}")
-        
-        # Write back
-        with open(settings_path, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=2)
-            
+        update_settings_file({"activeProfileId": profile_id})
         logger.info(f"✅ Successfully saved active profile ID to settings")
         return True
     except Exception as e:

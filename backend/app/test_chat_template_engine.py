@@ -9,6 +9,7 @@ import pytest
 
 from app.chat_template_engine import (
     DEFAULT_CHAT_TEMPLATES,
+    SELECTABLE_CHAT_TEMPLATES,
     lookup,
     render,
     render_with_stops,
@@ -107,3 +108,53 @@ def test_merge_backend_context_injects_rag_context():
 
 def test_lookup_returns_none_for_unknown_model():
     assert lookup("some-random-model-name.gguf") is None
+
+
+def test_selectable_generic_template_can_override_model_detection():
+    messages = [
+        {"role": "system", "content": "Stay in character."},
+        {"role": "user", "content": "Hello"},
+    ]
+    prompt, stops = render_with_stops(
+        messages,
+        "Qwen3.6-32B-Q4_K_M.gguf",
+        template_id="generic",
+    )
+    assert "System: Stay in character." in prompt
+    assert "User: Hello" in prompt
+    assert prompt.endswith("Assistant: ")
+    assert "\nUser:" in stops
+
+
+def test_selectable_chatml_template_can_override_unknown_model():
+    assert "chatml" in SELECTABLE_CHAT_TEMPLATES
+    prompt = render(
+        [{"role": "user", "content": "Hello"}],
+        "some-random-model-name.gguf",
+        template_id="chatml",
+    )
+    assert prompt == "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
+
+
+def test_explicit_custom_template_id_does_not_need_a_model_pattern_match(tmp_path, monkeypatch):
+    settings = {
+        "modelChatTemplates": {
+            "manual-template": {
+                "patterns": "a-different-model",
+                "template": "CUSTOM {{ messages[-1].content }} -> ",
+                "stop_tokens": "<STOP>",
+            }
+        }
+    }
+    settings_dir = tmp_path / ".LiangLocal"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(json.dumps(settings))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    prompt, stops = render_with_stops(
+        [{"role": "user", "content": "Hello"}],
+        "unmatched-model.gguf",
+        template_id="custom:manual-template",
+    )
+    assert prompt == "CUSTOM Hello -> "
+    assert stops == ["<STOP>"]
