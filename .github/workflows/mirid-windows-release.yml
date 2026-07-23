@@ -65,20 +65,20 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Set up Rust
-        shell: powershell
+        shell: pwsh
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
 
       - name: Verify release version
-        shell: powershell
+        shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.release_metadata.outputs.version }}
         run: |
           $packageVersion = (Get-Content frontend/package.json -Raw | ConvertFrom-Json).version
           $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $cargoVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
-          $versions = @($packageVersion, $tauriVersion, $cargoVersion) | Select-Object -Unique
+          $versions = @(@($packageVersion, $tauriVersion, $cargoVersion) | Select-Object -Unique)
           if ($versions.Count -ne 1 -or $versions[0] -ne $env:RELEASE_VERSION) {
             throw "Requested $env:RELEASE_VERSION, but source versions are package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion."
           }
@@ -96,7 +96,7 @@ jobs:
         run: npm run release:check
 
       - name: Fetch verified desktop sidecar
-        shell: powershell
+        shell: pwsh
         run: |
           $manifest = Get-Content runtime/runtime-release.json -Raw | ConvertFrom-Json
           $asset = $manifest.assets.sidecarExecutable
@@ -110,7 +110,7 @@ jobs:
           }
 
       - name: Verify updater signing key
-        shell: powershell
+        shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
@@ -191,7 +191,7 @@ jobs:
           retention-days: 30
 
       - name: Create GitHub Release
-        shell: powershell
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
