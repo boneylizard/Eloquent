@@ -24,6 +24,10 @@ This hotfix repairs fresh-install and local-media regressions found during clean
 * **Desktop restarts and window closure** now stop Mirid's child services before exiting, preventing updater relaunches from leaving local ports occupied.
 * **Generated images and room-gallery media** are retained when Mirid activates a replacement runtime.
 
+### Known issue
+
+* **VoxCPM2 GGUF is not operational in the v1.0.12 Windows build.** Mirid can download the GGUF weights, but this release does not include the `voxcpm2-cli` executable from `llama.cpp-omni`, so those files cannot be used for synthesis. This affects only the GGUF path: the separately bundled PyTorch VoxCPM2 engine remains available, although it is resource-heavy and can run slower than real time on consumer hardware.
+
 ---
 
 ## 1.0.9 — 24 July 2026
