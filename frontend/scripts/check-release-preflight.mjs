@@ -121,6 +121,9 @@ if (!packageJson.dependencies?.['@tauri-apps/plugin-dialog']) {
 if (!/^\s*tauri-plugin-dialog\s*=/m.test(cargoSource)) {
   failures.push('The Rust Tauri dialog plugin dependency is required');
 }
+if (!/^\s*tauri-plugin-single-instance\s*=/m.test(cargoSource)) {
+  failures.push('The Rust single-instance plugin dependency is required');
+}
 const cargoDialogVersion = cargoLockSource.match(
   /\[\[package\]\]\s*\r?\nname = "tauri-plugin-dialog"\s*\r?\nversion = "([^"]+)"/,
 )?.[1];
@@ -133,8 +136,25 @@ const miridCargoLockBlock = cargoLockSource.match(
 if (miridCargoLockBlock.includes('"tauri-plugin-process"')) {
   failures.push('Cargo.lock still lists the retired Tauri process plugin as a Mirid dependency');
 }
+if (!miridCargoLockBlock.includes('"tauri-plugin-single-instance"')) {
+  failures.push('Cargo.lock must list the single-instance plugin as a Mirid dependency');
+}
 if (!/\.plugin\(tauri_plugin_dialog::init\(\)\)/.test(tauriLibSource)) {
   failures.push('The Tauri dialog plugin must be initialised');
+}
+const singleInstancePluginIndex = tauriLibSource.indexOf(
+  '.plugin(tauri_plugin_single_instance::init(',
+);
+const dialogPluginIndex = tauriLibSource.indexOf('.plugin(tauri_plugin_dialog::init())');
+if (singleInstancePluginIndex < 0 || singleInstancePluginIndex > dialogPluginIndex) {
+  failures.push('The Tauri single-instance plugin must be initialised before other plugins');
+}
+if (
+  !tauriLibSource.includes('runtime_assets_are_reusable(')
+  || !tauriLibSource.includes('RuntimeActivation::ReusedExisting')
+  || !tauriLibSource.includes('runtime_attempt_path(dest, "installing")')
+) {
+  failures.push('Runtime reinstall recovery and isolated extraction staging are required');
 }
 const capabilityWindows = Array.isArray(defaultCapability.windows) ? defaultCapability.windows : [];
 if (!capabilityWindows.includes('main')) {

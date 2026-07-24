@@ -6,12 +6,13 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
-## 1.0.10 — 24 July 2026
+## 1.0.11 — 24 July 2026
 
 This hotfix repairs the complete local image workflow reported against Mirid 1.0.9.
 
 ### Fixed
 
+* **Reinstalling over a retained runtime** now verifies and reuses the existing content-addressed local engine, restores its readiness marker, removes abandoned extraction staging, and starts Mirid without replacing a Windows-locked 8.7 GB dependency directory.
 * **Windows folder selection** now uses the desktop application's native directory picker instead of asking the local backend to open a system dialog.
 * **Generated images** now resolve backend-relative file paths when rendered, with a bounded loading state and a clear retry action if the file cannot be loaded.
 * **Image-generation chat history** is persisted before generation completes. A new image request creates or reuses one owning conversation, remains attached to that conversation if the user changes chats, and survives reload.

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ExpectedVersion = "1.0.1",
+    [string]$ExpectedVersion = "1.0.11",
     [string]$OutputDirectory = (Join-Path $env:PUBLIC "Documents\Mirid Release Test"),
     [switch]$PlanOnly
 )
@@ -45,12 +45,15 @@ $runtimeVersion = if (Test-Path -LiteralPath $runtimeMarker) {
 } else {
     ""
 }
-if ($runtimeVersion -ne "v3") {
-    $errors.Add("The v3 runtime-ready marker is missing.")
+if ($runtimeVersion -ne "v9") {
+    $errors.Add("The v9 runtime-ready marker is missing.")
 }
 
 $runtimeDirectories = if (Test-Path -LiteralPath $runtimeRoot) {
-    @(Get-ChildItem -LiteralPath $runtimeRoot -Directory -Filter "_internal*" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    @(
+        Get-ChildItem -LiteralPath $runtimeRoot -Recurse -Directory -Filter "_internal*" -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+    )
 } else {
     @()
 }

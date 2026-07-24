@@ -1,7 +1,7 @@
 {
   "name": "mirid-frontend",
   "private": true,
-  "version": "1.0.10",
+  "version": "1.0.11",
   "engines": {
     "node": ">=24.0.0 <25"
   },

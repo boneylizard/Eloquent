@@ -5,8 +5,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern("^[a-fA-F0-9]{64}$")]
     [string]$InstallerSha256,
-    [string]$ExpectedVersion = "1.0.2",
-    [string]$ExpectedRuntimeVersion = "v3",
+    [string]$ExpectedVersion = "1.0.11",
+    [string]$ExpectedRuntimeVersion = "v9",
     [int]$TimeoutSeconds = 14400,
     [string]$EvidenceDirectory = (Join-Path $PSScriptRoot "..\artifacts\github-clean-install")
 )

@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
@@ -583,6 +583,18 @@ fn active_runtime_layout(runtime: &Path) -> Option<RuntimeLayout> {
     (runtime_internal_is_complete(&legacy.internal) && legacy.sidecar.is_file()).then_some(legacy)
 }
 
+fn runtime_assets_are_reusable(
+    internal: &Path,
+    sidecar: &Path,
+    expected_sidecar_size: u64,
+    expected_sidecar_sha256: &str,
+) -> Result<bool, String> {
+    if !runtime_internal_is_complete(internal) {
+        return Ok(false);
+    }
+    file_matches(sidecar, expected_sidecar_size, expected_sidecar_sha256)
+}
+
 fn ready_marker(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(runtime_dir(app)?.join("runtime.ready"))
 }
@@ -698,6 +710,14 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+fn runtime_attempt_path(dest: &Path, label: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path_with_suffix(dest, &format!(".{label}-{}-{nonce}", std::process::id()))
+}
+
 fn download_chunk_path(partial: &Path, index: usize) -> PathBuf {
     path_with_suffix(partial, &format!(".chunk-{index}"))
 }
@@ -730,6 +750,32 @@ fn cleanup_download_artifacts(runtime: &Path) {
         let partial = destination.with_extension("part");
         remove_download_chunks(&partial);
         let _ = fs::remove_file(partial);
+    }
+}
+
+fn cleanup_runtime_staging_artifacts(internal: &Path) {
+    let Some(parent) = internal.parent() else {
+        return;
+    };
+    let Some(filename) = internal.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    let legacy_name = format!("{filename}.installing");
+    let attempt_prefix = format!("{legacy_name}-");
+
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == legacy_name || name.starts_with(&attempt_prefix) {
+                if let Err(error) = fs::remove_dir_all(entry.path()) {
+                    log::warn!(
+                        "Could not remove abandoned runtime staging directory {}: {error}",
+                        entry.path().display()
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1343,8 +1389,11 @@ fn extract_runtime_archive(
         ),
         0,
     );
-    let staging = dest.with_extension("installing");
-    let backup = dest.with_extension("previous");
+    // Each process gets its own extraction and backup paths. Two launches can
+    // then race safely: the first activates the runtime and the second reuses
+    // the now-complete content-addressed destination.
+    let staging = runtime_attempt_path(dest, "installing");
+    let backup = runtime_attempt_path(dest, "previous");
     let _ = fs::remove_dir_all(&staging);
     let _ = fs::remove_dir_all(&backup);
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
@@ -1407,18 +1456,59 @@ fn extract_runtime_archive(
         preserve_runtime_static_data(previous, &staging)?;
     }
 
-    if dest.exists() {
-        fs::rename(dest, &backup).map_err(|e| format!("cannot stage previous runtime: {e}"))?;
+    match activate_extracted_runtime(&staging, dest, &backup)? {
+        RuntimeActivation::Activated => {
+            let _ = fs::remove_dir_all(&backup);
+        }
+        RuntimeActivation::ReusedExisting => {
+            log::info!(
+                "The verified runtime already exists at {}; keeping it in place",
+                dest.display()
+            );
+        }
     }
-    if let Err(error) = fs::rename(&staging, dest) {
+    emit(app, "extract", "Extraction complete.", 100);
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeActivation {
+    Activated,
+    ReusedExisting,
+}
+
+fn activate_extracted_runtime(
+    staging: &Path,
+    dest: &Path,
+    backup: &Path,
+) -> Result<RuntimeActivation, String> {
+    // The release directory is content-addressed by the runtime and sidecar
+    // hashes. A complete destination is therefore the same immutable payload,
+    // not an older version that needs replacing. Reuse it without renaming:
+    // Windows may still have DLLs loaded from it after an uninstall.
+    if runtime_internal_is_complete(dest) {
+        let _ = fs::remove_dir_all(staging);
+        return Ok(RuntimeActivation::ReusedExisting);
+    }
+
+    if backup.exists() {
+        fs::remove_dir_all(backup)
+            .map_err(|error| format!("cannot clear an interrupted runtime backup: {error}"))?;
+    }
+    if dest.exists() {
+        fs::rename(dest, backup).map_err(|error| {
+            format!(
+                "cannot stage an incomplete previous runtime: {error}. Close any other copies of Mirid, then try again"
+            )
+        })?;
+    }
+    if let Err(error) = fs::rename(staging, dest) {
         if backup.exists() {
-            let _ = fs::rename(&backup, dest);
+            let _ = fs::rename(backup, dest);
         }
         return Err(format!("cannot activate extracted runtime: {error}"));
     }
-    let _ = fs::remove_dir_all(&backup);
-    emit(app, "extract", "Extraction complete.", 100);
-    Ok(())
+    Ok(RuntimeActivation::Activated)
 }
 
 fn ensure_runtime(app: &tauri::AppHandle) -> Result<(), String> {
@@ -1427,18 +1517,34 @@ fn ensure_runtime(app: &tauri::AppHandle) -> Result<(), String> {
     let dir = runtime_dir(app)?;
     if runtime_is_ready(app) {
         cleanup_download_artifacts(&dir);
+        cleanup_runtime_staging_artifacts(&versioned_runtime_internal_dir(&dir));
         emit(app, "ready", "Runtime already installed.", 100);
         return Ok(());
     }
 
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let previous_internal = existing_runtime_internal_dir(&dir);
     let internal = versioned_runtime_internal_dir(&dir);
+    let exe_dest = versioned_sidecar_exe_path(&dir);
+    if runtime_assets_are_reusable(&internal, &exe_dest, SIDECAR_EXE_SIZE, SIDECAR_EXE_SHA256)
+        .unwrap_or(false)
+    {
+        cleanup_download_artifacts(&dir);
+        cleanup_runtime_staging_artifacts(&internal);
+        fs::write(ready_marker(app)?, RUNTIME_VERSION).map_err(|e| e.to_string())?;
+        emit(
+            app,
+            "ready",
+            "Existing runtime verified. Starting Mirid.",
+            100,
+        );
+        return Ok(());
+    }
+
+    let previous_internal = existing_runtime_internal_dir(&dir);
     let _ = fs::remove_file(ready_marker(app)?);
 
     // 1) Sidecar exe.
-    let exe_dest = versioned_sidecar_exe_path(&dir);
     if let Some(parent) = exe_dest.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -1460,6 +1566,22 @@ fn ensure_runtime(app: &tauri::AppHandle) -> Result<(), String> {
     )?;
     make_executable(&exe_dest)?;
 
+    // A reinstall may retain the immutable runtime while losing its ready
+    // marker or sidecar. Once the exact sidecar has been restored, do not
+    // download and replace the same 8.7 GB dependency tree.
+    if runtime_internal_is_complete(&internal) {
+        cleanup_download_artifacts(&dir);
+        cleanup_runtime_staging_artifacts(&internal);
+        fs::write(ready_marker(app)?, RUNTIME_VERSION).map_err(|e| e.to_string())?;
+        emit(
+            app,
+            "ready",
+            "Existing runtime repaired. Starting Mirid.",
+            100,
+        );
+        return Ok(());
+    }
+
     // 2) Runtime archive.
     let archive_dest = dir.join(RUNTIME_ARCHIVE);
     download_file(
@@ -1477,6 +1599,7 @@ fn ensure_runtime(app: &tauri::AppHandle) -> Result<(), String> {
     extract_runtime_archive(app, &archive_dest, &internal, previous_internal.as_deref())?;
     let _ = fs::remove_file(&archive_dest);
     cleanup_download_artifacts(&dir);
+    cleanup_runtime_staging_artifacts(&internal);
 
     // 4) Mark ready.
     fs::write(ready_marker(app)?, RUNTIME_VERSION).map_err(|e| e.to_string())?;
@@ -2325,6 +2448,77 @@ mod tests {
     }
 
     #[test]
+    fn reuses_complete_content_addressed_runtime_assets() {
+        let runtime = temporary_directory("reusable-runtime");
+        let internal = versioned_runtime_internal_dir(&runtime);
+        let sidecar = versioned_sidecar_exe_path(&runtime);
+        create_complete_runtime_internal(&internal);
+        fs::write(&sidecar, b"abc").expect("sidecar should be writable");
+        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        assert!(
+            runtime_assets_are_reusable(&internal, &sidecar, 3, expected)
+                .expect("runtime verification should succeed")
+        );
+
+        fs::remove_dir_all(internal.join("backend"))
+            .expect("test should make the runtime incomplete");
+        assert!(
+            !runtime_assets_are_reusable(&internal, &sidecar, 3, expected)
+                .expect("incomplete runtime should be rejected")
+        );
+        let _ = fs::remove_dir_all(runtime);
+    }
+
+    #[test]
+    fn activation_keeps_a_complete_existing_runtime_in_place() {
+        let runtime = temporary_directory("runtime-reinstall");
+        let dest = runtime.join("_internal");
+        let staging = runtime.join("_internal.installing");
+        let backup = runtime.join("_internal.previous");
+        create_complete_runtime_internal(&dest);
+        create_complete_runtime_internal(&staging);
+        fs::write(dest.join("existing.txt"), b"keep")
+            .expect("existing runtime marker should be writable");
+        fs::write(staging.join("fresh.txt"), b"replace")
+            .expect("staged runtime marker should be writable");
+
+        assert_eq!(
+            activate_extracted_runtime(&staging, &dest, &backup)
+                .expect("complete runtime should be reusable"),
+            RuntimeActivation::ReusedExisting
+        );
+        assert_eq!(
+            fs::read(dest.join("existing.txt")).expect("existing runtime should remain readable"),
+            b"keep"
+        );
+        assert!(!dest.join("fresh.txt").exists());
+        assert!(!staging.exists());
+        assert!(!backup.exists());
+        let _ = fs::remove_dir_all(runtime);
+    }
+
+    #[test]
+    fn removes_abandoned_runtime_staging_without_touching_runtime_or_backup() {
+        let runtime = temporary_directory("runtime-staging-cleanup");
+        let internal = runtime.join("_internal");
+        let legacy_staging = runtime.join("_internal.installing");
+        let attempt_staging = runtime.join("_internal.installing-123-456");
+        let backup = runtime.join("_internal.previous");
+        for path in [&internal, &legacy_staging, &attempt_staging, &backup] {
+            fs::create_dir_all(path).expect("fixture directory should be writable");
+        }
+
+        cleanup_runtime_staging_artifacts(&internal);
+
+        assert!(internal.is_dir());
+        assert!(!legacy_staging.exists());
+        assert!(!attempt_staging.exists());
+        assert!(backup.is_dir());
+        let _ = fs::remove_dir_all(runtime);
+    }
+
+    #[test]
     fn accepts_legacy_runtime_assets_until_the_next_runtime_release() {
         let runtime = temporary_directory("legacy-runtime");
         let legacy_internal = legacy_runtime_internal_dir(&runtime);
@@ -2618,6 +2812,12 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
