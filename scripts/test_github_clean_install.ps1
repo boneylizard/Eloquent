@@ -22,6 +22,7 @@ $evidence = [System.IO.Path]::GetFullPath($EvidenceDirectory)
 $installer = Join-Path $env:RUNNER_TEMP "Mirid-Setup.exe"
 $installedExecutable = Join-Path $env:LOCALAPPDATA "Mirid\mirid.exe"
 $appDataRoot = Join-Path $env:LOCALAPPDATA "ai.mirid.desktop"
+$installerAudioConfig = Join-Path $appDataRoot "installer-audio.ini"
 $runtimeRoot = Join-Path $appDataRoot "runtime"
 $runtimeMarker = Join-Path $runtimeRoot "runtime.ready"
 $logRoot = Join-Path $appDataRoot "logs"
@@ -384,8 +385,25 @@ try {
     if ($installedFile.VersionInfo.ProductVersion -ne $ExpectedVersion) {
         throw "Installed version is $($installedFile.VersionInfo.ProductVersion); expected $ExpectedVersion."
     }
-    if (Test-Path -LiteralPath $appDataRoot) {
-        throw "Mirid created runtime state before its first launch."
+    if (-not (Test-Path -LiteralPath $installerAudioConfig -PathType Leaf)) {
+        throw "The installer did not stage its expected first-run audio configuration."
+    }
+    $unexpectedPrelaunchState = @(
+        Get-ChildItem -LiteralPath $appDataRoot -Force |
+            Where-Object { $_.FullName -ne $installerAudioConfig }
+    )
+    if ($unexpectedPrelaunchState.Count -gt 0) {
+        $unexpectedNames = $unexpectedPrelaunchState.Name -join ", "
+        throw "Mirid created unexpected state before its first launch: $unexpectedNames"
+    }
+    if (Test-Path -LiteralPath $runtimeRoot) {
+        throw "Mirid installed its local runtime before its first launch."
+    }
+    $prelaunchProcesses = @(
+        Get-Process -Name "mirid", "mirid-sidecar-x86_64-pc-windows-msvc", "eloquent-sidecar-x86_64-pc-windows-msvc" -ErrorAction SilentlyContinue
+    )
+    if ($prelaunchProcesses.Count -gt 0) {
+        throw "The silent installer launched Mirid before the clean-install test requested it."
     }
 
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$devToolsPort"
