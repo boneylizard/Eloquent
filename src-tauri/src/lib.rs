@@ -32,6 +32,10 @@ const PARALLEL_DOWNLOAD_THRESHOLD: u64 = 64 * 1024 * 1024;
 const PARALLEL_DOWNLOAD_SEGMENT_SIZE: u64 = 32 * 1024 * 1024;
 const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
+fn destroyed_window_owns_sidecars(window_label: &str) -> bool {
+    window_label == "main"
+}
+
 #[derive(Default)]
 struct Sidecars {
     backend: Mutex<Option<CommandChild>>,
@@ -424,6 +428,7 @@ fn preserve_runtime_static_data(current: &Path, staging: &Path) -> Result<(), St
     for relative in [
         Path::new("backend/app/static/voice_references"),
         Path::new("backend/app/static/generated_images"),
+        Path::new("backend/app/static/room_gallery"),
         Path::new("backend/app/static/outreach_runtime"),
         Path::new("backend/static/voice_references"),
     ] {
@@ -2105,6 +2110,13 @@ mod tests {
     }
 
     #[test]
+    fn only_the_main_window_owns_sidecar_shutdown() {
+        assert!(destroyed_window_owns_sidecars("main"));
+        assert!(!destroyed_window_owns_sidecars("settings"));
+        assert!(!destroyed_window_owns_sidecars("secondary"));
+    }
+
+    #[test]
     fn parses_installer_audio_choices() {
         let profile = parse_installer_audio_profile(
             "[audio]\nttsEnabled=1\nsttEnabled=true\nttsEngine=nanogpt-Qwen-3-TTS-1.7B\nsttEngine=nanogpt\nnanogptSttModel=fun-asr-flash-2026-06-15\nnanoGptApiKey=test-key\n",
@@ -2166,6 +2178,36 @@ mod tests {
         );
         let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn preserves_generated_media_and_room_gallery_across_runtime_updates() {
+        let current = temporary_directory("static-media-current");
+        let staging = temporary_directory("static-media-staging");
+        let generated = Path::new("backend/app/static/generated_images/example.png");
+        let gallery_image = Path::new("backend/app/static/room_gallery/saved.png");
+        let gallery_manifest = Path::new("backend/app/static/room_gallery/gallery_manifest.json");
+
+        for relative in [generated, gallery_image, gallery_manifest] {
+            let source = current.join(relative);
+            fs::create_dir_all(source.parent().expect("fixture should have a parent"))
+                .expect("fixture directory should be writable");
+            fs::write(&source, relative.to_string_lossy().as_bytes())
+                .expect("fixture should be writable");
+        }
+
+        preserve_runtime_static_data(&current, &staging)
+            .expect("runtime media preservation should succeed");
+
+        for relative in [generated, gallery_image, gallery_manifest] {
+            assert_eq!(
+                fs::read(staging.join(relative)).expect("preserved file should be readable"),
+                relative.to_string_lossy().as_bytes()
+            );
+        }
+
+        let _ = fs::remove_dir_all(current);
+        let _ = fs::remove_dir_all(staging);
     }
 
     #[test]
@@ -2576,7 +2618,7 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecars::default())
@@ -2644,18 +2686,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                let sidecars = window.state::<Sidecars>();
-                if let Ok(mut backend) = sidecars.backend.lock() {
-                    if let Some(child) = backend.take() {
-                        let _ = child.kill();
-                    }
-                }
-                if let Ok(mut tts) = sidecars.tts.lock() {
-                    if let Some(child) = tts.take() {
-                        let _ = child.kill();
-                    }
-                };
+            if matches!(event, tauri::WindowEvent::Destroyed)
+                && destroyed_window_owns_sidecars(window.label())
+            {
+                let app = window.app_handle();
+                stop_all_sidecars(app);
+                // The main window owns the desktop session. End the event loop
+                // even if a standalone Settings window is still open.
+                app.exit(0);
             }
         })
         .run(tauri::generate_context!())

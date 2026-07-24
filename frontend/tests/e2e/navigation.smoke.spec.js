@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
 
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
+
 test.beforeEach(async ({ page }) => {
   await page.route('**/models/get-settings', async (route) => {
     await route.fulfill({
@@ -543,6 +548,46 @@ test('Character Library makes manual creation primary and explains card fields',
   const messageFieldsBefore = await page.locator('textarea[id^="dialogue-"][id$="-content"]').count();
   await page.getByRole('button', { name: 'Add exchange', exact: true }).click();
   await expect(page.locator('textarea[id^="dialogue-"][id$="-content"]')).toHaveCount(messageFieldsBefore + 2);
+});
+
+test('Character Library loads backend-relative generated avatars', async ({ page }) => {
+  const avatarPath = '/static/generated_images/character-avatar-smoke.png';
+  await page.addInitScript(({ savedCharacter }) => {
+    const settings = JSON.parse(localStorage.getItem('Eloquent-settings') || '{}');
+    localStorage.setItem('Eloquent-settings', JSON.stringify({
+      ...settings,
+      providerSetupCompleted: true,
+      modelSetupRequired: false,
+    }));
+    localStorage.setItem('llm-characters', JSON.stringify([savedCharacter]));
+  }, {
+    savedCharacter: {
+      id: 'character-avatar-smoke',
+      name: 'Portrait Test',
+      chat_role: 'npc',
+      description: 'A character with a backend-owned generated portrait.',
+      avatar: avatarPath,
+    },
+  });
+
+  const avatarRequests = [];
+  await page.route(`**${avatarPath}`, async (route) => {
+    avatarRequests.push(route.request().url());
+    await route.fulfill({
+      status: 200,
+      contentType: 'image/png',
+      body: ONE_PIXEL_PNG,
+    });
+  });
+
+  await page.goto('/');
+  await page.getByTitle('Characters', { exact: true }).click();
+
+  const card = page.getByRole('button', { name: 'Chat with Portrait Test', exact: true });
+  const avatar = card.locator('img');
+  await expect(avatar).toHaveAttribute('src', `http://localhost:8000${avatarPath}`);
+  await expect.poll(() => avatar.evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
+  expect(avatarRequests).toEqual([`http://localhost:8000${avatarPath}`]);
 });
 
 test('manual character writing help is opt-in and never overwrites a draft automatically', async ({ page }) => {

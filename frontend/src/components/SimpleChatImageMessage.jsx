@@ -8,12 +8,37 @@ import { Loader2, Download, Copy, ZoomIn, Check, X, RotateCcw, Sparkles, Undo, A
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { useApp } from '../contexts/AppContext';
 import { createRouteTraceId, logRouteTrace, resolveUnifiedRequestRoute } from '../utils/requestRouting';
+import {
+  isBackendOwnedMediaSource,
+  resolveBackendMediaUrl,
+  selectMediaBackendUrl,
+  withBackendMediaRetryToken,
+} from '../utils/backendMedia';
+import { updateMediaMessageIfSourceMatches } from '../utils/mediaConversation';
+
+const MEDIA_LOAD_TIMEOUT_MS = 30000;
 
 const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCancelRegenerations, isRegenerationRunning }) => {
-  const { primaryModel, primaryIsAPI, settings, MEMORY_API_URL, PRIMARY_API_URL, setMessages, generateUniqueId, userProfile, setBackgroundImage, saveToGallery } = useApp();
+  const {
+    primaryModel,
+    primaryIsAPI,
+    settings,
+    MEMORY_API_URL,
+    PRIMARY_API_URL,
+    setMessages,
+    activeConversation,
+    appendMessagesToConversation,
+    updateMessageInConversation,
+    generateUniqueId,
+    userProfile,
+    setBackgroundImage,
+    saveToGallery,
+  } = useApp();
 
   // Existing state
   const [isImageLoaded, setIsImageLoaded] = useState(false);
+  const [mediaLoadError, setMediaLoadError] = useState('');
+  const [mediaRetryAttempt, setMediaRetryAttempt] = useState(0);
   const [isViewerOpen, setIsViewerOpen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -91,7 +116,21 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
     return '';
   };
 
-  const imageUrl = getImageUrl();
+  const storedMediaPath = getImageUrl();
+  const mediaGpuId = message.gpuId ?? message.gpu_id ?? 0;
+  const resolvedMediaUrl = resolveBackendMediaUrl(storedMediaPath, {
+    gpuId: mediaGpuId,
+    primaryApiUrl: PRIMARY_API_URL,
+    memoryApiUrl: MEMORY_API_URL,
+  });
+  const isBackendOwnedMedia = isBackendOwnedMediaSource(storedMediaPath, {
+    primaryApiUrl: PRIMARY_API_URL,
+    memoryApiUrl: MEMORY_API_URL,
+  });
+  const renderedMediaUrl = isBackendOwnedMedia
+    ? withBackendMediaRetryToken(resolvedMediaUrl, mediaRetryAttempt)
+    : resolvedMediaUrl;
+  const mediaKind = message.type === 'video' ? 'video' : 'image';
   const adetailerModelOptions = (() => {
     const models = Array.isArray(availableAdetailerModels) ? [...availableAdetailerModels] : [];
     const current = adetailerSettings.modelName;
@@ -122,6 +161,43 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
       localStorage.setItem('adetailer-selected-model', adetailerSettings.modelName);
     }
   }, [adetailerSettings]);
+
+  useEffect(() => {
+    setIsImageLoaded(false);
+    setMediaLoadError('');
+    setMediaRetryAttempt(0);
+  }, [resolvedMediaUrl, message.type]);
+
+  useEffect(() => {
+    if (!renderedMediaUrl || isImageLoaded || mediaLoadError) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      setMediaLoadError(
+        `This ${mediaKind} is taking too long to load from the engine.`,
+      );
+    }, MEDIA_LOAD_TIMEOUT_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [renderedMediaUrl, isImageLoaded, mediaLoadError, mediaKind]);
+
+  const handleMediaLoaded = useCallback(() => {
+    setMediaLoadError('');
+    setIsImageLoaded(true);
+  }, []);
+
+  const handleMediaLoadError = useCallback((event) => {
+    console.error(`Failed to load generated ${mediaKind}:`, resolvedMediaUrl, event);
+    setIsImageLoaded(false);
+    setMediaLoadError(
+      `Mirid couldn’t load this ${mediaKind}. The generated file may have moved, or its engine may be unavailable.`,
+    );
+  }, [mediaKind, resolvedMediaUrl]);
+
+  const handleRetryMedia = useCallback(() => {
+    setIsImageLoaded(false);
+    setMediaLoadError('');
+    setMediaRetryAttempt((attempt) => attempt + 1);
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -166,7 +242,9 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
 
   // Enhanced enhancement function with history tracking
   const handleManualEnhance = useCallback(async () => {
-    if (!imageUrl || isEnhancing) return;
+    if (!storedMediaPath || isEnhancing) return;
+    const ownerConversationId = activeConversation;
+    if (!ownerConversationId) return;
 
     const settings = {
       strength: Number.isFinite(adetailerSettings.strength) ? adetailerSettings.strength : 0.35,
@@ -184,11 +262,15 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
     setIsEnhancing(true);
 
     try {
-      const response = await fetch(`${PRIMARY_API_URL}/sd-local/enhance-adetailer`, {
+      const enhancementApiUrl = selectMediaBackendUrl(mediaGpuId, {
+        primaryApiUrl: PRIMARY_API_URL,
+        memoryApiUrl: MEMORY_API_URL,
+      });
+      const response = await fetch(`${enhancementApiUrl}/sd-local/enhance-adetailer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image_url: imageUrl,
+          image_url: storedMediaPath,
           original_prompt: originalPrompt,
           face_prompt: settings.facePrompt,
           negative_prompt: negativePrompt,
@@ -197,7 +279,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
           confidence: settings.confidence,
           sampler: settings.sampler,
           model_name: settings.modelName,
-          gpu_id: message.gpuId || 0 // Use the GPU ID from the message or default to 0
+          gpu_id: mediaGpuId
         })
       });
 
@@ -222,22 +304,27 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
           }
           : { ...settings, model_name: settings.modelName };
 
-        // Update message with enhancement history tracking
-        setMessages(prev => prev.map(msg =>
-          msg.id === message.id
-            ? {
-              ...msg,
-              imagePath: result.enhanced_image_url,
-              // Initialize or update enhancement history
-              enhancement_history: msg.enhancement_history
-                ? [...msg.enhancement_history, result.enhanced_image_url]
-                : [msg.imagePath, result.enhanced_image_url],
-              current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
-              enhanced: true,
-              enhancement_settings: appliedSettings
-            }
-            : msg
-        ));
+        await updateMessageInConversation(
+          ownerConversationId,
+          message.id,
+          (currentMessage) => updateMediaMessageIfSourceMatches(
+            currentMessage,
+            storedMediaPath,
+            (matchedMessage) => {
+              if (matchedMessage.imagePath === result.enhanced_image_url) return matchedMessage;
+              return {
+                ...matchedMessage,
+                imagePath: result.enhanced_image_url,
+                enhancement_history: matchedMessage.enhancement_history
+                  ? [...matchedMessage.enhancement_history, result.enhanced_image_url]
+                  : [matchedMessage.imagePath, result.enhanced_image_url],
+                current_enhancement_level: (matchedMessage.current_enhancement_level || 0) + 1,
+                enhanced: true,
+                enhancement_settings: appliedSettings
+              };
+            },
+          ),
+        );
 
       } else {
         throw new Error('No enhanced image returned');
@@ -252,11 +339,23 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
         error: true,
         timestamp: new Date().toISOString()
       };
-      setMessages(prev => [...prev, errorMsg]);
+      await appendMessagesToConversation(ownerConversationId, [errorMsg]);
     } finally {
       setIsEnhancing(false);
     }
-  }, [imageUrl, isEnhancing, PRIMARY_API_URL, setMessages, message, generateUniqueId, adetailerSettings]);
+  }, [
+    storedMediaPath,
+    isEnhancing,
+    activeConversation,
+    PRIMARY_API_URL,
+    MEMORY_API_URL,
+    mediaGpuId,
+    message,
+    generateUniqueId,
+    adetailerSettings,
+    appendMessagesToConversation,
+    updateMessageInConversation,
+  ]);
 
   // Add this state near your other useState declarations
   const [upscalerModels, setUpscalerModels] = useState([]);
@@ -266,7 +365,11 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
   useEffect(() => {
     const fetchUpscalers = async () => {
       try {
-        const response = await fetch(`${PRIMARY_API_URL}/sd-local/upscalers`);
+        const upscalerApiUrl = selectMediaBackendUrl(mediaGpuId, {
+          primaryApiUrl: PRIMARY_API_URL,
+          memoryApiUrl: MEMORY_API_URL,
+        });
+        const response = await fetch(`${upscalerApiUrl}/sd-local/upscalers`);
         if (response.ok) {
           const data = await response.json();
           if (data.models && data.models.length > 0) {
@@ -285,22 +388,28 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
       }
     };
     fetchUpscalers();
-  }, [PRIMARY_API_URL]);
+  }, [PRIMARY_API_URL, MEMORY_API_URL, mediaGpuId]);
 
   const handleUpscale = useCallback(async () => {
-    if (!imageUrl || isUpscaling) return;
+    if (!storedMediaPath || isUpscaling) return;
+    const ownerConversationId = activeConversation;
+    if (!ownerConversationId) return;
     setIsUpscaling(true);
 
     try {
-      const response = await fetch(`${PRIMARY_API_URL}/sd-local/upscale`, {
+      const upscalerApiUrl = selectMediaBackendUrl(mediaGpuId, {
+        primaryApiUrl: PRIMARY_API_URL,
+        memoryApiUrl: MEMORY_API_URL,
+      });
+      const response = await fetch(`${upscalerApiUrl}/sd-local/upscale`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image_url: imageUrl,
+          image_url: storedMediaPath,
           scale_factor: parseFloat(scaleFactor),
           strength: 0.2,
           prompt: message.prompt || "",
-          gpu_id: message.gpuId || 0,
+          gpu_id: mediaGpuId,
           model_name: selectedUpscaler // Pass selected model
         })
       });
@@ -313,24 +422,29 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
       const result = await response.json();
 
       if (result.status === 'success' && result.image_url) {
-        // Update message
-        setMessages(prev => prev.map(msg =>
-          msg.id === message.id
-            ? {
-              ...msg,
-              imagePath: result.image_url,
-              width: (msg.width || 512) * parseFloat(scaleFactor),
-              height: (msg.height || 512) * parseFloat(scaleFactor),
-              // Add to history
-              enhancement_history: msg.enhancement_history
-                ? [...msg.enhancement_history, result.image_url]
-                : [msg.imagePath, result.image_url],
-              current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
-              enhanced: true,
-              upscaled: true
-            }
-            : msg
-        ));
+        await updateMessageInConversation(
+          ownerConversationId,
+          message.id,
+          (currentMessage) => updateMediaMessageIfSourceMatches(
+            currentMessage,
+            storedMediaPath,
+            (matchedMessage) => {
+              if (matchedMessage.imagePath === result.image_url) return matchedMessage;
+              return {
+                ...matchedMessage,
+                imagePath: result.image_url,
+                width: (matchedMessage.width || 512) * parseFloat(scaleFactor),
+                height: (matchedMessage.height || 512) * parseFloat(scaleFactor),
+                enhancement_history: matchedMessage.enhancement_history
+                  ? [...matchedMessage.enhancement_history, result.image_url]
+                  : [matchedMessage.imagePath, result.image_url],
+                current_enhancement_level: (matchedMessage.current_enhancement_level || 0) + 1,
+                enhanced: true,
+                upscaled: true
+              };
+            },
+          ),
+        );
       }
     } catch (error) {
       console.error('Upscale error:', error);
@@ -338,16 +452,27 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
     } finally {
       setIsUpscaling(false);
     }
-  }, [imageUrl, isUpscaling, PRIMARY_API_URL, setMessages, message, scaleFactor, selectedUpscaler]);
+  }, [
+    storedMediaPath,
+    isUpscaling,
+    activeConversation,
+    PRIMARY_API_URL,
+    MEMORY_API_URL,
+    mediaGpuId,
+    message,
+    scaleFactor,
+    selectedUpscaler,
+    updateMessageInConversation,
+  ]);
 
   const handleSetBackground = () => {
-    if (imageUrl) {
-      setBackgroundImage(imageUrl);
+    if (resolvedMediaUrl) {
+      setBackgroundImage(resolvedMediaUrl);
     }
   };
 
   const handleSaveToGallery = useCallback(async () => {
-    if (!imageUrl) return;
+    if (!storedMediaPath) return;
     try {
       const params = {
         prompt: message.original_prompt || message.prompt,
@@ -359,11 +484,11 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
         sampler: message.original_sampler || message.sampler,
         seed: message.original_seed ?? message.seed,
         model: message.model,
-        gpu_id: message.gpuId,
+        gpu_id: mediaGpuId,
         enhancement_history: message.enhancement_history,
       };
       await saveToGallery(
-        imageUrl,
+        storedMediaPath,
         params,
         (message.prompt || '').slice(0, 80) || 'Generated Image',
         null,
@@ -373,7 +498,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
     } catch (e) {
       alert('Failed to save to gallery: ' + (e.message || 'unknown error'));
     }
-  }, [imageUrl, message, saveToGallery]);
+  }, [storedMediaPath, message, saveToGallery]);
 
   // Reset to last enhancement level
   const handleResetToLast = useCallback(() => {
@@ -402,7 +527,8 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
     const systemPrompt = 'System: You are a helpful AI assistant.';
     const fullPrompt = `${systemPrompt}\n\nHuman: ${question}`;
 
-    if (!imageUrl || isAnalyzing) return;
+    const ownerConversationId = activeConversation;
+    if (!resolvedMediaUrl || isAnalyzing || !ownerConversationId) return;
 
     setIsAnalyzing(true);
     setShowImageQuery(false);
@@ -410,7 +536,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
 
     try {
       // Convert image URL to base64
-      const response = await fetch(imageUrl);
+      const response = await fetch(resolvedMediaUrl);
       const blob = await response.blob();
 
       const base64 = await new Promise((resolve) => {
@@ -458,7 +584,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
           content: `**Question:** ${question}\n\n**Answer:** ${result.text || 'No analysis available'}`,
           modelId: 'primary'
         };
-        setMessages(prev => [...prev, analysisMsg]);
+        await appendMessagesToConversation(ownerConversationId, [analysisMsg]);
       } else {
         throw new Error(`Analysis failed: ${analysisResponse.status}`);
       }
@@ -471,11 +597,22 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
         content: `Image analysis failed: ${error.message}`,
         modelId: 'primary'
       };
-      setMessages(prev => [...prev, errorMsg]);
+      await appendMessagesToConversation(ownerConversationId, [errorMsg]);
     } finally {
       setIsAnalyzing(false);
     }
-  }, [imageUrl, isAnalyzing, primaryModel, primaryIsAPI, settings, MEMORY_API_URL, setMessages, generateUniqueId, userProfile]);
+  }, [
+    resolvedMediaUrl,
+    isAnalyzing,
+    primaryModel,
+    primaryIsAPI,
+    settings,
+    MEMORY_API_URL,
+    generateUniqueId,
+    userProfile,
+    activeConversation,
+    appendMessagesToConversation,
+  ]);
 
   // Existing functions
   const handleCopyPrompt = () => {
@@ -485,13 +622,13 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
   };
 
   const handleDownload = () => {
-    if (!imageUrl) {
+    if (!resolvedMediaUrl) {
       console.warn('Cannot download: No valid image URL available.');
       return;
     }
 
     const link = document.createElement('a');
-    link.href = imageUrl;
+    link.href = resolvedMediaUrl;
     const ext = message.type === 'video' ? 'mp4' : 'png';
     const filename = message.prompt ?
       `sd-${message.type || 'image'}-${message.prompt.substring(0, 50).replace(/[^a-z0-9]/gi, '_')}.${ext}` :
@@ -502,7 +639,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
     document.body.removeChild(link);
   };
 
-  if (!imageUrl) {
+  if (!resolvedMediaUrl) {
     return (
       <div className='bg-red-100 dark:bg-red-900/30 p-3 rounded-lg text-sm text-red-800 dark:text-red-200'>
         <p>Unable to load image. Image URL is missing or invalid.</p>
@@ -522,15 +659,30 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
           </div>
         )}
 
-        {!isImageLoaded && (
+        {!isImageLoaded && !mediaLoadError && (
           <div className='w-full h-64 flex items-center justify-center bg-gray-100 dark:bg-gray-700 rounded-md'>
             <Loader2 className='h-8 w-8 animate-spin text-gray-400' />
           </div>
         )}
 
+        {mediaLoadError && (
+          <div
+            role='alert'
+            className='w-full min-h-48 flex flex-col items-center justify-center gap-3 rounded-md border border-red-300/70 bg-red-50 p-6 text-center text-red-900 dark:border-red-800 dark:bg-red-950/30 dark:text-red-100'
+          >
+            <ImageIcon className='h-8 w-8 opacity-70' aria-hidden='true' />
+            <p className='max-w-md text-sm'>{mediaLoadError}</p>
+            <Button type='button' size='sm' variant='outline' onClick={handleRetryMedia}>
+              <RotateCcw className='mr-1 h-3 w-3' />
+              Try loading again
+            </Button>
+          </div>
+        )}
+
         {message.type === 'video' ? (
           <video
-            src={imageUrl}
+            key={`video-${mediaRetryAttempt}`}
+            src={renderedMediaUrl}
             controls
             className='w-full max-w-2xl mx-auto rounded-md object-contain'
             style={{
@@ -538,11 +690,13 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
               maxHeight: '400px',
               minHeight: '200px'
             }}
-            onLoadedData={() => setIsImageLoaded(true)}
+            onLoadedData={handleMediaLoaded}
+            onError={handleMediaLoadError}
           />
         ) : (
           <img
-            src={imageUrl}
+            key={`image-${mediaRetryAttempt}`}
+            src={renderedMediaUrl}
             alt={message.prompt || 'Generated image'}
             className='w-full max-w-2xl mx-auto rounded-md object-contain cursor-pointer'
             style={{
@@ -550,12 +704,9 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
               maxHeight: '400px',
               minHeight: '200px'
             }}
-            onLoad={() => setIsImageLoaded(true)}
+            onLoad={handleMediaLoaded}
             onClick={() => setIsViewerOpen(true)}
-            onError={(e) => {
-              console.error('Failed to load image:', imageUrl, e);
-              e.target.style.display = 'none';
-            }}
+            onError={handleMediaLoadError}
           />
         )}
 
@@ -616,7 +767,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
                         sampler: message.original_sampler || message.sampler || 'Euler a',
                         seed: -1,
                         model: message.original_model || message.model || '',
-                        gpu_id: message.gpuId ?? 0
+                        gpu_id: mediaGpuId
                       })}
                       className='h-8 px-2 text-xs'
                       title='Regenerate with same parameters'
@@ -993,7 +1144,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
 
             <div className='flex flex-col items-center mt-4'>
               <img
-                src={imageUrl}
+                src={renderedMediaUrl}
                 alt={message.prompt || 'Generated image'}
                 className='max-h-[70vh] max-w-full object-contain rounded-md'
               />
@@ -1053,7 +1204,7 @@ const SimpleChatImageMessage = ({ message, onRegenerate, regenerationQueue, onCa
                           sampler: message.original_sampler || message.sampler || 'Euler a',
                           seed: -1,
                           model: message.original_model || message.model || '',
-                          gpu_id: message.gpuId ?? 0
+                          gpu_id: mediaGpuId
                         })}
                         className='h-8 px-2 text-xs'
                         title='Regenerate with same parameters'

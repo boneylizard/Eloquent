@@ -8,7 +8,12 @@ import {
   isCharacterIntroReady,
 } from '../utils/characterIntro';
 import CharacterAvatarMedia from './CharacterAvatarMedia';
-import { getActiveCharacterAvatar } from '../utils/characterAvatars';
+import {
+  getActiveCharacterAvatar,
+  resolveAvatarDisplayUrl,
+} from '../utils/characterAvatars';
+import { getBackendUrl } from '../config/api';
+import { useApp } from '../contexts/AppContext';
 
 const SECTION_ACCENTS = {
   who_they_are: 'border-cyan-500/30 bg-cyan-500/5',
@@ -107,6 +112,7 @@ export default function CharacterIntroExperience({
   variant = 'character',
   uiLabels,
 }) {
+  const { PRIMARY_API_URL } = useApp();
   const isSystemVariant = variant === 'system';
   const labels = uiLabels || CHARACTER_INTRO_UI_LABELS;
   const display = useMemo(() => {
@@ -114,7 +120,12 @@ export default function CharacterIntroExperience({
     return result.data;
   }, [result]);
 
-  const avatarUrl = character ? getActiveCharacterAvatar(character) : null;
+  const avatarUrl = character
+    ? resolveAvatarDisplayUrl(
+      getActiveCharacterAvatar(character),
+      PRIMARY_API_URL || getBackendUrl()
+    )
+    : null;
   const charName = character?.name || (isSystemVariant ? 'System' : 'Character');
   const userName = userProfile?.name || userProfile?.username || 'you';
   const isLoading = status === 'loading';

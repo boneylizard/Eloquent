@@ -9,6 +9,7 @@ import { Slider } from './ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Switch } from './ui/switch';
 import SimpleChatImageButton from './SimpleChatImageButton';
+import { resolveBackendMediaUrl } from '../utils/backendMedia';
 
 const STARTING_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const CHESS_SAVED_GAME_KEY = 'chess-saved-game';
@@ -86,6 +87,9 @@ function getBackendUrl() {
 export default function ChessTab() {
   const { PRIMARY_API_URL, primaryModel, playTTS, settings, updateSettings } = useApp();
   const baseUrl = PRIMARY_API_URL || getBackendUrl();
+  const historianAvatarDisplayUrl = resolveBackendMediaUrl(settings?.chessHistorianAvatar, {
+    primaryApiUrl: baseUrl,
+  });
   const historianAvatarSize = settings?.characterAvatarSize ?? 40;
   const BOARD_SIZE = 360;
 
@@ -1182,7 +1186,7 @@ export default function ChessTab() {
             onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && settings?.chessHistorianAvatar) { e.stopPropagation(); setHistorianAvatarZoomOpen(true); } }}
           >
             {settings?.chessHistorianAvatar ? (
-              <img src={settings.chessHistorianAvatar} alt="Historian" className="w-full h-full object-cover" />
+              <img src={historianAvatarDisplayUrl} alt="Historian" className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">♔</div>
             )}
@@ -1279,7 +1283,7 @@ export default function ChessTab() {
           aria-label="Historian avatar zoomed"
         >
           <div className="relative max-w-2xl max-h-[85vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-            <img src={settings.chessHistorianAvatar} alt="Chess Historian avatar" className="max-w-full max-h-[85vh] w-auto h-auto object-contain rounded-lg shadow-xl" />
+            <img src={historianAvatarDisplayUrl} alt="Chess Historian avatar" className="max-w-full max-h-[85vh] w-auto h-auto object-contain rounded-lg shadow-xl" />
             <Button variant="secondary" size="sm" className="absolute top-2 right-2" onClick={() => setHistorianAvatarZoomOpen(false)}>Close</Button>
           </div>
         </div>

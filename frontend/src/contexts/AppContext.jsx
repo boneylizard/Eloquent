@@ -35,6 +35,7 @@ import {
   loadConversationsFromStorage,
   loadConversationMessages,
   saveActiveConversationMessages,
+  mutateStoredConversationMessages,
   loadTombstonedConversationIds,
   persistChatState,
   saveConversationCatalog,
@@ -50,6 +51,10 @@ import {
   purgeOutreachConversationsFromStorage,
   isOutreachConversationId,
 } from '../utils/conversationStorage';
+import {
+  appendUniqueConversationMessages,
+  updateConversationMessageById,
+} from '../utils/mediaConversation';
 import { mergeNanoGptMemoryIntoPayload } from '../utils/nanoGptMemoryPayload';
 import {
   buildBookChapterJsonOutlineUserMessage,
@@ -175,8 +180,10 @@ const defaultAppContextValue = {
   activeTab: 'chat',
   setActiveTab: () => {},
   settingsEntryTab: 'general',
-    openSettingsTab: () => {},
+  openSettingsTab: () => {},
   openSettingsWindow: () => {},
+  appendMessagesToConversation: async () => false,
+  updateMessageInConversation: async () => false,
 };
 const AppContext = createContext(defaultAppContextValue);
 const logPromptSample = (prompt, maxLength = 500) => {
@@ -781,6 +788,12 @@ const AppProvider = ({ children }) => {
   const tombstonedConversationIdsRef = useRef(new Set());
   /** Suppress message auto-save while switching tabs (avoids wrong-id / empty shard writes). */
   const conversationSwitchInProgressRef = useRef(false);
+  /** Serialises long-running media completions per owning conversation. */
+  const conversationMessageMutationChainsRef = useRef(new Map());
+  /** Lets a tab load detect a shard mutation that completed while it was reading. */
+  const conversationMessageVersionRef = useRef(new Map());
+  /** Prevents a slower, older tab read from replacing a newer selection. */
+  const conversationSelectionRequestRef = useRef(0);
   /**
    * Startup restore gate:
    * - default: landing-first (do not auto-open a past chat on refresh)
@@ -951,7 +964,7 @@ const AppProvider = ({ children }) => {
       }
 
       conversationCatalogSigRef.current = conversationsToShow
-        .map((c) => `${c.id}\t${c.name || ''}`)
+        .map((c) => `${c.id}\t${c.name || ''}\t${Number(c.messageCount) || 0}`)
         .join('\n');
 
       const banCount = tombstonedConversationIdsRef.current.size;
@@ -1187,11 +1200,19 @@ const AppProvider = ({ children }) => {
 
   const deleteAllConversations = useCallback(async () => {
     try {
+      for (const conversation of conversationsRef.current || []) {
+        if (conversation?.id) tombstonedConversationIdsRef.current.add(conversation.id);
+      }
       if (conversationPersistTimerRef.current) {
         clearTimeout(conversationPersistTimerRef.current);
         conversationPersistTimerRef.current = null;
       }
       conversationStorageEpochRef.current += 1;
+      conversationSelectionRequestRef.current += 1;
+      conversationSwitchInProgressRef.current = false;
+      conversationsRef.current = [];
+      activeConversationRef.current = null;
+      messagesRef.current = [];
 
       setConversations([]);
       setActiveConversation(null);
@@ -3017,62 +3038,67 @@ const AppProvider = ({ children }) => {
 
   // NEW: Generate Video via NanoGPT
   const generateVideo = useCallback(async (prompt) => {
-    console.log("Starting video generation prompt:", prompt);
-    const videoModel = settings.nanoGptVideoModel || 'svd';
-    const apiKey = settings.nanoGptApiKey;
+    setIsImageGenerating(true);
+    try {
+      console.log("Starting video generation prompt:", prompt);
+      const videoModel = settings.nanoGptVideoModel || 'svd';
+      const apiKey = settings.nanoGptApiKey;
 
-    if (!apiKey) {
-      throw new Error("NanoGPT API Key is missing. Please check Settings > Image Generation.");
-    }
-
-    // 1. Start Job
-    const startRes = await fetch(`${PRIMARY_API_URL}/sd/nanogpt/video`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt,
-        model: videoModel,
-        api_key: apiKey
-      })
-    });
-
-    if (!startRes.ok) {
-      const errorText = await startRes.text();
-      throw new Error(`Failed to start video job: ${errorText}`);
-    }
-
-    const startData = await startRes.json();
-    const jobId = startData.job_id;
-    console.log("Video job started:", jobId);
-
-    // 2. Poll for Status
-    let attempts = 0;
-    const maxAttempts = 60; // 5 minutes (5s * 60)
-
-    while (attempts < maxAttempts) {
-      // Wait 5s
-      await new Promise(r => setTimeout(r, 5000));
-      attempts++;
-
-      const statusRes = await fetch(`${PRIMARY_API_URL}/sd/nanogpt/video/status/${jobId}?api_key=${apiKey}`);
-      if (!statusRes.ok) {
-        console.warn("Video status check failed, retrying...");
-        continue;
+      if (!apiKey) {
+        throw new Error("NanoGPT API Key is missing. Please check Settings > Image Generation.");
       }
 
-      const statusData = await statusRes.json();
-      console.log("Video polling status:", statusData);
+      // 1. Start Job
+      const startRes = await fetch(`${PRIMARY_API_URL}/sd/nanogpt/video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          model: videoModel,
+          api_key: apiKey
+        })
+      });
 
-      if (statusData.status === 'success') {
-        return statusData.video_url; // Local URL returned by backend
-      } else if (statusData.status === 'failed') {
-        throw new Error(`Video generation failed: ${statusData.error || 'Unknown error'}`);
+      if (!startRes.ok) {
+        const errorText = await startRes.text();
+        throw new Error(`Failed to start video job: ${errorText}`);
       }
-      // If pending/processing, continue loop
-    }
 
-    throw new Error("Video generation timed out.");
-  }, [PRIMARY_API_URL, settings]);
+      const startData = await startRes.json();
+      const jobId = startData.job_id;
+      console.log("Video job started:", jobId);
+
+      // 2. Poll for Status
+      let attempts = 0;
+      const maxAttempts = 60; // 5 minutes (5s * 60)
+
+      while (attempts < maxAttempts) {
+        // Wait 5s
+        await new Promise(r => setTimeout(r, 5000));
+        attempts++;
+
+        const statusRes = await fetch(`${PRIMARY_API_URL}/sd/nanogpt/video/status/${jobId}?api_key=${apiKey}`);
+        if (!statusRes.ok) {
+          console.warn("Video status check failed, retrying...");
+          continue;
+        }
+
+        const statusData = await statusRes.json();
+        console.log("Video polling status:", statusData);
+
+        if (statusData.status === 'success') {
+          return statusData.video_url; // Local URL returned by backend
+        } else if (statusData.status === 'failed') {
+          throw new Error(`Video generation failed: ${statusData.error || 'Unknown error'}`);
+        }
+        // If pending/processing, continue loop
+      }
+
+      throw new Error("Video generation timed out.");
+    } finally {
+      setIsImageGenerating(false);
+    }
+  }, [PRIMARY_API_URL, settings, setIsImageGenerating]);
 
   const saveToGallery = useCallback(async (imageUrl, parameters, displayName, categoryId, tags) => {
     const targetApiUrl = PRIMARY_API_URL || getBackendUrl();
@@ -4020,6 +4046,8 @@ const AppProvider = ({ children }) => {
     const next = [...conversationsRef.current, conv];
     conversationsRef.current = next;
     activeConversationRef.current = id;
+    conversationSelectionRequestRef.current += 1;
+    conversationSwitchInProgressRef.current = false;
     startupConversationRestoreRef.current.attempted = true;
     setConversations(next);
     if (initial.length > 0) {
@@ -4036,6 +4064,132 @@ const AppProvider = ({ children }) => {
     setMultiRoleContext('');
     return conv;
   }, [primaryCharacter, secondaryCharacter, userCharacter, characters, settings.multiRoleMode, userProfile, setConversations, setActiveConversation, setMessages, setDualModeEnabled, setActiveCharacter, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights]);
+
+  /**
+   * Persist an async message mutation against the conversation that started
+   * the work, never whichever tab happens to be visible when it finishes.
+   */
+  const mutateConversationMessages = useCallback((conversationId, mutation) => {
+    const id = typeof conversationId === 'string' ? conversationId.trim() : '';
+    if (!id || typeof mutation !== 'function') return Promise.resolve(false);
+    if (tombstonedConversationIdsRef.current.has(id)) return Promise.resolve(false);
+    if (!(conversationsRef.current || []).some((conversation) => conversation.id === id)) {
+      return Promise.resolve(false);
+    }
+
+    const activeAndSettled =
+      activeConversationRef.current === id
+      && !conversationSwitchInProgressRef.current;
+    const baseMessages = activeAndSettled ? (messagesRef.current || []) : null;
+    let optimisticMessages = null;
+
+    // Apply before awaiting IndexedDB so an immediate tab switch flushes the
+    // media result with the rest of its owning conversation.
+    if (baseMessages) {
+      optimisticMessages = mutation(baseMessages);
+      if (!Array.isArray(optimisticMessages)) {
+        return Promise.reject(new Error('Conversation message mutation must return an array'));
+      }
+      messagesRef.current = optimisticMessages;
+      setMessages(optimisticMessages);
+    }
+
+    const previous = conversationMessageMutationChainsRef.current.get(id) || Promise.resolve();
+    const run = async () => {
+      if (
+        tombstonedConversationIdsRef.current.has(id)
+        || !(conversationsRef.current || []).some((conversation) => conversation.id === id)
+      ) {
+        return false;
+      }
+
+      const conv = (conversationsRef.current || []).find((conversation) => conversation.id === id);
+      const { messages: _omit, ...catalogMeta } = conv || { id, name: 'Chat' };
+      if (activeConversationRef.current === id) setConversationSaveStatus('saving');
+
+      const persistedMessages = await mutateStoredConversationMessages(
+        id,
+        mutation,
+        catalogMeta,
+        { baseMessages },
+      );
+
+      if (
+        !persistedMessages
+        || tombstonedConversationIdsRef.current.has(id)
+        || !(conversationsRef.current || []).some((conversation) => conversation.id === id)
+      ) {
+        return false;
+      }
+
+      const nextVersion = (conversationMessageVersionRef.current.get(id) || 0) + 1;
+      conversationMessageVersionRef.current.set(id, nextVersion);
+
+      let visibleMessages = null;
+      if (
+        activeConversationRef.current === id
+        && !conversationSwitchInProgressRef.current
+      ) {
+        // Reapply idempotently to the latest state. This preserves messages
+        // added after the media request began and repairs a tab load that
+        // briefly read the shard before this mutation was committed.
+        visibleMessages = mutation(messagesRef.current || []);
+        messagesRef.current = visibleMessages;
+        setMessages(visibleMessages);
+        setConversationSaveStatus('saved');
+      }
+
+      const cachedMessages = visibleMessages || persistedMessages;
+      setConversations((current) => {
+        if (
+          tombstonedConversationIdsRef.current.has(id)
+          || !current.some((conversation) => conversation.id === id)
+        ) {
+          return current;
+        }
+        const next = current.map((conversation) => (
+          conversation.id === id
+            ? {
+              ...conversation,
+              messages: cachedMessages,
+              messageCount: cachedMessages.length,
+            }
+            : conversation
+        ));
+        conversationsRef.current = next;
+        return next;
+      });
+
+      return true;
+    };
+
+    const job = previous.catch(() => {}).then(run);
+    conversationMessageMutationChainsRef.current.set(id, job);
+    void job.finally(() => {
+      if (conversationMessageMutationChainsRef.current.get(id) === job) {
+        conversationMessageMutationChainsRef.current.delete(id);
+      }
+    }).catch(() => {});
+    return job.catch((error) => {
+      if (activeConversationRef.current === id) setConversationSaveStatus('error');
+      throw error;
+    });
+  }, [setConversations, setMessages]);
+
+  const appendMessagesToConversation = useCallback((conversationId, additions) => {
+    const messagesToAppend = Array.isArray(additions) ? additions : [additions];
+    return mutateConversationMessages(
+      conversationId,
+      (current) => appendUniqueConversationMessages(current, messagesToAppend),
+    );
+  }, [mutateConversationMessages]);
+
+  const updateMessageInConversation = useCallback((conversationId, messageId, update) => (
+    mutateConversationMessages(
+      conversationId,
+      (current) => updateConversationMessageById(current, messageId, update),
+    )
+  ), [mutateConversationMessages]);
 
   /**
    * Start a normal chat conversation for a specific character.
@@ -4143,6 +4297,8 @@ const AppProvider = ({ children }) => {
     const next = [...(conversationsRef.current || []), conv];
     conversationsRef.current = next;
     activeConversationRef.current = id;
+    conversationSelectionRequestRef.current += 1;
+    conversationSwitchInProgressRef.current = false;
     startupConversationRestoreRef.current.attempted = true;
 
     setConversations(next);
@@ -4187,6 +4343,8 @@ const AppProvider = ({ children }) => {
     }
 
     conversationSwitchInProgressRef.current = false;
+    conversationSelectionRequestRef.current += 1;
+    activeConversationRef.current = null;
     setActiveConversation(null);
     messagesRef.current = [];
     setMessages([]);
@@ -4349,6 +4507,9 @@ const AppProvider = ({ children }) => {
   }, [characters, setMessages, setPrimaryCharacter, setSecondaryCharacter, setActiveCharacter, setUserCharacterId, setActiveCharacterIds, setActiveCharacterWeights, setMultiRoleContext]);
 
   const handleConversationClick = useCallback((id) => {
+    if (!id || tombstonedConversationIdsRef.current.has(id)) return;
+    const selectionRequest = conversationSelectionRequestRef.current + 1;
+    conversationSelectionRequestRef.current = selectionRequest;
     const prevId = activeConversationRef.current;
     const prevMsgs = messagesRef.current;
 
@@ -4368,17 +4529,32 @@ const AppProvider = ({ children }) => {
     }
 
     conversationSwitchInProgressRef.current = true;
+    activeConversationRef.current = id;
     setActiveConversation(id);
     void (async () => {
       try {
-        const shardMsgs = await loadConversationMessages(id);
+        const versionBeforeLoad = conversationMessageVersionRef.current.get(id) || 0;
+        let shardMsgs = await loadConversationMessages(id);
+        if (versionBeforeLoad !== (conversationMessageVersionRef.current.get(id) || 0)) {
+          shardMsgs = await loadConversationMessages(id);
+        }
+        if (
+          conversationSelectionRequestRef.current !== selectionRequest
+          || activeConversationRef.current !== id
+          || tombstonedConversationIdsRef.current.has(id)
+        ) {
+          return;
+        }
         const conv = conversationsRef.current.find((c) => c.id === id) || {};
+        messagesRef.current = shardMsgs;
         applyConversationSelection({ ...conv, messages: shardMsgs });
         setConversations((prev) =>
           prev.map((c) => (c.id === id ? { ...c, messages: shardMsgs } : c))
         );
       } finally {
-        conversationSwitchInProgressRef.current = false;
+        if (conversationSelectionRequestRef.current === selectionRequest) {
+          conversationSwitchInProgressRef.current = false;
+        }
       }
     })();
   }, [setConversations, setActiveConversation, applyConversationSelection]);
@@ -8580,7 +8756,9 @@ colours: The dominant colours`;
     const visible = conversations.filter(
       (c) => c?.id && !tombstonedConversationIdsRef.current.has(c.id)
     );
-    const sig = visible.map((c) => `${c.id}\t${c.name || ''}`).join('\n');
+    const sig = visible
+      .map((c) => `${c.id}\t${c.name || ''}\t${Number(c.messageCount) || 0}`)
+      .join('\n');
     if (sig === conversationCatalogSigRef.current) return undefined;
     conversationCatalogSigRef.current = sig;
     if (visible.length === 0) return undefined;
@@ -8616,7 +8794,7 @@ colours: The dominant colours`;
         );
         if (visible.length === 0) return;
         conversationCatalogSigRef.current = visible
-          .map((c) => `${c.id}\t${c.name || ''}`)
+          .map((c) => `${c.id}\t${c.name || ''}\t${Number(c.messageCount) || 0}`)
           .join('\n');
         setConversations(visible);
         const activeId = activeConversationRef.current;
@@ -8668,7 +8846,7 @@ colours: The dominant colours`;
       );
       if (visible.length === 0) return;
       conversationCatalogSigRef.current = visible
-        .map((c) => `${c.id}\t${c.name || ''}`)
+        .map((c) => `${c.id}\t${c.name || ''}\t${Number(c.messageCount) || 0}`)
         .join('\n');
       setConversations(visible);
       console.info('[Eloquent] Restored missing sidebar tab from message shard:', activeConversation);
@@ -8903,6 +9081,8 @@ UPDATED SUMMARY:`;
   const contextValue = useMemo(() => ({
     messages,
     setMessages,
+    appendMessagesToConversation,
+    updateMessageInConversation,
     taskProgress,
     setTaskProgress,
     loadTtsEngine,
@@ -9166,7 +9346,7 @@ UPDATED SUMMARY:`;
     setLastRequestRouteMeta,
     stopStreamingTTS,
   }), [
-    messages, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, portsReady, storageHydrated, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, startCharacterConversation, goToHome, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, ttsPlaybackState, isTranscribing, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, secondaryModel, audioError, startRecording, stopRecording, playTTS, playTestStreamingTTS, playStreamingTtsScript, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, beginBookAutomationPacking, endBookAutomationPacking, runBookAutomationChapter, runBookAutomationQuickPrompt, generateBookChapterJsonOutline, buildBookAutomationExport, generateCallModeFollowUp, updateSettings, upsertOutreachRule, deleteOutreachRule, runOutreachRuleNow, outreachNotifications, clearOutreachNotifications, dismissOutreachToast, openOutreachNotification, discardOutreachNotification, requestOutreachNotificationPermission, outreachScrollToMessageId, dismissOutreachScrollTarget, pendingDMThreadId, setPendingDMThreadId, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, nanogptSttModels, fetchNanogptSttModels, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue, ttsFullResponseSaveStatus, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, saveCharacters, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL,     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext, injectTimestamp, setInjectTimestamp,
+    messages, appendMessagesToConversation, updateMessageInConversation, availableModels, loadedModels, activeModel, isModelLoading, loadModel, unloadModel, conversations, activeConversation, isGenerating, generateReply, primaryIsAPI, secondaryIsAPI, isSingleGpuMode, portsReady, storageHydrated, setActiveConversationWithMessages, deleteConversation, renameConversation, createNewConversation, startCharacterConversation, goToHome, getActiveConversationData, buildSystemPrompt, formatPrompt, settings, isRecording, fetchTriggeredLore, generateChatTitle, resolveSpeakerCharacter, isPlayingAudio, ttsPlaybackState, isTranscribing, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, secondaryModel, audioError, startRecording, stopRecording, playTTS, playTestStreamingTTS, playStreamingTtsScript, isCallModeActive, callModeRecording, startCallMode, stopCallMode, stopTTS, playTTSWithPitch, sdStatus, fetchMemoriesFromAgent, handleStopGeneration, abortController, isStreamingStopped, checkSdStatus, generateImage, generateVideo, generatedImages, isImageGenerating, generateAndShowImage, apiError, handleConversationClick, cleanModelOutput, generateUniqueId, userProfile, sendMessage, beginBookAutomationPacking, endBookAutomationPacking, runBookAutomationChapter, runBookAutomationQuickPrompt, generateBookChapterJsonOutline, buildBookAutomationExport, generateCallModeFollowUp, updateSettings, upsertOutreachRule, deleteOutreachRule, runOutreachRuleNow, outreachNotifications, clearOutreachNotifications, dismissOutreachToast, openOutreachNotification, discardOutreachNotification, requestOutreachNotificationPermission, outreachScrollToMessageId, dismissOutreachScrollTarget, pendingDMThreadId, setPendingDMThreadId, inputTranscript, documents, fetchDocuments, uploadDocument, deleteDocument, getDocumentContent, autoMemoryEnabled, fetchLoadedModels, getRelevantMemories, MEMORY_API_URL, addConversationSummary, activeTab, shouldUseDualMode, sttEnginesAvailable, fetchAvailableSTTEngines, nanogptSttModels, fetchNanogptSttModels, BACKEND, SECONDARY_API_URL, TTS_API_URL, VITE_API_URL, endStreamingTTS, addStreamingText, startStreamingTTS, pauseStreamingTTS, resumeStreamingTTS, isStreamingTtsPaused, ttsSubtitleCue, ttsFullResponseSaveStatus, ttsClient, characters, activeCharacter, userCharacter, activeCharacterIds, activeCharacterWeights, multiRoleContext, setUserCharacterById, updateActiveCharacterIds, updateActiveCharacterWeights, updateMultiRoleContext, loadCharacters, saveCharacter, saveCharacters, deleteCharacter, duplicateCharacter, applyCharacter, setCharacterChatRole, primaryCharacter, speechDetected, secondaryCharacter, primaryAvatar, secondaryAvatar, activeAvatar, showAvatars, applyAvatar, userAvatar, showAvatarsInChat, autoDeleteChats, dualModeEnabled, sendDualMessage, startAgentConversation, agentConversationActive, PRIMARY_API_URL,     generateConversationSummary, generateAppendedSummary, activeContextSummary, setActiveContextSummary, unlockAudioContext, injectTimestamp, setInjectTimestamp,
     roomGalleryOpen, saveToGallery,
   ]);
 

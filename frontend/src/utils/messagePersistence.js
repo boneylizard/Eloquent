@@ -39,8 +39,26 @@ export function sanitizeMessageForStorage(msg) {
   }
   out.imagePath = trimString(out.imagePath, 1024);
 
-  if (Array.isArray(out.enhancement_history) && out.enhancement_history.length > 3) {
-    out.enhancement_history = out.enhancement_history.slice(-3);
+  if (Array.isArray(out.enhancement_history)) {
+    const history = out.enhancement_history
+      .map((entry) => trimString(entry, 1024))
+      .filter(Boolean);
+    if (out.imagePath && !history.includes(out.imagePath)) {
+      history.push(out.imagePath);
+    }
+    out.enhancement_history = history;
+    if (history.length > 0) {
+      const currentPathIndex = history.indexOf(out.imagePath);
+      const requestedLevel = Number(out.current_enhancement_level);
+      out.current_enhancement_level = currentPathIndex >= 0
+        ? currentPathIndex
+        : Math.max(
+          0,
+          Math.min(Number.isFinite(requestedLevel) ? Math.trunc(requestedLevel) : 0, history.length - 1),
+        );
+    } else {
+      out.current_enhancement_level = 0;
+    }
   }
 
   if (Array.isArray(out.images)) {

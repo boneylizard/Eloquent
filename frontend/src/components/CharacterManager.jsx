@@ -27,6 +27,8 @@ import {
   loadCharacterGroups,
   saveCharacterGroups,
 } from '../utils/characterGroups';
+import { getBackendUrl } from '../config/api';
+import { resolveAvatarDisplayUrl } from '../utils/characterAvatars';
 import './CharacterManager.css';
 
 const CharacterManager = ({ onSelectCharacter }) => {
@@ -644,7 +646,10 @@ const CharacterManager = ({ onSelectCharacter }) => {
                       group.members.slice(0, 4).map((member) => (
                         <div key={member.id} className="group-member-portrait">
                           {member.avatar ? (
-                            <img src={member.avatar} alt="" />
+                            <img
+                              src={resolveAvatarDisplayUrl(member.avatar, PRIMARY_API_URL || getBackendUrl())}
+                              alt=""
+                            />
                           ) : (
                             <span aria-hidden="true">{String(member.name || '?').charAt(0)}</span>
                           )}
@@ -701,7 +706,10 @@ const CharacterManager = ({ onSelectCharacter }) => {
                 >
                   <div className="character-avatar">
                     {character.avatar ? (
-                      <img src={character.avatar} alt="" />
+                      <img
+                        src={resolveAvatarDisplayUrl(character.avatar, PRIMARY_API_URL || getBackendUrl())}
+                        alt=""
+                      />
                     ) : (
                       <div className="avatar-placeholder" aria-hidden="true">
                         {String(character.name || '?').charAt(0)}
@@ -838,7 +846,10 @@ const CharacterManager = ({ onSelectCharacter }) => {
                             />
                             <span className="group-member-option-avatar">
                               {character.avatar ? (
-                                <img src={character.avatar} alt="" />
+                                <img
+                                  src={resolveAvatarDisplayUrl(character.avatar, PRIMARY_API_URL || getBackendUrl())}
+                                  alt=""
+                                />
                               ) : (
                                 String(character.name || '?').charAt(0)
                               )}

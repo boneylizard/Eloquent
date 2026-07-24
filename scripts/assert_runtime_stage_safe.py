@@ -12,6 +12,7 @@ MUTABLE_DIRECTORIES = (
     Path("backend/app/data"),
     Path("backend/app/static/generated_images"),
     Path("backend/app/static/outreach_runtime"),
+    Path("backend/app/static/room_gallery"),
 )
 REQUIRED_RUNTIME_FILES = (
     Path("en_core_web_sm/__init__.py"),

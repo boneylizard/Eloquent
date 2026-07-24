@@ -38,16 +38,37 @@ const packageJsonPath = path.join(frontendDir, 'package.json');
 const packageLockPath = path.join(frontendDir, 'package-lock.json');
 const tauriConfigPath = path.join(rootDir, 'src-tauri', 'tauri.conf.json');
 const cargoPath = path.join(rootDir, 'src-tauri', 'Cargo.toml');
+const cargoLockPath = path.join(rootDir, 'src-tauri', 'Cargo.lock');
+const tauriLibPath = path.join(rootDir, 'src-tauri', 'src', 'lib.rs');
+const defaultCapabilityPath = path.join(rootDir, 'src-tauri', 'capabilities', 'default.json');
+const settingsCapabilityPath = path.join(rootDir, 'src-tauri', 'capabilities', 'settings-dialog.json');
 const rustLibPath = path.join(rootDir, 'src-tauri', 'src', 'runtime_windows.rs');
 const runtimeReleasePath = path.join(rootDir, 'runtime', 'runtime-release.json');
 const inferenceLockPath = path.join(rootDir, 'runtime', 'inference-wheels.lock.json');
 const inferenceReleasePath = path.join(rootDir, 'runtime', 'inference-wheels.release.json');
 
-const [packageJson, packageLock, tauriConfig, cargoSource, rustSource, runtimeRelease, inferenceLock, inferenceRelease] = await Promise.all([
+const [
+  packageJson,
+  packageLock,
+  tauriConfig,
+  cargoSource,
+  cargoLockSource,
+  tauriLibSource,
+  defaultCapability,
+  settingsCapability,
+  rustSource,
+  runtimeRelease,
+  inferenceLock,
+  inferenceRelease,
+] = await Promise.all([
   readJson(packageJsonPath),
   readJson(packageLockPath),
   readJson(tauriConfigPath),
   readFile(cargoPath, 'utf8'),
+  readFile(cargoLockPath, 'utf8'),
+  readFile(tauriLibPath, 'utf8'),
+  readJson(defaultCapabilityPath),
+  readJson(settingsCapabilityPath),
   readFile(rustLibPath, 'utf8'),
   readJson(runtimeReleasePath),
   readJson(inferenceLockPath),
@@ -66,6 +87,16 @@ if (!lockRoot) {
 } else {
   if (lockRoot.name !== packageJson.name) failures.push('package-lock.json package name does not match package.json');
   if (lockRoot.version !== packageJson.version) failures.push('package-lock.json version does not match package.json');
+  if (lockRoot.dependencies?.['@tauri-apps/plugin-dialog'] !== packageJson.dependencies?.['@tauri-apps/plugin-dialog']) {
+    failures.push('The Tauri dialog dependency does not match package-lock.json');
+  }
+}
+const dialogLock = packageLock.packages?.['node_modules/@tauri-apps/plugin-dialog'];
+if (!dialogLock?.version || !dialogLock?.resolved || !dialogLock?.integrity) {
+  failures.push('package-lock.json must pin the resolved Tauri dialog plugin artifact');
+}
+if (packageLock.packages?.['node_modules/@tauri-apps/plugin-process']) {
+  failures.push('package-lock.json still contains the retired direct Tauri process plugin');
 }
 
 if (packageJson.name !== 'mirid-frontend') failures.push('Frontend package name must be mirid-frontend');
@@ -82,6 +113,96 @@ const imageDirective = csp
 for (const loopbackImageSource of ['http://127.0.0.1:*', 'http://localhost:*']) {
   if (!imageDirective?.split(/\s+/).includes(loopbackImageSource)) {
     failures.push(`Tauri img-src must allow Mirid's local avatar source ${loopbackImageSource}`);
+  }
+}
+if (!packageJson.dependencies?.['@tauri-apps/plugin-dialog']) {
+  failures.push('The frontend Tauri dialog plugin dependency is required');
+}
+if (!/^\s*tauri-plugin-dialog\s*=/m.test(cargoSource)) {
+  failures.push('The Rust Tauri dialog plugin dependency is required');
+}
+const cargoDialogVersion = cargoLockSource.match(
+  /\[\[package\]\]\s*\r?\nname = "tauri-plugin-dialog"\s*\r?\nversion = "([^"]+)"/,
+)?.[1];
+if (cargoDialogVersion !== '2.7.2') {
+  failures.push(`Cargo.lock must pin tauri-plugin-dialog 2.7.2 (found ${cargoDialogVersion || 'none'})`);
+}
+const miridCargoLockBlock = cargoLockSource.match(
+  /\[\[package\]\]\s*\r?\nname = "mirid"[\s\S]*?(?=\r?\n\r?\n\[\[package\]\])/,
+)?.[0] || '';
+if (miridCargoLockBlock.includes('"tauri-plugin-process"')) {
+  failures.push('Cargo.lock still lists the retired Tauri process plugin as a Mirid dependency');
+}
+if (!/\.plugin\(tauri_plugin_dialog::init\(\)\)/.test(tauriLibSource)) {
+  failures.push('The Tauri dialog plugin must be initialised');
+}
+const capabilityWindows = Array.isArray(defaultCapability.windows) ? defaultCapability.windows : [];
+if (!capabilityWindows.includes('main')) {
+  failures.push('The default Tauri capability must cover the main window');
+}
+if (capabilityWindows.includes('settings')) {
+  failures.push('The standalone Settings window must not inherit the broad default capability');
+}
+const capabilityPermissions = Array.isArray(defaultCapability.permissions)
+  ? defaultCapability.permissions.filter((permission) => typeof permission === 'string')
+  : [];
+if (!capabilityPermissions.includes('dialog:allow-open')) {
+  failures.push('The Tauri open-dialog permission is required');
+}
+if (!capabilityPermissions.includes('core:webview:allow-create-webview-window')) {
+  failures.push('The main window must be allowed to create standalone webview windows');
+}
+if (!capabilityPermissions.includes('core:window:allow-close')) {
+  failures.push('The main window must be allowed to replace an existing standalone window');
+}
+if (capabilityPermissions.includes('dialog:default')) {
+  failures.push('Use dialog:allow-open instead of the broader dialog:default permission');
+}
+const settingsCapabilityWindows = Array.isArray(settingsCapability.windows)
+  ? settingsCapability.windows
+  : [];
+const settingsCapabilityPermissionsRaw = Array.isArray(settingsCapability.permissions)
+  ? settingsCapability.permissions
+  : [];
+const settingsCapabilityPermissions = settingsCapabilityPermissionsRaw
+  .filter((permission) => typeof permission === 'string');
+if (
+  settingsCapabilityWindows.length !== 1
+  || settingsCapabilityWindows[0] !== 'settings'
+) {
+  failures.push('The standalone Settings picker capability must cover only the settings window');
+}
+if (
+  settingsCapabilityPermissionsRaw.length !== 2
+  || settingsCapabilityPermissions.length !== settingsCapabilityPermissionsRaw.length
+  || !settingsCapabilityPermissions.includes('core:window:allow-close')
+  || !settingsCapabilityPermissions.includes('dialog:allow-open')
+) {
+  failures.push('The standalone Settings window must receive only close-window and open-dialog permissions');
+}
+
+const backendMainSource = secretLogSources.find(
+  ({ filePath }) => filePath.endsWith(path.join('backend', 'app', 'main.py')),
+)?.source || '';
+const localImageLoadRoutes = backendMainSource.match(
+  /@(?:app|router)\.post\(["']\/sd-local\/load-model["']\)/g,
+) || [];
+if (localImageLoadRoutes.length !== 1) {
+  failures.push(`Backend must register exactly one /sd-local/load-model route (found ${localImageLoadRoutes.length})`);
+} else {
+  const routeStart = backendMainSource.search(
+    /@(?:app|router)\.post\(["']\/sd-local\/load-model["']\)/,
+  );
+  const nextRoute = backendMainSource.indexOf('\n@', routeStart + 1);
+  const routeSource = backendMainSource.slice(
+    routeStart,
+    nextRoute >= 0 ? nextRoute : backendMainSource.length,
+  );
+  if (
+    !/gpu_id\s*=\s*data\.get\(["']gpu_id["'],\s*0\)/.test(routeSource)
+    || !/load_model\(full_model_path,\s*gpu_id=gpu_id\)/.test(routeSource)
+  ) {
+    failures.push('The local image model-load route must honour the requested GPU id');
   }
 }
 

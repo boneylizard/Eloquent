@@ -5,6 +5,7 @@ import {
   createUpdateProgress,
   formatBytes,
   formatUpdateProgress,
+  installAppUpdate,
   reduceUpdateProgress,
 } from './appUpdater.js';
 
@@ -45,4 +46,26 @@ test('update progress handles downloads without a content length', () => {
 test('byte formatting remains readable across common update sizes', () => {
   assert.equal(formatBytes(700 * 1024), '700.0 KB');
   assert.equal(formatBytes(32 * 1024 * 1024), '32.0 MB');
+});
+
+test('installed updates restart through Mirid lifecycle cleanup', async () => {
+  const calls = [];
+  const update = {
+    downloadAndInstall: async (onEvent, options) => {
+      calls.push(['install', options]);
+      onEvent({ event: 'Finished', data: {} });
+    },
+  };
+
+  await installAppUpdate(
+    update,
+    (progress) => calls.push(['progress', progress.phase]),
+    async () => calls.push(['restart']),
+  );
+
+  assert.deepEqual(calls, [
+    ['install', { timeout: 30 * 60_000 }],
+    ['progress', 'installing'],
+    ['restart'],
+  ]);
 });

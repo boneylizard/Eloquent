@@ -11,13 +11,19 @@ import ImageCropEditor from './ImageCropEditor';
 import { CROP_PRESETS, cropImageToBlob } from '../utils/imageCrop';
 import { createRouteTraceId, logRouteTrace, resolveUnifiedRequestRoute } from '../utils/requestRouting';
 import { resolveCharacterPostHistoryInstructions } from '../utils/characterCardRuntime';
+import {
+  ensureMediaConversation,
+  updateMediaMessageIfSourceMatches,
+} from '../utils/mediaConversation';
 
 const ChatImageUploadButton = () => {
   const {
-    sendMessage,
     isGenerating,
     generateUniqueId,
-    setMessages,
+    appendMessagesToConversation,
+    updateMessageInConversation,
+    activeConversation,
+    createNewConversation,
     userProfile,
     primaryModel,
     primaryIsAPI,
@@ -373,6 +379,11 @@ const ChatImageUploadButton = () => {
     const total = imagesToSend.length;
     const runEnhancements = enableAdetailer || enableUpscale;
     if (runEnhancements) setBatchUpscaleQueueProgress({ current: 0, total });
+    const ownerConversationId = ensureMediaConversation({
+      activeConversation,
+      createNewConversation,
+    });
+    if (!ownerConversationId) return;
 
     try {
       // 1. Add user message with text (if any)
@@ -387,7 +398,7 @@ const ChatImageUploadButton = () => {
           userMsg.characterName = userCharacter.name;
           userMsg.avatar = userCharacter.avatar;
         }
-        setMessages(prev => [...prev, userMsg]);
+        await appendMessagesToConversation(ownerConversationId, [userMsg]);
       }
 
       // 2. Upload each image and add image message (same format as SimpleChatImageButton)
@@ -414,7 +425,7 @@ const ChatImageUploadButton = () => {
           height: cropEnabled ? Math.round(cropHeight) : undefined,
           timestamp: new Date().toISOString()
         };
-        setMessages(prev => [...prev, imageMessage]);
+        await appendMessagesToConversation(ownerConversationId, [imageMessage]);
         uploaded.push({ messageId: imageMessage.id, imageUrl });
       }
 
@@ -446,17 +457,26 @@ const ChatImageUploadButton = () => {
                 if (enhanceResponse.ok) {
                   const result = await enhanceResponse.json();
                   if (result.status === 'success' && result.enhanced_image_url) {
+                    const sourceImageUrl = currentImageUrl;
                     currentImageUrl = result.enhanced_image_url;
-                    setMessages(prev => prev.map(msg =>
-                      msg.id === msgId ? {
-                        ...msg,
-                        imagePath: currentImageUrl,
-                        enhanced: true,
-                        current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
-                        enhancement_history: msg.enhancement_history ? [...msg.enhancement_history, currentImageUrl] : [uploaded[i].imageUrl, currentImageUrl],
-                        enhancement_settings: { ...adetailerSettings }
-                      } : msg
-                    ));
+                    await updateMessageInConversation(
+                      ownerConversationId,
+                      msgId,
+                      (message) => updateMediaMessageIfSourceMatches(
+                        message,
+                        sourceImageUrl,
+                        (matchedMessage) => ({
+                          ...matchedMessage,
+                          imagePath: currentImageUrl,
+                          enhanced: true,
+                          current_enhancement_level: (matchedMessage.current_enhancement_level || 0) + 1,
+                          enhancement_history: matchedMessage.enhancement_history
+                            ? [...matchedMessage.enhancement_history, currentImageUrl]
+                            : [uploaded[i].imageUrl, currentImageUrl],
+                          enhancement_settings: { ...adetailerSettings }
+                        }),
+                      ),
+                    );
                   }
                 }
               }
@@ -474,19 +494,28 @@ const ChatImageUploadButton = () => {
                 if (upscaleResponse.ok) {
                   const result = await upscaleResponse.json();
                   if (result.status === 'success' && result.image_url) {
+                    const sourceImageUrl = currentImageUrl;
                     currentImageUrl = result.image_url;
-                    setMessages(prev => prev.map(msg =>
-                      msg.id === msgId ? {
-                        ...msg,
-                        imagePath: currentImageUrl,
-                        enhanced: true,
-                        upscaled: true,
-                        width: (msg.width || 512) * parseFloat(upscaleSettings.scale_factor),
-                        height: (msg.height || 512) * parseFloat(upscaleSettings.scale_factor),
-                        current_enhancement_level: (msg.current_enhancement_level || 0) + 1,
-                        enhancement_history: msg.enhancement_history ? [...msg.enhancement_history, currentImageUrl] : [uploaded[i].imageUrl, currentImageUrl]
-                      } : msg
-                    ));
+                    await updateMessageInConversation(
+                      ownerConversationId,
+                      msgId,
+                      (message) => updateMediaMessageIfSourceMatches(
+                        message,
+                        sourceImageUrl,
+                        (matchedMessage) => ({
+                          ...matchedMessage,
+                          imagePath: currentImageUrl,
+                          enhanced: true,
+                          upscaled: true,
+                          width: (matchedMessage.width || 512) * parseFloat(upscaleSettings.scale_factor),
+                          height: (matchedMessage.height || 512) * parseFloat(upscaleSettings.scale_factor),
+                          current_enhancement_level: (matchedMessage.current_enhancement_level || 0) + 1,
+                          enhancement_history: matchedMessage.enhancement_history
+                            ? [...matchedMessage.enhancement_history, currentImageUrl]
+                            : [uploaded[i].imageUrl, currentImageUrl]
+                        }),
+                      ),
+                    );
                   }
                 }
               }
@@ -558,7 +587,7 @@ const ChatImageUploadButton = () => {
             content: result.text || 'No response from vision model',
             modelId: 'primary'
           };
-          setMessages(prev => [...prev, botMsg]);
+          await appendMessagesToConversation(ownerConversationId, [botMsg]);
         }
       }
     } catch (error) {
@@ -576,7 +605,10 @@ const ChatImageUploadButton = () => {
     cropHeight,
     replaceImageItem,
     generateUniqueId,
-    setMessages,
+    appendMessagesToConversation,
+    updateMessageInConversation,
+    activeConversation,
+    createNewConversation,
     primaryModel,
     primaryIsAPI,
     userProfile,

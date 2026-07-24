@@ -6,7 +6,7 @@ on:
       version:
         description: Version already set in package.json, Cargo.toml, and tauri.conf.json
         required: true
-        default: 1.0.9
+        default: 1.0.10
         type: string
       prerelease:
         description: Mark this GitHub release as a pre-release

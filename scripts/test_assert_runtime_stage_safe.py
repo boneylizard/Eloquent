@@ -10,8 +10,11 @@ def test_rejects_runtime_databases_and_generated_content(tmp_path):
     generated = tmp_path / "backend" / "app" / "static" / "generated_images" / "private.png"
     generated.parent.mkdir(parents=True)
     generated.write_bytes(b"image")
+    gallery = tmp_path / "backend" / "app" / "static" / "room_gallery" / "manifest.json"
+    gallery.parent.mkdir(parents=True)
+    gallery.write_text('{"images": ["private.png"]}', encoding="utf-8")
 
-    assert set(find_unsafe_files(tmp_path)) == {database, generated}
+    assert set(find_unsafe_files(tmp_path)) == {database, generated, gallery}
 
 
 def test_allows_dependency_metadata_and_voice_assets(tmp_path):

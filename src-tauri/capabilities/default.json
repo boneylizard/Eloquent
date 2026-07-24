@@ -8,7 +8,9 @@
   "permissions": [
     "core:default",
     "core:webview:allow-set-webview-zoom",
-    "process:allow-restart",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-close",
+    "dialog:allow-open",
     "updater:default",
     {
       "identifier": "shell:allow-spawn",

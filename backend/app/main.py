@@ -8653,35 +8653,6 @@ async def sd_comfy_custom_workflow(body: dict):
     except Exception as e:
         raise HTTPException(500, f"ComfyUI error: {e}")
 
-@app.post("/sd-local/load-model")
-async def sd_local_load_model(data: dict, request: Request):
-    """Load a local SD model by its filename"""
-    sd_manager = getattr(request.app.state, 'sd_manager', None)
-    if not sd_manager:
-        raise HTTPException(status_code=500, detail="SD Manager not available")
-
-    # This is the fix: we now correctly look for 'model_filename' from the request
-    model_filename = data.get("model_filename")
-    if not model_filename:
-        raise HTTPException(status_code=400, detail="Request body must include 'model_filename'")
-
-    # The backend now correctly builds the full path from the configured directory
-    full_model_path = str(_resolve_sd_model_directory(request) / Path(model_filename).name)
-    try:
-        success = sd_manager.load_model(full_model_path)
-    except RuntimeError as load_err:
-        # Worker returns load failure as RuntimeError(message); always surface so user sees it and knows worker was restarted
-        raise HTTPException(status_code=500, detail=str(load_err))
-    except Exception as load_err:
-        from .sd_manager import SDLoadError
-        if isinstance(load_err, SDLoadError):
-            raise HTTPException(status_code=500, detail=str(load_err))
-        raise
-    if success:
-        return {"status": "success", "message": f"Model loaded: {full_model_path}"}
-    else:
-        raise HTTPException(status_code=500, detail=f"Failed to load model from path: {full_model_path}")
-
 @app.post("/sd-local/txt2img")
 async def sd_local_txt2img(body: dict, request: Request):
     """Generate image using local SD on a specific GPU."""

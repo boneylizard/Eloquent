@@ -34,6 +34,8 @@ import NanoGptModelSelectorPopover from './NanoGptModelSelectorPopover';
 import { VisionModelSettings } from './VisionModelSelector';
 import { resolveEndpointDisplay, getRotationPool } from '../utils/resolveEndpointDisplay';
 import { readNanoGptModelsCache } from '../utils/nanoGptModelsCache';
+import { resolveAvatarDisplayUrl } from '../utils/characterAvatars';
+import { resolveBackendMediaUrl } from '../utils/backendMedia';
 import MobileRemoteSettings from './MobileRemoteSettings';
 import * as indexedDbStorage from '../utils/indexedDbStorage';
 import {
@@ -60,6 +62,7 @@ import {
   readInterfaceZoom,
   setInterfaceZoom,
 } from '../utils/interfaceZoom';
+import { openPathPicker } from '../utils/nativePathPicker';
 
 const DIRECTORY_SETTING_KEYS = [
   'modelDirectory',
@@ -979,18 +982,12 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
     const baseUrl = PRIMARY_API_URL || getBackendUrl();
     setDirectoryPickerKey(settingKey);
     try {
-      const response = await fetch(`${baseUrl}/system/select-directory`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initial_directory: localSettings[settingKey] || null,
-          title
-        })
+      const data = await openPathPicker({
+        mode: 'directory',
+        backendUrl: baseUrl,
+        initialDirectory: localSettings[settingKey] || null,
+        title,
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.detail || data.message || 'Failed to open directory picker.');
-      }
       if (data.status === 'cancelled' || !data.directory) {
         return;
       }
@@ -2955,7 +2952,11 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                     return (
                       <div key={note.id} className="flex gap-3 rounded-lg border border-border/60 bg-background/40 p-3">
                         {note.characterAvatar ? (
-                          <img src={note.characterAvatar} alt="" className="h-10 w-10 shrink-0 rounded-full object-cover border border-border" />
+                          <img
+                            src={resolveAvatarDisplayUrl(note.characterAvatar, PRIMARY_API_URL || getBackendUrl())}
+                            alt=""
+                            className="h-10 w-10 shrink-0 rounded-full object-cover border border-border"
+                          />
                         ) : (
                           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-xs font-semibold">
                             {String(label).charAt(0).toUpperCase()}
@@ -2967,7 +2968,10 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{note.preview}</div>
                           {note.attachmentImageUrl ? (
                             <img
-                              src={note.attachmentImageUrl}
+                              src={resolveBackendMediaUrl(note.attachmentImageUrl, {
+                                primaryApiUrl: PRIMARY_API_URL || getBackendUrl(),
+                                memoryApiUrl: MEMORY_API_URL,
+                              })}
                               alt=""
                               className="mt-2 max-h-20 rounded-md object-cover border border-border/60"
                             />

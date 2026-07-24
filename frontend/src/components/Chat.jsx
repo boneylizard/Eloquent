@@ -69,6 +69,7 @@ import {
 import { cycleCharacterGreetingMessage } from '../utils/characterCardRuntime';
 import CharacterAvatarMedia from './CharacterAvatarMedia';
 import CharacterIntroExperience from './CharacterIntroExperience';
+import { updateMediaMessageIfSourceMatches } from '../utils/mediaConversation';
 import {
   fetchCharacterIntro,
   getCharacterIntroStatus,
@@ -82,6 +83,10 @@ import {
   composeLayeredSystemPrompt,
   isSystemPersonaModeActive,
 } from '../utils/systemPersona';
+import {
+  resolveBackendMediaUrl,
+  selectMediaBackendUrl,
+} from '../utils/backendMedia';
 
 function escapeRegExp(s) {
   return s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
@@ -305,7 +310,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
   const {
     // Model/Chat state
     activeModel, primaryModel, lastRequestRouteMeta, setLastRequestRouteMeta, setPrimaryModel, secondaryModel, dualModeEnabled, setDualModeEnabled, buildSystemPrompt, buildSystemPersonaPrompt, formatPrompt, prepareApiHistoryWithRollingMemory, cleanModelOutput, abortController, setAbortController,
-    messages: messagesRaw, setMessages, sendMessage, sendDualMessage, isGenerating, isModelLoading,
+    messages: messagesRaw, setMessages, appendMessagesToConversation, updateMessageInConversation, sendMessage, sendDualMessage, isGenerating, isModelLoading,
     createNewConversation, completeCharacterIntro, applyIntroChatTitle, updateCharacterIntro, startAgentConversation, agentConversationActive, PRIMARY_API_URL, generateReply, fetchMemoriesFromAgent, fetchTriggeredLore, isStreamingStopped, handleStopGeneration,
     conversations, setConversations,
     // Character info
@@ -789,6 +794,12 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
   const [characterFeedback, setCharacterFeedback] = useState('');
   const [isGeneratingCharacterImage, setIsGeneratingCharacterImage] = useState(false);
   const [characterImageUrl, setCharacterImageUrl] = useState(null);
+  const characterImageDisplayUrl = useMemo(() => (
+    resolveBackendMediaUrl(characterImageUrl, {
+      primaryApiUrl: PRIMARY_API_URL,
+      memoryApiUrl: MEMORY_API_URL,
+    })
+  ), [characterImageUrl, PRIMARY_API_URL, MEMORY_API_URL]);
   const [characterImagePrompt, setCharacterImagePrompt] = useState('');
   const [customImagePrompt, setCustomImagePrompt] = useState('');
   const [regenerationQueue, setRegenerationQueue] = useState(0);
@@ -1048,10 +1059,11 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
   };
 
   const handleVisualizeScene = useCallback(async () => {
-    if (messages.length === 0 || isGenerating) return;
+    const ownerConversationId = activeConversation;
+    if (messages.length === 0 || isGenerating || !ownerConversationId) return;
 
     const tempId = generateUniqueId();
-    setMessages(prev => [...prev, {
+    await appendMessagesToConversation(ownerConversationId, [{
       id: tempId,
       role: 'system',
       content: '🎨 Visualizing current scene...'
@@ -1072,10 +1084,11 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
 
       const data = await response.json();
 
-      setMessages(prev => {
-        const filtered = prev.filter(m => m.id !== tempId);
-        return [...filtered, {
-          id: generateUniqueId(),
+      await updateMessageInConversation(
+        ownerConversationId,
+        tempId,
+        () => ({
+          id: tempId,
           role: 'bot',
           characterId: activeCharacter?.id,
           characterName: activeCharacter?.name,
@@ -1087,14 +1100,32 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
           prompt: data.generated_prompt,
           model: 'SD-Local',
           timestamp: new Date().toISOString()
-        }];
-      });
+        }),
+      );
 
     } catch (error) {
       console.error('Visualization error:', error);
-      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, content: `❌ Visualization failed: ${error.message}`, error: true } : m));
+      await updateMessageInConversation(
+        ownerConversationId,
+        tempId,
+        (message) => ({
+          ...message,
+          content: `❌ Visualization failed: ${error.message}`,
+          error: true,
+        }),
+      );
     }
-  }, [messages, isGenerating, primaryModel, PRIMARY_API_URL, setMessages, generateUniqueId, activeCharacter]);
+  }, [
+    messages,
+    isGenerating,
+    primaryModel,
+    PRIMARY_API_URL,
+    generateUniqueId,
+    activeCharacter,
+    activeConversation,
+    appendMessagesToConversation,
+    updateMessageInConversation,
+  ]);
 
   // Author's Note: sync from AuthorsNotePanel (debounced there to avoid typing lag)
   const handleAuthorNoteSync = useCallback((value) => {
@@ -1841,13 +1872,25 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     // ... [Original Logic] ...
   }, [primaryModel, PRIMARY_API_URL, userProfile, generateUniqueId]);
 
-  const autoEnhanceRegeneratedImage = useCallback(async (imageUrl, originalPrompt, messageId, enhancementSettings, modelName, gpuId = 0) => {
-    if (!imageUrl || !messageId) {
+  const autoEnhanceRegeneratedImage = useCallback(async (
+    imageUrl,
+    originalPrompt,
+    messageId,
+    ownerConversationId,
+    enhancementSettings,
+    modelName,
+    gpuId = 0,
+  ) => {
+    if (!imageUrl || !messageId || !ownerConversationId) {
       return;
     }
 
     try {
-      const response = await fetch(`${PRIMARY_API_URL}/sd-local/enhance-adetailer`, {
+      const enhancementApiUrl = selectMediaBackendUrl(gpuId, {
+        primaryApiUrl: PRIMARY_API_URL,
+        memoryApiUrl: MEMORY_API_URL,
+      });
+      const response = await fetch(`${enhancementApiUrl}/sd-local/enhance-adetailer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1869,27 +1912,35 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
 
       const result = await response.json();
       if (result.status === 'success' && result.enhanced_image_url) {
-        setMessages(prev => prev.map(msg =>
-          msg.id === messageId
-            ? {
-              ...msg,
-              imagePath: result.enhanced_image_url,
-              enhancement_history: [imageUrl, result.enhanced_image_url],
-              current_enhancement_level: 1,
-              enhanced: true,
-              enhancement_settings: { ...enhancementSettings, model_name: modelName }
-            }
-            : msg
-        ));
+        await updateMessageInConversation(
+          ownerConversationId,
+          messageId,
+          (message) => updateMediaMessageIfSourceMatches(
+            message,
+            imageUrl,
+            (currentMessage) => {
+              if (currentMessage.imagePath === result.enhanced_image_url) return currentMessage;
+              return {
+                ...currentMessage,
+                imagePath: result.enhanced_image_url,
+                enhancement_history: [imageUrl, result.enhanced_image_url],
+                current_enhancement_level: 1,
+                enhanced: true,
+                enhancement_settings: { ...enhancementSettings, model_name: modelName }
+              };
+            },
+          ),
+        );
       }
     } catch (error) {
       console.error('Auto-enhancement failed:', error);
     }
-  }, [PRIMARY_API_URL, setMessages]);
+  }, [PRIMARY_API_URL, MEMORY_API_URL, updateMessageInConversation]);
 
   const runRegenerationTask = useCallback(async (queueItem, signal) => {
     const imageParams = queueItem?.imageParams;
-    if (!imageParams?.prompt?.trim()) {
+    const ownerConversationId = queueItem?.conversationId;
+    if (!imageParams?.prompt?.trim() || !ownerConversationId) {
       return;
     }
 
@@ -1918,7 +1969,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
       }, gpuId, signal ? { signal } : {});
 
       if (responseData && Array.isArray(responseData.image_urls) && responseData.image_urls.length > 0) {
-        responseData.image_urls.forEach((imageUrl) => {
+        const regeneratedMessages = responseData.image_urls.map((imageUrl) => {
           const messageId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}-img`;
           const imageMessage = {
             id: messageId,
@@ -1951,10 +2002,15 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
             original_seed: imageParams.original_seed ?? imageParams.seed ?? -1,
             timestamp: new Date().toISOString()
           };
+          return imageMessage;
+        });
+        const saved = await appendMessagesToConversation(
+          ownerConversationId,
+          regeneratedMessages,
+        );
 
-          setMessages(prev => [...prev, imageMessage]);
-
-          if (autoEnhanceEnabled && settings?.imageEngine === 'EloDiffusion') {
+        if (saved && autoEnhanceEnabled && settings?.imageEngine === 'EloDiffusion') {
+          regeneratedMessages.forEach((imageMessage) => {
             const fallbackSettings = {
               strength: typeof adetailerSettings.strength === 'number' ? adetailerSettings.strength : 0.35,
               confidence: typeof adetailerSettings.confidence === 'number' ? adetailerSettings.confidence : 0.3,
@@ -1962,44 +2018,39 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
               sampler: adetailerSettings.sampler || 'euler_a',
               facePrompt: adetailerSettings.facePrompt || 'detailed face, high quality, sharp focus'
             };
-            autoEnhanceRegeneratedImage(
-              imageUrl,
+            void autoEnhanceRegeneratedImage(
+              imageMessage.imagePath,
               imageParams.prompt,
-              messageId,
+              imageMessage.id,
+              ownerConversationId,
               fallbackSettings,
               selectedAdetailerModel,
               gpuId
             );
-          }
-        });
+          });
+        }
       } else {
-        setMessages(prev => [
-          ...prev,
-          {
+        await appendMessagesToConversation(ownerConversationId, [{
             id: `${Date.now()}-regen-error`,
             role: 'system',
             content: 'Image regeneration completed, but no images were returned.',
             error: true
-          }
-        ]);
+          }]);
       }
     } catch (err) {
       if (err?.name === 'AbortError') return; // User cancelled
       console.error('Error regenerating image:', err);
-      setMessages(prev => [
-        ...prev,
-        {
+      await appendMessagesToConversation(ownerConversationId, [{
           id: `${Date.now()}-regen-catch`,
           role: 'system',
           content: `Error regenerating image: ${err.message}.`,
           error: true
-        }
-      ]);
+        }]);
     }
   }, [
     generateImage,
     activeCharacter,
-    setMessages,
+    appendMessagesToConversation,
     autoEnhanceEnabled,
     adetailerSettings,
     selectedAdetailerModel,
@@ -2044,6 +2095,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
 
     regenerationQueueRef.current.push({
       imageParams: { ...imageParams },
+      conversationId: activeConversation,
       characterSnapshot: activeCharacter
         ? {
           id: activeCharacter.id,
@@ -2054,7 +2106,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     });
     setRegenerationQueue(regenerationQueueRef.current.length);
     processRegenerationQueue();
-  }, [activeCharacter, processRegenerationQueue]);
+  }, [activeCharacter, activeConversation, processRegenerationQueue]);
 
   const handleSaveCharacter = useCallback(() => {
     if (!generatedCharacter) return;
@@ -2736,9 +2788,10 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
     };
 
     if (userAvatarSource) {
-      userDisplayUrl = userAvatarSource.startsWith('/')
-        ? `${PRIMARY_API_URL || getBackendUrl()}${userAvatarSource}`
-        : userAvatarSource;
+      userDisplayUrl = resolveAvatarDisplayUrl(
+        userAvatarSource,
+        PRIMARY_API_URL || getBackendUrl()
+      );
     }
 
     if (userDisplayUrl) {
@@ -3509,7 +3562,10 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
                           {settings.narratorAvatar && (
                             <div className="flex items-center gap-2">
                               <img
-                                src={settings.narratorAvatar}
+                                src={resolveAvatarDisplayUrl(
+                                  settings.narratorAvatar,
+                                  PRIMARY_API_URL || getBackendUrl()
+                                )}
                                 alt="Narrator avatar"
                                 className="h-12 w-12 rounded-full object-cover border border-border"
                                 onError={(e) => { e.target.style.display = 'none'; }}
@@ -4210,7 +4266,7 @@ const Chat = ({ layoutMode, scrollContainerRef, onOpenChatHistory }) => {
               <div className="flex gap-4 items-start">
                 <div className="flex-shrink-0">
                   {characterImageUrl ? (
-                    <img src={characterImageUrl} alt="Avatar" className="w-16 h-16 rounded-lg object-cover border border-border" />
+                    <img src={characterImageDisplayUrl} alt="Avatar" className="w-16 h-16 rounded-lg object-cover border border-border" />
                   ) : (
                     <div className="w-16 h-16 rounded-lg bg-muted flex items-center justify-center text-muted-foreground text-xs">No image</div>
                   )}

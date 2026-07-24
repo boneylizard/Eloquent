@@ -10,6 +10,11 @@ import { AlertTriangle, Image, Loader2, X, Sparkles, Info, Video, Download, Fold
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 import * as Path from 'path-browserify';
 import { getActiveCharacterAvatar } from '../utils/characterAvatars';
+import {
+    ensureMediaConversation,
+    updateMediaMessageIfSourceMatches,
+} from '../utils/mediaConversation';
+import { selectMediaBackendUrl } from '../utils/backendMedia';
 
 
 
@@ -23,7 +28,10 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
         isImageGenerating,
         apiError,
         clearError,
-        setMessages,
+        appendMessagesToConversation,
+        updateMessageInConversation,
+        activeConversation,
+        createNewConversation,
         settings,
         MEMORY_API_URL,
         PRIMARY_API_URL,
@@ -351,11 +359,26 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
     }, [adetailerSettings]);
 
     // FIXED: Auto-enhance function - now updates in place with history tracking
-    const autoEnhanceImage = useCallback(async (imageUrl, originalPrompt, messageId) => {
-        if (!autoEnhanceEnabled || !adetailerAvailable || !messageId) return;
+    const autoEnhanceImage = useCallback(async (
+        imageUrl,
+        originalPrompt,
+        messageId,
+        ownerConversationId,
+        gpuId,
+    ) => {
+        if (
+            !autoEnhanceEnabled
+            || !adetailerAvailable
+            || !messageId
+            || !ownerConversationId
+        ) return;
 
         try {
-            const response = await fetch(`${PRIMARY_API_URL}/sd-local/enhance-adetailer`, {
+            const enhancementApiUrl = selectMediaBackendUrl(gpuId, {
+                primaryApiUrl: PRIMARY_API_URL,
+                memoryApiUrl: MEMORY_API_URL,
+            });
+            const response = await fetch(`${enhancementApiUrl}/sd-local/enhance-adetailer`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -366,35 +389,51 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                     steps: adetailerSettings.steps,
                     confidence: adetailerSettings.confidence,
                     model_name: selectedAdetailerModel,
-                    sampler: selectedSampler
+                    sampler: selectedSampler,
+                    gpu_id: gpuId,
                 })
             });
 
             if (response.ok) {
                 const result = await response.json();
                 if (result.status === 'success' && result.enhanced_image_url) {
-                    // FIXED: Update existing message with enhancement history tracking
-                    setTimeout(() => {
-                        setMessages(prev => prev.map(msg =>
-                            msg.id === messageId
-                                ? {
-                                    ...msg,
+                    await updateMessageInConversation(
+                        ownerConversationId,
+                        messageId,
+                        (message) => updateMediaMessageIfSourceMatches(
+                            message,
+                            imageUrl,
+                            (currentMessage) => {
+                                if (currentMessage.imagePath === result.enhanced_image_url) return currentMessage;
+                                return {
+                                    ...currentMessage,
                                     imagePath: result.enhanced_image_url,
-                                    // Initialize enhancement history with original and enhanced
                                     enhancement_history: [imageUrl, result.enhanced_image_url],
                                     current_enhancement_level: 1,
                                     enhanced: true,
-                                    enhancement_settings: { ...adetailerSettings, model_name: selectedAdetailerModel }
-                                }
-                                : msg
-                        ));
-                    }, 1000);
+                                    enhancement_settings: {
+                                        ...adetailerSettings,
+                                        model_name: selectedAdetailerModel,
+                                    },
+                                };
+                            },
+                        ),
+                    );
                 }
             }
         } catch (error) {
             console.error('Auto-enhancement failed:', error);
         }
-    }, [autoEnhanceEnabled, adetailerAvailable, adetailerSettings, selectedAdetailerModel, selectedSampler, MEMORY_API_URL, setMessages]);
+    }, [
+        autoEnhanceEnabled,
+        adetailerAvailable,
+        adetailerSettings,
+        selectedAdetailerModel,
+        selectedSampler,
+        PRIMARY_API_URL,
+        MEMORY_API_URL,
+        updateMessageInConversation,
+    ]);
 
     // Effects
     useEffect(() => {
@@ -441,6 +480,22 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
             return;
         }
 
+        const isCallbackOnlyGeneration = typeof onImageGenerated === 'function';
+        if (isCallbackOnlyGeneration && generationMode === 'video') {
+            setLocalSetupError('This picker accepts generated images, not video.');
+            return;
+        }
+
+        const ownerConversationId = ensureMediaConversation({
+            activeConversation,
+            createNewConversation,
+            onImageGenerated,
+        });
+        if (!isCallbackOnlyGeneration && !ownerConversationId) {
+            setLocalSetupError('Mirid could not create a chat for this image.');
+            return;
+        }
+
         // NEW: Video Generation Branch
         if (imageEngine === 'nanogpt' && generationMode === 'video') {
             clearError();
@@ -462,20 +517,20 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                         videoPath: videoUrl, // NEW FIELD
                         timestamp: new Date().toISOString()
                     };
-                    setMessages(prev => [...prev, videoMessage]);
+                    await appendMessagesToConversation(ownerConversationId, [videoMessage]);
                     setPrompt('');
                     setIsDialogOpen(false);
                 }
             } catch (err) {
                 console.error("Video generation failed:", err);
-                setMessages(prev => [
-                    ...prev, {
-                        id: `${Date.now()}-error`,
-                        role: 'system',
-                        content: `Error generating video: ${err.message}`,
-                        error: true
-                    }
-                ]);
+                if (!isCallbackOnlyGeneration) {
+                    await appendMessagesToConversation(ownerConversationId, [{
+                            id: `${Date.now()}-error`,
+                            role: 'system',
+                            content: `Error generating video: ${err.message}`,
+                            error: true
+                        }]);
+                }
             } finally {
                 setImageProgress(null);
             }
@@ -529,7 +584,7 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                     setImageProgress(null);
                     return;
                 }
-                responseData.image_urls.forEach(imageUrl => {
+                const generatedMessages = responseData.image_urls.map(imageUrl => {
                     // Generate message ID first
                     const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 7)}-img`;
 
@@ -564,23 +619,34 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
                         original_seed: responseData.parameters?.seed !== undefined ? responseData.parameters.seed : -1,
                         timestamp: new Date().toISOString()
                     };
-
-                    setMessages(prev => [...prev, imageMessage]);
-
-                    // FIXED: Auto-enhance if enabled - now passes message ID
-                    if (autoEnhanceEnabled && adetailerAvailable) {
-                        autoEnhanceImage(imageUrl, prompt, messageId);
-                    }
+                    return imageMessage;
                 });
+                const saved = await appendMessagesToConversation(
+                    ownerConversationId,
+                    generatedMessages,
+                );
+                if (saved && autoEnhanceEnabled && adetailerAvailable) {
+                    generatedMessages.forEach((imageMessage) => {
+                        void autoEnhanceImage(
+                            imageMessage.imagePath,
+                            prompt,
+                            imageMessage.id,
+                            ownerConversationId,
+                            selectedGpuId,
+                        );
+                    });
+                }
             } else {
-                setMessages(prev => [
-                    ...prev, {
-                        id: `${Date.now()}-error`,
-                        role: 'system',
-                        content: `Image generation completed, but no images were returned.`,
-                        error: true
-                    }
-                ]);
+                if (isCallbackOnlyGeneration) {
+                    setLocalSetupError('The image engine finished without returning an image.');
+                } else {
+                    await appendMessagesToConversation(ownerConversationId, [{
+                            id: `${Date.now()}-error`,
+                            role: 'system',
+                            content: `Image generation completed, but no images were returned.`,
+                            error: true
+                        }]);
+                }
             }
             setPrompt('');
             setNegativePrompt('');
@@ -588,14 +654,14 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
             onClose?.();
         } catch (err) {
             console.error('Error during image generation process:', err);
-            setMessages(prev => [
-                ...prev, {
-                    id: `${Date.now()}-catch`,
-                    role: 'system',
-                    content: `Error generating image: ${err.message}.`,
-                    error: true
-                }
-            ]);
+            if (!isCallbackOnlyGeneration) {
+                await appendMessagesToConversation(ownerConversationId, [{
+                        id: `${Date.now()}-catch`,
+                        role: 'system',
+                        content: `Error generating image: ${err.message}.`,
+                        error: true
+                    }]);
+            }
         } finally {
             clearProgressPolling();
             setImageProgress(null);
@@ -617,17 +683,28 @@ const SimpleChatImageButton = ({ defaultOpen = false, onImageGenerated, onClose 
             )}
 
             {isDialogOpen && createPortal(
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                <div
+                    className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="mirid-image-generation-title"
+                >
                     <div
                         className="relative w-full max-w-lg bg-background rounded-lg p-6 shadow-xl max-h-[90vh] flex flex-col overflow-hidden"
                         onClick={(e) => e.stopPropagation()}
                     >
                         <div className="flex items-start justify-between border-b pb-3 mb-4">
                             <div>
-                                <h3 className="text-lg font-semibold">Image generation</h3>
+                                <h3 id="mirid-image-generation-title" className="text-lg font-semibold">Image generation</h3>
                                 <p className="text-sm text-muted-foreground">Describe an image, choose how it runs, then generate it.</p>
                             </div>
-                            <Button variant="ghost" size="icon" className="-mt-1 -mr-2" onClick={() => { setIsDialogOpen(false); onClose?.(); }}>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="-mt-1 -mr-2"
+                                aria-label="Close image generation"
+                                onClick={() => { setIsDialogOpen(false); onClose?.(); }}
+                            >
                                 <X className="h-4 w-4" />
                             </Button>
 

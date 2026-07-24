@@ -2,12 +2,17 @@ import React, { useMemo } from 'react';
 import { X } from 'lucide-react';
 import { useApp } from '../contexts/AppContext';
 import { cn } from '@/lib/utils';
+import { getBackendUrl } from '../config/api';
+import { resolveAvatarDisplayUrl } from '../utils/characterAvatars';
+import { resolveBackendMediaUrl } from '../utils/backendMedia';
 
 export default function OutreachNotificationStack() {
   const {
     outreachNotifications,
     openOutreachNotification,
     dismissOutreachToast,
+    PRIMARY_API_URL,
+    MEMORY_API_URL,
   } = useApp();
 
   const visible = useMemo(
@@ -31,9 +36,10 @@ export default function OutreachNotificationStack() {
           note.characterName || (typeof note.title === 'string' ? note.title.replace(/\s+outreach\s*$/i, '').trim() : '')
           || 'Character';
         const preview = (note.preview || '').slice(0, 140);
-        const attachUrl = note.attachmentImageUrl && typeof note.attachmentImageUrl === 'string'
-          ? note.attachmentImageUrl
-          : null;
+        const attachUrl = resolveBackendMediaUrl(note.attachmentImageUrl, {
+          primaryApiUrl: PRIMARY_API_URL || getBackendUrl(),
+          memoryApiUrl: MEMORY_API_URL,
+        }) || null;
         return (
           <div
             key={note.id}
@@ -51,7 +57,10 @@ export default function OutreachNotificationStack() {
             <div className="shrink-0">
               {note.characterAvatar ? (
                 <img
-                  src={note.characterAvatar}
+                  src={resolveAvatarDisplayUrl(
+                    note.characterAvatar,
+                    PRIMARY_API_URL || getBackendUrl()
+                  )}
                   alt=""
                   className="h-12 w-12 rounded-full object-cover border border-border"
                   onError={(e) => {

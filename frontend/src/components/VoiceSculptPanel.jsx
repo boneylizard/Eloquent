@@ -21,6 +21,15 @@ import {
 import VoiceMergeQueuePanel from './VoiceMergeQueuePanel';
 import { safeErrorMessage } from '../config/api';
 import { runVoiceSculptStream } from '../utils/voiceSculptStream';
+import { openPathPicker } from '../utils/nativePathPicker';
+
+const VOICE_REFERENCE_FILTERS = [
+  {
+    name: 'Audio and video references',
+    extensions: ['wav', 'mp3', 'flac', 'm4a', 'ogg', 'opus', 'webm', 'aac', 'mp4', 'mkv'],
+  },
+  { name: 'All files', extensions: ['*'] },
+];
 
 const STEPS = [
   { id: 1, label: 'Clean (optional)', detail: 'UVR only if clips are not already isolated' },
@@ -259,20 +268,16 @@ export default function VoiceSculptPanel({ onVoiceReady, disabled = false }) {
 
   const pickAudioFiles = async () => {
     try {
-      const res = await fetchWithTimeout(
-        `${PRIMARY_API_URL}/system/select-file`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: 'Select speech clips or voice references (any number)',
-            initial_directory: source.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || undefined,
-            multiple: true,
-          }),
-        },
-        120000,
-      );
-      const data = await res.json();
+      const data = await openPathPicker({
+        mode: 'file',
+        backendUrl: PRIMARY_API_URL,
+        title: 'Select speech clips or voice references (any number)',
+        initialDirectory: source.split(/\r?\n/).map((l) => l.trim()).find(Boolean) || undefined,
+        multiple: true,
+        filters: VOICE_REFERENCE_FILTERS,
+      }, {
+        fetcher: (url, init) => fetchWithTimeout(url, init, 120000),
+      });
       if (data.status === 'success' && Array.isArray(data.files) && data.files.length > 0) {
         setSource((prev) => {
           const existing = prev.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);

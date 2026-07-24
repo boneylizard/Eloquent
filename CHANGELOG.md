@@ -6,6 +6,23 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
+## 1.0.10 — 24 July 2026
+
+This hotfix repairs the complete local image workflow reported against Mirid 1.0.9.
+
+### Fixed
+
+* **Windows folder selection** now uses the desktop application's native directory picker instead of asking the local backend to open a system dialog.
+* **Generated images** now resolve backend-relative file paths when rendered, with a bounded loading state and a clear retry action if the file cannot be loaded.
+* **Image-generation chat history** is persisted before generation completes. A new image request creates or reuses one owning conversation, remains attached to that conversation if the user changes chats, and survives reload.
+* **Concurrent image operations** no longer allow an older enhancement result to overwrite a newer image, and enhancement history remains valid after reload.
+* **Recent History metadata** now updates when messages are added to an existing conversation.
+* **Character avatars** now resolve backend-relative paths throughout the active Character Library, editor, introductions, chat, outreach, and multi-character surfaces.
+* **Desktop restarts and window closure** now stop Mirid's child services before exiting, preventing updater relaunches from leaving local ports occupied.
+* **Generated images and room-gallery media** are retained when Mirid activates a replacement runtime.
+
+---
+
 ## 1.0.9 — 24 July 2026
 
 This hotfix restores two capabilities that regressed in the 1.0.8 Windows release.

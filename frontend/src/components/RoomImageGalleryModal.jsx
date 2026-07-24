@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils';
 import RoomImageGalleryCard from './RoomImageGalleryCard';
 
 export default function RoomImageGalleryModal({ open, onOpenChange, onSelect }) {
+  const backendUrl = getBackendUrl();
   const [images, setImages] = useState([]);
   const [categories, setCategories] = useState([]);
   const [activeCategory, setActiveCategory] = useState('all');
@@ -56,9 +57,9 @@ export default function RoomImageGalleryModal({ open, onOpenChange, onSelect }) 
     );
   });
 
-  const handleSelect = (path) => {
+  const handleSelect = (path, resolvedPath) => {
     setSelectedId(images.find(i => i.path === path)?.id);
-    onSelect?.(path);
+    onSelect?.(resolvedPath);
     onOpenChange?.(false);
   };
 
@@ -69,7 +70,7 @@ export default function RoomImageGalleryModal({ open, onOpenChange, onSelect }) 
           <div className="flex items-start justify-between gap-4">
             <div>
               <DialogTitle>Room Image Gallery</DialogTitle>
-              <DialogDescription>Select from themed gallery or upload custom image</DialogDescription>
+              <DialogDescription>Select a background from your gallery.</DialogDescription>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <Button
@@ -145,7 +146,7 @@ export default function RoomImageGalleryModal({ open, onOpenChange, onSelect }) 
               <ImageOff className="h-8 w-8" />
               {searchQuery || activeCategory !== 'all'
                 ? <p className="text-sm">No images match your search</p>
-                : <p className="text-sm">No images yet. Generate or upload some!</p>
+                : <p className="text-sm">No images yet. Save a generated image to add it here.</p>
               }
             </div>
           )}
@@ -156,6 +157,7 @@ export default function RoomImageGalleryModal({ open, onOpenChange, onSelect }) 
                 <RoomImageGalleryCard
                   key={img.id}
                   image={img}
+                  apiUrl={backendUrl}
                   isSelected={selectedId === img.id}
                   onSelect={handleSelect}
                 />

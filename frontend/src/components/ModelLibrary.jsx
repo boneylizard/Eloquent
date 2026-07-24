@@ -25,6 +25,7 @@ import {
   syncHostedProviderEndpointKey,
   upsertHostedModelEndpoint,
 } from '../utils/hostedModelProviders';
+import { openPathPicker } from '../utils/nativePathPicker';
 
 
 const formatBytes = (bytes) => {
@@ -614,16 +615,12 @@ const ModelLibrary = ({ onSettingChange }) => {
     setDestinationBusy(destination.type);
     setDestinationMessage((current) => ({ ...current, [destination.type]: '' }));
     try {
-      const response = await fetch(`${PRIMARY_API_URL}/system/select-directory`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initial_directory: destinationDrafts[destination.type] || destination.path,
-          title: `Choose ${destination.label} folder`,
-        }),
+      const data = await openPathPicker({
+        mode: 'directory',
+        backendUrl: PRIMARY_API_URL,
+        initialDirectory: destinationDrafts[destination.type] || destination.path,
+        title: `Choose ${destination.label} folder`,
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || data.message || 'The folder picker could not be opened.');
       if (data.status !== 'cancelled' && data.directory) {
         setDestinationDrafts((current) => ({ ...current, [destination.type]: data.directory }));
       }

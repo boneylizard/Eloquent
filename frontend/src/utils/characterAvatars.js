@@ -416,7 +416,9 @@ export function removeAvatarAtIndex(character, index) {
 
 export function resolveAvatarDisplayUrl(avatarSource, apiUrl) {
   if (!avatarSource) return null;
-  if (avatarSource.startsWith('http') || avatarSource.startsWith('data:')) return avatarSource;
+  if (/^[a-z][a-z\d+.-]*:/i.test(avatarSource) || avatarSource.startsWith('//')) {
+    return avatarSource;
+  }
   if (avatarSource.startsWith('/')) return `${apiUrl || ''}${avatarSource}`;
   if (apiUrl) return `${apiUrl}/static/${avatarSource}`;
   return avatarSource;

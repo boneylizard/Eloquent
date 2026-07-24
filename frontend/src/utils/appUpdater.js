@@ -1,5 +1,4 @@
-import { isTauri } from '@tauri-apps/api/core';
-import { relaunch } from '@tauri-apps/plugin-process';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { check } from '@tauri-apps/plugin-updater';
 
 const CHECK_TIMEOUT_MS = 30_000;
@@ -104,7 +103,11 @@ export function formatUpdaterError(error, action = 'update Mirid') {
   return `Mirid could not ${action}: ${detail}`;
 }
 
-export async function installAppUpdate(update, onProgress) {
+export async function installAppUpdate(
+  update,
+  onProgress,
+  restartApp = () => invoke('restart_app'),
+) {
   if (!update) throw new Error('No update is ready to install.');
 
   let progress = createUpdateProgress();
@@ -115,5 +118,7 @@ export async function installAppUpdate(update, onProgress) {
     },
     { timeout: DOWNLOAD_TIMEOUT_MS },
   );
-  await relaunch();
+  // Stop Mirid's backend and voice sidecars before restarting. A direct
+  // process-plugin relaunch can leave stale children holding the service ports.
+  await restartApp();
 }

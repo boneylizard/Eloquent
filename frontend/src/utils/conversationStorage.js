@@ -153,7 +153,9 @@ function catalogEntryFromMessages(id, messages) {
 
 function stripMessages(conv) {
   if (!conv || typeof conv !== 'object') return conv;
-  const messageCount = Array.isArray(conv.messages) ? conv.messages.length : 0;
+  const messageCount = Array.isArray(conv.messages)
+    ? conv.messages.length
+    : (Number.isFinite(Number(conv.messageCount)) ? Number(conv.messageCount) : 0);
   const { messages, ...meta } = conv;
   return { ...meta, messageCount };
 }
@@ -278,9 +280,29 @@ async function writeMessageShard(conversationId, messages, { deleteIfEmpty = fal
 
 /** Sidebar index entry missing but messages exist — restore tab metadata. */
 async function ensureConversationInCatalog(conversationId, meta, deletedIds) {
-  if (!conversationId || deletedIds.has(conversationId)) return false;
+  if (
+    !conversationId
+    || deletedIds.has(conversationId)
+    || getBannedConversationIdsSync().has(conversationId)
+  ) return false;
   const { catalog } = await readCatalogFromDisk();
-  if (catalog.some((c) => c.id === conversationId)) return false;
+  if (getBannedConversationIdsSync().has(conversationId)) return false;
+  const existingIndex = catalog.findIndex((c) => c.id === conversationId);
+  if (existingIndex >= 0) {
+    const existing = catalog[existingIndex];
+    const requestedCount = Number(meta?.messageCount);
+    if (!Number.isFinite(requestedCount) || requestedCount === existing.messageCount) {
+      return false;
+    }
+    const next = [...catalog];
+    next[existingIndex] = stripMessages({
+      ...existing,
+      messageCount: requestedCount,
+    });
+    if (getBannedConversationIdsSync().has(conversationId)) return false;
+    await writeCatalogIndex(next);
+    return true;
+  }
   const entry = stripMessages({
     id: conversationId,
     name: meta?.name || 'Recovered Chat',
@@ -289,6 +311,7 @@ async function ensureConversationInCatalog(conversationId, meta, deletedIds) {
     ...meta,
   });
   const next = [...catalog, entry];
+  if (getBannedConversationIdsSync().has(conversationId)) return false;
   await writeCatalogIndex(next);
   console.warn(
     `[conversationStorage] Catalog was missing tab "${conversationId}" — restored from message save / shard`
@@ -597,6 +620,67 @@ export async function saveActiveConversationMessages(conversationId, messages, c
       );
     }
     return true;
+  });
+}
+
+/**
+ * Atomically read, mutate and persist one conversation shard.
+ *
+ * Long-running media jobs use this instead of the globally active message
+ * state. The storage queue prevents simultaneous completions from overwriting
+ * each other, while the repeated ban checks prevent a deleted chat from being
+ * recreated by a late response.
+ */
+export async function mutateStoredConversationMessages(
+  conversationId,
+  mutation,
+  catalogMeta = null,
+  { baseMessages = null } = {},
+) {
+  if (!conversationId || typeof mutation !== 'function') return null;
+  if (getBannedConversationIdsSync().has(conversationId)) return null;
+
+  return enqueueWrite(async () => {
+    let deletedIds = await getDeletedIdSet();
+    if (
+      deletedIds.has(conversationId)
+      || getBannedConversationIdsSync().has(conversationId)
+    ) {
+      return null;
+    }
+
+    const storedMessages = Array.isArray(baseMessages)
+      ? baseMessages
+      : await readShardMessages(conversationId);
+    const nextMessages = mutation(
+      Array.isArray(storedMessages) ? storedMessages : [],
+    );
+    if (!Array.isArray(nextMessages)) {
+      throw new Error('Conversation message mutation must return an array');
+    }
+
+    deletedIds = await getDeletedIdSet();
+    if (
+      deletedIds.has(conversationId)
+      || getBannedConversationIdsSync().has(conversationId)
+    ) {
+      return null;
+    }
+
+    if (nextMessages.length > 0) {
+      await writeMessageShard(conversationId, nextMessages);
+      if (getBannedConversationIdsSync().has(conversationId)) {
+        await indexedDbStorage.removeItem(shardKey(conversationId));
+        return null;
+      }
+      await ensureConversationInCatalog(
+        conversationId,
+        { ...catalogMeta, messageCount: nextMessages.length },
+        deletedIds,
+      );
+    }
+
+    return hydrateMessagesThinkFields(nextMessages);
   });
 }
 

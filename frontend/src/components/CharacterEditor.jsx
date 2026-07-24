@@ -1709,7 +1709,7 @@ const CharacterEditor = ({ initialCharacter = null, onSave, showLibraryList }) =
                     ) : null}
                     {char.avatar && (
                       <img
-                        src={char.avatar}
+                        src={resolveAvatarDisplayUrl(char.avatar, PRIMARY_API_URL || getBackendUrl())}
                         alt={`${char.name || 'Character'} Avatar`}
                         className="w-10 h-10 rounded-full object-cover flex-shrink-0 border border-border"
                         onError={(e) => {

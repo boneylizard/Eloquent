@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-dialog",
+  "description": "allows the standalone Settings window to open native file and folder pickers",
+  "windows": [
+    "settings"
+  ],
+  "permissions": [
+    "core:window:allow-close",
+    "dialog:allow-open"
+  ]
+}
