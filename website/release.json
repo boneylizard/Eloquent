@@ -1,8 +1,8 @@
 {
   "product": "Mirid",
-  "version": "1.0.9",
+  "version": "1.0.12",
   "platform": "windows-x86_64",
-  "published": "2026-07-23",
+  "published": "2026-07-24",
   "runtime": {
     "version": "v9",
     "downloadBytes": 3138914529,
@@ -11,10 +11,10 @@
   "installers": [
     {
       "format": "exe",
-      "filename": "Mirid_1.0.9_x64-setup.exe",
-      "bytes": 31950386,
-      "sha256": "cb17770e2263866d3210d1bdd1ba64a76ea8ab7e464819f85829dbdbcf6aaf73",
-      "url": "https://huggingface.co/boneylizardwizard/mirid-runtime/resolve/main/releases/v1.0.9/Mirid_1.0.9_x64-setup.exe?download=true"
+      "filename": "Mirid_1.0.12_x64-setup.exe",
+      "bytes": 32056858,
+      "sha256": "574c4d0e674e3c11b20bb1f2badb92e90ebf40223893c42c57e7c1894f6bd66d",
+      "url": "https://github.com/boneylizard/Eloquent/releases/download/v1.0.12/Mirid_1.0.12_x64-setup.exe"
     }
   ]
 }
