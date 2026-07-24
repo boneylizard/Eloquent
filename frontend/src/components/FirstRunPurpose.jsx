@@ -72,7 +72,7 @@ export default function FirstRunPurpose({ onBegin }) {
         {purpose === 'sillytavern' && (
           <div className="mirid-first-run__roleplay-note">
             <Cable aria-hidden="true" />
-            <p><strong>Close SillyTavern before continuing.</strong> Both programs use port 8000 by default. Mirid's setup guide will move SillyTavern to port 8001 before they run together.</p>
+            <p><strong>Keep port 8000 free for Mirid.</strong> If SillyTavern currently uses it, Mirid’s setup guide will show you how to move SillyTavern to port 8001.</p>
           </div>
         )}
 

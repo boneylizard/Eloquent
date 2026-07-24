@@ -1215,12 +1215,18 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                 description="Use this address in clients running on this computer. Mirid serves model discovery and streaming chat completions."
               >
                 <div className="flex gap-2">
-                  <Input value="http://127.0.0.1:8000/v1" readOnly className="font-mono text-xs" />
+                  <Input
+                    value={`${String(PRIMARY_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')}/v1`}
+                    readOnly
+                    className="font-mono text-xs"
+                  />
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => navigator.clipboard?.writeText('http://127.0.0.1:8000/v1')}
+                    onClick={() => navigator.clipboard?.writeText(
+                      `${String(PRIMARY_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')}/v1`
+                    )}
                   >
                     Copy
                   </Button>
@@ -1304,7 +1310,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
                   <Link2 className="h-4 w-4" />
                   <AlertTitle>LAN address</AlertTitle>
                   <AlertDescription>
-                    After restarting Mirid, use <code>http://YOUR-PC-IP:8000/v1</code>. Windows Firewall may ask whether to allow the connection.
+                    After restarting Mirid, use <code>{`${String(PRIMARY_API_URL || 'http://127.0.0.1:8000').replace(/^http:\/\/(?:127\.0\.0\.1|localhost)/, 'http://YOUR-PC-IP').replace(/\/+$/, '')}/v1`}</code>. Windows Firewall may ask whether to allow the connection.
                   </AlertDescription>
                 </Alert>
               )}
@@ -1903,7 +1909,7 @@ const Settings = ({ darkMode, toggleDarkMode, initialTab = 'general', isStandalo
               title="Services"
               description="Manage optional background services and VRAM usage."
             >
-              <SettingRow label="TTS Service Management (Port 8002)" layout="stack">
+              <SettingRow label="Voice service management" layout="stack">
                 <div className="flex flex-col md:flex-row gap-2">
                   <Button
                     variant="outline"

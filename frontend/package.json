@@ -1,7 +1,7 @@
 {
   "name": "mirid-frontend",
   "private": true,
-  "version": "1.0.11",
+  "version": "1.0.12",
   "engines": {
     "node": ">=24.0.0 <25"
   },
@@ -16,7 +16,7 @@
     "release:build": "npm run release:check && npm run build",
     "preview": "vite preview",
     "tauri": "cd .. && tauri",
-    "test": "node --test src/config/modules.test.js src/config/providerPromotions.test.js src/config/retiredCognitiveGlass.test.js src/utils/CharacterCardUtils.test.js src/utils/appUpdater.test.js src/utils/backendMedia.test.js src/utils/characterAvatars.test.js src/utils/characterCardRuntime.test.js src/utils/characterGroups.test.js src/utils/characterIntro.test.js src/utils/characterDatasetImport.test.js src/utils/chat_templates.test.js src/utils/chatTemplateSelection.test.js src/utils/chatTitle.test.js src/utils/desktopLifecycle.test.js src/utils/desktopWindows.test.js src/utils/externalLinks.test.js src/utils/firstRunIntent.test.js src/utils/hostedModelProviders.test.js src/utils/installerAudioProfile.test.js src/utils/interfaceZoom.test.js src/utils/mediaConversation.test.js src/utils/messagePersistence.test.js src/utils/nativePathPicker.test.js src/utils/openRouterModelsCache.test.js src/utils/requestRouting.test.js src/utils/settingsPersistence.test.js src/utils/streamDelta.test.js src/utils/ttsPlaybackPolicy.test.js",
+    "test": "node --test src/config/api.test.js src/config/modules.test.js src/config/providerPromotions.test.js src/config/retiredCognitiveGlass.test.js src/utils/CharacterCardUtils.test.js src/utils/appUpdater.test.js src/utils/backendMedia.test.js src/utils/characterAvatars.test.js src/utils/characterCardRuntime.test.js src/utils/characterGroups.test.js src/utils/characterIntro.test.js src/utils/characterDatasetImport.test.js src/utils/chat_templates.test.js src/utils/chatTemplateSelection.test.js src/utils/chatTitle.test.js src/utils/desktopLifecycle.test.js src/utils/desktopWindows.test.js src/utils/externalLinks.test.js src/utils/firstRunIntent.test.js src/utils/hostedModelProviders.test.js src/utils/installerAudioProfile.test.js src/utils/interfaceZoom.test.js src/utils/mediaConversation.test.js src/utils/messagePersistence.test.js src/utils/nativePathPicker.test.js src/utils/openRouterModelsCache.test.js src/utils/requestRouting.test.js src/utils/settingsPersistence.test.js src/utils/streamDelta.test.js src/utils/ttsPlaybackPolicy.test.js",
     "test:ui-smoke": "playwright test --config playwright.config.js"
   },
   "dependencies": {

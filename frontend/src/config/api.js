@@ -1,10 +1,12 @@
 /**
  * Central API configuration
- * Reads ports from /ports.json when supplied by the host, or uses defaults.
+ * Reads service endpoints from the desktop host or ports.json.
  */
 
 let portConfig = null;
 let configLoaded = false;
+let configLoadPromise = null;
+let publishedEndpoints = null;
 
 // Default ports
 const DEFAULTS = {
@@ -13,17 +15,122 @@ const DEFAULTS = {
   tts: 'http://localhost:8002'
 };
 
+export const SERVICE_ENDPOINTS_CHANGED_EVENT = 'service-endpoints-changed';
+const DESKTOP_ENDPOINTS_DIAGNOSTIC_KEY = '__MIRID_SERVICE_ENDPOINTS__';
+const DESKTOP_RETRY_INITIAL_MS = 50;
+const DESKTOP_RETRY_MAX_MS = 1000;
+
+function isHttpEndpoint(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  try {
+    const endpoint = new URL(value);
+    return endpoint.protocol === 'http:' || endpoint.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+export function normalisePortConfig(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const backend = isHttpEndpoint(candidate.backend) ? candidate.backend : null;
+  const tts = isHttpEndpoint(candidate.tts) ? candidate.tts : null;
+  if (!backend || !tts) return null;
+  return {
+    backend,
+    secondary: isHttpEndpoint(candidate.secondary) ? candidate.secondary : backend,
+    tts,
+    ...(Number.isInteger(candidate.backendPort) ? { backendPort: candidate.backendPort } : {}),
+    ...(Number.isInteger(candidate.ttsPort) ? { ttsPort: candidate.ttsPort } : {}),
+  };
+}
+
+function publishAppliedEndpoints(config) {
+  publishedEndpoints = Object.freeze({ ...config });
+  if (typeof window === 'undefined') return;
+
+  const existing = Object.getOwnPropertyDescriptor(window, DESKTOP_ENDPOINTS_DIAGNOSTIC_KEY);
+  if (existing) return;
+
+  Object.defineProperty(window, DESKTOP_ENDPOINTS_DIAGNOSTIC_KEY, {
+    get: () => publishedEndpoints,
+    set: undefined,
+    configurable: false,
+    enumerable: false,
+  });
+}
+
+export function applyServiceEndpoints(candidate, { emitEvent = true } = {}) {
+  const config = normalisePortConfig(candidate);
+  if (!config) return null;
+
+  portConfig = config;
+  configLoaded = true;
+  publishAppliedEndpoints(config);
+
+  if (
+    emitEvent &&
+    typeof window !== 'undefined' &&
+    typeof window.dispatchEvent === 'function' &&
+    typeof CustomEvent === 'function'
+  ) {
+    window.dispatchEvent(new CustomEvent(SERVICE_ENDPOINTS_CHANGED_EVENT, {
+      detail: publishedEndpoints,
+    }));
+  }
+
+  return portConfig;
+}
+
+function desktopRetryDelay(attempt) {
+  const exponent = Math.min(Math.max(attempt - 1, 0), 5);
+  return Math.min(DESKTOP_RETRY_INITIAL_MS * (2 ** exponent), DESKTOP_RETRY_MAX_MS);
+}
+
+async function loadDesktopPortConfig() {
+  let attempt = 0;
+
+  while (true) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const desktopConfig = normalisePortConfig(
+        await invoke('get_service_endpoints')
+      );
+      if (!desktopConfig) {
+        throw new Error('The desktop host returned an invalid service configuration.');
+      }
+      return desktopConfig;
+    } catch (error) {
+      attempt += 1;
+      const retryInMs = desktopRetryDelay(attempt);
+      if (attempt === 1 || attempt % 10 === 0) {
+        console.warn(
+          `Mirid could not read its desktop service endpoints; retrying in ${retryInMs}ms.`,
+          error
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryInMs));
+    }
+  }
+}
+
 /**
- * Load port configuration from ports.json
- * Called once on app startup
+ * Load the host's service endpoints. Desktop lookup keeps retrying instead of
+ * silently caching fixed ports after a transient IPC failure.
  */
-export async function loadPortConfig() {
-  if (configLoaded) return portConfig;
+async function loadPortConfigUncached() {
+  const inTauri =
+    typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
+
+  if (inTauri) {
+    const desktopConfig = await loadDesktopPortConfig();
+    console.log('Loaded desktop service endpoints:', desktopConfig);
+    return applyServiceEndpoints(desktopConfig);
+  }
 
   try {
     const response = await fetchWithTimeout('/ports.json', {}, 4000);
     if (response.ok) {
-      portConfig = await response.json();
+      portConfig = normalisePortConfig(await response.json()) || { ...DEFAULTS };
 
       // Smart Hostname Override:
       // If we are accessing via a network IP/Hostname (not localhost),
@@ -36,9 +143,7 @@ export async function loadPortConfig() {
       // the Tauri desktop webview the backend is always local, and the webview
       // origin (asset.localhost / tauri://localhost) must NOT be used as the API
       // host — doing so sends requests to a host the backend doesn't answer on.
-      const inTauri =
-        typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
-      if (!inTauri && currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
+      if (currentHost !== 'localhost' && currentHost !== '127.0.0.1') {
         const replaceHost = (url) => {
           try {
             const u = new URL(url);
@@ -56,15 +161,27 @@ export async function loadPortConfig() {
       console.log('📌 Loaded port config:', portConfig);
     } else {
       console.log('📌 No ports.json found, using defaults');
-      portConfig = DEFAULTS;
+      portConfig = { ...DEFAULTS };
     }
   } catch (e) {
-    console.log('📌 Could not load ports.json, using defaults');
-    portConfig = DEFAULTS;
+    console.log('Could not load ports.json, using defaults');
+    portConfig = { ...DEFAULTS };
   }
 
-  configLoaded = true;
-  return portConfig;
+  return applyServiceEndpoints(portConfig);
+}
+
+export async function loadPortConfig() {
+  if (configLoaded) return portConfig;
+  if (configLoadPromise) return configLoadPromise;
+
+  configLoadPromise = loadPortConfigUncached();
+  try {
+    return await configLoadPromise;
+  } catch (error) {
+    configLoadPromise = null;
+    throw error;
+  }
 }
 
 /**

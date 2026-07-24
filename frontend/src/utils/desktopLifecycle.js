@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { applyServiceEndpoints } from '../config/api.js';
 
 
 function requireDesktop() {
@@ -28,5 +29,9 @@ export async function stopTtsService() {
 
 export async function restartTtsService() {
   requireDesktop();
-  await invoke('restart_tts');
+  const endpoints = await invoke('restart_tts');
+  if (endpoints) {
+    applyServiceEndpoints(endpoints);
+  }
+  return endpoints;
 }

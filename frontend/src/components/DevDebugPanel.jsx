@@ -3,10 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { useBackendStatus } from '../hooks/useBackendStatus';
 import { useSidecarStatus } from '../hooks/useSidecarStatus';
 import { restartTtsService } from '../utils/desktopLifecycle';
+import { getBackendUrl, getTtsUrl } from '../config/api';
 
 /**
  * Developer console: full visibility into the desktop app's moving parts.
- * - Live backend (8000) + TTS (8002) connection state (auto-retrying)
+ * - Live backend + TTS connection state on the desktop host's selected ports
  * - Live sidecar process state (so you SEE when TTS crashes)
  * - Last first-run boot event (download/extract progress + errors)
  * - Rolling tail of the on-disk log file (pasteable to any AI agent)
@@ -103,6 +104,8 @@ export default function DevDebugPanel({ open, onClose }) {
 
   const ttsDown = sidecar.available && !sidecar.tts;
   const backendDown = conn.backend === 'offline';
+  const backendPort = new URL(getBackendUrl()).port;
+  const ttsPort = new URL(getTtsUrl()).port;
 
   return (
     <div style={styles.backdrop} onClick={onClose}>
@@ -117,10 +120,10 @@ export default function DevDebugPanel({ open, onClose }) {
 
         {(ttsDown || backendDown) && (
           <div style={styles.alert}>
-            {backendDown && <div>⚠ Backend (8000) is DOWN</div>}
+            {backendDown && <div>⚠ Backend ({backendPort}) is DOWN</div>}
             {ttsDown && (
               <div>
-                ⚠ TTS (8002) CRASHED or stopped — click <b>Restart TTS</b>
+                ⚠ TTS ({ttsPort}) CRASHED or stopped — click <b>Restart TTS</b>
               </div>
             )}
           </div>
@@ -128,14 +131,14 @@ export default function DevDebugPanel({ open, onClose }) {
 
         <div style={styles.grid}>
           <div style={styles.cell}>
-            <div style={styles.label}>Backend 8000</div>
+            <div style={styles.label}>Backend {backendPort}</div>
             <div>
               <Dot state={conn.backend} />
               {conn.backend}
             </div>
           </div>
           <div style={styles.cell}>
-            <div style={styles.label}>TTS 8002 (process)</div>
+            <div style={styles.label}>TTS {ttsPort} (process)</div>
             <div>
               <Dot state={sidecar.tts} />
               {sidecar.available ? (sidecar.tts ? 'alive' : 'DEAD') : 'n/a'}

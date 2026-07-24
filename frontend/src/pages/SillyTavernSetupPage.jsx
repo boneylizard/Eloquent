@@ -149,9 +149,9 @@ export default function SillyTavernSetupPage() {
 
       <Alert variant="destructive">
         <AlertCircle className="h-4 w-4" />
-        <AlertTitle>Move SillyTavern to port 8001</AlertTitle>
+        <AlertTitle>Keep port 8000 free for Mirid</AlertTitle>
         <AlertDescription className="space-y-2">
-          <p>Mirid and SillyTavern both default to port 8000, so they cannot start together unchanged. Close SillyTavern, open its <code>config.yaml</code>, set <code>port: 8001</code>, then restart it.</p>
+          <p>If SillyTavern uses port 8000, close it, open its <code>config.yaml</code>, set <code>port: 8001</code>, then restart it. Mirid’s main engine must remain on 8000.</p>
           <Button variant="outline" size="sm" onClick={() => copy('port: 8001', 'SillyTavern port setting')}>
             <Copy className="mr-2 h-3.5 w-3.5" />{copied === 'SillyTavern port setting' ? 'Copied' : 'Copy setting'}
           </Button>
@@ -216,7 +216,7 @@ export default function SillyTavernSetupPage() {
             <h2 className="text-lg font-semibold">2. Connect the services</h2>
           </div>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-            Open Mirid Bridge in SillyTavern, leave the Mirid address on port 8000, then select Test connection. Use these addresses for SillyTavern's manual text and image settings.
+            Open Mirid Bridge in SillyTavern, paste the current Mirid address below, then select Test connection. Use the same address for SillyTavern’s manual image settings.
           </p>
           <div className="mt-4 space-y-2">
             <CopyRow label="Mirid address" value={addresses.base} onCopy={copy} />

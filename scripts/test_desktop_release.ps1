@@ -22,16 +22,39 @@ if (-not $ExpectedRuntimeVersion) {
     $ExpectedRuntimeVersion = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).runtimeVersion
 }
 $runtimeMarker = Join-Path $env:LOCALAPPDATA "ai.mirid.desktop\runtime\runtime.ready"
+$logRoot = Join-Path $env:LOCALAPPDATA "ai.mirid.desktop\logs"
 $previousBrowserArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 $process = $null
 $passed = $false
+
+function Get-MiridServicePorts {
+    if (-not (Test-Path -LiteralPath $logRoot)) {
+        return $null
+    }
+    $latestLog = Get-ChildItem -LiteralPath $logRoot -Filter "*.log" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if (-not $latestLog) {
+        return $null
+    }
+    $text = Get-Content -LiteralPath $latestLog.FullName -Raw
+    $backendMatches = [regex]::Matches($text, "Starting backend sidecar on \S+:(\d+)")
+    $ttsMatches = [regex]::Matches($text, "Starting tts sidecar on \S+:(\d+)")
+    if ($backendMatches.Count -eq 0 -or $ttsMatches.Count -eq 0) {
+        return $null
+    }
+    return [pscustomobject]@{
+        Backend = [int]$backendMatches[$backendMatches.Count - 1].Groups[1].Value
+        Tts = [int]$ttsMatches[$ttsMatches.Count - 1].Groups[1].Value
+    }
+}
 
 Get-Process -Name "mirid", "mirid-sidecar-x86_64-pc-windows-msvc" -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 $occupiedPorts = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {
-    $_.LocalPort -in @(8000, 8002, $DevToolsPort)
+    $_.LocalPort -eq $DevToolsPort
 })
 if ($occupiedPorts.Count -gt 0) {
     $owners = $occupiedPorts | ForEach-Object {
@@ -53,6 +76,8 @@ try {
     $frontendTitle = ""
     $frontendUrl = ""
     $runtimeVersion = "missing"
+    $backendPort = 0
+    $ttsPort = 0
 
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 5
@@ -66,14 +91,18 @@ try {
         $runtimeReady = $runtimeVersion -eq $ExpectedRuntimeVersion
         if (-not $runtimeReady) { continue }
 
+        $servicePorts = Get-MiridServicePorts
+        if (-not $servicePorts) { continue }
+        $backendPort = $servicePorts.Backend
+        $ttsPort = $servicePorts.Tts
         try {
-            $backendHealth = Invoke-RestMethod "http://127.0.0.1:8000/health" -TimeoutSec 3
+            $backendHealth = Invoke-RestMethod "http://127.0.0.1:$backendPort/health" -TimeoutSec 3
             $backendReady = $backendHealth.status -eq "healthy"
         } catch {
             $backendReady = $false
         }
         try {
-            $ttsHealth = Invoke-RestMethod "http://127.0.0.1:8002/health" -TimeoutSec 3
+            $ttsHealth = Invoke-RestMethod "http://127.0.0.1:$ttsPort/health" -TimeoutSec 3
             $ttsReady = $ttsHealth.status -eq "healthy"
         } catch {
             $ttsReady = $false
@@ -98,6 +127,9 @@ try {
     if (-not ($backendReady -and $ttsReady -and $frontendReady)) {
         throw "Mirid did not complete the $ExpectedRuntimeVersion desktop release smoke test within $TimeoutSeconds seconds (runtime=$runtimeVersion, backend=$backendReady, tts=$ttsReady, frontend=$frontendReady)."
     }
+    if ($backendPort -ne 8000) {
+        throw "Mirid's main engine moved away from required port 8000."
+    }
 
     if ($ValidateKokoro) {
         $audioPath = Join-Path $env:TEMP "mirid-desktop-kokoro-$PID.wav"
@@ -107,7 +139,7 @@ try {
             voice = "af_heart"
         } | ConvertTo-Json
         try {
-            Invoke-WebRequest "http://127.0.0.1:8002/tts/synthesize" `
+            Invoke-WebRequest "http://127.0.0.1:$ttsPort/tts/synthesize" `
                 -Method Post `
                 -ContentType "application/json" `
                 -Body $body `
@@ -164,6 +196,8 @@ try {
         RuntimeVersion = $ExpectedRuntimeVersion
         Backend = "healthy"
         Tts = "healthy"
+        BackendPort = $backendPort
+        TtsPort = $ttsPort
         FrontendTitle = $frontendTitle
         FrontendUrl = $frontendUrl
         ProcessId = $process.Id

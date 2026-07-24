@@ -9,7 +9,12 @@ import {
 } from '../utils/thinkStreamParser';
 import { inferCapabilitiesFromModelId } from '../utils/resolveEndpointDisplay';
 import { extractSseStreamParts } from '../utils/streamDelta';
-import { formatFetchError, loadPortConfig, getConfig } from '../config/api';
+import {
+  applyServiceEndpoints,
+  formatFetchError,
+  loadPortConfig,
+  SERVICE_ENDPOINTS_CHANGED_EVENT,
+} from '../config/api';
 import { fetchTriggeredLore } from '../utils/apiCall';
 import { generateChatTitle } from '../utils/chatTitle';
 import { observeConversation, initializeMemories } from '../utils/memoryUtils';
@@ -1663,7 +1668,7 @@ const AppProvider = ({ children }) => {
     secondary: "http://localhost:8001",
     tts: "http://localhost:8002"
   });
-  /** True after loadPortConfig finishes (or times out) — URLs are safe to use. */
+  /** True only after the host's service endpoints have been applied. */
   const [portsReady, setPortsReady] = useState(false);
 
   const retryBoot = useCallback(() => {
@@ -1675,6 +1680,61 @@ const AppProvider = ({ children }) => {
     setStorageHydrationDegraded(false);
     setPortsLoadDegraded(false);
     setBootGeneration((g) => g + 1);
+  }, []);
+
+  // The desktop host can move a service after launch (for example, if a port is
+  // claimed during a TTS restart). Keep every API consumer on the host's current
+  // endpoints and let the TTS WebSocket effect reconnect to the new URL.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = null;
+
+    const adoptEndpoints = (candidate) => {
+      const config = applyServiceEndpoints(candidate, { emitEvent: false });
+      if (!config || disposed) return;
+      setPortConfig(config);
+      setPortsLoadDegraded(false);
+      setPortsReady(true);
+    };
+
+    const handleWindowEndpoints = (event) => {
+      adoptEndpoints(event?.detail ?? event?.payload);
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener(SERVICE_ENDPOINTS_CHANGED_EVENT, handleWindowEndpoints);
+    }
+
+    (async () => {
+      if (
+        typeof window === 'undefined' ||
+        !window.__TAURI_INTERNALS__
+      ) return;
+
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const disposeListener = await listen(SERVICE_ENDPOINTS_CHANGED_EVENT, (event) => {
+          adoptEndpoints(event?.payload);
+        });
+        if (disposed) {
+          disposeListener();
+        } else {
+          unlisten = disposeListener;
+        }
+      } catch (error) {
+        if (!disposed) {
+          console.warn('Could not subscribe to desktop service endpoint changes.', error);
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(SERVICE_ENDPOINTS_CHANGED_EVENT, handleWindowEndpoints);
+      }
+      if (unlisten) unlisten();
+    };
   }, []);
 
   // Load port configuration on startup (also updates the api.js module cache)
@@ -1690,16 +1750,15 @@ const AppProvider = ({ children }) => {
         if (!cancelled) {
           console.log('📌 Loaded port config:', config);
           setPortConfig(config);
+          setPortsLoadDegraded(false);
+          setPortsReady(true);
         }
       } catch (e) {
-        console.warn('Port config load failed or timed out; using defaults', e);
+        console.warn('Desktop service endpoints are not ready yet; background retry continues.', e);
         if (!cancelled) {
           setPortsLoadDegraded(true);
-          setPortConfig(getConfig());
+          setPortsReady(false);
         }
-      } finally {
-        // Always unblock settings/UI even if this effect was superseded by retryBoot cleanup.
-        setPortsReady(true);
       }
     })();
     return () => { cancelled = true; };
@@ -1722,7 +1781,13 @@ const AppProvider = ({ children }) => {
 
   // Keep TTS WebSocket always connected when TTS autoplay is enabled
   useEffect(() => {
+    if (!portsReady) {
+      ttsClient.disconnect();
+      return;
+    }
     if (settings.ttsAutoPlay) {
+      // A changed endpoint must close the old socket before connecting again.
+      ttsClient.disconnect();
       console.log("🔌 [TTS] Keeping WebSocket connected for instant TTS (Internal Auto-Reconnect enabled)");
       ttsClient.connect(
         () => console.log("✅ [TTS] WebSocket connected and ready"),
@@ -1733,7 +1798,8 @@ const AppProvider = ({ children }) => {
       // Disconnect if TTS autoplay is off
       ttsClient.disconnect();
     }
-  }, [settings.ttsAutoPlay]);
+    return () => ttsClient.disconnect();
+  }, [portsReady, settings.ttsAutoPlay, TTS_API_URL]);
 
   useEffect(() => {
     ttsWaitForFullResponseRef.current = settings.ttsWaitForFullResponse === true;

@@ -6,12 +6,14 @@ This log is intentionally simple, human-readable, and focused on real user-facin
 
 ---
 
-## 1.0.11 — 24 July 2026
+## 1.0.12 — 24 July 2026
 
-This hotfix repairs the complete local image workflow reported against Mirid 1.0.9.
+This hotfix repairs fresh-install and local-media regressions found during clean testing of Mirid 1.0.9.
 
 ### Fixed
 
+* **An occupied voice-service port** no longer breaks startup. Mirid uses 8002 when it is available, automatically chooses a private fallback when it is not, and gives that endpoint to both the local engine and desktop interface. The main engine remains on 8000 so memory and model routing stay correct.
+* **Closing or restarting Mirid** now contains each managed service in a Windows Job Object, so Python launchers and multiprocessing workers are terminated with the desktop session instead of remaining behind to consume memory or hold ports.
 * **Reinstalling over a retained runtime** now verifies and reuses the existing content-addressed local engine, restores its readiness marker, removes abandoned extraction staging, and starts Mirid without replacing a Windows-locked 8.7 GB dependency directory.
 * **Windows folder selection** now uses the desktop application's native directory picker instead of asking the local backend to open a system dialog.
 * **Generated images** now resolve backend-relative file paths when rendered, with a bounded loading state and a clear retry action if the file cannot be loaded.

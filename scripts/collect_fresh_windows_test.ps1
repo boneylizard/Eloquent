@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ExpectedVersion = "1.0.11",
+    [string]$ExpectedVersion = "1.0.12",
     [string]$OutputDirectory = (Join-Path $env:PUBLIC "Documents\Mirid Release Test"),
     [switch]$PlanOnly
 )
@@ -71,6 +71,11 @@ $latestLog = if (Test-Path -LiteralPath $logRoot) {
 $logText = if ($latestLog) { Get-Content -LiteralPath $latestLog.FullName -Raw } else { "" }
 $servicesReady = $logText -match "Local services are ready\."
 $runtimeFailure = $logText -match "Runtime setup failed|cannot stage previous runtime|Access is denied \(os error 5\)"
+$serviceFailure = $logText -match "winerror 10048|process exited before its local endpoint became ready|Failed to start services"
+$backendMatches = [regex]::Matches($logText, "Starting backend sidecar on \S+:(\d+)")
+$ttsMatches = [regex]::Matches($logText, "Starting tts sidecar on \S+:(\d+)")
+$backendPort = if ($backendMatches.Count) { [int]$backendMatches[$backendMatches.Count - 1].Groups[1].Value } else { $null }
+$ttsPort = if ($ttsMatches.Count) { [int]$ttsMatches[$ttsMatches.Count - 1].Groups[1].Value } else { $null }
 if (-not $latestLog) {
     $errors.Add("No Mirid first-launch log was found.")
 } elseif (-not $servicesReady) {
@@ -78,6 +83,9 @@ if (-not $latestLog) {
 }
 if ($runtimeFailure) {
     $errors.Add("The log contains a runtime setup or access-denied failure.")
+}
+if ($serviceFailure) {
+    $errors.Add("The log contains a local-service startup or port-binding failure.")
 }
 
 $runningProcesses = @(Get-Process -Name "mirid", "mirid-sidecar-x86_64-pc-windows-msvc", "eloquent-sidecar-x86_64-pc-windows-msvc" -ErrorAction SilentlyContinue |
@@ -102,6 +110,9 @@ $result = [ordered]@{
     latestLog = if ($latestLog) { $latestLog.FullName } else { "" }
     servicesReady = $servicesReady
     runtimeFailure = $runtimeFailure
+    serviceFailure = $serviceFailure
+    backendPort = $backendPort
+    ttsPort = $ttsPort
     runningProcesses = $runningProcesses
     errors = @($errors)
 }

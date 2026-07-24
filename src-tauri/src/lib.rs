@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufReader, Read, Write};
+use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -31,15 +33,461 @@ const PARALLEL_DOWNLOAD_CONNECTIONS: usize = 8;
 const PARALLEL_DOWNLOAD_THRESHOLD: u64 = 64 * 1024 * 1024;
 const PARALLEL_DOWNLOAD_SEGMENT_SIZE: u64 = 32 * 1024 * 1024;
 const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+const DEFAULT_BACKEND_PORT: u16 = 8000;
+const DEFAULT_TTS_PORT: u16 = 8002;
+const TTS_PORT_RELEASE_GRACE: Duration = Duration::from_secs(3);
 
 fn destroyed_window_owns_sidecars(window_label: &str) -> bool {
     window_label == "main"
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceEndpoints {
+    backend: String,
+    secondary: String,
+    tts: String,
+    backend_port: u16,
+    tts_port: u16,
+}
+
+struct TtsRuntime {
+    port: u16,
+    reservation: Option<TcpListener>,
+}
+
+struct ServiceRuntime {
+    backend_reservation: Mutex<Option<TcpListener>>,
+    tts: Mutex<TtsRuntime>,
+    tts_operation: Mutex<()>,
+}
+
+impl ServiceRuntime {
+    fn new() -> Self {
+        Self {
+            backend_reservation: Mutex::new(None),
+            tts: Mutex::new(TtsRuntime {
+                port: DEFAULT_TTS_PORT,
+                reservation: None,
+            }),
+            tts_operation: Mutex::new(()),
+        }
+    }
+
+    fn reserve_initial_ports(&self) -> Result<u16, String> {
+        let backend_reservation =
+            reserve_fixed_service_port(backend_bind_host(), DEFAULT_BACKEND_PORT)?;
+        let (tts_port, tts_reservation) =
+            reserve_service_port("127.0.0.1", DEFAULT_TTS_PORT, "voice service")?;
+        *self
+            .backend_reservation
+            .lock()
+            .map_err(|_| "backend port reservation is unavailable".to_string())? =
+            Some(backend_reservation);
+        let mut tts = self
+            .tts
+            .lock()
+            .map_err(|_| "voice-service port state is unavailable".to_string())?;
+        tts.port = tts_port;
+        tts.reservation = Some(tts_reservation);
+        Ok(tts_port)
+    }
+
+    fn endpoints(&self) -> Result<ServiceEndpoints, String> {
+        let tts_port = self.current_tts_port()?;
+        let backend = format!("http://127.0.0.1:{DEFAULT_BACKEND_PORT}");
+        Ok(ServiceEndpoints {
+            backend: backend.clone(),
+            secondary: backend,
+            tts: format!("http://127.0.0.1:{tts_port}"),
+            backend_port: DEFAULT_BACKEND_PORT,
+            tts_port,
+        })
+    }
+
+    fn current_tts_port(&self) -> Result<u16, String> {
+        self.tts
+            .lock()
+            .map(|state| state.port)
+            .map_err(|_| "voice-service port state is unavailable".to_string())
+    }
+
+    fn take_backend_reservation(&self) -> Result<TcpListener, String> {
+        self.backend_reservation
+            .lock()
+            .map_err(|_| "backend port reservation is unavailable".to_string())?
+            .take()
+            .ok_or_else(|| "backend port 8000 is not reserved".to_string())
+    }
+
+    fn take_tts_reservation(&self) -> Result<(u16, TcpListener), String> {
+        let mut state = self
+            .tts
+            .lock()
+            .map_err(|_| "voice-service port state is unavailable".to_string())?;
+        let reservation = state
+            .reservation
+            .take()
+            .ok_or_else(|| "voice-service port is not reserved".to_string())?;
+        Ok((state.port, reservation))
+    }
+
+    fn reserve_tts_for_restart(
+        &self,
+        preferred_port: u16,
+        release_grace: Duration,
+    ) -> Result<u16, String> {
+        let (port, reservation) = reserve_service_port_after_release(
+            "127.0.0.1",
+            preferred_port,
+            "voice service",
+            release_grace,
+        )?;
+        let mut state = self
+            .tts
+            .lock()
+            .map_err(|_| "voice-service port state is unavailable".to_string())?;
+        state.port = port;
+        state.reservation = Some(reservation);
+        Ok(port)
+    }
+}
+
+fn reserve_fixed_service_port(host: &str, port: u16) -> Result<TcpListener, String> {
+    reserve_fixed_service_port_after_release(host, port, Duration::ZERO)
+}
+
+fn reserve_fixed_service_port_after_release(
+    host: &str,
+    port: u16,
+    release_grace: Duration,
+) -> Result<TcpListener, String> {
+    let started = Instant::now();
+    loop {
+        match TcpListener::bind((host, port)) {
+            Ok(listener) => return Ok(listener),
+            Err(_) if started.elapsed() < release_grace => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Main engine port {port} is already in use or unavailable. Close the other program or Mirid session using port {port}, then reopen Mirid. ({error})"
+                ));
+            }
+        }
+    }
+}
+
+fn reserve_service_port(
+    host: &str,
+    preferred_port: u16,
+    label: &str,
+) -> Result<(u16, TcpListener), String> {
+    reserve_service_port_after_release(host, preferred_port, label, Duration::ZERO)
+}
+
+fn reserve_service_port_after_release(
+    host: &str,
+    preferred_port: u16,
+    label: &str,
+    release_grace: Duration,
+) -> Result<(u16, TcpListener), String> {
+    let started = Instant::now();
+    let preferred_error = loop {
+        match TcpListener::bind((host, preferred_port)) {
+            Ok(listener) => return Ok((preferred_port, listener)),
+            Err(_) if started.elapsed() < release_grace => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => break error,
+        }
+    };
+
+    let listener = TcpListener::bind((host, 0)).map_err(|fallback_error| {
+        format!(
+            "cannot reserve a local port for {label}: preferred port {preferred_port} is unavailable ({preferred_error}); automatic fallback also failed ({fallback_error})"
+        )
+    })?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("cannot read the reserved {label} port: {error}"))?
+        .port();
+    Ok((port, listener))
+}
+
+#[cfg(target_os = "windows")]
+struct SidecarJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for SidecarJob {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for SidecarJob {}
+
+#[cfg(target_os = "windows")]
+impl SidecarJob {
+    fn attach(process_id: u32) -> Result<Self, String> {
+        use std::mem::size_of;
+        use std::ptr::{null, null_mut};
+        use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+        };
+
+        unsafe {
+            let job = CreateJobObjectW(null(), null());
+            if job.is_null() {
+                return Err(format!(
+                    "cannot create a Windows sidecar job: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const core::ffi::c_void,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == FALSE
+            {
+                let error = std::io::Error::last_os_error();
+                CloseHandle(job);
+                return Err(format!("cannot configure the Windows sidecar job: {error}"));
+            }
+
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, process_id);
+            if process == null_mut() {
+                let error = std::io::Error::last_os_error();
+                CloseHandle(job);
+                return Err(format!(
+                    "cannot open sidecar process {process_id} for containment: {error}"
+                ));
+            }
+            let assigned = AssignProcessToJobObject(job, process);
+            CloseHandle(process);
+            if assigned == FALSE {
+                let error = std::io::Error::last_os_error();
+                CloseHandle(job);
+                return Err(format!(
+                    "cannot contain sidecar process {process_id}: {error}"
+                ));
+            }
+
+            Ok(Self { handle: job })
+        }
+    }
+
+    fn terminate(&self) -> Result<(), String> {
+        use windows_sys::Win32::Foundation::FALSE;
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+        if unsafe { TerminateJobObject(self.handle, 1) } == FALSE {
+            return Err(format!(
+                "cannot terminate the Windows sidecar job: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+
+    fn contains_process(&self, process_id: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+            if process.is_null() {
+                return false;
+            }
+            let mut belongs = FALSE;
+            let checked = IsProcessInJob(process, self.handle, &mut belongs);
+            CloseHandle(process);
+            checked != FALSE && belongs != FALSE
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for SidecarJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+struct ManagedSidecar {
+    child: CommandChild,
+    exited: Arc<AtomicBool>,
+    #[cfg(target_os = "windows")]
+    job: Option<SidecarJob>,
+}
+
+impl ManagedSidecar {
+    fn new(child: CommandChild) -> Self {
+        #[cfg(target_os = "windows")]
+        let job = match SidecarJob::attach(child.pid()) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                log::warn!(
+                    "Could not place sidecar process {} in a Windows Job Object: {error}",
+                    child.pid()
+                );
+                None
+            }
+        };
+        Self {
+            child,
+            exited: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "windows")]
+            job,
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.pid()
+    }
+
+    fn exit_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.exited)
+    }
+
+    fn is_running(&self) -> bool {
+        !self.exited.load(Ordering::Acquire)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn owns_process(&self, process_id: u32) -> bool {
+        process_id == self.child.pid()
+            || self
+                .job
+                .as_ref()
+                .map(|job| job.contains_process(process_id))
+                .unwrap_or(false)
+    }
+
+    fn kill(self) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        if let Some(job) = &self.job {
+            if job.terminate().is_ok() {
+                return Ok(());
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if terminate_windows_process_tree(self.child.pid()).is_ok() {
+            return Ok(());
+        }
+        self.child.kill().map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_listener_process_ids(port: u16) -> Result<Vec<u32>, String> {
+    use std::mem::size_of;
+    use std::ptr::{null_mut, read_unaligned};
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, FALSE};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+    };
+
+    const AF_INET: u32 = 2;
+    let mut table_size = 0u32;
+    let initial_status = unsafe {
+        GetExtendedTcpTable(
+            null_mut(),
+            &mut table_size,
+            FALSE,
+            AF_INET,
+            TCP_TABLE_OWNER_PID_LISTENER,
+            0,
+        )
+    };
+    if initial_status != ERROR_INSUFFICIENT_BUFFER && initial_status != 0 {
+        return Err(format!(
+            "cannot inspect local TCP listener ownership (Windows error {initial_status})"
+        ));
+    }
+    if table_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut table = vec![0u8; table_size as usize];
+    let status = unsafe {
+        GetExtendedTcpTable(
+            table.as_mut_ptr().cast(),
+            &mut table_size,
+            FALSE,
+            AF_INET,
+            TCP_TABLE_OWNER_PID_LISTENER,
+            0,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "cannot read local TCP listener ownership (Windows error {status})"
+        ));
+    }
+
+    let count = unsafe { read_unaligned(table.as_ptr().cast::<u32>()) } as usize;
+    let row_size = size_of::<MIB_TCPROW_OWNER_PID>();
+    let rows_size = count
+        .checked_mul(row_size)
+        .and_then(|size| size.checked_add(size_of::<u32>()))
+        .ok_or_else(|| "local TCP listener table size overflowed".to_string())?;
+    if rows_size > table.len() {
+        return Err("Windows returned an incomplete TCP listener table".to_string());
+    }
+
+    let mut process_ids = Vec::new();
+    for index in 0..count {
+        let offset = size_of::<u32>() + index * row_size;
+        let row =
+            unsafe { read_unaligned(table.as_ptr().add(offset).cast::<MIB_TCPROW_OWNER_PID>()) };
+        if u16::from_be(row.dwLocalPort as u16) == port {
+            process_ids.push(row.dwOwningPid);
+        }
+    }
+    Ok(process_ids)
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_windows_process_tree(process_id: u32) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let status = Command::new("taskkill.exe")
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("cannot launch taskkill for sidecar {process_id}: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "taskkill could not terminate sidecar process tree {process_id}"
+        ))
+    }
+}
+
 #[derive(Default)]
 struct Sidecars {
-    backend: Mutex<Option<CommandChild>>,
-    tts: Mutex<Option<CommandChild>>,
+    backend: Mutex<Option<ManagedSidecar>>,
+    tts: Mutex<Option<ManagedSidecar>>,
 }
 
 #[derive(Default)]
@@ -1673,7 +2121,12 @@ fn development_venv() -> Result<Option<DevelopmentVenv>, String> {
     }))
 }
 
-fn spawn_sidecar(app: &tauri::AppHandle, mode: &str, port: u16) -> Result<CommandChild, String> {
+fn spawn_sidecar(
+    app: &tauri::AppHandle,
+    mode: &str,
+    port: u16,
+    tts_port: u16,
+) -> Result<ManagedSidecar, String> {
     let development = development_venv()?;
     let (exe, working_directory, runners, runner_manifest, mut arguments, development_root) =
         if let Some(development) = development {
@@ -1728,6 +2181,9 @@ fn spawn_sidecar(app: &tauri::AppHandle, mode: &str, port: u16) -> Result<Comman
         .env("MIRID_LOG_DIR", log_dir.to_string_lossy().to_string())
         .env("ELOQUENT_LOG_DIR", log_dir.to_string_lossy().to_string())
         .env("MIRID_RUNNER_ROOT", runners.to_string_lossy().to_string())
+        .env("PORT", port.to_string())
+        .env("TTS_PORT", tts_port.to_string())
+        .env("MIRID_SERVICE_ROLE", mode)
         .env(
             "MIRID_RUNNER_MANIFEST",
             runner_manifest.to_string_lossy().to_string(),
@@ -1744,7 +2200,9 @@ fn spawn_sidecar(app: &tauri::AppHandle, mode: &str, port: u16) -> Result<Comman
     let command = command.args(arguments);
 
     let (mut events, child) = command.spawn().map_err(|error| error.to_string())?;
+    let child = ManagedSidecar::new(child);
     let child_pid = child.pid();
+    let child_exited = child.exit_flag();
     let mode = mode.to_owned();
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1754,19 +2212,20 @@ fn spawn_sidecar(app: &tauri::AppHandle, mode: &str, port: u16) -> Result<Comman
                     log::warn!("{mode}: {}", String::from_utf8_lossy(&bytes));
                 }
                 tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                    child_exited.store(true, Ordering::Release);
                     log::info!("{mode} sidecar exited with {:?}", payload.code);
                     let sidecars = handle.state::<Sidecars>();
                     match mode.as_str() {
                         "backend" => {
                             if let Ok(mut child) = sidecars.backend.lock() {
-                                if child.as_ref().map(CommandChild::pid) == Some(child_pid) {
+                                if child.as_ref().map(ManagedSidecar::pid) == Some(child_pid) {
                                     *child = None;
                                 }
                             }
                         }
                         "tts" => {
                             if let Ok(mut child) = sidecars.tts.lock() {
-                                if child.as_ref().map(CommandChild::pid) == Some(child_pid) {
+                                if child.as_ref().map(ManagedSidecar::pid) == Some(child_pid) {
                                     *child = None;
                                 }
                             }
@@ -1791,15 +2250,43 @@ fn service_is_ready(client: &reqwest::blocking::Client, url: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn wait_for_service_stop(client: &reqwest::blocking::Client, url: &str) -> Result<(), String> {
-    let started = Instant::now();
-    while service_is_ready(client, url) {
-        if started.elapsed() >= Duration::from_secs(15) {
-            return Err("voice service did not stop within 15 seconds".to_string());
-        }
-        std::thread::sleep(Duration::from_millis(100));
+fn managed_service_endpoint_state(
+    app: &tauri::AppHandle,
+    label: &str,
+    port: u16,
+) -> Result<(bool, bool), String> {
+    let sidecars = app.state::<Sidecars>();
+    let child = match label {
+        "backend" => sidecars
+            .backend
+            .lock()
+            .map_err(|_| "backend sidecar lock poisoned")?,
+        "voice service" => sidecars
+            .tts
+            .lock()
+            .map_err(|_| "tts sidecar lock poisoned")?,
+        _ => return Ok((true, true)),
+    };
+    let Some(child) = child.as_ref() else {
+        return Ok((false, false));
+    };
+    if !child.is_running() {
+        return Ok((false, false));
     }
-    Ok(())
+
+    #[cfg(target_os = "windows")]
+    {
+        let listener_process_ids = windows_listener_process_ids(port)?;
+        let owns_listener = listener_process_ids
+            .into_iter()
+            .any(|process_id| child.owns_process(process_id));
+        Ok((true, owns_listener))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = port;
+        Ok((true, true))
+    }
 }
 
 fn wait_for_service(
@@ -1810,11 +2297,21 @@ fn wait_for_service(
     message: &str,
     percent: u8,
 ) -> Result<(), String> {
+    let port = reqwest::Url::parse(url)
+        .map_err(|error| format!("invalid {label} health URL: {error}"))?
+        .port_or_known_default()
+        .ok_or_else(|| format!("{label} health URL has no port"))?;
     let started = Instant::now();
     let mut last_update = Instant::now();
     emit(app, "starting", message, percent);
     loop {
-        if service_is_ready(client, url) {
+        let (sidecar_running, owns_listener) = managed_service_endpoint_state(app, label, port)?;
+        if !sidecar_running {
+            return Err(format!(
+                "{label} process exited before its local endpoint became ready"
+            ));
+        }
+        if owns_listener && service_is_ready(client, url) {
             return Ok(());
         }
         let elapsed = started.elapsed();
@@ -1852,50 +2349,106 @@ fn stop_all_sidecars(app: &tauri::AppHandle) {
 }
 
 fn start_sidecars(app: &tauri::AppHandle) -> Result<(), String> {
-    emit(app, "starting", "Starting local services.", 10);
-    *app.state::<Sidecars>()
-        .backend
+    let runtime = app.state::<ServiceRuntime>();
+    let _tts_operation = runtime
+        .tts_operation
         .lock()
-        .map_err(|_| "backend sidecar lock poisoned")? = Some(spawn_sidecar(app, "backend", 8000)?);
-    let tts = match spawn_sidecar(app, "tts", 8002) {
-        Ok(child) => child,
-        Err(error) => {
-            stop_all_sidecars(app);
-            return Err(error);
-        }
-    };
-    *app.state::<Sidecars>()
+        .map_err(|_| "voice-service operation lock is unavailable".to_string())?;
+    let sidecars = app.state::<Sidecars>();
+    emit(app, "starting", "Starting local services.", 10);
+    let (mut tts_port, tts_reservation) = runtime.take_tts_reservation()?;
+    drop(tts_reservation);
+    *sidecars
         .tts
         .lock()
-        .map_err(|_| "tts sidecar lock poisoned")? = Some(tts);
+        .map_err(|_| "tts sidecar lock poisoned")? =
+        Some(spawn_sidecar(app, "tts", tts_port, tts_port)?);
 
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(4))
         .build()
         .map_err(|error| error.to_string())?;
-    let readiness = wait_for_service(
+    let initial_voice_readiness = wait_for_service(
         app,
         &client,
-        "backend",
-        "http://127.0.0.1:8000/health",
-        "Starting the local engine. First launch can take a few minutes.",
-        45,
-    )
-    .and_then(|_| {
-        wait_for_service(
+        "voice service",
+        &format!("http://127.0.0.1:{tts_port}/health"),
+        "Starting voice services.",
+        35,
+    );
+    if let Err(initial_error) = initial_voice_readiness {
+        let tts_still_running = sidecars
+            .tts
+            .lock()
+            .map_err(|_| "tts sidecar lock poisoned")?
+            .as_ref()
+            .map(ManagedSidecar::is_running)
+            .unwrap_or(false);
+        if tts_still_running {
+            stop_all_sidecars(app);
+            return Err(initial_error);
+        }
+
+        log::warn!(
+            "Voice service exited before owning port {tts_port}; reserving the endpoint again and retrying once"
+        );
+        let retry_port = runtime.reserve_tts_for_restart(tts_port, Duration::ZERO)?;
+        if retry_port != tts_port {
+            log::warn!(
+                "Voice port {tts_port} was claimed during startup; Mirid automatically selected 127.0.0.1:{retry_port}"
+            );
+            tts_port = retry_port;
+        }
+        let (reserved_tts_port, retry_reservation) = runtime.take_tts_reservation()?;
+        debug_assert_eq!(tts_port, reserved_tts_port);
+        drop(retry_reservation);
+        *sidecars
+            .tts
+            .lock()
+            .map_err(|_| "tts sidecar lock poisoned")? =
+            Some(spawn_sidecar(app, "tts", tts_port, tts_port)?);
+        publish_service_endpoints(app)?;
+        if let Err(retry_error) = wait_for_service(
             app,
             &client,
             "voice service",
-            "http://127.0.0.1:8002/health",
-            "The local engine is ready. Starting voice services.",
-            85,
-        )
-    });
-    if let Err(error) = readiness {
+            &format!("http://127.0.0.1:{tts_port}/health"),
+            "Retrying voice services on the reserved endpoint.",
+            40,
+        ) {
+            stop_all_sidecars(app);
+            return Err(format!(
+                "{retry_error} (initial voice startup also failed: {initial_error})"
+            ));
+        }
+    }
+
+    let backend_reservation = runtime.take_backend_reservation()?;
+    drop(backend_reservation);
+    let backend = match spawn_sidecar(app, "backend", DEFAULT_BACKEND_PORT, tts_port) {
+        Ok(child) => child,
+        Err(error) => {
+            stop_all_sidecars(app);
+            return Err(error);
+        }
+    };
+    *sidecars
+        .backend
+        .lock()
+        .map_err(|_| "backend sidecar lock poisoned")? = Some(backend);
+    if let Err(error) = wait_for_service(
+        app,
+        &client,
+        "backend",
+        &format!("http://127.0.0.1:{DEFAULT_BACKEND_PORT}/health"),
+        "Starting the local engine. First launch can take a few minutes.",
+        85,
+    ) {
         stop_all_sidecars(app);
         return Err(error);
     }
+
     emit(app, "done", "Local services are ready.", 100);
     Ok(())
 }
@@ -1907,18 +2460,35 @@ fn sidecar_status(state: tauri::State<'_, Sidecars>) -> Result<SidecarStatus, St
             .backend
             .lock()
             .map_err(|_| "backend sidecar lock poisoned")?
-            .is_some(),
+            .as_ref()
+            .map(ManagedSidecar::is_running)
+            .unwrap_or(false),
         tts: state
             .tts
             .lock()
             .map_err(|_| "tts sidecar lock poisoned")?
-            .is_some(),
+            .as_ref()
+            .map(ManagedSidecar::is_running)
+            .unwrap_or(false),
     })
 }
 
 #[tauri::command]
-fn stop_tts(state: tauri::State<'_, Sidecars>) -> Result<(), String> {
-    if let Some(child) = state
+fn get_service_endpoints(
+    state: tauri::State<'_, ServiceRuntime>,
+) -> Result<ServiceEndpoints, String> {
+    state.endpoints()
+}
+
+#[tauri::command]
+fn stop_tts(app: tauri::AppHandle) -> Result<(), String> {
+    let runtime = app.state::<ServiceRuntime>();
+    let _operation = runtime
+        .tts_operation
+        .lock()
+        .map_err(|_| "voice-service operation lock is unavailable".to_string())?;
+    let sidecars = app.state::<Sidecars>();
+    if let Some(child) = sidecars
         .tts
         .lock()
         .map_err(|_| "tts sidecar lock poisoned")?
@@ -1929,44 +2499,136 @@ fn stop_tts(state: tauri::State<'_, Sidecars>) -> Result<(), String> {
     Ok(())
 }
 
-fn restart_tts_sync(app: &tauri::AppHandle) -> Result<(), String> {
+fn publish_service_endpoints(app: &tauri::AppHandle) -> Result<ServiceEndpoints, String> {
+    let endpoints = app.state::<ServiceRuntime>().endpoints()?;
+    if let Err(error) = app.emit("service-endpoints-changed", endpoints.clone()) {
+        log::warn!("Could not publish updated service endpoints: {error}");
+    }
+    Ok(endpoints)
+}
+
+fn restart_tts_sync(app: &tauri::AppHandle) -> Result<ServiceEndpoints, String> {
+    let runtime = app.state::<ServiceRuntime>();
+    let _operation = runtime
+        .tts_operation
+        .lock()
+        .map_err(|_| "voice-service operation lock is unavailable".to_string())?;
     let state = app.state::<Sidecars>();
+    let previous_tts_port = runtime.current_tts_port()?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(4))
         .build()
         .map_err(|error| error.to_string())?;
-    {
+    let stopped_managed_tts = {
         let mut tts = state.tts.lock().map_err(|_| "tts sidecar lock poisoned")?;
         if let Some(child) = tts.take() {
             child.kill().map_err(|error| error.to_string())?;
+            true
+        } else {
+            false
         }
+    };
+
+    let release_grace = if stopped_managed_tts {
+        TTS_PORT_RELEASE_GRACE
+    } else {
+        Duration::ZERO
+    };
+    let tts_port = runtime.reserve_tts_for_restart(previous_tts_port, release_grace)?;
+    let tts_port_changed = tts_port != previous_tts_port;
+    if tts_port_changed {
+        log::warn!(
+            "Voice port {previous_tts_port} remained occupied during restart; Mirid reserved fallback endpoint 127.0.0.1:{tts_port}"
+        );
+    } else {
+        log::info!("Reserved voice endpoint 127.0.0.1:{tts_port} for restart");
     }
 
-    wait_for_service_stop(&client, "http://127.0.0.1:8002/health")?;
+    let mut backend_reservation = None;
+    let restart_backend = if tts_port_changed {
+        let backend = state
+            .backend
+            .lock()
+            .map_err(|_| "backend sidecar lock poisoned")?
+            .take();
+        if let Some(child) = backend {
+            child.kill().map_err(|error| error.to_string())?;
+            backend_reservation = Some(reserve_fixed_service_port_after_release(
+                backend_bind_host(),
+                DEFAULT_BACKEND_PORT,
+                TTS_PORT_RELEASE_GRACE,
+            )?);
+            log::warn!(
+                "Restarting the main engine so its voice client follows fallback port {tts_port}"
+            );
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
 
-    let child = spawn_sidecar(app, "tts", 8002)?;
+    let (reserved_tts_port, tts_reservation) = runtime.take_tts_reservation()?;
+    debug_assert_eq!(tts_port, reserved_tts_port);
+    drop(tts_reservation);
+    let child = spawn_sidecar(app, "tts", tts_port, tts_port)?;
     *state.tts.lock().map_err(|_| "tts sidecar lock poisoned")? = Some(child);
+    if restart_backend {
+        drop(backend_reservation.take());
+        let backend = match spawn_sidecar(app, "backend", DEFAULT_BACKEND_PORT, tts_port) {
+            Ok(child) => child,
+            Err(error) => {
+                stop_all_sidecars(app);
+                return Err(format!(
+                    "voice service selected port {tts_port}, but the main engine could not restart with the updated endpoint: {error}"
+                ));
+            }
+        };
+        *state
+            .backend
+            .lock()
+            .map_err(|_| "backend sidecar lock poisoned")? = Some(backend);
+    }
+
     if let Err(error) = wait_for_service(
         app,
         &client,
         "voice service",
-        "http://127.0.0.1:8002/health",
+        &format!("http://127.0.0.1:{tts_port}/health"),
         "Restarting voice services.",
         85,
-    ) {
-        if let Ok(mut tts) = state.tts.lock() {
+    )
+    .and_then(|_| {
+        if restart_backend {
+            wait_for_service(
+                app,
+                &client,
+                "backend",
+                &format!("http://127.0.0.1:{DEFAULT_BACKEND_PORT}/health"),
+                "Restarting the local engine with the new voice endpoint.",
+                90,
+            )
+        } else {
+            Ok(())
+        }
+    }) {
+        if restart_backend {
+            stop_all_sidecars(app);
+        } else if let Ok(mut tts) = state.tts.lock() {
             if let Some(child) = tts.take() {
                 let _ = child.kill();
             }
         }
         return Err(error);
     }
-    Ok(())
+
+    publish_service_endpoints(app)
 }
 
 #[tauri::command]
-async fn restart_tts(app: tauri::AppHandle) -> Result<(), String> {
+async fn restart_tts(app: tauri::AppHandle) -> Result<ServiceEndpoints, String> {
     tauri::async_runtime::spawn_blocking(move || restart_tts_sync(&app))
         .await
         .map_err(|error| error.to_string())?
@@ -2114,7 +2776,11 @@ fn clear_installer_audio_profile(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_app_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+fn get_app_info(
+    app: tauri::AppHandle,
+    services: tauri::State<'_, ServiceRuntime>,
+) -> Result<serde_json::Value, String> {
+    let tts_port = services.current_tts_port()?;
     let log_dir = app
         .path()
         .app_log_dir()
@@ -2138,6 +2804,8 @@ fn get_app_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
       "runtime_installed_size": RUNTIME_INSTALLED_SIZE,
       "model_runner_contract_version": MODEL_RUNNER_CONTRACT_VERSION,
       "runtime_ready": runtime_is_ready(&app),
+      "backend_port": DEFAULT_BACKEND_PORT,
+      "tts_port": tts_port,
     }))
 }
 
@@ -2237,6 +2905,144 @@ mod tests {
         assert!(destroyed_window_owns_sidecars("main"));
         assert!(!destroyed_window_owns_sidecars("settings"));
         assert!(!destroyed_window_owns_sidecars("secondary"));
+    }
+
+    #[test]
+    fn reserves_the_preferred_service_port_when_it_is_available() {
+        let candidate = TcpListener::bind(("127.0.0.1", 0))
+            .expect("test should obtain an available loopback port")
+            .local_addr()
+            .expect("test listener should have an address")
+            .port();
+
+        let (selected, reservation) = reserve_service_port("127.0.0.1", candidate, "test service")
+            .expect("available preferred port should be reserved");
+
+        assert_eq!(selected, candidate);
+        assert_eq!(
+            reservation
+                .local_addr()
+                .expect("reservation should have an address")
+                .port(),
+            candidate
+        );
+    }
+
+    #[test]
+    fn automatically_reserves_another_port_when_the_preferred_port_is_occupied() {
+        let occupied =
+            TcpListener::bind(("127.0.0.1", 0)).expect("test should occupy a loopback port");
+        let occupied_port = occupied
+            .local_addr()
+            .expect("occupied listener should have an address")
+            .port();
+
+        let (selected, reservation) =
+            reserve_service_port("127.0.0.1", occupied_port, "test service")
+                .expect("occupied preferred port should use an automatic fallback");
+
+        assert_ne!(selected, occupied_port);
+        assert_eq!(
+            reservation
+                .local_addr()
+                .expect("fallback reservation should have an address")
+                .port(),
+            selected
+        );
+    }
+
+    #[test]
+    fn fixed_backend_port_reports_a_clear_conflict_instead_of_falling_back() {
+        let occupied =
+            TcpListener::bind(("127.0.0.1", 0)).expect("test should occupy a loopback port");
+        let occupied_port = occupied
+            .local_addr()
+            .expect("occupied listener should have an address")
+            .port();
+
+        let error = match reserve_fixed_service_port("127.0.0.1", occupied_port) {
+            Ok(_) => panic!("fixed backend reservation should not select another port"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains(&format!("Main engine port {occupied_port}")));
+        assert!(error.contains("Close the other program or Mirid session"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_listener_table_identifies_the_process_that_owns_a_port() {
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("test should bind a loopback listener");
+        let port = listener
+            .local_addr()
+            .expect("test listener should have an address")
+            .port();
+
+        let process_ids =
+            windows_listener_process_ids(port).expect("Windows listener table should be readable");
+
+        assert!(
+            process_ids.contains(&std::process::id()),
+            "current process should own the test listener"
+        );
+    }
+
+    #[test]
+    fn service_endpoints_expose_the_ports_selected_by_the_desktop_host() {
+        let runtime = ServiceRuntime {
+            backend_reservation: Mutex::new(None),
+            tts: Mutex::new(TtsRuntime {
+                port: 18102,
+                reservation: None,
+            }),
+            tts_operation: Mutex::new(()),
+        };
+
+        let endpoints = runtime
+            .endpoints()
+            .expect("service endpoint state should be readable");
+
+        assert_eq!(endpoints.backend, "http://127.0.0.1:8000");
+        assert_eq!(endpoints.secondary, endpoints.backend);
+        assert_eq!(endpoints.tts, "http://127.0.0.1:18102");
+        assert_eq!(endpoints.backend_port, 8000);
+        assert_eq!(endpoints.tts_port, 18102);
+    }
+
+    #[test]
+    fn tts_restart_fallback_updates_shared_port_state_and_holds_the_reservation() {
+        let occupied =
+            TcpListener::bind(("127.0.0.1", 0)).expect("test should occupy a loopback port");
+        let occupied_port = occupied
+            .local_addr()
+            .expect("occupied listener should have an address")
+            .port();
+        let runtime = ServiceRuntime {
+            backend_reservation: Mutex::new(None),
+            tts: Mutex::new(TtsRuntime {
+                port: occupied_port,
+                reservation: None,
+            }),
+            tts_operation: Mutex::new(()),
+        };
+
+        let selected = runtime
+            .reserve_tts_for_restart(occupied_port, Duration::ZERO)
+            .expect("restart should reserve a fallback voice port");
+        let (state_port, reservation) = runtime
+            .take_tts_reservation()
+            .expect("selected fallback should remain reserved until spawn");
+
+        assert_ne!(selected, occupied_port);
+        assert_eq!(state_port, selected);
+        assert_eq!(
+            reservation
+                .local_addr()
+                .expect("reservation should have an address")
+                .port(),
+            selected
+        );
     }
 
     #[test]
@@ -2822,12 +3628,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Sidecars::default())
+        .manage(ServiceRuntime::new())
         .manage(RuntimeBootState::default())
         .manage(RuntimeSetupGate::default())
         .invoke_handler(tauri::generate_handler![
             get_runtime_boot_status,
             begin_runtime_setup,
             sidecar_status,
+            get_service_endpoints,
             read_installer_audio_profile,
             clear_installer_audio_profile,
             stop_tts,
@@ -2844,6 +3652,31 @@ pub fn run() {
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+            let tts_port = match app
+                .state::<ServiceRuntime>()
+                .reserve_initial_ports()
+            {
+                Ok(port) => port,
+                Err(error) => {
+                    emit(app.handle(), "error", &error, 0);
+                    log::error!("local service port reservation failed: {error}");
+                    return Ok(());
+                }
+            };
+            log::info!("Reserved main engine endpoint 127.0.0.1:{DEFAULT_BACKEND_PORT}");
+            if tts_port == DEFAULT_TTS_PORT {
+                log::info!("Reserved voice endpoint 127.0.0.1:{tts_port}");
+            } else {
+                log::warn!(
+                    "Voice port {DEFAULT_TTS_PORT} is occupied; Mirid automatically selected 127.0.0.1:{}",
+                    tts_port
+                );
+            }
+            if let Err(error) = publish_service_endpoints(app.handle()) {
+                emit(app.handle(), "error", &error, 0);
+                log::error!("could not publish local service endpoints: {error}");
+                return Ok(());
+            }
 
             let handle = app.handle().clone();
             // Run runtime provisioning + sidecar startup off the main thread so the

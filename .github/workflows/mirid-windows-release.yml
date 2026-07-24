@@ -1,4 +1,4 @@
-name: Publish Mirid for Windows
+name: Qualify and publish Mirid for Windows
 
 on:
   workflow_dispatch:
@@ -6,29 +6,40 @@ on:
       version:
         description: Version already set in package.json, Cargo.toml, and tauri.conf.json
         required: true
-        default: 1.0.11
+        default: 1.0.12
         type: string
       prerelease:
         description: Mark this GitHub release as a pre-release
         required: true
         default: false
         type: boolean
+      publish_release:
+        description: Publish the qualified candidate as a GitHub release
+        required: true
+        default: false
+        type: boolean
   push:
+    branches:
+      - "candidate/v*.*.*"
     tags:
       - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: mirid-windows-release
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish Windows installer
+  build:
+    name: Build signed Windows candidate
     runs-on: windows-2025
     timeout-minutes: 120
+    outputs:
+      version: ${{ steps.release_metadata.outputs.version }}
+      prerelease: ${{ steps.release_metadata.outputs.prerelease }}
+      artifact_name: ${{ steps.release_files.outputs.artifact_name }}
 
     steps:
       - name: Check out source
@@ -46,6 +57,10 @@ jobs:
           if ($env:EVENT_NAME -eq 'workflow_dispatch') {
             $version = $env:DISPATCH_VERSION
             $prerelease = $env:DISPATCH_PRERELEASE.ToLowerInvariant()
+          }
+          elseif ($env:REF_NAME -match '^candidate/v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
+            $version = $Matches['version']
+            $prerelease = if ($version.Contains('-')) { 'true' } else { 'false' }
           }
           else {
             if ($env:REF_NAME -notmatch '^v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
@@ -132,13 +147,20 @@ jobs:
           RELEASE_VERSION: ${{ steps.release_metadata.outputs.version }}
         run: |
           $installer = "src-tauri/target/release/bundle/nsis/Mirid_$($env:RELEASE_VERSION)_x64-setup.exe"
-          if (-not (Test-Path $installer)) {
+          if (-not (Test-Path -LiteralPath $installer)) {
             throw "Installer not found at $installer"
           }
           $installerSignature = "$installer.sig"
-          if (-not (Test-Path $installerSignature)) {
+          if (-not (Test-Path -LiteralPath $installerSignature)) {
             throw "Updater signature not found at $installerSignature"
           }
+          $candidateDirectory = Join-Path $PWD 'release-candidate'
+          New-Item -ItemType Directory -Force -Path $candidateDirectory | Out-Null
+          $stagedInstaller = Join-Path $candidateDirectory ([IO.Path]::GetFileName($installer))
+          $stagedInstallerSignature = "$stagedInstaller.sig"
+          Copy-Item -LiteralPath $installer -Destination $stagedInstaller
+          Copy-Item -LiteralPath $installerSignature -Destination $stagedInstallerSignature
+
           $signature = (Get-Content -LiteralPath $installerSignature -Raw).Trim()
           $assetUrl = "https://github.com/boneylizard/Eloquent/releases/download/v$($env:RELEASE_VERSION)/$([IO.Path]::GetFileName($installer))"
           $latest = [ordered]@{
@@ -153,12 +175,13 @@ jobs:
             }
           }
           [IO.File]::WriteAllText(
-            (Join-Path $PWD 'latest.json'),
+            (Join-Path $candidateDirectory 'latest.json'),
             ($latest | ConvertTo-Json -Depth 6),
             [Text.UTF8Encoding]::new($false)
           )
           $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
-          "$hash  $([IO.Path]::GetFileName($installer))" | Set-Content -Encoding ascii SHA256SUMS.txt
+          "$hash  $([IO.Path]::GetFileName($installer))" |
+            Set-Content -Encoding ascii (Join-Path $candidateDirectory 'SHA256SUMS.txt')
           $changelog = Get-Content CHANGELOG.md -Raw
           $versionPattern = [Regex]::Escape($env:RELEASE_VERSION)
           $match = [Regex]::Match(
@@ -170,42 +193,139 @@ jobs:
           }
           $releaseNotes = "# Mirid $env:RELEASE_VERSION`r`n`r`n$($match.Groups['body'].Value.Trim())`r`n"
           [IO.File]::WriteAllText(
-            (Join-Path $PWD 'release-notes.md'),
+            (Join-Path $candidateDirectory 'release-notes.md'),
             $releaseNotes,
             [Text.UTF8Encoding]::new($false)
           )
-          "installer=$installer" >> $env:GITHUB_OUTPUT
-          "installer_signature=$installerSignature" >> $env:GITHUB_OUTPUT
+          "artifact_name=Mirid-$env:RELEASE_VERSION-Windows-candidate" >> $env:GITHUB_OUTPUT
 
-      - name: Upload workflow artefacts
+      - name: Upload signed candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: Mirid-${{ steps.release_metadata.outputs.version }}-Windows
-          path: |
-            ${{ steps.release_files.outputs.installer }}
-            ${{ steps.release_files.outputs.installer_signature }}
-            latest.json
-            SHA256SUMS.txt
-            release-notes.md
+          name: ${{ steps.release_files.outputs.artifact_name }}
+          path: release-candidate
           if-no-files-found: error
           retention-days: 30
+
+  clean-install:
+    name: Qualify candidate on a fresh Windows VM
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 300
+
+    steps:
+      - name: Check out clean-install test
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Download signed candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/mirid-candidate
+
+      - name: Test candidate from an empty Windows profile
+        shell: powershell
+        env:
+          CANDIDATE_DIRECTORY: ${{ runner.temp }}/mirid-candidate
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $installers = @(
+            Get-ChildItem -LiteralPath $env:CANDIDATE_DIRECTORY `
+              -Filter "Mirid_$($env:EXPECTED_VERSION)_x64-setup.exe" `
+              -File `
+              -Recurse
+          )
+          if ($installers.Count -ne 1) {
+            throw "Expected one Mirid $env:EXPECTED_VERSION installer, found $($installers.Count)."
+          }
+          $checksumFiles = @(
+            Get-ChildItem -LiteralPath $env:CANDIDATE_DIRECTORY `
+              -Filter 'SHA256SUMS.txt' `
+              -File `
+              -Recurse
+          )
+          if ($checksumFiles.Count -ne 1) {
+            throw "Expected one SHA256SUMS.txt, found $($checksumFiles.Count)."
+          }
+          $checksumPattern = "^(?<hash>[a-fA-F0-9]{64})\s+$([Regex]::Escape($installers[0].Name))$"
+          $checksumLine = (Get-Content -LiteralPath $checksumFiles[0].FullName -Raw).Trim()
+          $checksumMatch = [Regex]::Match($checksumLine, $checksumPattern)
+          if (-not $checksumMatch.Success) {
+            throw "SHA256SUMS.txt does not contain the expected installer checksum."
+          }
+          .\scripts\test_github_clean_install.ps1 `
+            -InstallerPath $installers[0].FullName `
+            -InstallerSha256 $checksumMatch.Groups['hash'].Value `
+            -ExpectedVersion $env:EXPECTED_VERSION
+
+      - name: Upload clean-install evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mirid-clean-install-${{ needs.build.outputs.version }}-${{ github.run_id }}
+          path: artifacts/github-clean-install
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    name: Publish qualified GitHub release
+    needs:
+      - build
+      - clean-install
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release == true) }}
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download qualified candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/mirid-candidate
 
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
-          RELEASE_VERSION: ${{ steps.release_metadata.outputs.version }}
-          INSTALLER_PATH: ${{ steps.release_files.outputs.installer }}
-          INSTALLER_SIGNATURE_PATH: ${{ steps.release_files.outputs.installer_signature }}
-          PRERELEASE: ${{ steps.release_metadata.outputs.prerelease }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          CANDIDATE_DIRECTORY: ${{ runner.temp }}/mirid-candidate
         run: |
+          function Get-SingleCandidateFile {
+            param([Parameter(Mandatory = $true)][string]$Name)
+            $files = @(
+              Get-ChildItem -LiteralPath $env:CANDIDATE_DIRECTORY `
+                -Filter $Name `
+                -File `
+                -Recurse
+            )
+            if ($files.Count -ne 1) {
+              throw "Expected one '$Name' candidate file, found $($files.Count)."
+            }
+            return $files[0].FullName
+          }
+
+          $installerName = "Mirid_$($env:RELEASE_VERSION)_x64-setup.exe"
+          $installerPath = Get-SingleCandidateFile -Name $installerName
+          $installerSignaturePath = Get-SingleCandidateFile -Name "$installerName.sig"
+          $latestPath = Get-SingleCandidateFile -Name 'latest.json'
+          $checksumsPath = Get-SingleCandidateFile -Name 'SHA256SUMS.txt'
+          $releaseNotesPath = Get-SingleCandidateFile -Name 'release-notes.md'
+
           $arguments = @(
             'release', 'create', "v$env:RELEASE_VERSION",
-            $env:INSTALLER_PATH, $env:INSTALLER_SIGNATURE_PATH,
-            'latest.json', 'SHA256SUMS.txt',
+            $installerPath, $installerSignaturePath,
+            $latestPath, $checksumsPath,
             '--title', "Mirid $env:RELEASE_VERSION",
-            '--notes-file', 'release-notes.md'
+            '--notes-file', $releaseNotesPath
           )
           if ($env:EVENT_NAME -eq 'workflow_dispatch') {
             $arguments += @('--target', $env:GITHUB_SHA)

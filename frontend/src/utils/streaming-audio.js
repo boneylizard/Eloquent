@@ -1,5 +1,7 @@
 // streaming-audio.js - Add this to your frontend
 
+import { getTtsUrl } from '../config/api';
+
 class StreamingAudioPlayer {
   constructor() {
     this.audioContext = null;
@@ -28,11 +30,9 @@ class StreamingAudioPlayer {
       this.websocket.close();
     }
 
-    // Default to current hostname but port 8002
+    // Use the desktop host's selected voice endpoint when no override is supplied.
     if (!serverUrl) {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.hostname;
-      serverUrl = `${protocol}//${host}:8002/tts-stream`;
+      serverUrl = `${getTtsUrl().replace(/^http/, 'ws')}/tts-stream`;
     }
 
     return new Promise((resolve, reject) => {

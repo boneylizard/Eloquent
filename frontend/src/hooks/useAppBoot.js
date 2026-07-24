@@ -22,18 +22,18 @@ export function useAppBoot() {
   const apiReady = portsReady;
 
   const banner = useMemo(() => {
+    if (portsLoadDegraded) {
+      return {
+        tone: 'warning',
+        message: 'Mirid is still waiting for its local service endpoints. Model, memory, and voice features will remain paused until the desktop host responds.',
+      };
+    }
     if (!portsReady) {
       return {
         tone: 'loading',
         message: settingsStandalone
-          ? 'Loading API configuration (ports.json or localhost defaults)…'
-          : 'Loading network configuration…',
-      };
-    }
-    if (portsLoadDegraded) {
-      return {
-        tone: 'warning',
-        message: 'Could not read ports.json in time — using localhost defaults. Start the backend or fix the dev server if API calls fail.',
+          ? 'Reading Mirid’s local service endpoints…'
+          : 'Reading local service endpoints…',
       };
     }
     if (!storageHydrated && !settingsStandalone) {

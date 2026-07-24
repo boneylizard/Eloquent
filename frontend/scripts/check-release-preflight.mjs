@@ -46,6 +46,16 @@ const rustLibPath = path.join(rootDir, 'src-tauri', 'src', 'runtime_windows.rs')
 const runtimeReleasePath = path.join(rootDir, 'runtime', 'runtime-release.json');
 const inferenceLockPath = path.join(rootDir, 'runtime', 'inference-wheels.lock.json');
 const inferenceReleasePath = path.join(rootDir, 'runtime', 'inference-wheels.release.json');
+const frontendApiSource = await readFile(path.join(frontendDir, 'src', 'config', 'api.js'), 'utf8');
+const appContextSource = await readFile(path.join(frontendDir, 'src', 'contexts', 'AppContext.jsx'), 'utf8');
+const windowsReleaseWorkflowSource = await readFile(
+  path.join(rootDir, '.github', 'workflows', 'mirid-windows-release.yml'),
+  'utf8',
+);
+const cleanInstallScriptSource = await readFile(
+  path.join(rootDir, 'scripts', 'test_github_clean_install.ps1'),
+  'utf8',
+);
 
 const [
   packageJson,
@@ -124,6 +134,12 @@ if (!/^\s*tauri-plugin-dialog\s*=/m.test(cargoSource)) {
 if (!/^\s*tauri-plugin-single-instance\s*=/m.test(cargoSource)) {
   failures.push('The Rust single-instance plugin dependency is required');
 }
+if (
+  !/windows-sys\s*=\s*\{/.test(cargoSource)
+  || !cargoSource.includes('"Win32_System_JobObjects"')
+) {
+  failures.push('The Windows Job Object dependency and feature are required');
+}
 const cargoDialogVersion = cargoLockSource.match(
   /\[\[package\]\]\s*\r?\nname = "tauri-plugin-dialog"\s*\r?\nversion = "([^"]+)"/,
 )?.[1];
@@ -138,6 +154,9 @@ if (miridCargoLockBlock.includes('"tauri-plugin-process"')) {
 }
 if (!miridCargoLockBlock.includes('"tauri-plugin-single-instance"')) {
   failures.push('Cargo.lock must list the single-instance plugin as a Mirid dependency');
+}
+if (!miridCargoLockBlock.includes('"windows-sys 0.61.2"')) {
+  failures.push('Cargo.lock must list windows-sys as a direct Mirid dependency');
 }
 if (!/\.plugin\(tauri_plugin_dialog::init\(\)\)/.test(tauriLibSource)) {
   failures.push('The Tauri dialog plugin must be initialised');
@@ -155,6 +174,49 @@ if (
   || !tauriLibSource.includes('runtime_attempt_path(dest, "installing")')
 ) {
   failures.push('Runtime reinstall recovery and isolated extraction staging are required');
+}
+if (
+  !tauriLibSource.includes('reserve_fixed_service_port(')
+  || !tauriLibSource.includes('reserve_service_port(')
+  || !tauriLibSource.includes('get_service_endpoints')
+  || !tauriLibSource.includes('Voice port {DEFAULT_TTS_PORT} is occupied')
+  || !tauriLibSource.includes('.env("TTS_PORT", tts_port.to_string())')
+  || !tauriLibSource.includes('windows_listener_process_ids(')
+) {
+  failures.push('The desktop must keep backend 8000 fixed, recover TTS port conflicts, verify listener ownership, and publish the selected endpoints');
+}
+if (
+  !tauriLibSource.includes('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE')
+  || !tauriLibSource.includes('AssignProcessToJobObject')
+  || !tauriLibSource.includes('TerminateJobObject')
+) {
+  failures.push('Windows sidecars must be contained and terminated through Job Objects');
+}
+if (
+  !frontendApiSource.includes("invoke('get_service_endpoints')")
+  || !frontendApiSource.includes('normalisePortConfig')
+) {
+  failures.push('The desktop frontend must load the endpoints selected by the Tauri host');
+}
+if (
+  !appContextSource.includes('[portsReady, settings.ttsAutoPlay, TTS_API_URL]')
+  || !appContextSource.includes('if (!portsReady)')
+  || !appContextSource.includes('SERVICE_ENDPOINTS_CHANGED_EVENT')
+  || !appContextSource.includes('applyServiceEndpoints')
+) {
+  failures.push('The frontend must adopt endpoint changes and reconnect TTS on the selected desktop endpoint');
+}
+if (
+  !windowsReleaseWorkflowSource.includes('publish_release:')
+  || !windowsReleaseWorkflowSource.includes('"candidate/v*.*.*"')
+  || !windowsReleaseWorkflowSource.includes('Qualify candidate on a fresh Windows VM')
+  || !windowsReleaseWorkflowSource.includes('-InstallerPath $installers[0].FullName')
+  || !/needs:\s*\r?\n\s*-\s*build\s*\r?\n\s*-\s*clean-install/.test(windowsReleaseWorkflowSource)
+  || !windowsReleaseWorkflowSource.includes("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')")
+  || !windowsReleaseWorkflowSource.includes("github.ref == 'refs/heads/main'")
+  || !cleanInstallScriptSource.includes('ParameterSetName = "LocalInstaller"')
+) {
+  failures.push('Windows publication must remain gated by the signed fresh-install candidate test');
 }
 const capabilityWindows = Array.isArray(defaultCapability.windows) ? defaultCapability.windows : [];
 if (!capabilityWindows.includes('main')) {

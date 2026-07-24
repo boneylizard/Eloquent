@@ -1131,8 +1131,7 @@ class TTSWebSocketClient {
       this.reconnectTimeout = null;
     }
 
-    // Connect to the TTS service on port 8002
-    // Use dynamic URL from config to handle mobile/LAN access
+    // Use the desktop host's selected endpoint or the hosted web configuration.
     const ttsUrl = getTtsUrl();
     const wsUrl = ttsUrl.replace(/^http/, 'ws') + '/tts-stream';
     console.log(`🔌 [TTS] Connecting to WebSocket at: ${wsUrl}`);
