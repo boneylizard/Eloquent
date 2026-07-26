@@ -10,9 +10,21 @@ import httpx
 import pytest
 
 # character_intelligence imports heavy ML deps at module load; stub for unit tests.
+# Only stub what is genuinely absent. setdefault still installs a stub when the
+# real package is installed but has not been imported yet, and a later test in
+# the same session then imports that stub instead of the real torch and fails
+# collection with "torch.__spec__ is not set".
 _st_util = MagicMock()
-sys.modules.setdefault("sentence_transformers", MagicMock(util=_st_util))
-sys.modules.setdefault("torch", MagicMock())
+for _module, _stub in (
+    ("sentence_transformers", MagicMock(util=_st_util)),
+    ("torch", MagicMock()),
+):
+    if _module in sys.modules:
+        continue
+    try:
+        __import__(_module)
+    except ImportError:
+        sys.modules[_module] = _stub
 
 from . import character_intelligence as ci  # noqa: E402
 from . import openai_compat  # noqa: E402

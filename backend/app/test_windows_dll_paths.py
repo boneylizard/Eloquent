@@ -85,6 +85,9 @@ def test_prepare_preloads_one_complete_cuda_runtime_in_dependency_order(
         windows_dll_paths.ctypes,
         "WinDLL",
         lambda path, winmode: loaded.append(path) or object(),
+        # ctypes.WinDLL only exists on Windows; the test simulates the Windows
+        # loader everywhere else, so it has to be created rather than replaced.
+        raising=False,
     )
     monkeypatch.setattr(windows_dll_paths, "_DLL_DIRECTORY_HANDLES", [])
     monkeypatch.setattr(windows_dll_paths, "_PRELOADED_DLL_HANDLES", {})
