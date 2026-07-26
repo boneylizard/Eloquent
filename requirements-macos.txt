@@ -5,6 +5,12 @@
 # stable-diffusion-cpp-python are deliberately absent here because they must be
 # compiled against Metal, and the upstream Metal wheel for llama-cpp-python
 # 0.3.34 is corrupt (bad CRC on lib/libggml-base.0.16.0.dylib).
+#
+# transformers is held below 5.x deliberately. The Chatterbox build Mirid
+# installs constructs a LlamaConfig with rope_theta and reads it back, which
+# transformers 5 moved into rope_parameters, so voice cloning fails outright
+# with "'LlamaConfig' object has no attribute 'rope_theta'". Whisper STT was
+# verified against this same pin.
 
 accelerate==1.14.0
 addict==2.4.0
@@ -87,7 +93,7 @@ http_ece==1.2.1
 httpcore==1.0.9
 httptools==0.8.0
 httpx==0.28.1
-huggingface_hub==1.24.0
+huggingface-hub==0.36.2
 hydra-core==1.3.4
 identify==2.6.19
 idna==3.18
@@ -263,7 +269,7 @@ torchaudio==2.11.0
 torchcodec==0.15.0
 torchvision==0.28.0
 tqdm==4.69.1
-transformers==5.14.1
+transformers==4.57.6
 tweepy==4.17.0
 typeguard==4.5.2
 typer==0.27.0

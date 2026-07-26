@@ -679,6 +679,10 @@ class DocumentQuery(BaseModel): # Keep for now
     query: str
     doc_ids: List[str]
     top_k: int = 30
+    # The handler forwards this to rag_utils.query_documents, which has always
+    # expected it; without the field every /document/query request failed with
+    # "'DocumentQuery' object has no attribute 'threshold'".
+    threshold: float = 0.05
 
 class FileOperationRequest(BaseModel):
     filepath: str
@@ -7762,10 +7766,22 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
             sample_method=sampler
         )
         
+        # The manager returns the untouched image when no face is detected and
+        # when enhancement raises, so compare rather than claim success: an
+        # unreported no-op is worse than a reported one.
+        try:
+            enhancement_applied = enhanced_image_data != image_path.read_bytes()
+        except OSError:
+            enhancement_applied = True
+        if not enhancement_applied:
+            logger.info(
+                "ADetailer returned the image unchanged; no face was detected or enhancement failed"
+            )
+
         # Save enhanced image
         enhanced_filename = f"enhanced_{uuid.uuid4()}.png"
         enhanced_path = Path(__file__).parent / "static" / "generated_images" / enhanced_filename
-        
+
         with open(enhanced_path, "wb") as f:
             f.write(enhanced_image_data)
         
@@ -7782,7 +7798,7 @@ async def enhance_image_with_adetailer(request: Request, data: dict = Body(...))
             "status": "success",
             "enhanced_image_url": enhanced_url,
             "original_image_url": image_url,
-            "enhancement_applied": True,
+            "enhancement_applied": enhancement_applied,
             "model_used": data.get("model_name", "face_yolov8n.pt"),
             "parameters": {
                 "strength": strength,
