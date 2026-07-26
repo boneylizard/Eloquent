@@ -25,6 +25,20 @@ MIRID_SIDECAR_PROFILE="${MIRID_SIDECAR_PROFILE:-default}" "$PYTHON" -m PyInstall
   --workpath "$ROOT/build/pyinstaller" \
   "$ROOT/mirid-sidecar-platform.spec"
 
+# PyInstaller resolves the bundle's interpreter library by basename, and
+# torchcodec ships its own libpython3.12.dylib. When the vendored copy wins that
+# slot the stage root ends up holding a symlink into torchcodec, and the frozen
+# service dies at startup on "No module named '_struct'" because that copy
+# carries none of the interpreter's builtin modules. Put the real one back.
+INTERPRETER_LIBRARY="$("$PYTHON" -c 'import os, sysconfig; print(os.path.join(sysconfig.get_config_var("LIBDIR") or "", sysconfig.get_config_var("LDLIBRARY") or ""))')"
+STAGED_LIBRARY="$BUILT/_internal/$(basename "$INTERPRETER_LIBRARY")"
+if [[ -L "$STAGED_LIBRARY" && -f "$INTERPRETER_LIBRARY" ]]; then
+  echo "Replacing vendored interpreter library at $STAGED_LIBRARY"
+  rm "$STAGED_LIBRARY"
+  cp "$INTERPRETER_LIBRARY" "$STAGED_LIBRARY"
+  chmod 755 "$STAGED_LIBRARY"
+fi
+
 "$PYTHON" "$ROOT/scripts/assert_runtime_stage_safe.py" "$BUILT/_internal"
 
 mkdir -p "$BUILT/_internal/runners"

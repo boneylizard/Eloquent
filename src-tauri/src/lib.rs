@@ -378,6 +378,8 @@ impl ManagedSidecar {
     }
 
     fn kill(self) -> Result<(), String> {
+        #[cfg(unix)]
+        terminate_unix_process_tree(self.child.pid());
         #[cfg(target_os = "windows")]
         if let Some(job) = &self.job {
             if job.terminate().is_ok() {
@@ -482,6 +484,64 @@ fn terminate_windows_process_tree(process_id: u32) -> Result<(), String> {
             "taskkill could not terminate sidecar process tree {process_id}"
         ))
     }
+}
+
+/// Depth-first list of every descendant of `root`, deepest last.
+///
+/// Collect this before killing `root`: once the parent dies its children are
+/// reparented and can no longer be found by walking down from it.
+#[cfg(unix)]
+fn unix_descendant_process_ids(root: u32) -> Vec<u32> {
+    use std::process::{Command, Stdio};
+
+    let mut descendants: Vec<u32> = Vec::new();
+    let mut pending = vec![root];
+    while let Some(parent) = pending.pop() {
+        let Ok(output) = Command::new("/usr/bin/pgrep")
+            .args(["-P", &parent.to_string()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        else {
+            continue;
+        };
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Ok(child) = line.trim().parse::<u32>() else {
+                continue;
+            };
+            if child != root && !descendants.contains(&child) {
+                descendants.push(child);
+                pending.push(child);
+            }
+        }
+    }
+    descendants
+}
+
+/// Unix counterpart to the Windows job object: model runners such as
+/// llama-server are grandchildren of the sidecar, and killing only the direct
+/// child leaves them holding their port and the model's memory.
+#[cfg(unix)]
+fn terminate_unix_process_tree(root: u32) {
+    use std::process::{Command, Stdio};
+
+    let descendants = unix_descendant_process_ids(root);
+    if descendants.is_empty() {
+        return;
+    }
+    let signal_all = |signal: &str| {
+        for process_id in descendants.iter().rev() {
+            let _ = Command::new("/bin/kill")
+                .args([signal, &process_id.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    };
+    signal_all("-TERM");
+    std::thread::sleep(Duration::from_millis(500));
+    signal_all("-KILL");
 }
 
 #[derive(Default)]
@@ -901,8 +961,15 @@ fn backend_host_from_settings(settings: &serde_json::Value) -> &'static str {
     }
 }
 
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .filter(|home| !home.as_os_str().is_empty())
+}
+
 fn backend_bind_host() -> &'static str {
-    let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
+    let Some(home) = user_home_dir() else {
         return "127.0.0.1";
     };
     let settings_path = home.join(".LiangLocal").join("settings.json");
@@ -974,6 +1041,12 @@ fn runtime_internal_is_complete(internal: &Path) -> bool {
     }
     #[cfg(target_os = "windows")]
     if !internal.join("python312.dll").is_file() {
+        return false;
+    }
+    // PyInstaller always writes base_library.zip beside the interpreter on
+    // Unix targets, so a runtime missing it was extracted only partially.
+    #[cfg(not(target_os = "windows"))]
+    if !internal.join("base_library.zip").is_file() {
         return false;
     }
     true
@@ -1139,6 +1212,20 @@ fn content_range_starts_at(
 }
 
 fn archive_path_is_safe(path: &str) -> bool {
+    // Archive entries carry whatever separators the packaging host wrote, so
+    // inspect them directly as well: Path::components() does not recognise a
+    // Windows separator or drive prefix while Mirid runs on Unix, which would
+    // let an entry such as "C:\\evil.txt" through as an ordinary relative name.
+    if path.is_empty() || path.starts_with('/') || path.starts_with('\\') {
+        return false;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    if path.split(['/', '\\']).any(|segment| segment == "..") {
+        return false;
+    }
     !Path::new(path).components().any(|component| {
         matches!(
             component,
@@ -3084,6 +3171,9 @@ mod tests {
         #[cfg(target_os = "windows")]
         fs::write(path.join("python312.dll"), b"python")
             .expect("runtime Python DLL should be writable");
+        #[cfg(not(target_os = "windows"))]
+        fs::write(path.join("base_library.zip"), b"python")
+            .expect("runtime Python archive should be writable");
     }
 
     #[test]
@@ -3247,8 +3337,8 @@ mod tests {
             Some("_internal")
         );
         assert_eq!(
-            sidecar.extension().and_then(|value| value.to_str()),
-            Some("exe")
+            sidecar.file_name().and_then(|value| value.to_str()),
+            Some(SIDECAR_EXE)
         );
         let _ = fs::remove_dir_all(runtime);
     }
