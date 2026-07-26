@@ -52,6 +52,25 @@ class ADetailerProcessor:
         self.available_models = [f.name for f in model_files]
         logger.info(f"Found {len(self.available_models)} ADetailer models: {self.available_models}")
         
+    @staticmethod
+    def _detector_device(gpu_id: int = 0) -> str:
+        """Pick a device the detector can actually run on.
+
+        Asking for "cuda:N" where there is no CUDA raises "Torch not compiled
+        with CUDA enabled", which left face detection dead on every machine
+        without an NVIDIA card.
+        """
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return f"cuda:{gpu_id}"
+            if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+
     def get_detector(self, model_name: str, gpu_id: int = 0):
         """Get or load a specific detector model on specified GPU"""
         if model_name not in self.detectors:
@@ -69,13 +88,12 @@ class ADetailerProcessor:
             try:
                 from ultralytics import YOLO
                 model = YOLO(model_path)
-                
-                # Force YOLO to use the specified GPU
-                device = f'cuda:{gpu_id}'
+
+                device = self._detector_device(gpu_id)
                 model.to(device)
-                
+
                 self.detectors[model_name] = model
-                logger.info(f"Loaded ADetailer model: {model_name} on GPU {gpu_id}")
+                logger.info(f"Loaded ADetailer model: {model_name} on {device}")
             except Exception as e:
                 logger.error(f"Failed to load model {model_name}: {e}")
                 raise

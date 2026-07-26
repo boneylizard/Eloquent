@@ -81,7 +81,12 @@ def active_image_model(sd_manager: Any) -> str:
     if not isinstance(loaded, dict) or not loaded:
         return ""
     first_path = next(iter(loaded.values()), "")
-    return Path(str(first_path)).name if first_path else ""
+    if not first_path:
+        return ""
+    # Report the file name whichever platform wrote the path: Path().name cannot
+    # split a Windows path while Mirid is running on Unix, and a settings file
+    # can be carried between installations.
+    return str(first_path).replace("\\", "/").rsplit("/", 1)[-1]
 
 
 def resolve_image_model_path(model_directory: Optional[str], model_name: str) -> Path:

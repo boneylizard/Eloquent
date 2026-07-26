@@ -76,6 +76,9 @@ for package in (
     "sentence_transformers",
     "tiktoken",
     "triton",
+    # sentence_transformers imports torchcodec unconditionally, and torchcodec
+    # loads its libtorchcodec_core* extension modules by name at import time.
+    "torchcodec",
 ):
     collect_optional(package)
 

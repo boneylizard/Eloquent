@@ -8,7 +8,7 @@ test('first run offers three unrestricted starting paths before runtime install'
   await expect(page.getByRole('button', { name: 'Install Mirid’s engine' })).toBeDisabled();
 
   await page.getByRole('radio', { name: /Use Mirid with SillyTavern/ }).click();
-  await expect(page.getByText('Close SillyTavern before continuing.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Keep port 8000 free for Mirid.', { exact: true })).toBeVisible();
   await expect(page.getByText('Your choice changes the welcome, not your access.', { exact: true })).toBeVisible();
   await expect(page.getByText('Advanced first-run settings', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Install Mirid’s engine' })).toBeEnabled();
@@ -52,7 +52,7 @@ test('SillyTavern primary use opens its guide without restricting Mirid', async 
   await page.goto('/');
 
   await expect(page.getByRole('heading', { name: 'Connect SillyTavern to Mirid' })).toBeVisible();
-  await expect(page.getByText('Move SillyTavern to port 8001', { exact: true })).toBeVisible();
+  await expect(page.getByText('Keep port 8000 free for Mirid', { exact: true })).toBeVisible();
   await expect(page.getByTitle('SillyTavern setup')).toBeVisible();
 
   await page.getByRole('button', { name: 'Use Mirid normally' }).click();

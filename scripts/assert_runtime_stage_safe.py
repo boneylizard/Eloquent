@@ -29,6 +29,11 @@ ESPEAK_LIBRARY_NAMES = (
     "libespeak-ng.so",
     "libespeak-ng.dylib",
 )
+INTERPRETER_LIBRARY_PATTERNS = (
+    "libpython*.dylib",
+    "libpython*.so*",
+    "python3*.dll",
+)
 
 
 def find_unsafe_files(root: Path) -> list[Path]:
@@ -69,6 +74,27 @@ def find_missing_runtime_files(root: Path) -> list[Path]:
     return missing
 
 
+def find_interpreter_library_faults(root: Path) -> list[str]:
+    """Reject a stage whose interpreter library is a wheel's vendored copy.
+
+    PyInstaller resolves the library by basename, so a dependency that ships its
+    own (torchcodec ships libpython3.12.dylib) can take the stage root as a
+    symlink. The resulting service starts against a library carrying none of the
+    interpreter's builtin modules and aborts on "No module named '_struct'".
+    """
+    libraries = [path for pattern in INTERPRETER_LIBRARY_PATTERNS for path in root.glob(pattern)]
+    if not libraries:
+        return ["no interpreter library (libpython*/python3*.dll) at the stage root"]
+    stage_root = root.resolve()
+    faults = []
+    for path in libraries:
+        if path.is_symlink():
+            faults.append(f"{path.name} is a symlink to {path.readlink()}, not the interpreter's own library")
+        elif path.resolve().parent != stage_root:
+            faults.append(f"{path.name} resolves to {path.resolve()}, outside the stage root")
+    return faults
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Reject mutable or secret-bearing files from a Mirid runtime stage.")
     parser.add_argument("root", type=Path)
@@ -86,6 +112,11 @@ def main() -> None:
     if missing:
         rendered = "\n".join(f"- {path}" for path in missing)
         raise SystemExit(f"Runtime stage is missing required files:\n{rendered}")
+
+    interpreter_faults = find_interpreter_library_faults(root)
+    if interpreter_faults:
+        rendered = "\n".join(f"- {fault}" for fault in interpreter_faults)
+        raise SystemExit(f"Runtime stage has an unusable interpreter library:\n{rendered}")
 
     print(f"Runtime stage safety check passed: {root}")
 

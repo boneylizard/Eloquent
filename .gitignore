@@ -93,7 +93,11 @@ temp_audio/
 forensic_cache/
 vram_snapshots.json
 
+# Swift package build output for the Apple Foundation Models runner
+sidecars/apple_foundation/.build/
+
 # User data
+backend/data/documents/
 backend/data/preview_prompts/
 backend/app/user_memories/
 backend/user_memories/
@@ -121,6 +125,7 @@ docs/*
 !docs/LAUNCH_UI_CONTROL_AUDIT.md
 !docs/CROSS_PLATFORM_RUNTIME.md
 !docs/RELEASE_TESTING.md
+!docs/MACOS_BUILD.md
 
 # Runtime generated entity cache (may contain pre-depersonalization output)
 backend/app/data/

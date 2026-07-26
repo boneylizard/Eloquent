@@ -112,7 +112,7 @@
       "modelFormats": ["gguf"],
       "executable": "macos-aarch64/metal/llama-server",
       "probeArgs": ["--list-devices"],
-      "probeMarkers": ["Metal"],
+      "probeMarkers": ["MTL", "Metal"],
       "launchKind": "llama-server"
     },
     {

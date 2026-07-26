@@ -1115,6 +1115,30 @@ async def _synthesize_with_chatterbox(
         logger.error(f"Chatterbox synthesis failed: {e}")
         raise RuntimeError(f"Chatterbox synthesis failed: {str(e)}")
 
+def _chatterbox_backend_params(model) -> dict:
+    """Ask Chatterbox for a token generator that exists on this machine.
+
+    The build Mirid installs defaults ``generate_token_backend`` to
+    "cudagraphs-manual". Without CUDA that raises "Tried to instantiate dummy
+    base class CUDAGraph" and no voice can be produced at all. ``generate()``
+    forwards ``t3_params`` straight through to the T3 sampler, which is where
+    the choice is made, so request the eager path there.
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return {}
+    except Exception:
+        pass
+    try:
+        if "t3_params" not in inspect.signature(model.generate).parameters:
+            return {}
+    except (TypeError, ValueError):
+        return {}
+    return {"t3_params": {"generate_token_backend": "eager"}}
+
+
 def _call_chatterbox_generate(model, text, audio_prompt_path=None, **kwargs):
     """
     Dynamically adapts to the Chatterbox model's generate signature.
@@ -1122,7 +1146,10 @@ def _call_chatterbox_generate(model, text, audio_prompt_path=None, **kwargs):
     """
     sig = inspect.signature(model.generate)
     params = sig.parameters
-    
+
+    for key, value in _chatterbox_backend_params(model).items():
+        kwargs.setdefault(key, value)
+
     call_args = [text]
     call_kwargs = kwargs.copy()
     
@@ -1283,6 +1310,7 @@ async def _synthesize_with_chatterbox_turbo(
             'temperature': 0.8,
             # 'exaggeration': exaggeration, # Not supported in Turbo
             # 'cfg_weight': cfg, # Not supported in Turbo
+            **_chatterbox_backend_params(model),
         }
         
         if audio_prompt_path and os.path.exists(audio_prompt_path):
@@ -1410,6 +1438,7 @@ async def _synthesize_with_chatterbox_nano(
         # Generation kwargs for Nano
         generation_kwargs = {
             'temperature': 0.8,
+            **_chatterbox_backend_params(model),
         }
         
         if audio_prompt_path and os.path.exists(audio_prompt_path):
