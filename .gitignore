@@ -125,6 +125,7 @@ docs/*
 !docs/LAUNCH_UI_CONTROL_AUDIT.md
 !docs/CROSS_PLATFORM_RUNTIME.md
 !docs/RELEASE_TESTING.md
+!docs/MACOS_BUILD.md
 
 # Runtime generated entity cache (may contain pre-depersonalization output)
 backend/app/data/
