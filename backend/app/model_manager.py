@@ -1125,7 +1125,11 @@ class ModelManager:
             if model_format in {"mlx", "system"}:
                 resolved_model_path = model_path
                 if model_format == "mlx" and not resolved_model_path:
-                    resolved_model_path = model_name.removeprefix("mlx:")
+                    requested = model_name.removeprefix("mlx:")
+                    # A discovered model names a directory in the models folder;
+                    # anything else is passed through as a Hugging Face repository.
+                    local_model = self.models_dir / requested
+                    resolved_model_path = str(local_model) if local_model.is_dir() else requested
                 model = self.runtime_broker.start_model(
                     model_name=model_name,
                     model_path=resolved_model_path,
@@ -1411,10 +1415,42 @@ class ModelManager:
             await self.load_model(model_name, gpu_id=target_gpu_id, model_path=current_path, context_length=new_context_length)
             logging.info(f"Context length for {model_name} on GPU {target_gpu_id} updated to {new_context_length}.")
 
+    def discover_mlx_models(self):
+        """Find MLX models sitting in the models directory.
+
+        An MLX model is a directory of weights, so a scan for *.gguf can never
+        see one and the MLX runner stays unreachable however well it works.
+        Report them under the "mlx:" prefix the loader already understands.
+        """
+        formats = self.runtime_broker.capabilities().get("formats", {})
+        if not formats.get("mlx", {}).get("available"):
+            return []
+        try:
+            entries = sorted(self.models_dir.iterdir())
+        except OSError:
+            return []
+        discovered = []
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            configuration = entry / "config.json"
+            if not configuration.is_file() or not any(entry.glob("*.safetensors")):
+                continue
+            # A plain Transformers checkpoint has the same shape on disk, so
+            # require a positive signal that these weights are MLX's.
+            try:
+                settings = json.loads(configuration.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if "quantization" in settings or "mlx" in entry.name.lower():
+                discovered.append(f"mlx:{entry.name}")
+        return discovered
+
     def list_available_models(self):
         """List all available GGUF models in the models directory"""
         try:
             model_files = [filename for filename in os.listdir(MODEL_DIR) if filename.endswith(".gguf")]
+            model_files.extend(self.discover_mlx_models())
             system_support = self.runtime_broker.capabilities().get("formats", {}).get("system", {})
             if system_support.get("available"):
                 model_files.append(APPLE_INTELLIGENCE_MODEL_ID)
