@@ -2423,16 +2423,14 @@ fn wait_for_service(
 
 fn stop_all_sidecars(app: &tauri::AppHandle) {
     let sidecars = app.state::<Sidecars>();
-    if let Ok(mut backend) = sidecars.backend.lock() {
-        if let Some(child) = backend.take() {
-            let _ = child.kill();
-        }
+    // Claim both sidecars under their locks, then terminate outside them:
+    // killing walks the process tree and waits between SIGTERM and SIGKILL, and
+    // holding a lock across that would stall status and restart calls on quit.
+    let backend = sidecars.backend.lock().ok().and_then(|mut slot| slot.take());
+    let tts = sidecars.tts.lock().ok().and_then(|mut slot| slot.take());
+    for child in [backend, tts].into_iter().flatten() {
+        let _ = child.kill();
     }
-    if let Ok(mut tts) = sidecars.tts.lock() {
-        if let Some(child) = tts.take() {
-            let _ = child.kill();
-        }
-    };
 }
 
 fn start_sidecars(app: &tauri::AppHandle) -> Result<(), String> {
@@ -3819,6 +3817,15 @@ pub fn run() {
                 app.exit(0);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        // Closing the main window is not the only way out: Cmd-Q, the Dock's
+        // Quit and a quit Apple Event all end the event loop without destroying
+        // the window first, which on macOS left the backend, the voice service
+        // and any llama-server holding their ports and the model's memory.
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                stop_all_sidecars(app);
+            }
+        });
 }
