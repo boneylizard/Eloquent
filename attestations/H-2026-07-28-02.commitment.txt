@@ -1,0 +1,11 @@
+CRYPTOGRAPHIC COMMITMENT
+
+Record ID: H-2026-07-28-02
+Commitment scheme: SHA-256
+Committed document filename: H-2026-07-28-02.md
+Committed document SHA-256: 94e262851cd9a05c8ca3bdccc5916477f145933e53d2a39e69bb1aae62b6137a
+Local Git commit containing the document and manifest: 33aac96a042ed0cf91568e11deb4e9a9d5dadb7e
+
+The committed document's contents are intentionally withheld at the time of this public commitment. Revealing a byte-identical document whose SHA-256 matches the value above can establish that the exact contents were committed to no later than this GitHub record, subject to the security properties of SHA-256 and GitHub's record integrity.
+
+This commitment establishes content priority only. It does not establish the truth of any claim in the committed document.
